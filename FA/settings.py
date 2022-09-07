@@ -16,7 +16,7 @@ SECRET_KEY = 'django-insecure-(zyb)qx!o_p@$vjqscb=p+)8&-(tj(v*ne_=qc(r@7f(%%a5ey
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['146.190.28.215']
+ALLOWED_HOSTS = ['127.0.0.1']
 
 AUTH_USER_MODEL = "Authentication.User"
 # Application definition
@@ -70,8 +70,8 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 DATABASES = {
    'default': {
        'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'accounts',
-       'USER': 'accountuser',
+       'NAME': 'accountsNew',
+       'USER': 'postgres',
        'PASSWORD': 'ansh@1789',
        'HOST': 'localhost',
        'PORT': '',
