@@ -30,7 +30,7 @@ class tdsordelatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = tdsmain.objects.filter(entity= entity).last()
+        id = tdsmain.objects.filter(entityid= entity).last()
         serializer = tdsVSerializer(id)
         return Response(serializer.data)
 
@@ -49,7 +49,7 @@ class tdstypeApiView(ListCreateAPIView):
     def get_queryset(self):
 
         entity = self.request.query_params.get('entity')
-        return tdstype.objects.filter(entity = entity)
+        return tdstype.objects.filter(entityid = entity)
 
 
 
@@ -68,7 +68,7 @@ class tdsmainApiView(ListCreateAPIView):
     def get_queryset(self):
 
         entity = self.request.query_params.get('entity')
-        return tdsmain.objects.filter(entity = entity)
+        return tdsmain.objects.filter(entityid = entity)
 
 
 
@@ -80,7 +80,7 @@ class tdsmainupdatedel(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        return tdsmain.objects.filter(entity = entity)
+        return tdsmain.objects.filter(entityid = entity)
 
 
 class tdsmainpreviousapiview(RetrieveUpdateDestroyAPIView):
@@ -92,7 +92,7 @@ class tdsmainpreviousapiview(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         #vouchertype = self.request.query_params.get('vouchertype')
-        return tdsmain.objects.filter(entity = entity)
+        return tdsmain.objects.filter(entityid = entity)
 
 
 
