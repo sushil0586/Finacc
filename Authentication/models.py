@@ -58,9 +58,10 @@ class MyUserManager(UserManager):
 
 
 
-class Role(TrackingModel):
+class userRole(TrackingModel):
     rolename = models.CharField(max_length=150)
     roledesc = models.CharField(max_length=150)
+    entity = models.ForeignKey(to='entity.entity', on_delete=models.CASCADE,null= True)
     
 
 
@@ -85,7 +86,7 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
     first_name = models.CharField(_('first name'), max_length=100, blank=True)
     last_name = models.CharField(_('last name'), max_length=100, blank=True)
     email = models.EmailField(_('email address'), blank=False,unique = True)
-    role = models.ForeignKey(Role,  on_delete=models.CASCADE,null=True,blank=True)
+    role = models.ForeignKey(userRole,  on_delete=models.CASCADE,null=True,blank=True)
     is_staff = models.BooleanField(
         _('staff status'),
         default=False,
@@ -155,7 +156,7 @@ class submenu(TrackingModel):
 
 
 class rolepriv(TrackingModel):
-    role =     models.ManyToManyField(Role,null= True,related_name='roles')
+    role =     models.ManyToManyField(userRole,null= True,related_name='roles')
     mainmenu =     models.ManyToManyField(MainMenu,null= True,related_name='mainmenus')
  
 

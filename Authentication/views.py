@@ -4,7 +4,7 @@ from rest_framework import response,status,permissions
 from rest_framework.generics import GenericAPIView,ListAPIView,UpdateAPIView,ListCreateAPIView
 from Authentication.serializers import Registerserializer,LoginSerializer,Userserializer,ChangePasswordSerializer,RoleSerializer,mainmenuserializer,roleprivserializer
 from django.contrib.auth import authenticate
-from Authentication.models import User,Role,MainMenu,rolepriv
+from Authentication.models import User,userRole,MainMenu,rolepriv
 from rest_framework.response import Response
 
 
@@ -76,7 +76,7 @@ class roleapiview(ListAPIView):
     
     def get_queryset(self): 
         entity = self.request.query_params.get('entity')
-        return Role.objects.filter(entity=entity)
+        return userRole.objects.filter(entity=entity)
 
 class ChangePasswordView(UpdateAPIView):
     serializer_class = ChangePasswordSerializer
