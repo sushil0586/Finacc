@@ -510,7 +510,7 @@ class tdsmain(TrackingModel):
     ledgerposting = models.IntegerField(verbose_name= 'Ledger Posting',null=True)
     chalanno = models.CharField(max_length= 255,verbose_name= 'Chalan No',null=True)
     bank = models.CharField(max_length= 255,verbose_name= 'Bank',null=True)
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entityid = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
