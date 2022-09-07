@@ -49,7 +49,7 @@ class tdstypeApiView(ListCreateAPIView):
     def get_queryset(self):
 
         entity = self.request.query_params.get('entity')
-        return tdstype.objects.filter(entityid = entity)
+        return tdstype.objects.filter(entity = entity)
 
 
 
