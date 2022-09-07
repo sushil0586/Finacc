@@ -1,7 +1,7 @@
 import imp
 from django.db import models
 from rest_framework import serializers
-from Authentication.models import User,Role,MainMenu,submenu,rolepriv
+from Authentication.models import User,userRole,MainMenu,submenu,rolepriv
 #from entity.models import enti
 #from entity.serializers import entityUserSerializer
 
@@ -122,7 +122,7 @@ class RoleSerializer(serializers.ModelSerializer):
 
 
     class Meta:
-        model = Role
+        model = userRole
         fields = ('id','rolename','roledesc','entity')
 
 
