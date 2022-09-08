@@ -511,7 +511,7 @@ class tdsmain(TrackingModel):
     chalanno = models.CharField(max_length= 255,verbose_name= 'Chalan No',null=True)
     bank = models.CharField(max_length= 255,verbose_name= 'Bank',null=True)
     entityid = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
-    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null = True)
 
 
     def __str__(self):
