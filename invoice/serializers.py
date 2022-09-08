@@ -22,6 +22,33 @@ class tdsmainSerializer(serializers.ModelSerializer):
         model = tdsmain
         fields ='__all__'
 
+    def create(self, validated_data):
+        #print(validated_data)
+        #journaldetails_data = validated_data.pop('journaldetails')
+        tds = tdsmain.objects.create(**validated_data)
+        entryid,created  = entry.objects.get_or_create(entrydate1 = tds.voucherdate,entity=tds.entityid)
+        StockTransactions.objects.create(accounthead= tds.creditaccountid.accounthead,account= tds.creditaccountid,transactiontype = 'T',transactionid = tds.id,desc = str(tds.voucherno),drcr=0,creditamount=tds.amount,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
+        StockTransactions.objects.create(accounthead= tds.debitaccountid.accounthead,account= tds.debitaccountid,transactiontype = 'T',transactionid = tds.id,desc = str(tds.voucherno),drcr=1,debitamount=tds.debitamount,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
+        StockTransactions.objects.create(accounthead= tds.tdsaccountid.accounthead,account= tds.tdsaccountid,transactiontype = 'T',transactionid = tds.id,desc = str(tds.voucherno),drcr=1,debitamount=tds.grandtotal,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
+
+        return tds
+
+    def update(self, instance, validated_data):
+        fields = ['voucherdate','voucherno','creditaccountid','creditdesc','debitaccountid','debitdesc','tdsaccountid','tdsdesc','tdsreturnccountid','tdsreturndesc','tdstype','amount','debitamount','otherexpenses','tdsrate','tdsvalue','surchargerate','surchargevalue','cessrate','cessvalue','hecessrate','hecessvalue','grandtotal','tdsreturndesc','vehicleno','grno','invoiceno','grdate','invoicedate','weight','depositdate','chequeno','ledgerposting','chalanno','bank','entityid','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id).delete()
+        StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = str(instance.voucherno),drcr=0,creditamount=instance.amount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        StockTransactions.objects.create(accounthead= instance.debitaccountid.accounthead,account= instance.debitaccountid,transactiontype = 'T',transactionid = instance.id,desc = str(instance.voucherno),drcr=1,debitamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        StockTransactions.objects.create(accounthead= instance.tdsaccountid.accounthead,account= instance.tdsaccountid,transactiontype = 'T',transactionid = instance.id,desc = str(instance.voucherno),drcr=1,debitamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+
+        return instance
+
 
 
 class tdstypeSerializer(serializers.ModelSerializer):
