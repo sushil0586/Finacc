@@ -498,10 +498,10 @@ class tdsmain(TrackingModel):
     hecessrate = models.DecimalField(max_digits=10,null = True,decimal_places=2,verbose_name= 'HE Cess rate')
     hecessvalue = models.DecimalField(max_digits=10,null = True,decimal_places=2,verbose_name= 'HE Cess Value')
     grandtotal = models.DecimalField(max_digits=10,null = True,decimal_places=2,verbose_name= 'Grand Total')
-    tdsreturndesc = models.CharField(max_length= 255,verbose_name= 'tds return Acc desc')
-    vehicleno = models.CharField(max_length= 20,verbose_name= 'vehicle no')
-    grno = models.CharField(max_length= 20,verbose_name= 'GR No')
-    invoiceno = models.CharField(max_length= 20,verbose_name= 'Invoice No')
+    tdsreturndesc = models.CharField(max_length= 255,verbose_name= 'tds return Acc desc',null=True)
+    vehicleno = models.CharField(max_length= 20,verbose_name= 'vehicle no',null=True)
+    grno = models.CharField(max_length= 20,verbose_name= 'GR No',null=True)
+    invoiceno = models.CharField(max_length= 20,verbose_name= 'Invoice No',null=True)
     grdate = models.DateField(verbose_name='GR Date',default=datetime.date.today)
     invoicedate = models.DateField(verbose_name='Invoice Date',default=datetime.date.today)
     weight = models.DecimalField(max_digits=10,null = True,decimal_places=2,verbose_name= 'weight')
@@ -512,6 +512,10 @@ class tdsmain(TrackingModel):
     bank = models.CharField(max_length= 255,verbose_name= 'Bank',null=True)
     entityid = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null = True)
+
+
+    class Meta:
+        unique_together = ('voucherno', 'entityid',)
 
 
     def __str__(self):
