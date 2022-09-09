@@ -61,7 +61,7 @@ urlpatterns  = [
     path('purchasetaxtype',views.purchasetaxtypeApiView.as_view(), name = 'purchasetaxtype'),
     path('tdsmain',views.tdsmainApiView.as_view(), name = 'tdsmain'),
     path('tdsmain/<int:id>',views.tdsmainupdatedel.as_view(), name = 'tdsmain'),
-    path('tdsmainprev/<int:voucherno>',views.tdsmainpreviousapiview.as_view(), name = 'tdsmainp'),
+    path('tdsmainvno/<int:voucherno>',views.tdsmainpreviousapiview.as_view(), name = 'tdsmainp'),
     path('tdsvoucherno',views.tdsordelatestview.as_view(), name = 'purchaseorder'),
     path('tdstype',views.tdstypeApiView.as_view(), name = 'purchaseorder'),
 
