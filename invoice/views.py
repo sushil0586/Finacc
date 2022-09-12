@@ -6,7 +6,7 @@ from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,
 from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
-PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,accounthead1Serializer,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
+PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
@@ -18,7 +18,13 @@ from financial.models import account
 from inventory.models import Product
 from django.db import connection
 from django.core import serializers
+from rest_framework.renderers import JSONRenderer
+from drf_excel.mixins import XLSXFileMixin
+from drf_excel.renderers import XLSXRenderer
+from rest_framework.viewsets import ReadOnlyModelViewSet
+from entity.models import entity
 
+ 
 
 
 
@@ -69,6 +75,107 @@ class tdsmainApiView(ListCreateAPIView):
 
         entity = self.request.query_params.get('entity')
         return tdsmain.objects.filter(entityid = entity)
+
+
+class tdsmainApiView1(XLSXFileMixin, ReadOnlyModelViewSet):
+
+    serializer_class = tdsmainSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    renderer_classes = (XLSXRenderer,)
+    filename = 'my_export.xlsx'
+    column_header = {
+        'titles': [
+            "Column_1_name",
+            "Column_2_name",
+            "Column_3_name",
+        ],
+        'column_width': [17, 30, 17],
+        'height': 25,
+        'style': {
+            'fill': {
+                'fill_type': 'solid',
+                'start_color': 'FFCCFFCC',
+            },
+            'alignment': {
+                'horizontal': 'center',
+                'vertical': 'center',
+                'wrapText': True,
+                'shrink_to_fit': True,
+            },
+            'border_side': {
+                'border_style': 'thin',
+                'color': 'FF000000',
+            },
+            'font': {
+                'name': 'Arial',
+                'size': 14,
+                'bold': True,
+                'color': 'FF000000',
+            },
+        },
+    }
+    body = {
+        'style': {
+            'fill': {
+                'fill_type': 'solid',
+                'start_color': 'FFCCFFCC',
+            },
+            'alignment': {
+                'horizontal': 'center',
+                'vertical': 'center',
+                'wrapText': True,
+                'shrink_to_fit': True,
+            },
+            'border_side': {
+                'border_style': 'thin',
+                'color': 'FF000000',
+            },
+            'font': {
+                'name': 'Arial',
+                'size': 14,
+                'bold': False,
+                'color': 'FF000000',
+            }
+        },
+        'height': 40,
+    }
+    column_data_styles = {
+        'distance': {
+            'alignment': {
+                'horizontal': 'right',
+                'vertical': 'top',
+            },
+            'format': '0.00E+00'
+        },
+        'created_at': {
+            'format': 'd.m.y h:mm',
+        }
+    }
+    
+
+    filter_backends = [DjangoFilterBackend]
+   # filterset_fields = ['id','ProductName','is_stockable']
+
+
+    def get_queryset(self):
+            entity = self.request.query_params.get('entity')
+            id = tdsmain.objects.filter(entityid = entity)
+           
+            return id
+
+    # def get(self,request):
+    #     entity = self.request.query_params.get('entity')
+    #     id = tdsmain.objects.filter(entityid = entity)
+    #     serializer = tdsmainSerializer(id,many=True)
+    #     return Response(serializer.data)    
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(createdby = self.request.user)
+    
+    # def get_queryset(self):
+
+    #     entity = self.request.query_params.get('entity')
+    #     return tdsmain.objects.filter(entityid = entity)
 
 
 
@@ -587,7 +694,8 @@ class TrialbalanceApiView(ListAPIView):
     def get_queryset(self):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
-        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead').annotate(debit = Sum('debitamount'),credit = Sum('creditamount') )
+        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
+        
         return stk
 
 
@@ -597,15 +705,15 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['accounthead']
 
 
     
     def get_queryset(self):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
-        accounthead = self.request.query_params.get('accounthead')
-        stk =StockTransactions.objects.filter(entity = entity,accounthead = accounthead).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount'),credit = Sum('creditamount') )
+       # accounthead = self.request.query_params.get('accounthead')
+        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
         #print(stk)
         return stk
 
@@ -615,15 +723,15 @@ class TrialbalancebyaccountApiView(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['account']
 
 
     
     def get_queryset(self):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
-        account = self.request.query_params.get('account')
-        stk =StockTransactions.objects.filter(entity = entity,account = account).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount') )
+        #account = self.request.query_params.get('account')
+        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount') )
         #print(stk)
         return stk
 
@@ -631,15 +739,15 @@ class TrialbalancebyaccountApiView(ListAPIView):
 
 class Trialview(ListAPIView):
 
-    serializer_class = accounthead1Serializer
+    serializer_class = entitySerializer
   #  filter_class = accountheadFilter
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['id']
     def get_queryset(self):
         #entity = self.request.query_params.get('entity')
-        entity = self.request.query_params.get('entity')
+        entity1 = self.request.query_params.get('entity')
 
         # stk = accountHead.objects.prefetch_related(Prefetch('headtrans',queryset = account.objects.prefetch_related(Prefetch('headtrans', queryset=StockTransactions.objects.filter(
         #         entity=entity).order_by('entity'))))to_attr='accounthead_transactions')
@@ -649,7 +757,7 @@ class Trialview(ListAPIView):
         #         entity=entity).order_by('entity'), to_attr='accounthead_transactions')
         # )
 
-        stk = accountHead.objects.prefetch_related('accounthead_accounts','accounthead_accounts__accounttrans').all()
+        stk = entity.objects.filter(id = entity1).prefetch_related('entity_accountheads','entity_accountheads__headtrans').all()
         
         return stk
 
