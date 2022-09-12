@@ -10,6 +10,9 @@ from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
+from entity.models import entity
+from django.db.models.functions import Abs
+
 
 
 
@@ -29,7 +32,7 @@ class tdsmainSerializer(serializers.ModelSerializer):
         entryid,created  = entry.objects.get_or_create(entrydate1 = tds.voucherdate,entity=tds.entityid)
         StockTransactions.objects.create(accounthead= tds.creditaccountid.accounthead,account= tds.creditaccountid,transactiontype = 'T',transactionid = tds.id,desc ='By Tds Voucher no ' + str(tds.voucherno),drcr=0,creditamount=tds.amount,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
         StockTransactions.objects.create(accounthead= tds.debitaccountid.accounthead,account= tds.debitaccountid,transactiontype = 'T',transactionid = tds.id,desc = 'By Tds Voucher no ' + str(tds.voucherno),drcr=1,debitamount=tds.debitamount,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
-        StockTransactions.objects.create(accounthead= tds.tdsaccountid.accounthead,account= tds.tdsaccountid,transactiontype = 'T',transactionid = tds.id,desc = 'By Tds Voucher no ' + str(tds.voucherno),drcr=1,debitamount=tds.grandtotal,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
+        StockTransactions.objects.create(accounthead= tds.tdsaccountid.accounthead,account= tds.tdsaccountid,transactiontype = 'T',transactionid = tds.id,desc = 'By Tds Voucher no ' + str(tds.voucherno),drcr=0,creditamount=tds.grandtotal,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M')
 
         return tds
 
@@ -45,7 +48,7 @@ class tdsmainSerializer(serializers.ModelSerializer):
         StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id).delete()
         StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=0,creditamount=instance.amount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
         StockTransactions.objects.create(accounthead= instance.debitaccountid.accounthead,account= instance.debitaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
-        StockTransactions.objects.create(accounthead= instance.tdsaccountid.accounthead,account= instance.tdsaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        StockTransactions.objects.create(accounthead= instance.tdsaccountid.accounthead,account= instance.tdsaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=0,creditamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
 
         return instance
 
@@ -948,13 +951,25 @@ class TrialbalanceSerializer(serializers.ModelSerializer):
     accountheadname = serializers.CharField(max_length=500,source = 'account__accounthead__name')
     debit = serializers.DecimalField(max_digits=10,decimal_places=2)
     credit = serializers.DecimalField(max_digits=10,decimal_places=2)
+    balance = serializers.DecimalField(max_digits=10,decimal_places=2)
+    drcr = serializers.SerializerMethodField()
+    
 
     #debit  = serializers.SerializerMethodField()
    
 
     class Meta:
         model = StockTransactions
-        fields = ['accounthead','accountheadname','debit','credit']
+        fields = ['accounthead','accountheadname','debit','credit','balance','drcr']
+
+    
+    def get_drcr(self,obj):
+        if obj['balance'] > 0:
+            return 'DR'
+        else:
+            return 'CR'
+
+    
 
     
 
@@ -963,16 +978,32 @@ class TrialbalanceSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         representation = super().to_representation(instance)
 
-        if representation['debit'] and representation['credit']:
-            if float(representation['debit']) - float(representation['credit']) > 0:
-                representation['debit'] = ("{:0.2f}".format(float(representation['debit']) - float(representation['credit'])))
-                representation['credit'] = ''
-                return representation
-            else:
-                representation['credit'] = ("{:0.2f}".format(float(representation['credit']) - float(representation['debit'])))
-                representation['debit'] = ' '
-                return representation
-        return representation
+        #print(instance)
+
+        if representation['balance'] > 0:
+            representation['debit'] = representation['balance']
+            representation['credit'] = 0
+
+            return representation
+        else:
+            representation['credit'] = abs(representation['balance'])
+            representation['debit'] = 0
+            representation['balance'] = abs(representation['balance'])
+            return representation
+
+
+
+
+        # if representation['debit'] and representation['credit']:
+        #     if float(representation['debit']) - float(representation['credit']) > 0:
+        #         representation['debit'] = ("{:0.2f}".format(float(representation['debit']) - float(representation['credit'])))
+        #         representation['credit'] = ''
+        #         return representation
+        #     else:
+        #         representation['credit'] = ("{:0.2f}".format(float(representation['credit']) - float(representation['debit'])))
+        #         representation['debit'] = ' '
+        #         return representation
+        # return representation
 
 
 
@@ -985,11 +1016,23 @@ class TrialbalanceSerializerbyaccounthead(serializers.ModelSerializer):
     accountname = serializers.CharField(max_length=500,source = 'account__accountname')
     debit = serializers.DecimalField(max_digits=10,decimal_places=2)
     credit = serializers.DecimalField(max_digits=10,decimal_places=2)
+    balance = serializers.DecimalField(max_digits=10,decimal_places=2)
+    drcr = serializers.SerializerMethodField()
    
 
     class Meta:
         model = StockTransactions
-        fields = ['account','accountname','debit','credit']
+        fields = ['account','accountname','debit','credit','balance','drcr']
+
+    def get_drcr(self,obj):
+        if obj['balance'] > 0:
+            return 'DR'
+        else:
+            return 'CR'
+        
+        
+
+        
 
 
 
@@ -2390,29 +2433,55 @@ class account1Serializer(serializers.ModelSerializer):
         return obj.accounttrans.aggregate(Sum('creditamount'))['creditamount__sum']
 
 
-class accounthead1Serializer(serializers.ModelSerializer):
-    accounthead_accounts = account1Serializer(many=True, read_only=True)
+
+class accountheadtranSerializer(serializers.ModelSerializer):
+  #  accounttrans = stock1DriverSerializer(many=True, read_only=True)
     debit  = serializers.SerializerMethodField()
     credit = serializers.SerializerMethodField()
-   # amount_of_trucks = serializers.IntegerField()
 
     class Meta:
         model = accountHead
-        fields = ('name', 'code','debit','credit','accounthead_accounts')
+        fields = ('name','code','debit','credit')
 
+    
     def get_debit(self, obj):
         # fromDate = parse_datetime(self.context['request'].query_params.get(
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.accounthead_accounts.aggregate(Sum('accounttrans__debitamount'))['accounttrans__debitamount__sum']
+        return obj.headtrans.aggregate(Sum('debitamount'))['debitamount__sum']
 
     def get_credit(self, obj):
         # fromDate = parse_datetime(self.context['request'].query_params.get(
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.accounthead_accounts.aggregate(Sum('accounttrans__creditamount'))['accounttrans__creditamount__sum']
+        return obj.headtrans.aggregate(Sum('creditamount'))['creditamount__sum']
+
+
+class entitySerializer(serializers.ModelSerializer):
+    entity_accountheads = accountheadtranSerializer(many=True, read_only=True)
+    debit  = serializers.SerializerMethodField()
+    credit = serializers.SerializerMethodField()
+   # amount_of_trucks = serializers.IntegerField()
+
+    class Meta:
+        model = entity
+        fields = ('debit','credit','entity_accountheads')
+
+    def get_debit(self, obj):
+        # fromDate = parse_datetime(self.context['request'].query_params.get(
+        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        # toDate = parse_datetime(self.context['request'].query_params.get(
+        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        return obj.entity_accountheads.aggregate(Sum('headtrans__debitamount'))['headtrans__debitamount__sum']
+
+    def get_credit(self, obj):
+        # fromDate = parse_datetime(self.context['request'].query_params.get(
+        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        # toDate = parse_datetime(self.context['request'].query_params.get(
+        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        return obj.entity_accountheads.aggregate(Sum('headtrans__creditamount'))['headtrans__creditamount__sum']
     
 
 
