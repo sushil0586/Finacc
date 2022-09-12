@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead
-from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts
+from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -93,7 +93,7 @@ class accountApiView3(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['gstno']
+    filterset_fields = ['accounthead']
 
     # def perform_create(self, serializer):
     #     return serializer.save(owner = self.request.user)
@@ -128,3 +128,20 @@ class accountupdatedelApiView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return account.objects.filter(owner = self.request.user)
+
+
+
+class accountheadApiView3(ListAPIView):
+
+    serializer_class = accountHeadMainSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+   # filterset_fields = ['accounthead']
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(owner = self.request.user)
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return accountHead.objects.filter(entity = entity)
