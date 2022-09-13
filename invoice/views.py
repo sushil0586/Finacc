@@ -694,7 +694,7 @@ class TrialbalanceApiView(ListAPIView):
     def get_queryset(self):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
-        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
+        stk =StockTransactions.objects.filter(entity = entity,isActive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
         
         return stk
 
@@ -705,15 +705,15 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['accounthead']
+    filterset_fields = ['account__accounthead']
 
 
     
     def get_queryset(self):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
-       # accounthead = self.request.query_params.get('accounthead')
-        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+        accounthead = self.request.query_params.get('accounthead')
+        stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isActive = 1).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
         #print(stk)
         return stk
 
@@ -731,7 +731,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
         #account = self.request.query_params.get('account')
-        stk =StockTransactions.objects.filter(entity = entity).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount') )
+        stk =StockTransactions.objects.filter(entity = entity,isActive = 1).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
         #print(stk)
         return stk
 
@@ -833,7 +833,7 @@ class daybookviewapi(ListAPIView):
 
 
 
-        queryset1=StockTransactions.objects.filter(entity=entity).only('account__accountname','transactiontype','drcr','transactionid','desc').annotate(debit = Sum('debitamount'),credit =Sum('creditamount')).order_by('account')
+        queryset1=StockTransactions.objects.filter(entity=entity,isActive = 1).only('account__accountname','transactiontype','drcr','transactionid','desc').annotate(debit = Sum('debitamount'),credit =Sum('creditamount')).order_by('account')
 
       #  print(queryset1)
 
@@ -1097,7 +1097,7 @@ class salebyaccountapi(ListAPIView):
         enddate = self.request.query_params.get('enddate')
 
 
-        queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M',transactiontype = transactiontype).order_by('account')
+        queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M',transactiontype = transactiontype,isActive = 1).order_by('account')
 
 
 
@@ -1130,7 +1130,7 @@ class purchasebyaccountapi(ListAPIView):
 
 
 
-        queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M',transactiontype = transactiontype,entrydatetime__range=(startdate, enddate)).order_by('account').only('account__accountname','account__city', 'transactiontype','drcr','transactionid','desc','creditamount','cgstdr','sgstdr','igstdr','subtotal', )
+        queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M',transactiontype = transactiontype,entrydatetime__range=(startdate, enddate),isActive = 1).order_by('account').only('account__accountname','account__city', 'transactiontype','drcr','transactionid','desc','creditamount','cgstdr','sgstdr','igstdr','subtotal', )
 
        # queryset=entry.objects.prefetch_related(Prefetch('cashtrans', queryset=queryset1,to_attr='account_transactions')).order_by('-entrydate1')
 
