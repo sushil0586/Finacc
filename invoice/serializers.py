@@ -2557,7 +2557,7 @@ class accountheadtranSerializer(serializers.ModelSerializer):
         return obj.headtrans.aggregate(Sum('creditamount'))['creditamount__sum']
 
 
-class entitySerializer(serializers.ModelSerializer):
+class entitySerializer1(serializers.ModelSerializer):
     entity_accountheads = accountheadtranSerializer(many=True, read_only=True)
     debit  = serializers.SerializerMethodField()
     credit = serializers.SerializerMethodField()
