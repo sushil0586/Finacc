@@ -64,66 +64,14 @@ urlpatterns  = [
     path('tdsmainvno/<int:voucherno>',views.tdsmainpreviousapiview.as_view(), name = 'tdsmainp'),
     path('tdsvoucherno',views.tdsordelatestview.as_view(), name = 'purchaseorder'),
     path('tdstype',views.tdstypeApiView.as_view(), name = 'purchaseorder'),
-
-
+    path('tdscancel/<int:id>',views.tdsmaincancel.as_view(), name = 'tdsmain'),
+    path('salesordercancel/<int:id>',views.salesordercancel.as_view(), name = 'tdsmain'),
+    path('purchaseordercancel/<int:id>',views.purchaseordercancel.as_view(), name = 'tdsmain'),
+    path('purchasereturncancel/<int:id>',views.purchasereturncancel.as_view(), name = 'tdsmain'),
+    path('salesreturncancel/<int:id>',views.salesreturncancel.as_view(), name = 'tdsmain'),
+    path('journalmaincancel/<int:id>',views.journalmaincancel.as_view(), name = 'tdsmain'),
+    path('tdsmain1',views.tdsmainApiView1.as_view({'get': 'list'}), name = 'tdsmain'),
     
-
-
-    
-    
-
-    
-
-     
-
-
-    
-
-    
-
-    
-
-    
-
-    
-
-
-    
-
-    
-
-
-
-    
-
-
-    
-
-
-    
-
-
-    
-
-
-    
-
-    
-
-
-    
-
-
-
-    
-
-    
-
-    
-
-    
-    # path('account',views.accountApiView.as_view(),name ='account'),
-    # path('account/<int:id>',views.accountupdatedelApiView.as_view(),name = 'accountid')
    
    
    

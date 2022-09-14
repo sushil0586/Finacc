@@ -17,6 +17,134 @@ from django.db.models.functions import Abs
 
 
 
+
+class tdsmaincancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = tdsmain
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id,transactiontype = 'T').update(isactive = instance.isactive)
+        return instance
+
+class salesordercancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = SalesOderHeader
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
+        return instance
+
+
+class purchaseordercancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = purchaseorder
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
+        return instance
+
+
+class purchasereturncancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = PurchaseReturn
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'PR').update(isactive = instance.isactive)
+        return instance
+
+
+class salesreturncancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = salereturn
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'SR').update(isactive = instance.isactive)
+        return instance
+
+
+class journalcancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = journalmain
+        fields = ('isactive','vouchertype',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['vouchertype','isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = instance.vouchertype).update(isactive = instance.isactive)
+        return instance
+
+
+
+
 class tdsmainSerializer(serializers.ModelSerializer):
 
 
@@ -399,16 +527,9 @@ class journalmainSerializer(serializers.ModelSerializer):
     class Meta:
         model = journalmain
         fields = ('id','voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entity','createdby', 'isactive','journaldetails',)
-
-
-    
-
     def create(self, validated_data):
-        #print(validated_data)
         journaldetails_data = validated_data.pop('journaldetails')
         order = journalmain.objects.create(**validated_data)
-       # stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'Sale ')
-        #print(tracks_data)
         for journaldetail_data in journaldetails_data:
             detail = journaldetails.objects.create(Journalmain = order, **journaldetail_data)
             print(order.entrydate)
@@ -416,13 +537,6 @@ class journalmainSerializer(serializers.ModelSerializer):
 
             accountentryid,accountentrycreated  = accountentry.objects.get_or_create(entrydate2 = order.entrydate,account =detail.account,  entity = order.entity)
 
-
-            # print(detail.drcr)
-            # print(detail)
-
-            
-
-           
             if order.vouchertype == 'C':
                 cash = account.objects.get(entity =order.entity,accountcode = 4000)
                 if detail.drcr == 1:
@@ -438,35 +552,12 @@ class journalmainSerializer(serializers.ModelSerializer):
                 else:
                     StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M')
 
-
-
-
-
-
-                
-
-            
-
-
-
-            print(id)
-            print(created)
-            # if detail.account.accounthead.code == 2000:
-            #     accounttype = 'BIH'
             if detail.account.accounthead.code == 4000:
                 accounttype = 'CIH'
             else:
                 accounttype = 'M'
             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype=accounttype)
-           # stk.createtransactiondetails(detail=detail,stocktype='S')
-
-            # if(detail.orderqty ==0.00):
-            #     qty = detail.pieces
-            # else:
-            #     qty = detail.orderqty
-            # StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = 'S',transactionid = order.id,desc = 'Sale By B.No ' + str(order.billno),stockttype = 'S',salequantity = qty,drcr = 0,creditamount = detail.amount,cgstcr = detail.cgst,sgstcr= detail.sgst,igstcr = detail.igst,entrydate = order.sorderdate,entity = order.entity,createdby = order.owner)
-
-       # stk.createtransaction()
+          
         return order
 
     def update(self, instance, validated_data):
