@@ -7,7 +7,7 @@ from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,Purch
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer
+purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -188,6 +188,70 @@ class tdsmainupdatedel(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return tdsmain.objects.filter(entityid = entity)
+
+
+class tdsmaincancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = tdsmaincancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return tdsmain.objects.filter(entityid = entity)
+
+class salesordercancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = salesordercancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return SalesOderHeader.objects.filter(entity = entity)
+
+
+class purchaseordercancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = purchaseordercancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return purchaseorder.objects.filter(entity = entity)
+
+
+class purchasereturncancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = purchasereturncancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return PurchaseReturn.objects.filter(entity = entity)
+
+class journalmaincancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = journalcancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return journalmain.objects.filter(entity = entity)
+
+
+class salesreturncancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = salesreturncancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return salereturn.objects.filter(entity = entity)
 
 
 class tdsmainpreviousapiview(RetrieveUpdateDestroyAPIView):
