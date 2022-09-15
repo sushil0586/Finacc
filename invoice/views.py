@@ -23,6 +23,7 @@ from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from entity.models import entity
+from django_pandas.io import read_frame
 
  
 
@@ -755,12 +756,41 @@ class TrialbalanceApiView(ListAPIView):
 
     filter_backends = [DjangoFilterBackend]
     #filterset_fields = ['id','unitType','entityName']
-    def get_queryset(self):
+    def get(self, request, format=None):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
+        #stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
+       # stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+       # q = stk.filter(balance__gt=0)
+
+
+
+        stkunion = stk.union(stk2)
+
+        df = read_frame(stkunion)
+        df['drcr'] = 'CR'
+
+        df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+
+
+        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead'}, inplace = True)
+
+
+       # print(df.groupby(['account__accounthead__name','account__accounthead'])['debit','credit','balance'].sum())
+
+        #print(df.to_dict())
+
         
-        return stk
+
+        #stu = stkunion.values('account__accounthead__name','account__accounthead','debit','credit','balance')
+
+
+      #  print(stu.query.__str__())
+        #q = stk.filter(balance > 0)
+        return Response(df.groupby(['accounthead','accountheadname','drcr'])['debit','credit','balance'].sum().abs().reset_index().T.to_dict().values())
 
 
 class TrialbalancebyaccountheadApiView(ListAPIView):
@@ -777,9 +807,14 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
         accounthead = self.request.query_params.get('accounthead')
-        stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
-        #print(stk)
-        return stk
+        drcrgroup = self.request.query_params.get('drcr')
+        if drcrgroup == 'DR':
+            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+            return stk
+        
+        if drcrgroup == 'CR':
+            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+            return stk
 
 class TrialbalancebyaccountApiView(ListAPIView):
 
@@ -841,13 +876,13 @@ class Trialviewaccount(ListAPIView):
 
         queryset1=StockTransactions.objects.filter(entity=entity).order_by('entity').only('account__accountname','transactiontype','transactionid','entrydatetime','desc','debitamount','creditamount')
 
-        print(connection.queries[-1])
+        #print(connection.queries[-1])
 
-        print(queryset1.values())
+        #print(queryset1.values())
 
         queryset=account.objects.prefetch_related(Prefetch('accounttrans', queryset=queryset1,to_attr='account_transactions'))
 
-        print(queryset.values())
+        print(queryset.query.__str__())
       #  print(connection.queries[])
 
 
@@ -875,6 +910,9 @@ class Balancesheetapi(ListAPIView):
         #account = self.request.query_params.get('account')
 
         queryset = accountHead.objects.filter(balanceType = 'Credit').prefetch_related('accounthead_accounts__accounttrans')
+
+
+        print(queryset.query.__str__())
 
     
      

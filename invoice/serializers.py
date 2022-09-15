@@ -1039,14 +1039,14 @@ class TrialbalanceSerializer(serializers.ModelSerializer):
 
   #  purchasequantity1 = serializers.DecimalField(max_digits=10,decimal_places=2)
 
-    creditaccounthead = serializers.IntegerField(source = 'account__creditaccounthead')
-    creditaccountheadname = serializers.CharField(max_length=500,source = 'account__creditaccounthead__name')
+   # creditaccounthead = serializers.IntegerField(source = 'account__creditaccounthead')
+   # creditaccountheadname = serializers.CharField(max_length=500,source = 'account__creditaccounthead__name')
     accounthead = serializers.IntegerField(source = 'account__accounthead')
     accountheadname = serializers.CharField(max_length=500,source = 'account__accounthead__name')
     debit = serializers.DecimalField(max_digits=10,decimal_places=2)
     credit = serializers.DecimalField(max_digits=10,decimal_places=2)
     balance = serializers.DecimalField(max_digits=10,decimal_places=2)
-    drcr = serializers.SerializerMethodField()
+   # drcr = serializers.SerializerMethodField()
     
 
     #debit  = serializers.SerializerMethodField()
@@ -1054,14 +1054,14 @@ class TrialbalanceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StockTransactions
-        fields = ['accounthead','accountheadname','creditaccounthead','creditaccountheadname','debit','credit','balance','drcr']
+        fields = ['accounthead','accountheadname','debit','credit','balance']
 
     
-    def get_drcr(self,obj):
-        if obj['balance'] > 0:
-            return 'DR'
-        else:
-            return 'CR'
+    # def get_drcr(self,obj):
+    #     if obj['balance'] > 0:
+    #         return 'DR'
+    #     else:
+    #         return 'CR'
 
     
 
@@ -1069,25 +1069,25 @@ class TrialbalanceSerializer(serializers.ModelSerializer):
 
   
 
-    def to_representation(self, instance):
-        representation = super().to_representation(instance)
+    # def to_representation(self, instance):
+    #     representation = super().to_representation(instance)
 
-        #print(instance)
+    #     #print(instance)
 
-        if representation['balance'] > 0:
-            representation['debit'] = representation['balance']
-            # representation['accounthead'] = representation['accounthead']
-            # representation['accountheadname'] = representation['accountheadname']
-            representation['credit'] = 0
+    #     if representation['balance'] > 0:
+    #         representation['debit'] = representation['balance']
+    #         # representation['accounthead'] = representation['accounthead']
+    #         # representation['accountheadname'] = representation['accountheadname']
+    #         representation['credit'] = 0
 
-            return representation
-        else:
-            representation['credit'] = abs(representation['balance'])
-            representation['debit'] = 0
-            representation['balance'] = abs(representation['balance'])
-            # representation['accounthead'] = representation['creditaccounthead']
-            # representation['accountheadname'] = representation['creditaccountheadname']
-            return representation
+    #         return representation
+    #     else:
+    #         representation['credit'] = abs(representation['balance'])
+    #         representation['debit'] = 0
+    #         representation['balance'] = abs(representation['balance'])
+    #         # representation['accounthead'] = representation['creditaccounthead']
+    #         # representation['accountheadname'] = representation['creditaccountheadname']
+    #         return representation
 
 
 
