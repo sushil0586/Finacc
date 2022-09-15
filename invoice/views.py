@@ -905,8 +905,8 @@ class Balancesheetapi(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['id']
-    def get_queryset(self):
+    filterset_fields = ['entity']
+    def get(self, request, format=None):
         #account = self.request.query_params.get('account')
 
         queryset = accountHead.objects.filter(balanceType = 'Credit').prefetch_related('accounthead_accounts__accounttrans')
@@ -914,9 +914,31 @@ class Balancesheetapi(ListAPIView):
 
         print(queryset.query.__str__())
 
+        stk =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+       # q = stk.filter(balance__gt=0)
+
+
+
+        stkunion = stk.union(stk2)
+
+        df = read_frame(stkunion)
+
+
+        df['drcr'] = df['balance'].apply(lambda x: 'Left' if x < 0 else 'Right')
+
+
+        print(df.groupby(['account__accounthead','account__accounthead__name']).apply(lambda grp: grp.groupby(['account_id'])[['balance']].sum().reset_index().T.to_dict().values()))
+
+
+
+        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead'}, inplace = True)
+
+        print(df.groupby(['accounthead','accountheadname','drcr'])['debit','credit','balance'].sum().abs().reset_index().T.to_dict().values())
+
     
      
-        return queryset
+        return Response(df.groupby(["drcr"]).apply(lambda grp1: grp1.groupby(["accounthead","accountheadname"]).apply(lambda grp: grp.groupby(['account_id'])[['balance']].sum().reset_index().T.to_dict().values()).reset_index().T.to_dict().values()).reset_index().T.to_dict().values())
 
     
 
