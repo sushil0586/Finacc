@@ -55,6 +55,7 @@ class accountHead(TrackingModel):
 
 class account(TrackingModel):
     accounthead = models.ForeignKey(to = accountHead,related_name='accounthead_accounts', on_delete= models.CASCADE,null = True)
+    creditaccounthead = models.ForeignKey(to = accountHead,related_name='accounthead_creditaccounts', on_delete= models.CASCADE,null = True)
     accountcode = models.IntegerField(verbose_name=_('Account Code'),null=True,blank=True,default=1000)
     gstno       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'))
     accountname       = models.CharField(max_length=50, null=True,verbose_name=_('Account Name'))
