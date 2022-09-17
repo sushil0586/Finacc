@@ -762,8 +762,8 @@ class TrialbalanceApiView(ListAPIView):
         #stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
 
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
        # q = stk.filter(balance__gt=0)
 
 
@@ -776,7 +776,7 @@ class TrialbalanceApiView(ListAPIView):
         df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
 
 
-        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead'}, inplace = True)
+        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__id':'account'}, inplace = True)
 
 
        # print(df.groupby(['account__accounthead__name','account__accounthead'])['debit','credit','balance'].sum())
@@ -790,7 +790,7 @@ class TrialbalanceApiView(ListAPIView):
 
       #  print(stu.query.__str__())
         #q = stk.filter(balance > 0)
-        return Response(df.groupby(['accounthead','accountheadname','drcr'])['debit','credit','balance'].sum().abs().reset_index().T.to_dict().values())
+        return Response(df.groupby(['accounthead','accountheadname','drcr'])[['debit','credit','balance']].sum().abs().reset_index().T.to_dict().values())
 
 
 class TrialbalancebyaccountheadApiView(ListAPIView):
@@ -914,8 +914,8 @@ class Balancesheetapi(ListAPIView):
 
         print(queryset.query.__str__())
 
-        stk =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+        stk =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
        # q = stk.filter(balance__gt=0)
 
 
@@ -924,21 +924,31 @@ class Balancesheetapi(ListAPIView):
 
         df = read_frame(stkunion)
 
+        
 
-        df['drcr'] = df['balance'].apply(lambda x: 'Left' if x < 0 else 'Right')
+        df.loc[len(df.index)] = ['Total', -1, -1, 'Total',0,0,df['balance'].sum()]
+
+        print(df)
 
 
-        print(df.groupby(['account__accounthead','account__accounthead__name']).apply(lambda grp: grp.groupby(['account_id'])[['balance']].sum().reset_index().T.to_dict().values()))
+
+        df['drcr'] = df['balance'].apply(lambda x: 0 if x < 0 else 1)
+        #df = df.loc['Column_Total']= df.sum(numeric_only=True, axis=0)
+
+        
+
+        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__accountname':'accountname','account__id':'accountid'}, inplace = True)
+
+
+     
 
 
 
-        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead'}, inplace = True)
 
-        print(df.groupby(['accounthead','accountheadname','drcr'])['debit','credit','balance'].sum().abs().reset_index().T.to_dict().values())
-
+      
     
      
-        return Response(df.groupby(["drcr"]).apply(lambda grp1: grp1.groupby(["accounthead","accountheadname"]).apply(lambda grp: grp.groupby(['account_id'])[['balance']].sum().reset_index().T.to_dict().values()).reset_index().T.to_dict().values()).reset_index().T.to_dict().values())
+        return Response(df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().T.to_dict().values())
 
     
 
