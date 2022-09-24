@@ -26,7 +26,7 @@ class purchasetaxtype(TrackingModel):
 
 class SalesOderHeader(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
-    sorderdate = models.DateField(verbose_name='Sales Order date',auto_now_add=True)
+    sorderdate = models.DateTimeField(verbose_name='Sales Order date',auto_now_add=True)
     billno = models.IntegerField(verbose_name='Bill No')
     accountid = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
@@ -93,7 +93,7 @@ class salesOrderdetails(TrackingModel):
 
 class PurchaseReturn(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
-    sorderdate = models.DateField(verbose_name='Sales Order date',auto_now_add=True)
+    sorderdate = models.DateTimeField(verbose_name='Sales Order date',auto_now_add=True)
     billno = models.IntegerField(verbose_name='Bill No')
     accountid = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
@@ -162,7 +162,7 @@ class purchaseorder(TrackingModel):
     voucherno = models.IntegerField(verbose_name='Voucher No')
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True)
     billno = models.IntegerField(verbose_name='Bill No')
-    billdate = models.DateField(verbose_name='Bill Date',auto_now_add=True)
+    billdate = models.DateTimeField(verbose_name='Bill Date',auto_now_add=True)
     terms = models.IntegerField(verbose_name='Terms')
     taxtype = models.IntegerField(verbose_name='TaxType')
     billcash = models.IntegerField(verbose_name='Bill/Cash')
@@ -420,6 +420,8 @@ class StockTransactions(TrackingModel):
     stockttype = models.CharField(verbose_name='Stock Transaction',max_length=10,null=True)
     salequantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Sale quantity')
     purchasequantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Purchase quantity')
+    purchaserate =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Purchase Rate')
+    salerate =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Sale Rate')
     issuedquantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Issued quantity')
     Recivedquantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Received quantity')
     drcr = models.BooleanField(verbose_name='Debit/Credit',null = True)
@@ -438,6 +440,7 @@ class StockTransactions(TrackingModel):
     subtotal =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Sub Total')
     pieces = models.IntegerField(verbose_name='Pieces',null=True)
     weightqty =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Weight Quantity')
+    iscashtransaction = models.BooleanField(verbose_name='Cash Transaction',default = False)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 

@@ -137,7 +137,7 @@ class accountheadApiView3(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['accounthead']
+    filterset_fields = ['accounthead','balanceType']
 
     # def perform_create(self, serializer):
     #     return serializer.save(owner = self.request.user)
