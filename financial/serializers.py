@@ -14,6 +14,43 @@ class accountSerializer(serializers.ModelSerializer):
     class Meta:
         model = account
         fields =  '__all__'
+        
+
+
+
+
+class accountListSerializer(serializers.ModelSerializer):
+
+
+
+    debit = serializers.DecimalField(max_digits=10,decimal_places=2)
+    credit = serializers.DecimalField(max_digits=10,decimal_places=2)
+    daccountheadname =  serializers.CharField(max_length=500,source = 'accounthead__name')
+    caccountheadname =  serializers.CharField(max_length=500,source = 'creditaccounthead__name')
+    
+
+   # accounttype = serializers.CharField(max_length=500,source = 'accounttrans__accounttype')
+   # gstno = serializers.CharField(max_length=500)
+   # pan = serializers.CharField(max_length=500)
+    cityname = serializers.CharField(max_length=500,source = 'city__cityname')
+    accountid = serializers.CharField(max_length=500,source = 'id')
+    accgst = serializers.CharField(max_length=500,source = 'gstno')
+    accpan = serializers.CharField(max_length=500,source = 'pan')
+
+    
+
+
+
+
+    
+
+    class Meta:
+        model = account
+        fields =  ('accountname','debit','credit','accgst','accpan','cityname','accountid','daccountheadname','caccountheadname',)
+
+    
+   
+        
 
 
 
