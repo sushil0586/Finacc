@@ -3,11 +3,13 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead
-from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer
+from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
 import json
+from django.db.models import Sum
+from django.db.models import Q
 
 
 class accountHeadApiView(ListCreateAPIView):
@@ -118,6 +120,26 @@ class accountApiView(ListCreateAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return account.objects.filter(entity = entity)
+
+
+
+class accountListApiView(ListAPIView):
+
+    serializer_class = accountListSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        queryset =  account.objects.filter( Q(entity = entity),Q(accounttrans__accounttype__isnull = True) | Q(accounttrans__accounttype__in = ['M','DD'])).values('accountname','city__cityname','id','gstno','pan','accounthead__name','creditaccounthead__name').annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
+
+        #query = queryset.exclude(accounttrans__accounttype  = 'MD')
+
+        #annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
+
+        print(queryset.query.__str__())
+        return queryset
 
 
 class accountupdatedelApiView(RetrieveUpdateDestroyAPIView):
