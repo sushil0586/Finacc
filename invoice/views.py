@@ -24,6 +24,10 @@ from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from entity.models import entity
 from django_pandas.io import read_frame
+from django.db.models import Q
+import numpy as np
+import pandas as pd
+
 
  
 
@@ -774,6 +778,15 @@ class TrialbalanceApiView(ListAPIView):
         df['drcr'] = 'CR'
 
         df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+        df['credit'] = np.where(df['balance'] < 0, df['balance'],0)
+        df['debit'] = np.where(df['balance'] > 0, df['balance'],0)
+        #df['credit'] = df['balance'].apply(lambda x: df['balance'] if x < 0 else 0)
+        #df['debit'] = df['balance'].apply(lambda x: 0 if x < 0 else df['balance'])
+
+        print(df)
+        
+
+    
 
 
         df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__id':'account'}, inplace = True)
@@ -803,18 +816,33 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
 
 
     
-    def get_queryset(self):
+    def get(self, request, format=None):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
         accounthead = self.request.query_params.get('accounthead')
         drcrgroup = self.request.query_params.get('drcr')
         if drcrgroup == 'DR':
-            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-            return stk
+            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+            #return stk
         
         if drcrgroup == 'CR':
-            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
-            return stk
+            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+
+
+
+        
+        df = read_frame(stk)
+        df['drcr'] = 'CR'
+
+        df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+        df['credit'] = np.where(df['balance'] < 0, df['balance'],0)
+        df['debit'] = np.where(df['balance'] > 0, df['balance'],0)
+
+        df.rename(columns = {'account__accountname':'accountname','account__id':'account'}, inplace = True)
+
+        print(df)
+        
+        return Response(df.groupby(['accountname','drcr','account'])[['debit','credit','balance']].sum().abs().reset_index().T.to_dict().values())
 
 class TrialbalancebyaccountApiView(ListAPIView):
 
@@ -906,38 +934,112 @@ class Balancesheetapi(ListAPIView):
 
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['entity']
+
+    def FiFo(dfg):
+        if dfg[dfg['CS'] < 0]['purchasequantity'].count():
+            subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
+            dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
+            dfg = dfg[dfg['purchasequantity'] > 0]
+            if (len(dfg) > 0):
+                dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
+        return dfg
+
+
     def get(self, request, format=None):
         #account = self.request.query_params.get('account')
 
-        queryset = accountHead.objects.filter(balanceType = 'Credit').prefetch_related('accounthead_accounts__accounttrans')
+        # queryset = accountHead.objects.filter(balanceType = 'Credit').prefetch_related('accounthead_accounts__accounttrans')
 
 
-        print(queryset.query.__str__())
+        # print(queryset.query.__str__())
 
-        stk =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
-       # q = stk.filter(balance__gt=0)
+        stk =StockTransactions.objects.filter(Q(isactive = 1)).filter(account__accounthead__detilsinbs = "Yes").exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(Q(isactive = 1)).filter(account__creditaccounthead__detilsinbs = "Yes").exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+
+
+
+        def FiFo(dfg):
+            if dfg[dfg['CS'] < 0]['purchasequantity'].count():
+                subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
+                dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
+                dfg = dfg[dfg['purchasequantity'] > 0]
+                if (len(dfg) > 0):
+                    dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
+            return dfg
+
+
+        puchases = StockTransactions.objects.filter(isactive =1,transactiontype = 'P',accounttype = 'DD').values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','purchaserate','transactiontype','purchasequantity','entrydatetime')
+        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','salerate','transactiontype','salequantity','entrydatetime')
+
+        inventory = puchases.union(sales).order_by('entrydatetime')
+
+        idf = read_frame(inventory)
+
+        idf['purchasequantity'] = np.where(idf['transactiontype'] == 'P', idf['purchasequantity'],-1 * (idf['purchasequantity']))
+
+        #print(idf)
+
+        idf['purchasequantity'] = idf['purchasequantity'].astype(float)
+        idf['CS'] = idf.groupby(['stock','transactiontype'])['purchasequantity'].cumsum()
+
+
+
+        dfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
+
+
+        dfR['balance'] = dfR['purchasequantity'].astype(float) *  dfR['purchaserate'].astype(float)
+
+        dfR = dfR.drop(['stock','transactiontype','entrydatetime'],axis=1) 
+
+        print(dfR)
+
+
+
+
+    #     print(stk2.query.__str__())
+    #    # q = stk.filter(balance__gt=0)
 
 
 
         stkunion = stk.union(stk2)
 
         df = read_frame(stkunion)
+        df = df.drop(['debit','credit'],axis=1)
+
+       # print(df)
 
         
 
-        df.loc[len(df.index)] = ['Total', -1, -1, 'Total',0,0,df['balance'].sum()]
+        df.loc[len(df.index)] = ['Total', -1, -1, 'Total',-df['balance'].sum()]
+        #print(df)
 
-        print(df)
+        #print(df)
+
+        frames = [df, dfR]
+
+        df = pd.concat(frames)
+
+        #print(df)
 
 
 
         df['drcr'] = df['balance'].apply(lambda x: 0 if x < 0 else 1)
         #df = df.loc['Column_Total']= df.sum(numeric_only=True, axis=0)
 
+       #     print(df)
+
+        df['balance'] = df['balance'].astype(float)
+
+       
+
+        
+
         
 
         df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__accountname':'accountname','account__id':'accountid'}, inplace = True)
+
+
+        print(df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs())
 
 
      

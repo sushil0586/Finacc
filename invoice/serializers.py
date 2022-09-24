@@ -236,10 +236,15 @@ class stocktransaction:
         tds194q1id = account.objects.get(entity =pentity,accountcode = 8200)
         expensesid = account.objects.get(entity =pentity,accountcode = 8300)
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.billdate,entity=self.order.entity)
+
+        iscash = False
+
+        if self.order.account.accountcode == 4000:
+            iscash = True
         #Transactions.objects.create(account= purchaseid,transactiontype = 'P',transactionid = id,desc = 'Purchase from',drcr=1,amount=subtotal,entity=pentity,createdby = order.createdby )
         StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
         StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
-        StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal)
+        StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal,iscashtransaction = iscash)
         #if self.transactiontype == 'P':
         if tcs206c1ch2 > 0:
             StockTransactions.objects.create(accounthead = tcs206c1ch2id.accounthead, account= tcs206c1ch2id,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=tcs206c1ch2,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
@@ -290,9 +295,15 @@ class stocktransaction:
 
         #print(self.order.id)
 
+        iscash = False
+
+        if self.order.account.accountcode == 4000:
+            iscash = True
+
+
         StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
         StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
-        StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal,isactive = self.order.isactive)
+        StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal,isactive = self.order.isactive,iscashtransaction = iscash)
         #if self.transactiontype == 'P':
         if tcs206c1ch2 > 0:
             StockTransactions.objects.create(accounthead = tcs206c1ch2id.accounthead, account= tcs206c1ch2id,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=tcs206c1ch2,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
@@ -327,8 +338,8 @@ class stocktransaction:
 
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.billdate,entity=self.order.entity)
 
-        details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,purchasequantity = qty,drcr = self.debit,debitamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive)
-        details1 = StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,purchasequantity = qty,drcr = self.debit,debitamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'MD',isactive = self.order.isactive)
+        details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,purchasequantity = qty,drcr = self.debit,debitamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive,purchaserate = detail.rate)
+        details1 = StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,purchasequantity = qty,drcr = self.debit,debitamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'MD',isactive = self.order.isactive,purchaserate = detail.rate)
         
         goodstransaction.objects.create(account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,purchasequantity = qty,entrydatetime = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,goodstransactiontype = 'D')
         goodstransaction.objects.create(account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,purchasequantity = qty,entrydatetime = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,goodstransactiontype = 'M')
@@ -381,6 +392,12 @@ class stocktransactionsale:
 
         print(self.transactiontype)
 
+
+        iscash = False
+
+        if self.order.account.accountcode == 4000:
+            iscash = True
+
         if self.transactiontype == 'S':
             if tcs206C2 > 0:
                 StockTransactions.objects.create(accounthead = tcs206C2id.accounthead,account= tcs206C2id,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=tcs206C2,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
@@ -393,7 +410,7 @@ class stocktransactionsale:
 
             StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order, desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=cgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
             StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=sgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
-            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal)
+            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal,iscashtransaction = iscash)
         
         if self.transactiontype == 'PR':
             if tcs206C2 > 0:
@@ -409,7 +426,7 @@ class stocktransactionsale:
 
             StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order, desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=cgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
             StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=sgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
-            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal)
+            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal,iscashtransaction = iscash)
         return id
 
     def updateransaction(self):
@@ -434,12 +451,17 @@ class stocktransactionsale:
         sgstid = account.objects.get(entity =pentity,accountcode = 6002)
         igstid = account.objects.get(entity =pentity,accountcode = 6003)
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.sorderdate,entity=self.order.entity)
+
+        iscash = False
+
+        if self.order.account.accountcode == 4000:
+            iscash = True
         if self.transactiontype == 'S':
             StockTransactions.objects.filter(entity = pentity,transactiontype = 'S',transactionid= id).delete()
             goodstransaction.objects.filter(entity = pentity,stockttype = 'S',transactionid= id).delete()
             StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order, desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=cgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,isactive = self.order.isactive)
             StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=sgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,isactive = self.order.isactive)
-            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal,isactive = self.order.isactive)
+            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal,isactive = self.order.isactive,iscashtransaction = iscash)
             if tcs206C2 > 0:
                 StockTransactions.objects.create(accounthead = tcs206C2id.accounthead,account= tcs206C2id,transactiontype = self.transactiontype,transactionid = id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=tcs206C2,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,isactive = self.order.isactive)
             if tcs206c1ch2 > 0:
@@ -456,7 +478,7 @@ class stocktransactionsale:
             goodstransaction.objects.filter(entity = pentity,stockttype = 'PR',transactionid= id).delete()
             StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order, desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=cgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
             StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=sgst,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
-            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal)
+            StockTransactions.objects.create(accounthead= self.order.accountid.accounthead,account= self.order.accountid,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,cgstcr = cgst,sgstcr= sgst,igstcr = igst,accounttype = 'M',subtotal = subtotal,iscashtransaction = iscash)
             if tcs206C2 > 0:
                 StockTransactions.objects.create(accounthead = tcs206C2id.accounthead,account= tcs206C2id,transactiontype = self.transactiontype,transactionid = id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),drcr=self.credit,creditamount=tcs206C2,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate,isactive = self.order.isactive)
             if tcs206c1ch2 > 0:
@@ -483,11 +505,11 @@ class stocktransactionsale:
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.sorderdate,entity=self.order.entity)
 
         if self.transactiontype == 'S':
-            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive)
-            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive)
+            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,salerate = detail.rate)
+            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,salerate = detail.rate)
         if self.transactiontype == 'PR':
-            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive)
-            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive)
+            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,salerate = detail.rate)
+            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,salerate = detail.rate)
         goodstransaction.objects.create(account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,salequantity = qty,entrydatetime = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,goodstransactiontype = 'D')
         goodstransaction.objects.create(account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,salequantity = qty,entrydatetime = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,goodstransactiontype = 'M')
 
@@ -538,11 +560,16 @@ class journalmainSerializer(serializers.ModelSerializer):
             accountentryid,accountentrycreated  = accountentry.objects.get_or_create(entrydate2 = order.entrydate,account =detail.account,  entity = order.entity)
 
             if order.vouchertype == 'C':
+               # iscash = False
+                iscash = True
+
+                #if self.order.account.accountcode == 4000:
+                    
                 cash = account.objects.get(entity =order.entity,accountcode = 4000)
                 if detail.drcr == 1:
-                    StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH')
+                    StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash)
                 else:
-                    StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH')
+                    StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash)
 
                 
             if order.vouchertype == 'B':
@@ -552,11 +579,12 @@ class journalmainSerializer(serializers.ModelSerializer):
                 else:
                     StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M')
 
-            if detail.account.accounthead.code == 4000:
-                accounttype = 'CIH'
+            if detail.account.accountcode == 4000:
+                iscash = True
             else:
-                accounttype = 'M'
-            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype=accounttype)
+                iscash = False
+               # accounttype = 'M'
+            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',iscashtransaction= iscash)
           
         return order
 
@@ -1589,21 +1617,21 @@ class   cbserializer(serializers.ModelSerializer):
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.filter(accounttype = 'CIH',transactiontype = 'C',isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+        return obj.cashtrans.filter(account__accountcode = 4000,iscashtransaction = True,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
 
     def get_payment(self, obj):
         # fromDate = parse_datetime(self.context['request'].query_params.get(
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.filter(accounttype = 'CIH',transactiontype = 'C',isactive = 1 ).aggregate(Sum('creditamount'))['creditamount__sum']
+        return obj.cashtrans.filter(account__accountcode = 4000,iscashtransaction = True,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
 
     def get_openingbalance(self, obj):
 
         yesterday = obj.entrydate1 - timedelta(days = 1)
         startdate = obj.entrydate1 - timedelta(days = 200)
-        debit = StockTransactions.objects.filter(accounttype = 'CIH',entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
-        credit = StockTransactions.objects.filter(accounttype = 'CIH',entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
+        debit = StockTransactions.objects.filter(account__accountcode = 4000,iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+        credit = StockTransactions.objects.filter(account__accountcode = 4000,iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
         # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
         # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
         if not debit:
@@ -1623,8 +1651,8 @@ class   cbserializer(serializers.ModelSerializer):
 
         yesterday = obj.entrydate1 - timedelta(days = 1)
         startdate = obj.entrydate1 - timedelta(days = 200)
-        debit = StockTransactions.objects.filter(accounttype = 'CIH',entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,transactiontype = 'C',isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
-        credit = StockTransactions.objects.filter(accounttype = 'CIH',entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,transactiontype = 'C',isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
+        debit = StockTransactions.objects.filter(account__accountcode = 4000,iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,transactiontype = 'C',isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+        credit = StockTransactions.objects.filter(account__accountcode = 4000,iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,transactiontype = 'C',isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
         # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
         # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
         if not debit:
