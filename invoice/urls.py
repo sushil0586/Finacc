@@ -71,6 +71,8 @@ urlpatterns  = [
     path('salesreturncancel/<int:id>',views.salesreturncancel.as_view(), name = 'tdsmain'),
     path('journalmaincancel/<int:id>',views.journalmaincancel.as_view(), name = 'tdsmain'),
     path('tdsmain1',views.tdsmainApiView1.as_view({'get': 'list'}), name = 'tdsmain'),
+    path('pandlstatement',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
+    path('Tradingstatement',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
     
    
    
