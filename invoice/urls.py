@@ -73,6 +73,10 @@ urlpatterns  = [
     path('tdsmain1',views.tdsmainApiView1.as_view({'get': 'list'}), name = 'tdsmain'),
     path('pandlstatement',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
     path('Tradingstatement',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
+    path('stockmaincancel',views.stockmaincancel.as_view(), name = 'Trialbalance'),
+
+
+    
     
    
    
