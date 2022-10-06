@@ -7,7 +7,7 @@ from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,Purch
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer
+purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -246,6 +246,16 @@ class journalmaincancel(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return journalmain.objects.filter(entity = entity)
+
+class stockmaincancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = stockcancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return stockmain.objects.filter(entity = entity)
 
 
 class salesreturncancel(RetrieveUpdateDestroyAPIView):
@@ -929,30 +939,11 @@ class Trialviewaccount(ListAPIView):
 class Balancesheetapi(ListAPIView):
 
     serializer_class = balancesheetserializer
-  #  filter_class = accountheadFilter
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['entity']
 
-    def FiFo(dfg):
-        if dfg[dfg['CS'] < 0]['purchasequantity'].count():
-            subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
-            dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
-            dfg = dfg[dfg['purchasequantity'] > 0]
-            if (len(dfg) > 0):
-                dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
-        return dfg
-
-
     def get(self, request, format=None):
-        #account = self.request.query_params.get('account')
-
-        # queryset = accountHead.objects.filter(balanceType = 'Credit').prefetch_related('accounthead_accounts__accounttrans')
-
-
-        # print(queryset.query.__str__())
-
         stk =StockTransactions.objects.filter(Q(isactive = 1)).filter(account__accounthead__detilsinbs = "Yes").exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
         stk2 =StockTransactions.objects.filter(Q(isactive = 1)).filter(account__creditaccounthead__detilsinbs = "Yes").exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
 

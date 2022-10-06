@@ -5,7 +5,7 @@ from entity.models import entity,entity_details,unitType
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
-from financial.serializers import accountHeadSerializer,accountSerializer
+from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2
 from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer
 from invoice.serializers import purchasetaxtypeserializer
 import os
@@ -26,6 +26,7 @@ class entityAddSerializer(serializers.ModelSerializer):
    # entity_accountheads = accountHeadSerializer(many=True)
 
     serializer = accountHeadSerializer
+    accounthead = accountHeadSerializer2
     roleserializer = RoleSerializer
     rateerializer = Ratecalculateserializer
     uomser = UOMserializer
@@ -47,6 +48,11 @@ class entityAddSerializer(serializers.ModelSerializer):
             json_data = json.load(jsonfile)
             for key in json_data["entity_accountheads"]:
                 serializer2 = self.serializer(data =key)
+                serializer2.is_valid(raise_exception=True)
+                serializer2.save(entity = newentity,owner = users[0])
+
+            for key in json_data["accountheads"]:
+                serializer2 = self.accounthead(data =key)
                 serializer2.is_valid(raise_exception=True)
                 serializer2.save(entity = newentity,owner = users[0])
 

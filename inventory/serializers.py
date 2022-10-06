@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from inventory.models import Product,Album,Track,ProductCategory,Ratecalculate,UnitofMeasurement,stkcalculateby,typeofgoods,stkvaluationby,gsttype
+from invoice.models import entry,StockTransactions
+from financial.models import account
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
@@ -26,12 +28,23 @@ class ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields ='__all__'
 
-    # def get_pcategoryname(self,obj):
-    #    # acc =  obj.accountHeadSr.name
-    #     if obj.productcategory is None:
-    #         return 'null'   
-    #     else :
-    #         return obj.productcategory.pcategoryname
+    def create(self, validated_data):
+        #print(validated_data)
+        #journaldetails_data = validated_data.pop('journaldetails')
+        detail = Product.objects.create(**validated_data)
+        entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
+        os = account.objects.get(entity =detail.entity,accountcode = 9000)
+
+        if detail.openingstockvalue > 0:
+            if (detail.openingstockqty ==0.00):
+                    qty = detail.openingstockboxqty
+            else:
+                    qty = detail.openingstockqty
+            details = StockTransactions.objects.create(accounthead = os.accounthead,account= os,stock=detail,transactiontype = 'OS',transactionid = detail.id,desc = 'Opening Stock ' + detail.productname,stockttype = 'O',purchasequantity = qty,drcr = 1,debitamount = detail.openingstockvalue,entrydate = detail.created_at,entity = detail.entity,createdby = detail.createdby,entry = entryid,entrydatetime = detail.created_at,accounttype = 'DD',isactive = 1,purchaserate = detail.purchaserate)
+            #return detail
+        return detail
+
+  
 
 
 class Trackserializer(serializers.ModelSerializer):

@@ -1,6 +1,37 @@
 
     {
 
+        "accountheads": [
+            {
+               
+                "name": "Advance Recoverable",
+                "code": 6100,
+                "detilsinbs": "Yes",
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+                "group": "Balance_sheet",
+               
+                "accountHeadName": "null"
+            },
+            
+            {
+                
+                    "name": "InDirect Expenses",
+                        "code": 8300,
+                        "detilsinbs": "Yes",
+                        "balanceType": "Credit",
+                        "drcreffect": "1",
+                        "description": "desc",
+                        "accountheadsr": null,
+                        "group": "Balance_sheet",
+                       
+                        "accountHeadName": "null"
+                
+            }
+        ],
+
         "entity_accountheads": [
 
             
@@ -106,6 +137,57 @@
                 ]
 
             },
+            {
+               
+                "name": "Sale",
+                "code": 3000,
+                "detilsinbs": "Yes",
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+                "group": "Balance_sheet",
+               
+                "accountHeadName": "null",
+                "accounthead_accounts":[
+                   {
+     
+        "accountcode": 3000,
+        "gstno": "1",
+        "accountname": "Sale",
+        "address1": "4369 GT Road",
+        "address2": "sirhind",
+        "openingbcr": "1.00",
+        "openingndr": "1.00",
+        "contactno": "1",
+        "emailid": "sushiljyotibansal@gmail.com",
+        "agent": "1",
+        "pan": "1",
+        "tobel10cr": true,
+        "approved": true,
+        "tdsno": "1",
+        "accountno": null,
+        "rtgsno": null,
+        "bankname": null,
+        "Adhaarno": null,
+        "saccode": null,
+        "contactperson": null,
+        "deprate": "1.00",
+        "tdsrate": "1.00",
+        "gstshare": "1.00",
+        "quanity1": 1,
+        "quanity2": 1,
+        "BanKAcno": 1,
+        "composition": true,
+        "country": 1,
+        "state": 1,
+        "district": 1,
+        "city": 1
+       
+    }
+                ]
+
+            },
 			{
                
                 "name": "Cash",
@@ -160,111 +242,11 @@
 			
 			
 			,
-			  {
-               
-                "name": "Sale",
-                "code": 3000,
-                "detilsinbs": "Yes",
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-                "group": "Balance_sheet",
-               
-                "accountHeadName": "null",
-                "accounthead_accounts":[
-                   {
-     
-        "accountcode": 3000,
-        "gstno": "1",
-        "accountname": "Sale",
-        "address1": "4369 GT Road",
-        "address2": "sirhind",
-        "openingbcr": "1.00",
-        "openingndr": "1.00",
-        "contactno": "1",
-        "emailid": "sushiljyotibansal@gmail.com",
-        "agent": "1",
-        "pan": "1",
-        "tobel10cr": true,
-        "approved": true,
-        "tdsno": "1",
-        "accountno": null,
-        "rtgsno": null,
-        "bankname": null,
-        "Adhaarno": null,
-        "saccode": null,
-        "contactperson": null,
-        "deprate": "1.00",
-        "tdsrate": "1.00",
-        "gstshare": "1.00",
-        "quanity1": 1,
-        "quanity2": 1,
-        "BanKAcno": 1,
-        "composition": true,
-        "country": 1,
-        "state": 1,
-        "district": 1,
-        "city": 1
-       
-    }
-                ]
-
-            },
-            {
-               
-                "name": "Purchase-Expenses",
-                "code": 5000,
-                "detilsinbs": "Yes",
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-                "group": "Balance_sheet",
-				           
-                "accountHeadName": "null",
-                "accounthead_accounts":[
-                                                {
-                                    
-                                        "accountcode": 5000,
-                                        "gstno": "1",
-                                        "accountname": "Freight",
-                                        "address1": "4369 GT Road",
-                                        "address2": "sirhind",
-                                        "openingbcr": "1.00",
-                                        "openingndr": "1.00",
-                                        "contactno": "1",
-                                        "emailid": "sushiljyotibansal@gmail.com",
-                                        "agent": "1",
-                                        "pan": "1",
-                                        "tobel10cr": true,
-                                        "approved": true,
-                                        "tdsno": "1",
-                                        "accountno": null,
-                                        "rtgsno": null,
-                                        "bankname": null,
-                                        "Adhaarno": null,
-                                        "saccode": null,
-                                        "contactperson": null,
-                                        "deprate": "1.00",
-                                        "tdsrate": "1.00",
-                                        "gstshare": "1.00",
-                                        "quanity1": 1,
-                                        "quanity2": 1,
-                                        "BanKAcno": 1,
-                                        "composition": true,
-                                        "country": 1,
-                                        "state": 1,
-                                        "district": 1,
-                                        "city": 1
-       
-                                 }
-                ]
-
-            },
+			  
+            
 			 {
                
-                "name": "Taxation",
+                "name": "Advance Payable",
                 "code": 6000,
                 "detilsinbs": "Yes",
                 "balanceType": "Credit",
@@ -379,10 +361,116 @@
                                         "district": 1,
                                         "city": 1
        
-                                 }
+                                 },
+                                 {
+                                    
+                                    "accountcode": 8050,
+                                    "gstno": "1",
+                                    "accountname": "TCS206C1H",
+                                    "address1": "4369 GT Road",
+                                    "address2": "sirhind",
+                                    "openingbcr": "1.00",
+                                    "openingndr": "1.00",
+                                    "contactno": "1",
+                                    "emailid": "sushiljyotibansal@gmail.com",
+                                    "agent": "1",
+                                    "pan": "1",
+                                    "tobel10cr": true,
+                                    "approved": true,
+                                    "tdsno": "1",
+                                    "accountno": null,
+                                    "rtgsno": null,
+                                    "bankname": null,
+                                    "Adhaarno": null,
+                                    "saccode": null,
+                                    "contactperson": null,
+                                    "deprate": "1.00",
+                                    "tdsrate": "1.00",
+                                    "gstshare": "1.00",
+                                    "quanity1": 1,
+                                    "quanity2": 1,
+                                    "BanKAcno": 1,
+                                    "composition": true,
+                                    "country": 1,
+                                    "state": 1,
+                                    "district": 1,
+                                    "city": 1
+   
+                             },
+                             {
+                                
+                                "accountcode": 8051,
+                                "gstno": "1",
+                                "accountname": "TCS206C",
+                                "address1": "4369 GT Road",
+                                "address2": "sirhind",
+                                "openingbcr": "1.00",
+                                "openingndr": "1.00",
+                                "contactno": "1",
+                                "emailid": "sushiljyotibansal@gmail.com",
+                                "agent": "1",
+                                "pan": "1",
+                                "tobel10cr": true,
+                                "approved": true,
+                                "tdsno": "1",
+                                "accountno": null,
+                                "rtgsno": null,
+                                "bankname": null,
+                                "Adhaarno": null,
+                                "saccode": null,
+                                "contactperson": null,
+                                "deprate": "1.00",
+                                "tdsrate": "1.00",
+                                "gstshare": "1.00",
+                                "quanity1": 1,
+                                "quanity2": 1,
+                                "BanKAcno": 1,
+                                "composition": true,
+                                "country": 1,
+                                "state": 1,
+                                "district": 1,
+                                "city": 1
+
+                         },
+                         {
+                                    
+                            "accountcode": 8100,
+                            "gstno": "1",
+                            "accountname": "TDS194Q",
+                            "address1": "4369 GT  Road",
+                            "address2": "sirhind",
+                            "openingbcr": "1.00",
+                            "openingndr": "1.00",
+                            "contactno": "1",
+                            "emailid": "sushiljyotibansal@gmail.com",
+                            "agent": "1",
+                            "pan": "1",
+                            "tobel10cr": true,
+                            "approved": true,
+                            "tdsno": "1",
+                            "accountno": null,
+                            "rtgsno": null,
+                            "bankname": null,
+                            "Adhaarno": null,
+                            "saccode": null,
+                            "contactperson": null,
+                            "deprate": "1.00",
+                            "tdsrate": "1.00",
+                            "gstshare": "1.00",
+                            "quanity1": 1,
+                            "quanity2": 1,
+                            "BanKAcno": 1,
+                            "composition": true,
+                            "country": 1,
+                            "state": 1,
+                            "district": 1,
+                            "city": 1
+
+                     }
                 ]
 
             },
+            
             {
                
                 "name": "Sundry Creditors",
@@ -487,8 +575,8 @@
             },
             {
                
-                "name": "TCS Payable",
-                "code": 8050,
+                "name": "Opening Stock",
+                "code": 9000,
                 "detilsinbs": "Yes",
                 "balanceType": "Credit",
                 "drcreffect": "1",
@@ -500,9 +588,9 @@
                 "accounthead_accounts":[
                                                 {
                                     
-                                        "accountcode": 8050,
+                                        "accountcode": 9000,
                                         "gstno": "1",
-                                        "accountname": "TCS206C1H",
+                                        "accountname": "Opening Stock",
                                         "address1": "4369 GT Road",
                                         "address2": "sirhind",
                                         "openingbcr": "1.00",
@@ -532,235 +620,12 @@
                                         "district": 1,
                                         "city": 1
        
-                                 },
-                                 {
-                                    
-                                    "accountcode": 8051,
-                                    "gstno": "1",
-                                    "accountname": "TCS206C",
-                                    "address1": "4369 GT Road",
-                                    "address2": "sirhind",
-                                    "openingbcr": "1.00",
-                                    "openingndr": "1.00",
-                                    "contactno": "1",
-                                    "emailid": "sushiljyotibansal@gmail.com",
-                                    "agent": "1",
-                                    "pan": "1",
-                                    "tobel10cr": true,
-                                    "approved": true,
-                                    "tdsno": "1",
-                                    "accountno": null,
-                                    "rtgsno": null,
-                                    "bankname": null,
-                                    "Adhaarno": null,
-                                    "saccode": null,
-                                    "contactperson": null,
-                                    "deprate": "1.00",
-                                    "tdsrate": "1.00",
-                                    "gstshare": "1.00",
-                                    "quanity1": 1,
-                                    "quanity2": 1,
-                                    "BanKAcno": 1,
-                                    "composition": true,
-                                    "country": 1,
-                                    "state": 1,
-                                    "district": 1,
-                                    "city": 1
-   
-                             }
-                ]
-
-            },
-            {
-               
-                "name": "TCS Recoverable",
-                "code": 8060,
-                "detilsinbs": "Yes",
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-                "group": "Balance_sheet",
-               
-                "accountHeadName": "null",
-                "accounthead_accounts":[
-                                                {
-                                    
-                                        "accountcode": 8060,
-                                        "gstno": "1",
-                                        "accountname": "TCS206C1H",
-                                        "address1": "4369 GT Road",
-                                        "address2": "sirhind",
-                                        "openingbcr": "1.00",
-                                        "openingndr": "1.00",
-                                        "contactno": "1",
-                                        "emailid": "sushiljyotibansal@gmail.com",
-                                        "agent": "1",
-                                        "pan": "1",
-                                        "tobel10cr": true,
-                                        "approved": true,
-                                        "tdsno": "1",
-                                        "accountno": null,
-                                        "rtgsno": null,
-                                        "bankname": null,
-                                        "Adhaarno": null,
-                                        "saccode": null,
-                                        "contactperson": null,
-                                        "deprate": "1.00",
-                                        "tdsrate": "1.00",
-                                        "gstshare": "1.00",
-                                        "quanity1": 1,
-                                        "quanity2": 1,
-                                        "BanKAcno": 1,
-                                        "composition": true,
-                                        "country": 1,
-                                        "state": 1,
-                                        "district": 1,
-                                        "city": 1
-       
-                                 },
-                                 {
-                                    
-                                    "accountcode": 8061,
-                                    "gstno": "1",
-                                    "accountname": "TCS206C",
-                                    "address1": "4369 GT Road",
-                                    "address2": "sirhind",
-                                    "openingbcr": "1.00",
-                                    "openingndr": "1.00",
-                                    "contactno": "1",
-                                    "emailid": "sushiljyotibansal@gmail.com",
-                                    "agent": "1",
-                                    "pan": "1",
-                                    "tobel10cr": true,
-                                    "approved": true,
-                                    "tdsno": "1",
-                                    "accountno": null,
-                                    "rtgsno": null,
-                                    "bankname": null,
-                                    "Adhaarno": null,
-                                    "saccode": null,
-                                    "contactperson": null,
-                                    "deprate": "1.00",
-                                    "tdsrate": "1.00",
-                                    "gstshare": "1.00",
-                                    "quanity1": 1,
-                                    "quanity2": 1,
-                                    "BanKAcno": 1,
-                                    "composition": true,
-                                    "country": 1,
-                                    "state": 1,
-                                    "district": 1,
-                                    "city": 1
-   
-                             }
-                ]
-
-            },
-            {
-               
-                "name": "TDS Recoverable",
-                "code": 8100,
-                "detilsinbs": "Yes",
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-                "group": "Balance_sheet",
-               
-                "accountHeadName": "null",
-                "accounthead_accounts":[
-                                                {
-                                    
-                                        "accountcode": 8100,
-                                        "gstno": "1",
-                                        "accountname": "TDS194Q",
-                                        "address1": "4369 GT  Road",
-                                        "address2": "sirhind",
-                                        "openingbcr": "1.00",
-                                        "openingndr": "1.00",
-                                        "contactno": "1",
-                                        "emailid": "sushiljyotibansal@gmail.com",
-                                        "agent": "1",
-                                        "pan": "1",
-                                        "tobel10cr": true,
-                                        "approved": true,
-                                        "tdsno": "1",
-                                        "accountno": null,
-                                        "rtgsno": null,
-                                        "bankname": null,
-                                        "Adhaarno": null,
-                                        "saccode": null,
-                                        "contactperson": null,
-                                        "deprate": "1.00",
-                                        "tdsrate": "1.00",
-                                        "gstshare": "1.00",
-                                        "quanity1": 1,
-                                        "quanity2": 1,
-                                        "BanKAcno": 1,
-                                        "composition": true,
-                                        "country": 1,
-                                        "state": 1,
-                                        "district": 1,
-                                        "city": 1
-       
                                  }
-                                
                 ]
 
             },
-            {
-               
-                "name": "TDS Payable",
-                "code": 8200,
-                "detilsinbs": "Yes",
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-                "group": "Balance_sheet",
-               
-                "accountHeadName": "null",
-                "accounthead_accounts":[
-                                                {
-                                    
-                                        "accountcode": 8200,
-                                        "gstno": "1",
-                                        "accountname": "TDS194Q",
-                                        "address1": "4369 GT  Road",
-                                        "address2": "sirhind",
-                                        "openingbcr": "1.00",
-                                        "openingndr": "1.00",
-                                        "contactno": "1",
-                                        "emailid": "sushiljyotibansal@gmail.com",
-                                        "agent": "1",
-                                        "pan": "1",
-                                        "tobel10cr": true,
-                                        "approved": true,
-                                        "tdsno": "1",
-                                        "accountno": null,
-                                        "rtgsno": null,
-                                        "bankname": null,
-                                        "Adhaarno": null,
-                                        "saccode": null,
-                                        "contactperson": null,
-                                        "deprate": "1.00",
-                                        "tdsrate": "1.00",
-                                        "gstshare": "1.00",
-                                        "quanity1": 1,
-                                        "quanity2": 1,
-                                        "BanKAcno": 1,
-                                        "composition": true,
-                                        "country": 1,
-                                        "state": 1,
-                                        "district": 1,
-                                        "city": 1
-       
-                                 }
-                                
-                ]
-
-            },
+            
+            
             {
                
                 "name": "Direct Expenses",

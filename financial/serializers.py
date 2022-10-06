@@ -2,6 +2,7 @@ from sys import implementation
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField
 from financial.models import accountHead,account
+from invoice.models import entry,StockTransactions
 
 from geography.serializers import countrySerializer
 import os
@@ -14,6 +15,21 @@ class accountSerializer(serializers.ModelSerializer):
     class Meta:
         model = account
         fields =  '__all__'
+
+    def create(self, validated_data):
+        #print(validated_data)
+        #journaldetails_data = validated_data.pop('journaldetails')
+        detail = account.objects.create(**validated_data)
+        entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
+
+        if detail.openingbcr > 0 or detail.openingbcr > 0:
+            if (detail.openingbcr >0.00):
+                    drcr = 0
+            else:
+                    drcr = 1
+            details = StockTransactions.objects.create(accounthead= detail.accounthead,account= detail,transactiontype = 'OA',transactionid = detail.id,desc = 'Opening Balance',drcr=drcr,debitamount=detail.openingbdr,creditamount=detail.openingbcr,entity=detail.entity,createdby= detail.owner,entry = entryid,entrydatetime = detail.created_at,accounttype = 'M',isactive = 1)
+            #return detail
+        return detail
         
 
 
