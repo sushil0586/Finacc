@@ -785,6 +785,9 @@ class TrialbalanceApiView(ListAPIView):
         stkunion = stk.union(stk2)
 
         df = read_frame(stkunion)
+
+        print(df)
+        
         df['drcr'] = 'CR'
 
         df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
@@ -802,17 +805,7 @@ class TrialbalanceApiView(ListAPIView):
         df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__id':'account'}, inplace = True)
 
 
-       # print(df.groupby(['account__accounthead__name','account__accounthead'])['debit','credit','balance'].sum())
-
-        #print(df.to_dict())
-
-        
-
-        #stu = stkunion.values('account__accounthead__name','account__accounthead','debit','credit','balance')
-
-
-      #  print(stu.query.__str__())
-        #q = stk.filter(balance > 0)
+      
         return Response(df.groupby(['accounthead','accountheadname','drcr'])[['debit','credit','balance']].sum().abs().reset_index().T.to_dict().values())
 
 
