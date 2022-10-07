@@ -242,6 +242,9 @@ class stocktransaction:
         cgst = self.order.cgst
         sgst = self.order.sgst
         igst = self.order.igst
+        cgstcess = self.order.cgstcess
+        sgstcess = self.order.sgstcess
+        igstcess = self.order.igstcess
         gtotal = self.order.gtotal
         pentity = self.order.entity
         tcs206c1ch2 = self.order.tcs206c1ch2
@@ -252,6 +255,9 @@ class stocktransaction:
         cgstid = account.objects.get(entity =pentity,accountcode = 6001)
         sgstid = account.objects.get(entity =pentity,accountcode = 6002)
         igstid = account.objects.get(entity =pentity,accountcode = 6003)
+        cgstcessid = account.objects.get(entity =pentity,accountcode = 6004)
+        sgstcessid = account.objects.get(entity =pentity,accountcode = 6005)
+        igstcessid = account.objects.get(entity =pentity,accountcode = 6006)
         tcs206c1ch2id = account.objects.get(entity =pentity,accountcode = 8050)
         tcs206C2id = account.objects.get(entity =pentity,accountcode = 8051)
         tds194q1id = account.objects.get(entity =pentity,accountcode = 8100)
@@ -262,11 +268,22 @@ class stocktransaction:
 
         if self.order.account.accountcode == 4000:
             iscash = True
-        #Transactions.objects.create(account= purchaseid,transactiontype = 'P',transactionid = id,desc = 'Purchase from',drcr=1,amount=subtotal,entity=pentity,createdby = order.createdby )
-        StockTransactions.objects.create(accounthead = igstid.accounthead, account= igstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=igst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
-        StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
-        StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+
         StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal,iscashtransaction = iscash)
+        #Transactions.objects.create(account= purchaseid,transactiontype = 'P',transactionid = id,desc = 'Purchase from',drcr=1,amount=subtotal,entity=pentity,createdby = order.createdby )
+        if igst > 0:
+            StockTransactions.objects.create(accounthead = igstid.accounthead, account= igstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=igst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+        if cgst > 0:
+            StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+        if sgst > 0:
+            StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+        if igstcess > 0:
+            StockTransactions.objects.create(accounthead = igstcessid.accounthead, account= igstcessid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=igstcess,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+        if cgstcess > 0:
+            StockTransactions.objects.create(accounthead = cgstcessid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgstcess,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+        if sgstcess > 0:
+            StockTransactions.objects.create(accounthead = sgstcessid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgstcess,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
+        
         #if self.transactiontype == 'P':
         if tcs206c1ch2 > 0:
             StockTransactions.objects.create(accounthead = tcs206c1ch2id.accounthead, account= tcs206c1ch2id,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=tcs206c1ch2,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate)
@@ -290,6 +307,9 @@ class stocktransaction:
        
         sgst = self.order.sgst
         igst = self.order.igst
+        cgstcess = self.order.cgstcess
+        sgstcess = self.order.sgstcess
+        igstcess = self.order.igstcess
         gtotal = self.order.gtotal
         pentity = self.order.entity
         tcs206c1ch2 = self.order.tcs206c1ch2
@@ -298,9 +318,11 @@ class stocktransaction:
         expenses = self.order.expenses
         purchaseid = account.objects.get(entity =pentity,accountcode = 1000)
         cgstid = account.objects.get(entity =pentity,accountcode = 6001)
-        #print(cgstid.id)
         sgstid = account.objects.get(entity =pentity,accountcode = 6002)
         igstid = account.objects.get(entity =pentity,accountcode = 6003)
+        cgstcessid = account.objects.get(entity =pentity,accountcode = 6004)
+        sgstcessid = account.objects.get(entity =pentity,accountcode = 6005)
+        igstcessid = account.objects.get(entity =pentity,accountcode = 6006)
         tcs206c1ch2id = account.objects.get(entity =pentity,accountcode = 8050)
         tcs206C2id = account.objects.get(entity =pentity,accountcode = 8051)
         tds194q1id = account.objects.get(entity =pentity,accountcode = 8100)
@@ -322,9 +344,19 @@ class stocktransaction:
         if self.order.account.accountcode == 4000:
             iscash = True
 
-        StockTransactions.objects.create(accounthead = igstid.accounthead, account= igstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=igst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
-        StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
-        StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
+        
+        if igst > 0:
+             StockTransactions.objects.create(accounthead = igstid.accounthead, account= igstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=igst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
+        if cgst >0:
+            StockTransactions.objects.create(accounthead = cgstid.accounthead, account= cgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
+        if sgst > 0:
+            StockTransactions.objects.create(accounthead = sgstid.accounthead,account= sgstid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgst,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
+        if igstcess > 0:
+             StockTransactions.objects.create(accounthead = igstcessid.accounthead, account= igstcessid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=igstcess,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
+        if cgstcess >0:
+            StockTransactions.objects.create(accounthead = cgstcessid.accounthead, account= cgstcessid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=cgstcess,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
+        if sgstcess > 0:
+            StockTransactions.objects.create(accounthead = sgstcessid.accounthead,account= sgstcessid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.debit,debitamount=sgstcess,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,isactive = self.order.isactive)
         StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal,isactive = self.order.isactive,iscashtransaction = iscash)
         #if self.transactiontype == 'P':
         if tcs206c1ch2 > 0:
@@ -417,7 +449,7 @@ class stocktransactionsale:
 
         iscash = False
 
-        if self.order.account.accountcode == 4000:
+        if self.order.accountid.accountcode == 4000:
             iscash = True
 
         if self.transactiontype == 'S':
@@ -745,7 +777,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','linetotal','entity',)
+        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -761,7 +793,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     salesorderdetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','totalgst','expenses','gtotal','entity','owner','isactive','salesorderdetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','entity','owner','isactive','salesorderdetails',)
 
 
     
@@ -786,7 +818,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','totalgst','expenses','gtotal','isactive','entity','owner',]
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','isactive','entity','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -852,7 +884,7 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Purchasereturndetails
-        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','cgst','sgst','igst','linetotal','entity',)
+        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -870,7 +902,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseReturn
        # fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','vehicle','taxtype','billcash','supply','shippedto','remarks','transport','broker','tds194q','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','subtotal','subtotal','cgst','sgst','igst','expenses','gtotal','entity','owner','purchasereturndetails',)
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','totalgst','expenses','gtotal','entity','owner','isactive','purchasereturndetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','entity','owner','isactive','purchasereturndetails',)
 
 
     def create(self, validated_data):
@@ -890,7 +922,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','totalgst','expenses','gtotal','entity','owner','isactive',]
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','entity','owner','isactive',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -980,7 +1012,7 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','cgst','sgst','igst','linetotal','entity',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
     
     def get_productname(self,obj):
         return obj.product.productname
@@ -2931,7 +2963,7 @@ class salesreturnDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturnDetails
-        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','linetotal','entity',)
+        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
