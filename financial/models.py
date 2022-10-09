@@ -30,6 +30,8 @@ class accountHead(TrackingModel):
         ('P/l', _('Profit Loss'))
     ]
 
+    
+
     name = models.CharField(max_length=200,verbose_name=_('Account Name'))
     code = models.IntegerField(verbose_name=_('Account Head Code'))
     detilsinbs =  models.CharField(max_length=50, choices = Details_in_BS, null=True,verbose_name=_('Details in Balance Sheet'))
@@ -38,6 +40,7 @@ class accountHead(TrackingModel):
     description =   models.CharField(max_length=200,verbose_name=_('Description'),null=True)
     accountheadsr = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Account head Sr'),blank=True)
     group =  models.CharField(max_length=50, choices = Group, null=True)
+    details =  models.IntegerField(null=True,blank = True)
     entity = models.ForeignKey(entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
     owner = models.ForeignKey(to= User,  on_delete= models.CASCADE,null= True)
 

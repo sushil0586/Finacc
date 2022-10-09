@@ -75,8 +75,8 @@ class roleapiview(ListAPIView):
 
     
     def get_queryset(self): 
-        entity = self.request.query_params.get('entity')
-        return userRole.objects.filter(entity=entity)
+        #entity = self.request.query_params.get('entity')
+        return userRole.objects.filter()
 
 class ChangePasswordView(UpdateAPIView):
     serializer_class = ChangePasswordSerializer

@@ -55,7 +55,7 @@ urlpatterns  = [
     path('ledgersummary',views.ledgersummaryapi.as_view(), name = 'Trialbalance'),
     path('stockledgersummary',views.stockledgersummaryapi.as_view(), name = 'Trialbalance'),
     path('stockledgerbook',views.stockledgerbookapi.as_view(), name = 'Trialbalance'),
-    path('balancesheet',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
+    path('incomeandexpensesstatement',views.incomeandexpensesstatement.as_view(), name = 'Trialbalance'),
     path('gstr1b2bapi',views.gstr1b2bapi.as_view(), name = 'Trialbalance'),
     path('gstr1hsnapi',views.gstr1hsnapi.as_view(), name = 'Trialbalance'),
     path('purchasetaxtype',views.purchasetaxtypeApiView.as_view(), name = 'purchasetaxtype'),
@@ -71,8 +71,8 @@ urlpatterns  = [
     path('salesreturncancel/<int:id>',views.salesreturncancel.as_view(), name = 'tdsmain'),
     path('journalmaincancel/<int:id>',views.journalmaincancel.as_view(), name = 'tdsmain'),
     path('tdsmain1',views.tdsmainApiView1.as_view({'get': 'list'}), name = 'tdsmain'),
-    path('pandlstatement',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
-    path('Tradingstatement',views.Balancesheetapi.as_view(), name = 'Trialbalance'),
+    path('balancesheet',views.balancestatement.as_view(), name = 'Trialbalance'),
+    path('tradingaccountstatement',views.tradingaccountstatement.as_view(), name = 'Trialbalance'),
     path('stockmaincancel',views.stockmaincancel.as_view(), name = 'Trialbalance'),
 
 
