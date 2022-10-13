@@ -113,7 +113,7 @@ class accountHeadSerializeraccounts(serializers.ModelSerializer):
 
 class accountHeadSerializer(serializers.ModelSerializer):
 
-    detilsinbs = ChoiceField(choices=accountHead.Details_in_BS)
+   # detilsinbs = ChoiceField(choices=accountHead.Details_in_BS)
    # accountHeadMain = accountHeadMainSerializer(many=True)
     accountHeadName = serializers.SerializerMethodField()
   
@@ -124,7 +124,7 @@ class accountHeadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = accountHead
-        fields = ('id','name','code','detilsinbs','balanceType','drcreffect','description','accountheadsr','group','entity','accountHeadName','accounthead_accounts',)
+        fields = ('id','name','code','detailsingroup','balanceType','drcreffect','description','accountheadsr','entity','accountHeadName','accounthead_accounts',)
         #depth = 1
 
 
@@ -151,9 +151,11 @@ class accountHeadSerializer(serializers.ModelSerializer):
 
 class accountHeadSerializer2(serializers.ModelSerializer):
 
-    detilsinbs = ChoiceField(choices=accountHead.Details_in_BS)
+    #detilsinbs = ChoiceField(choices=accountHead.Details_in_BS)
    # accountHeadMain = accountHeadMainSerializer(many=True)
     accountHeadName = serializers.SerializerMethodField()
+
+    detailsingroupName = serializers.SerializerMethodField()
   
     #balanceType = ChoiceField(choices=accountHead.BALANCE_TYPE)
 
@@ -162,7 +164,7 @@ class accountHeadSerializer2(serializers.ModelSerializer):
 
     class Meta:
         model = accountHead
-        fields = ('id','name','code','detilsinbs','balanceType','drcreffect','description','accountheadsr','group','entity','accountHeadName',)
+        fields = ('id','name','code','detailsingroup','balanceType','drcreffect','description','accountheadsr','entity','accountHeadName','detailsingroupName',)
         #depth = 1
 
 
@@ -172,6 +174,17 @@ class accountHeadSerializer2(serializers.ModelSerializer):
             return 'null'   
         else :
             return obj.accountheadsr.name
+
+    
+    def get_detailsingroupName(self,obj):
+       # acc =  obj.accountHeadSr.name
+        if obj.detailsingroup == 1:
+            return 'Trading Account'   
+        elif obj.detailsingroup == 2:
+            return 'Inome and Expenses'
+        else:
+            return 'Balance Sheet' 
+           
 
 
         

@@ -1,13 +1,14 @@
 from django.contrib import admin
+from import_export.admin import ImportExportMixin
 
 from financial.models import accountHead,account
 # Register your models here.
 
 
-class accountheadAdmin(admin.ModelAdmin):
-    list_display = ['name','code','detilsinbs','accountheadsr','entity','owner']
+class accountheadAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['name','code','accountheadsr','entity','owner']
     
-class accountAdmin(admin.ModelAdmin):
+class accountAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['accountname','accounthead','accountcode','gstno','entity','owner']
 
 

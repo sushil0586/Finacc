@@ -1626,14 +1626,14 @@ class cashserializer(serializers.ModelSerializer):
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 1).exclude(transactiontype = 'OS').aggregate(Sum('debitamount'))['debitamount__sum']
 
     def get_credit(self, obj):
         # fromDate = parse_datetime(self.context['request'].query_params.get(
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
+        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 1).exclude(transactiontype = 'OS').aggregate(Sum('creditamount'))['creditamount__sum']
 
     def get_entrydate(self,obj):
         return obj.entrydate1
@@ -1643,7 +1643,7 @@ class cashserializer(serializers.ModelSerializer):
         #stock =  obj.cashtrans.filter(drcr = False).order_by('account')
        # print(stock)
 
-        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False,isactive = 1).exclude(accounttype = 'MD').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'))
+        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False,isactive = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'OS').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'))
         #return account1Serializer(accounts,many=True).data
         #stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False)
 
@@ -1655,7 +1655,7 @@ class cashserializer(serializers.ModelSerializer):
     
     def get_dr(self,obj):
         #stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True)
-        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,isactive = 1).exclude(accounttype = 'MD').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount= Sum('creditamount'))
+        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,isactive = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'OS').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount= Sum('creditamount'))
         #return account1Serializer(accounts,many=True).data
         stock = stock.annotate(accountname=F('account__accountname')).order_by('account__accountname')
         return stock
