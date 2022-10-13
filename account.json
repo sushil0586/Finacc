@@ -6,13 +6,10 @@
                
                 "name": "Advance Recoverable",
                 "code": 6100,
-                "detilsinbs": "Yes",
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
-               
                 "accountHeadName": "null"
             },
             
@@ -20,13 +17,9 @@
                 
                     "name": "InDirect Expenses",
                         "code": 8300,
-                        "detilsinbs": "Yes",
-                        "balanceType": "Credit",
                         "drcreffect": "1",
                         "description": "desc",
                         "accountheadsr": null,
-                        "group": "Balance_sheet",
-                       
                         "accountHeadName": "null"
                 
             }
@@ -39,12 +32,12 @@
                
                 "name": "Purchase",
                 "code": 1000,
-                "detilsinbs": "Yes",
+                
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+               
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -90,12 +83,12 @@
                
                 "name": "BanK",
                 "code": 2000,
-                "detilsinbs": "Yes",
+               
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+               
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -141,12 +134,12 @@
                
                 "name": "Sale",
                 "code": 3000,
-                "detilsinbs": "Yes",
+               
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+                
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -192,12 +185,12 @@
                
                 "name": "Cash",
                 "code": 4000,
-                "detilsinbs": "Yes",
+               
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+                
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -248,12 +241,12 @@
                
                 "name": "Advance Payable",
                 "code": 6000,
-                "detilsinbs": "Yes",
+               
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+               
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -580,12 +573,12 @@
                
                 "name": "Sundry Creditors",
                 "code": 7000,
-                "detilsinbs": "Yes",
+               
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+              
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -631,12 +624,11 @@
                
                 "name": "Sundry Debitors",
                 "code": 8000,
-                "detilsinbs": "Yes",
+              
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -682,12 +674,12 @@
                
                 "name": "Opening Stock",
                 "code": 9000,
-                "detilsinbs": "Yes",
+                
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+                
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[
@@ -735,12 +727,12 @@
                
                 "name": "Direct Expenses",
                 "code": 8300,
-                "detilsinbs": "Yes",
+               
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "group": "Balance_sheet",
+               
                
                 "accountHeadName": "null",
                 "accounthead_accounts":[

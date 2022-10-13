@@ -34,13 +34,11 @@ class accountHead(TrackingModel):
 
     name = models.CharField(max_length=200,verbose_name=_('Account Name'))
     code = models.IntegerField(verbose_name=_('Account Head Code'))
-    detilsinbs =  models.CharField(max_length=50, choices = Details_in_BS, null=True,verbose_name=_('Details in Balance Sheet'))
     balanceType =  models.CharField(max_length=50,null=True,verbose_name=_('Balance Type'))
     drcreffect =   models.CharField(max_length=20,verbose_name=_('Debit/credit Effect'))
     description =   models.CharField(max_length=200,verbose_name=_('Description'),null=True)
     accountheadsr = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Account head Sr'),blank=True)
-    group =  models.CharField(max_length=50, choices = Group, null=True)
-    details =  models.IntegerField(null=True,blank = True)
+    detailsingroup =  models.IntegerField(null=True,blank = True)
     entity = models.ForeignKey(entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
     owner = models.ForeignKey(to= User,  on_delete= models.CASCADE,null= True)
 
