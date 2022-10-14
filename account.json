@@ -6,6 +6,7 @@
                
                 "name": "Advance Recoverable",
                 "code": 6100,
+                "detailsingroup":3,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -17,6 +18,7 @@
                 
                     "name": "InDirect Expenses",
                         "code": 8300,
+                        "detailsingroup":2,
                         "drcreffect": "1",
                         "description": "desc",
                         "accountheadsr": null,
@@ -32,13 +34,11 @@
                
                 "name": "Purchase",
                 "code": 1000,
-                
+                "detailsingroup":1,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-               
-               
                 "accountHeadName": "null",
                 "accounthead_accounts":[
                                                 {
@@ -83,7 +83,7 @@
                
                 "name": "BanK",
                 "code": 2000,
-               
+                "detailsingroup":3,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -134,7 +134,7 @@
                
                 "name": "Sale",
                 "code": 3000,
-               
+                "detailsingroup":1,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -185,7 +185,7 @@
                
                 "name": "Cash",
                 "code": 4000,
-               
+                "detailsingroup":3,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -241,7 +241,7 @@
                
                 "name": "Advance Payable",
                 "code": 6000,
-               
+                "detailsingroup":3,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -573,7 +573,7 @@
                
                 "name": "Sundry Creditors",
                 "code": 7000,
-               
+                "detailsingroup":3,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -624,7 +624,7 @@
                
                 "name": "Sundry Debitors",
                 "code": 8000,
-              
+                "detailsingroup":3,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -674,7 +674,7 @@
                
                 "name": "Opening Stock",
                 "code": 9000,
-                
+                "detailsingroup":4,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -727,7 +727,7 @@
                
                 "name": "Direct Expenses",
                 "code": 8300,
-               
+                "detailsingroup":2,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
