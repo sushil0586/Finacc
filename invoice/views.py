@@ -1595,7 +1595,7 @@ class ledgerviewapi(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = {'id':["in", "exact"]
+    filterset_fields = {'id':["in", "exact"],'creditaccounthead':["in", "exact"],'accounthead':["in", "exact"]
     
     }
     #filterset_fields = ['id']
