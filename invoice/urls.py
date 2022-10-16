@@ -9,6 +9,7 @@ urlpatterns  = [
    
     path('salesorder',views.SalesOderHeaderApiView.as_view(),name = 'salesorder'),
     path('salesorder/<int:id>',views.salesOrderupdatedelview.as_view(), name = 'salesorder'),
+    path('salesorderpdf/<int:id>',views.salesOrderpdfview.as_view(), name = 'salesorder'),
     path('salesorderdetails',views.salesOrderdetailsApiView.as_view(),name = 'salesorder'),
     path('salesorderdetails/<int:id>',views.salesOrderdetailsApiView.as_view(), name = 'salesorder'),
     path('purchaseorder',views.purchaseorderApiView.as_view(),name = 'purchaseorder'),
