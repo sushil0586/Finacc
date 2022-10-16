@@ -592,11 +592,11 @@ class stocktransactionsale:
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.sorderdate,entity=self.order.entity)
 
         if self.transactiontype == 'S':
-            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,salerate = detail.rate)
-            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,salerate = detail.rate)
+            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,salerate = detail.rate,entrydatetime = self.order.sorderdate)
+            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,saleinvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,salerate = detail.rate,entrydatetime = self.order.sorderdate)
         if self.transactiontype == 'PR':
-            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,salerate = detail.rate)
-            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,salerate = detail.rate)
+            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,salerate = detail.rate,entrydatetime = self.order.sorderdate)
+            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,purchasereturninvoice = self.order,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,salequantity = qty,drcr = self.credit,creditamount = detail.amount,cgstdr = detail.cgst,sgstdr= detail.sgst,igstdr = detail.igst,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,salerate = detail.rate,entrydatetime = self.order.sorderdate)
         goodstransaction.objects.create(account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,salequantity = qty,entrydatetime = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,goodstransactiontype = 'D')
         goodstransaction.objects.create(account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,salequantity = qty,entrydatetime = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,goodstransactiontype = 'M')
 
@@ -783,6 +783,74 @@ class stockmainSerializer(serializers.ModelSerializer):
 
         
         return instance
+
+
+
+class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+    id = serializers.IntegerField(required=False)
+    productname = serializers.SerializerMethodField()
+    hsn = serializers.SerializerMethodField()
+    mrp = serializers.SerializerMethodField()
+
+    class Meta:
+        model = salesOrderdetails
+        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
+
+    def get_productname(self,obj):
+        return obj.product.productname
+
+    def get_hsn(self,obj):
+        return obj.product.hsn
+    
+    def get_mrp(self,obj):
+        return obj.product.mrp
+
+
+class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
+    salesorderdetails = salesOrderdetailspdfSerializer(many=True)
+
+    entityname = serializers.SerializerMethodField()
+    entityaddress = serializers.SerializerMethodField()
+    entitygst = serializers.SerializerMethodField()
+    billtoname = serializers.SerializerMethodField()
+    billtoaddress = serializers.SerializerMethodField()
+    billtogst = serializers.SerializerMethodField()
+    shiptoname = serializers.SerializerMethodField()
+    shiptoaddress = serializers.SerializerMethodField()
+    class Meta:
+        model = SalesOderHeader
+        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','entity','entityname', 'entityaddress','entitygst','owner','isactive','salesorderdetails',)
+
+    
+    def get_entityname(self,obj):
+        return obj.entity.entityName
+
+    
+    def get_entityaddress(self,obj):
+        return obj.entity.address + ' ' + obj.entity.city.cityname + ' ' + obj.entity.state.statename + ' ' + obj.entity.pincode
+
+    def get_entitygst(self,obj):
+        return obj.entity.gstno
+
+    def get_billtoname(self,obj):
+        return obj.accountid.accountname
+
+    
+    def get_billtoaddress(self,obj):
+        return obj.accountid.address1 + ' ' + obj.accountid.address2
+
+    def get_billtogst(self,obj):
+        return obj.accountid.gstno
+
+
+    def get_shiptoname(self,obj):
+        return obj.shippedto.accountname
+
+    
+    def get_shiptoaddress(self,obj):
+        return obj.shippedto.address1 + ' ' + obj.shippedto.address2
+
 
 
 
