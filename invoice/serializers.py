@@ -13,6 +13,7 @@ from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
 from entity.models import entity
 from django.db.models.functions import Abs
+from num2words import num2words
 
 
 
@@ -818,9 +819,10 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
     billtogst = serializers.SerializerMethodField()
     shiptoname = serializers.SerializerMethodField()
     shiptoaddress = serializers.SerializerMethodField()
+    amountinwords = serializers.SerializerMethodField()
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','entity','entityname', 'entityaddress','entitygst','owner','isactive','salesorderdetails',)
+        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cgstcess','sgstcess','igstcess','totalgst','expenses','gtotal','amountinwords','entity','entityname', 'entityaddress','entitygst','owner','isactive','salesorderdetails',)
 
     
     def get_entityname(self,obj):
@@ -850,6 +852,10 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
     
     def get_shiptoaddress(self,obj):
         return obj.shippedto.address1 + ' ' + obj.shippedto.address2
+
+    
+    def get_amountinwords(self,obj):
+        return num2words(obj.gtotal) + ' only'
 
 
 
