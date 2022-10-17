@@ -14,6 +14,7 @@ from datetime import timedelta,date,datetime
 from entity.models import entity
 from django.db.models.functions import Abs
 from num2words import num2words
+import string
 
 
 
@@ -793,10 +794,11 @@ class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
     mrp = serializers.SerializerMethodField()
+    units = serializers.SerializerMethodField()
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
+        fields =  ('id','product','productname','hsn','units','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -806,6 +808,12 @@ class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
     
     def get_mrp(self,obj):
         return obj.product.mrp
+
+    def get_units(self,obj):
+        return obj.product.unitofmeasurement.unitname
+
+
+        
 
 
 class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
@@ -826,7 +834,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 
     
     def get_entityname(self,obj):
-        return obj.entity.entityName
+        return string.capwords(obj.entity.entityName)
 
     
     def get_entityaddress(self,obj):
@@ -836,7 +844,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
         return obj.entity.gstno
 
     def get_billtoname(self,obj):
-        return obj.accountid.accountname
+        return string.capwords(obj.accountid.accountname)
 
     
     def get_billtoaddress(self,obj):
@@ -847,7 +855,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 
 
     def get_shiptoname(self,obj):
-        return obj.shippedto.accountname
+        return string.capwords(obj.shippedto.accountname)
 
     
     def get_shiptoaddress(self,obj):
@@ -855,7 +863,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 
     
     def get_amountinwords(self,obj):
-        return num2words(obj.gtotal) + ' only'
+        return string.capwords(num2words(obj.gtotal)) + ' only'
 
 
 
