@@ -958,17 +958,17 @@ class balancestatement(ListAPIView):
 
 
         def FiFo(dfg):
-            if dfg[dfg['CS'] < 0]['purchasequantity'].count():
+            if dfg[dfg['CS'] < 0]['quantity'].count():
                 subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
-                dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
-                dfg = dfg[dfg['purchasequantity'] > 0]
+                dfg['quantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['quantity'])
+                dfg = dfg[dfg['quantity'] > 0]
                 if (len(dfg) > 0):
-                    dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
+                    dfg['quantity'].iloc[0] = dfg['CS'].iloc[0] + subT
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock__id','stock__productname','purchaserate','transactiontype','purchasequantity','entrydatetime')
-        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock__id','stock__productname','salerate','transactiontype','salequantity','entrydatetime')
+        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock__id','stock__productname','rate','transactiontype','quantity','entrydatetime')
+        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock__id','stock__productname','rate','transactiontype','quantity','entrydatetime')
 
         inventory = puchases.union(sales).order_by('entrydatetime')
 
@@ -984,12 +984,12 @@ class balancestatement(ListAPIView):
 
         
 
-        idf['purchasequantity'] = np.where(idf['transactiontype'].isin(['P','OS']), idf['purchasequantity'],-1 * (idf['purchasequantity']))
+        idf['quantity'] = np.where(idf['transactiontype'].isin(['P','OS']), idf['quantity'],-1 * (idf['quantity']))
 
        
 
-        idf['purchasequantity'] = idf['purchasequantity'].astype(float)
-        idf['CS'] = idf.groupby(['stock__id','transactiontype'])['purchasequantity'].cumsum()
+        idf['quantity'] = idf['quantity'].astype(float)
+        idf['CS'] = idf.groupby(['stock__id','transactiontype'])['quantity'].cumsum()
 
       
 
@@ -1006,7 +1006,7 @@ class balancestatement(ListAPIView):
        
 
 
-        dfR['balance'] = dfR['purchasequantity'].astype(float) * -1 * dfR['purchaserate'].astype(float)
+        dfR['balance'] = dfR['quantity'].astype(float) * -1 * dfR['rate'].astype(float)
 
         
 
@@ -1019,7 +1019,7 @@ class balancestatement(ListAPIView):
 
         print(dfR)
 
-        dfi['balance'] = dfi['purchasequantity'].astype(float) * 1 * dfi['purchaserate'].astype(float)
+        dfi['balance'] = dfi['quantity'].astype(float) * 1 * dfi['rate'].astype(float)
 
         dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
 
@@ -1156,17 +1156,17 @@ class incomeandexpensesstatement(ListAPIView):
 
 
         def FiFo(dfg):
-            if dfg[dfg['CS'] < 0]['purchasequantity'].count():
+            if dfg[dfg['CS'] < 0]['quantity'].count():
                 subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
-                dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
-                dfg = dfg[dfg['purchasequantity'] > 0]
+                dfg['quantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['quantity'])
+                dfg = dfg[dfg['quantity'] > 0]
                 if (len(dfg) > 0):
-                    dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
+                    dfg['quantity'].iloc[0] = dfg['CS'].iloc[0] + subT
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','purchaserate','transactiontype','purchasequantity','entrydatetime')
-        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','salerate','transactiontype','salequantity','entrydatetime')
+        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime')
+        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime')
 
         inventory = puchases.union(sales).order_by('entrydatetime')
 
@@ -1182,12 +1182,12 @@ class incomeandexpensesstatement(ListAPIView):
 
         
 
-        idf['purchasequantity'] = np.where(idf['transactiontype'].isin(['P','OS']), idf['purchasequantity'],-1 * (idf['purchasequantity']))
+        idf['quantity'] = np.where(idf['transactiontype'].isin(['P','OS']), idf['quantity'],-1 * (idf['quantity']))
 
         print(idf)
 
-        idf['purchasequantity'] = idf['purchasequantity'].astype(float)
-        idf['CS'] = idf.groupby(['stock','transactiontype'])['purchasequantity'].cumsum()
+        idf['quantity'] = idf['quantity'].astype(float)
+        idf['CS'] = idf.groupby(['stock','transactiontype'])['quantity'].cumsum()
 
         print(idf)
 
@@ -1198,7 +1198,7 @@ class incomeandexpensesstatement(ListAPIView):
         print(dfR)
 
 
-        dfR['balance'] = dfR['purchasequantity'].astype(float) * -1 * dfR['purchaserate'].astype(float)
+        dfR['balance'] = dfR['quantity'].astype(float) * -1 * dfR['rate'].astype(float)
 
         dfR = dfR.drop(['stock','transactiontype','entrydatetime'],axis=1) 
 
@@ -1312,17 +1312,17 @@ class tradingaccountstatement(ListAPIView):
 
 
         def FiFo(dfg):
-            if dfg[dfg['CS'] < 0]['purchasequantity'].count():
+            if dfg[dfg['CS'] < 0]['quantity'].count():
                 subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
-                dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
-                dfg = dfg[dfg['purchasequantity'] > 0]
+                dfg['quantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['quantity'])
+                dfg = dfg[dfg['quantity'] > 0]
                 if (len(dfg) > 0):
-                    dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
+                    dfg['quantity'].iloc[0] = dfg['CS'].iloc[0] + subT
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','purchaserate','transactiontype','purchasequantity','entrydatetime')
-        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','salerate','transactiontype','salequantity','entrydatetime')
+        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime')
+        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime')
 
         inventory = puchases.union(sales).order_by('entrydatetime')
 
@@ -1338,12 +1338,12 @@ class tradingaccountstatement(ListAPIView):
 
         
 
-        idf['purchasequantity'] = np.where(idf['transactiontype'].isin(['P','OS']), idf['purchasequantity'],-1 * (idf['purchasequantity']))
+        idf['quantity'] = np.where(idf['transactiontype'].isin(['P','OS']), idf['quantity'],-1 * (idf['quantity']))
 
         print(idf)
 
-        idf['purchasequantity'] = idf['purchasequantity'].astype(float)
-        idf['CS'] = idf.groupby(['stock','transactiontype'])['purchasequantity'].cumsum()
+        idf['quantity'] = idf['quantity'].astype(float)
+        idf['CS'] = idf.groupby(['stock','transactiontype'])['quantity'].cumsum()
 
         print(idf)
 
@@ -1354,7 +1354,7 @@ class tradingaccountstatement(ListAPIView):
         print(dfR)
 
 
-        dfR['balance'] = dfR['purchasequantity'].astype(float) * -1 * dfR['purchaserate'].astype(float)
+        dfR['balance'] = dfR['quantity'].astype(float) * -1 * dfR['rate'].astype(float)
 
         dfR = dfR.drop(['stock','transactiontype','entrydatetime'],axis=1) 
 
@@ -1451,35 +1451,35 @@ class Balancesheetapi(ListAPIView):
 
 
         def FiFo(dfg):
-            if dfg[dfg['CS'] < 0]['purchasequantity'].count():
+            if dfg[dfg['CS'] < 0]['quantity'].count():
                 subT = dfg[dfg['CS'] < 0]['CS'].iloc[-1]
-                dfg['purchasequantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['purchasequantity'])
-                dfg = dfg[dfg['purchasequantity'] > 0]
+                dfg['quantity'] = np.where((dfg['CS'] + subT) <= 0, 0, dfg['quantity'])
+                dfg = dfg[dfg['quantity'] > 0]
                 if (len(dfg) > 0):
-                    dfg['purchasequantity'].iloc[0] = dfg['CS'].iloc[0] + subT
+                    dfg['quantity'].iloc[0] = dfg['CS'].iloc[0] + subT
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(isactive =1,transactiontype = 'P',accounttype = 'DD').values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','purchaserate','transactiontype','purchasequantity','entrydatetime')
-        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','salerate','transactiontype','salequantity','entrydatetime')
+        puchases = StockTransactions.objects.filter(isactive =1,transactiontype = 'P',accounttype = 'DD').values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime')
+        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime')
 
         inventory = puchases.union(sales).order_by('entrydatetime')
 
         idf = read_frame(inventory)
 
-        idf['purchasequantity'] = np.where(idf['transactiontype'] == 'P', idf['purchasequantity'],-1 * (idf['purchasequantity']))
+        idf['quantity'] = np.where(idf['transactiontype'] == 'P', idf['quantity'],-1 * (idf['quantity']))
 
         #print(idf)
 
-        idf['purchasequantity'] = idf['purchasequantity'].astype(float)
-        idf['CS'] = idf.groupby(['stock','transactiontype'])['purchasequantity'].cumsum()
+        idf['quantity'] = idf['quantity'].astype(float)
+        idf['CS'] = idf.groupby(['stock','transactiontype'])['quantity'].cumsum()
 
 
 
         dfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
 
 
-        dfR['balance'] = dfR['purchasequantity'].astype(float) *  dfR['purchaserate'].astype(float)
+        dfR['balance'] = dfR['quantity'].astype(float) *  dfR['rate'].astype(float)
 
         dfR = dfR.drop(['stock','transactiontype','entrydatetime'],axis=1) 
 
@@ -1792,7 +1792,7 @@ class gstr1hsnapi(ListAPIView):
 
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
-        queryset=StockTransactions.objects.filter(entity=entity,transactiontype = 'S',accounttype = 'DD').values('stock__hsn','stock__productdesc','stock__unitofmeasurement__unitname','stock__totalgst').annotate(salequantity = Sum('salequantity'),credit =Sum('creditamount'),cgstdr =Sum('cgstdr'),sgstdr =Sum('sgstdr'),igstdr =Sum('igstdr'))
+        queryset=StockTransactions.objects.filter(entity=entity,transactiontype = 'S',accounttype = 'DD').values('stock__hsn','stock__productdesc','stock__unitofmeasurement__unitname','stock__totalgst').annotate(quantity = Sum('quantity'),credit =Sum('creditamount'),cgstdr =Sum('cgstdr'),sgstdr =Sum('sgstdr'),igstdr =Sum('igstdr'))
 
        
 
