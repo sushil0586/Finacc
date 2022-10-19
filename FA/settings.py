@@ -38,7 +38,6 @@ INSTALLED_APPS = [
     'corsheaders',
     'invoice',
     'drf_excel',
-    'reports',
     'import_export',
 ]
 
