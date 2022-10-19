@@ -37,6 +37,9 @@ INSTALLED_APPS = [
     'financial',
     'corsheaders',
     'invoice',
+    'drf_excel',
+    'reports',
+    'import_export',
 ]
 
 MIDDLEWARE = [
