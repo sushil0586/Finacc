@@ -76,6 +76,7 @@ urlpatterns  = [
     path('tradingaccountstatement',views.tradingaccountstatement.as_view(), name = 'Trialbalance'),
     path('stockmaincancel',views.stockmaincancel.as_view(), name = 'Trialbalance'),
     path('dashboardkpis',views.dashboardkpis.as_view(), name = 'Trialbalance'),
+    path('dashboardgraphkpis',views.dashboardgraphkpis.as_view(), name = 'Trialbalance'),
 
     
 
