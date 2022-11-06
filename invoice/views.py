@@ -2121,22 +2121,22 @@ class gstr1b2csmallapi(ListAPIView):
 
         print(df)
 
-        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'gstrate','linetotal':'inviceamount','amount':'tatxableamount'}, inplace = True)
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'rate','linetotal':'invoicevalue','amount':'taxablevalue'}, inplace = True)
 
 
 
 
         df['type'] = 'OE'
-        df['placeofsuppy'] = '03-Punjab'
-        df['applicationpercentage'] = ''
-        df['ecommgstin'] = ''
+        df['placeofsupply'] = '03-Punjab'
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = ''
      #   df['reversecharge'] = 'N'
        
         df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
        # df['account__accounthead'] = -1
 
        # return Response(df)
-        return  Response(df.groupby(['type','applicationpercentage','gstrate','placeofsuppy','ecommgstin'])[['inviceamount','tatxableamount','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+        return  Response(df.groupby(['type','applicableoftaxrate','rate','placeofsupply','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
 
@@ -2172,18 +2172,19 @@ class gstr1b2clargeapi(ListAPIView):
 
         print(df)
 
-        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'gstrate','linetotal':'inviceamount','amount':'tatxableamount'}, inplace = True)
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'rate','linetotal':'invoicevalue','amount':'taxablevalue'}, inplace = True)
 
 
-        df['placeofsuppy'] = '03-Punjab'
-        df['applicationpercentage'] = ''
+        df['placeofsupply'] = '03-Punjab'
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = ''
      #   df['reversecharge'] = 'N'
        
         df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
        # df['account__accounthead'] = -1
 
        # return Response(df)
-        return  Response(df.groupby(['invoiceno','invoicedate','applicationpercentage','gstrate','placeofsuppy'])[['inviceamount','tatxableamount','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+        return  Response(df.groupby(['invoiceno','invoicedate','applicableoftaxrate','rate','placeofsupply','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
 
@@ -2213,13 +2214,13 @@ class gstrhsnapi(ListAPIView):
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
 
-        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('product__hsn','product__productname','product__unitofmeasurement','orderqty','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('product__hsn','product__productname','product__unitofmeasurement__unitname','orderqty','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
 
         df = read_frame(stk)
 
         print(df)
 
-        df.rename(columns = {'product__hsn':'hsn', 'product__productname':'description','product__unitofmeasurement':'uqc','orderqty':'totalqty','linetotal':'totalvalue','product__totalgst':'gstrate','amount':'taxablevalue'}, inplace = True)
+        df.rename(columns = {'product__hsn':'hsn', 'product__productname':'description','product__unitofmeasurement__unitname':'uqc','orderqty':'totalquantity','linetotal':'totalvalue','product__totalgst':'rate','amount':'taxablevalue'}, inplace = True)
 
 
         # df['placeofsuppy'] = '03-Punjab'
@@ -2229,7 +2230,7 @@ class gstrhsnapi(ListAPIView):
        # df['account__accounthead'] = -1
 
        # return Response(df)
-        return  Response(df.groupby(['hsn','description','uqc','gstrate'])[['totalqty','totalvalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+        return  Response(df.groupby(['hsn','description','uqc','rate'])[['totalquantity','totalvalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
 
@@ -2275,17 +2276,19 @@ class gstr1b2bapi(ListAPIView):
 
         print(df)
 
-        df.rename(columns = {'salesorderheader__accountid__gstno':'gstin', 'salesorderheader__accountid__accountname':'receivername','salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate','salesorderheader__sorderdate':'invoicedate','product__totalgst':'gstrate'}, inplace = True)
+        df.rename(columns = {'salesorderheader__accountid__gstno':'gstin', 'salesorderheader__accountid__accountname':'receivername','salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'rate','linetotal': 'invoicevalue','amount':'taxablevalue'}, inplace = True)
 
 
-        df['placeofsuppy'] = '03-Punjab'
+        df['placeofsupply'] = '03-Punjab'
         df['reversecharge'] = 'N'
         df['invoicetype'] = 'RegularB2B'
-        df['invoicedate1'] = pd.to_datetime(df['invoicedate']).dt.strftime('%d-%B-%Y')
+        df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = 'N'
        # df['account__accounthead'] = -1
 
        # return Response(df)
-        return  Response(df.groupby(['gstin','receivername','invoiceno','invoicedate1','gstrate','placeofsuppy','reversecharge','invoicetype'])[['linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+        return  Response(df.groupby(['gstin','receivername','invoiceno','invoicedate','rate','placeofsupply','reversecharge','invoicetype','applicableoftaxrate','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
 
