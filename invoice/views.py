@@ -2093,6 +2093,57 @@ class stockledgerbookapi(ListAPIView):
 
 
 
+class gstr1b2csmallapi(ListAPIView):
+
+    serializer_class = gstr1b2bserializer
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # filter_backends = [DjangoFilterBackend]
+    # filterset_fields = {'id':["in", "exact"]
+    
+    # }
+    #filterset_fields = ['id']
+    def get(self, request, format=None):
+       # acc = self.request.query_params.get('acc')
+        entity = self.request.query_params.get('entity')
+
+        
+
+
+
+      #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
+
+
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+
+        df = read_frame(stk)
+
+        print(df)
+
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'gstrate','linetotal':'inviceamount','amount':'tatxableamount'}, inplace = True)
+
+
+
+
+        df['type'] = 'OE'
+        df['placeofsuppy'] = '03-Punjab'
+        df['applicationpercentage'] = ''
+        df['ecommgstin'] = ''
+     #   df['reversecharge'] = 'N'
+       
+        df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
+       # df['account__accounthead'] = -1
+
+       # return Response(df)
+        return  Response(df.groupby(['type','applicationpercentage','gstrate','placeofsuppy','ecommgstin'])[['inviceamount','tatxableamount','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+
+      
+
+
+
+
+
 class gstr1b2clargeapi(ListAPIView):
 
     serializer_class = gstr1b2bserializer
@@ -2121,17 +2172,18 @@ class gstr1b2clargeapi(ListAPIView):
 
         print(df)
 
-        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate','salesorderheader__sorderdate':'invoicedate','product__totalgst':'gstrate'}, inplace = True)
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'gstrate','linetotal':'inviceamount','amount':'tatxableamount'}, inplace = True)
 
 
         df['placeofsuppy'] = '03-Punjab'
+        df['applicationpercentage'] = ''
      #   df['reversecharge'] = 'N'
        
-        df['invoicedate1'] = pd.to_datetime(df['invoicedate']).dt.strftime('%d-%B-%Y')
+        df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
        # df['account__accounthead'] = -1
 
        # return Response(df)
-        return  Response(df.groupby(['invoiceno','invoicedate1','gstrate','placeofsuppy'])[['linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+        return  Response(df.groupby(['invoiceno','invoicedate','applicationpercentage','gstrate','placeofsuppy'])[['inviceamount','tatxableamount','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
 
@@ -2139,7 +2191,62 @@ class gstr1b2clargeapi(ListAPIView):
 
 
 
+class gstrhsnapi(ListAPIView):
 
+    serializer_class = gstr1b2bserializer
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # filter_backends = [DjangoFilterBackend]
+    # filterset_fields = {'id':["in", "exact"]
+    
+    # }
+    #filterset_fields = ['id']
+    def get(self, request, format=None):
+       # acc = self.request.query_params.get('acc')
+        entity = self.request.query_params.get('entity')
+
+        
+
+
+
+      #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
+
+
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('product__hsn','product__productname','product__unitofmeasurement','orderqty','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+
+        df = read_frame(stk)
+
+        print(df)
+
+        df.rename(columns = {'product__hsn':'hsn', 'product__productname':'description','product__unitofmeasurement':'uqc','orderqty':'totalqty','linetotal':'totalvalue','product__totalgst':'gstrate','amount':'taxablevalue'}, inplace = True)
+
+
+        # df['placeofsuppy'] = '03-Punjab'
+        # df['reversecharge'] = 'N'
+        # df['invoicetype'] = 'RegularB2B'
+        # df['invoicedate1'] = pd.to_datetime(df['invoicedate']).dt.strftime('%d-%B-%Y')
+       # df['account__accounthead'] = -1
+
+       # return Response(df)
+        return  Response(df.groupby(['hsn','description','uqc','gstrate'])[['totalqty','totalvalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+
+      
+
+
+
+
+    #     print(stk2.query.__str__())
+    #    # q = stk.filter(balance__gt=0)
+
+
+
+        #stkunion = stk.union(stk2)
+
+     
+       #df = df.drop(['debit','credit'],axis=1)
+
+       # queryset=StockTransactions.objects.filter(entity=entity,transactiontype = 'S',accounttype = 'M').values('account__gstno','account__accountname','saleinvoice__billno','saleinvoice__sorderdate')
 class gstr1b2bapi(ListAPIView):
 
     serializer_class = gstr1b2bserializer
