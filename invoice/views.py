@@ -28,6 +28,7 @@ from django.db.models import Q
 import numpy as np
 import pandas as pd
 from decimal import Decimal
+from datetime import timedelta,date,datetime
 
 
  
@@ -2107,6 +2108,8 @@ class gstr1b2csmallapi(ListAPIView):
     def get(self, request, format=None):
        # acc = self.request.query_params.get('acc')
         entity = self.request.query_params.get('entity')
+        stardate = datetime.strptime(self.request.query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
+        enddate = datetime.strptime(self.request.query_params.get('enddate'), '%Y-%m-%d') - timedelta(days = 1)
 
         
 
@@ -2115,7 +2118,7 @@ class gstr1b2csmallapi(ListAPIView):
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
 
-        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
 
         df = read_frame(stk)
 
@@ -2158,6 +2161,8 @@ class gstr1b2clargeapi(ListAPIView):
     def get(self, request, format=None):
        # acc = self.request.query_params.get('acc')
         entity = self.request.query_params.get('entity')
+        stardate = datetime.strptime(self.request.query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
+        enddate = datetime.strptime(self.request.query_params.get('enddate'), '%Y-%m-%d') - timedelta(days = 1)
 
         
 
@@ -2166,7 +2171,7 @@ class gstr1b2clargeapi(ListAPIView):
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
 
-        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
 
         df = read_frame(stk)
 
@@ -2206,6 +2211,8 @@ class gstrhsnapi(ListAPIView):
     def get(self, request, format=None):
        # acc = self.request.query_params.get('acc')
         entity = self.request.query_params.get('entity')
+        stardate = datetime.strptime(self.request.query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
+        enddate = datetime.strptime(self.request.query_params.get('enddate'), '%Y-%m-%d') - timedelta(days = 1)
 
         
 
@@ -2214,7 +2221,7 @@ class gstrhsnapi(ListAPIView):
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
 
-        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('product__hsn','product__productname','product__unitofmeasurement__unitname','orderqty','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('product__hsn','product__productname','product__unitofmeasurement__unitname','orderqty','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
 
         df = read_frame(stk)
 
@@ -2262,6 +2269,10 @@ class gstr1b2bapi(ListAPIView):
     def get(self, request, format=None):
        # acc = self.request.query_params.get('acc')
         entity = self.request.query_params.get('entity')
+        #stardate = self.request.query_params.get('stardate')
+
+        stardate = datetime.strptime(self.request.query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
+        enddate = datetime.strptime(self.request.query_params.get('enddate'), '%Y-%m-%d') - timedelta(days = 1)
 
         
 
@@ -2270,7 +2281,7 @@ class gstr1b2bapi(ListAPIView):
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
 
-        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity)).values('salesorderheader__accountid__gstno','salesorderheader__accountid__accountname','salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__accountid__gstno','salesorderheader__accountid__accountname','salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
 
         df = read_frame(stk)
 
