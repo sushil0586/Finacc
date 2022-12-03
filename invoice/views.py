@@ -789,20 +789,39 @@ class TrialbalanceApiView(ListAPIView):
     def get(self, request, format=None):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
+
+       # yesterday = date.today() - timedelta(days = 100)
+
+       # startdate1 = self.request.query_params.get('startdate')
         #stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
 
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
-       # q = stk.filter(balance__gt=0)
 
+        obp =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
+        obn =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt= startdate).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lte = 0)
+        ob = obp.union(obn)
 
+        #print(ob)
 
+        df = read_frame(ob)
+
+        print(df)
+
+        df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__id':'account'}, inplace = True)
+
+        dffinal1 = df.groupby(['accounthead','accountheadname'])[['balance1']].sum().reset_index()
+
+        print(dffinal1)
+
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
         stkunion = stk.union(stk2)
 
         df = read_frame(stkunion)
 
-        print(df)
+        #print(df)
         
         df['drcr'] = 'CR'
 
@@ -812,7 +831,7 @@ class TrialbalanceApiView(ListAPIView):
         #df['credit'] = df['balance'].apply(lambda x: df['balance'] if x < 0 else 0)
         #df['debit'] = df['balance'].apply(lambda x: 0 if x < 0 else df['balance'])
 
-        print(df)
+       #print(df)
         
 
     
@@ -820,9 +839,54 @@ class TrialbalanceApiView(ListAPIView):
 
         df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__id':'account'}, inplace = True)
 
+        dffinal = df.groupby(['accounthead','accountheadname','drcr'])[['debit','credit','balance']].sum().abs().reset_index()
+
+        df = pd.merge(dffinal,dffinal1,on='accounthead',how='outer',indicator=True)
+
+
+        if 'balance1' in df.columns:
+            df['balance1'] = df['balance1']
+        else:
+            df['balance1'] = 0
+
+        
+        if 'debit' in df.columns:
+            df['debit'] = df['debit']
+        else:
+            df['debit'] = 0
+
+        
+        if 'credit' in df.columns:
+            df['credit'] = df['credit']
+        else:
+            df['credit'] = 0
+
+        
+
+
+
+        
+
+        
+
+        
+        df['debit'] = df['debit'].fillna(0)
+        df['credit'] = df['credit'].fillna(0)
+        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
+        df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
+        # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
+        # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
+        df['accountheadname'] = np.where(df['_merge'] == 'right_only', df['accountheadname_y'],df['accountheadname_x'])
+        df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+        df['obdrcr'] = df['openingbalance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+
+        df = df.drop(['accountheadname_y', 'accountheadname_x','_merge','balance1'],axis = 1)
+
+        print(df)
+
 
       
-        return Response(df.groupby(['accounthead','accountheadname','drcr'])[['debit','credit','balance']].sum().abs().reset_index().T.to_dict().values())
+        return Response(df.T.to_dict().values())
 
 
 class TrialbalancebyaccountheadApiView(ListAPIView):
@@ -840,12 +904,14 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         entity = self.request.query_params.get('entity')
         accounthead = self.request.query_params.get('accounthead')
         drcrgroup = self.request.query_params.get('drcr')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
         if drcrgroup == 'DR':
-            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
             #return stk
         
         if drcrgroup == 'CR':
-            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
 
 
 
@@ -2300,6 +2366,59 @@ class gstr1b2bapi(ListAPIView):
 
        # return Response(df)
         return  Response(df.groupby(['gstin','receivername','invoiceno','invoicedate','rate','placeofsupply','reversecharge','invoicetype','applicableoftaxrate','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+
+
+    
+
+class gstr1b2baapi(ListAPIView):
+
+    serializer_class = gstr1b2bserializer
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # filter_backends = [DjangoFilterBackend]
+    # filterset_fields = {'id':["in", "exact"]
+    
+    # }
+    #filterset_fields = ['id']
+    def get(self, request, format=None):
+       # acc = self.request.query_params.get('acc')
+        entity = self.request.query_params.get('entity')
+        #stardate = self.request.query_params.get('stardate')
+
+        stardate = datetime.strptime(self.request.query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
+        enddate = datetime.strptime(self.request.query_params.get('enddate'), '%Y-%m-%d') - timedelta(days = 1)
+
+        
+
+
+
+      #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
+
+
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__accountid__gstno','salesorderheader__accountid__accountname','salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+
+        df = read_frame(stk)
+
+        print(df)
+
+        df.rename(columns = {'salesorderheader__accountid__gstno':'gstin', 'salesorderheader__accountid__accountname':'receivername','salesorderheader__billno':'originalinvoiceno5','salesorderheader__billno':'revisedinvoiceno','salesorderheader__sorderdate':'originalinvoicedate1','salesorderheader__sorderdate':'revisedinvoicedate1','product__totalgst':'rate','linetotal': 'invoicevalue','amount':'taxablevalue'}, inplace = True)
+
+
+        df['placeofsupply'] = '03-Punjab'
+        df['reversecharge'] = 'N'
+        df['invoicetype'] = 'RegularB2B'
+        df['originalinvoicedate'] = pd.to_datetime(df['revisedinvoicedate1']).dt.strftime('%d-%B-%Y')
+        df['revisedinvoicedate'] = pd.to_datetime(df['revisedinvoicedate1']).dt.strftime('%d-%B-%Y')
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = 'N'
+        df['originalinvoiceno'] = 1
+       # df['account__accounthead'] = -1
+
+        print(df)
+
+       # return Response(df)
+        return  Response(df.groupby(['gstin','receivername','originalinvoiceno','revisedinvoiceno','originalinvoicedate','revisedinvoicedate','rate','placeofsupply','reversecharge','invoicetype','applicableoftaxrate','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
 
