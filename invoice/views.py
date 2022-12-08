@@ -1219,6 +1219,8 @@ class balancestatement(ListAPIView):
         idf['CS'] = idf.groupby(['stock','transactiontype'])['quantity'].cumsum()
         #print(idf)
         odfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
+
+        odfi = odfR
        #print(dfR)
         odfR['balance'] = dfR['quantity'].astype(float)  * odfR['rate'].astype(float)
         odfR = odfR.drop(['stock','transactiontype','entrydatetime','account__id','account__accountname'],axis=1) 
@@ -1228,6 +1230,20 @@ class balancestatement(ListAPIView):
         odfR.rename(columns = {'stock__id':'account__id', 'stock__productname':'account__accountname'}, inplace = True)
         odfR['account__accounthead__name'] = 'Opening Stock'
         odfR['account__accounthead'] = -5
+
+
+        
+
+
+
+        odfi['balance'] = odfi['quantity'].astype(float) * -1 * odfi['rate'].astype(float)
+
+        odfi = odfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
+
+        odfi.rename(columns = {'stock__id':'account__id', 'stock__productname':'account__accountname'}, inplace = True)
+
+        odfi['account__accounthead__name'] = 'Opening Stock'
+        odfi['account__accounthead'] = -5
 
 
         ##################################################################
@@ -1305,7 +1321,7 @@ class balancestatement(ListAPIView):
             bsdf.loc[len(bsdf.index)] = ['Net Loss', -2, -2, 'Net Loss',pldf['balance'].sum()]
 
         
-        frames = [bsdf, dfi]
+        frames = [bsdf, dfi,odfi]
 
         bsdf = pd.concat(frames)
 
@@ -1923,8 +1939,8 @@ class tradingaccountstatement(ListAPIView):
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lt = enddate)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
-        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1,entrydatetime__lt = enddate).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
+        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lte = enddate)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
+        sales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
         inventory = puchases.union(sales).order_by('entrydatetime')
         #idf1 = read_frame(puchases)
        # print(idf1)
@@ -1952,8 +1968,8 @@ class tradingaccountstatement(ListAPIView):
         ##################################################################
 
 
-        opuchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lt = startdate)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
-        osales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1,entrydatetime__lt = startdate).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
+        opuchases = StockTransactions.objects.filter(Q(isactive =1),Q(transactiontype__in = ['P','OS']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lte = startdate)).values('account__accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
+        osales = StockTransactions.objects.filter(isactive =1,transactiontype = 'S',accounttype = 'DD',entity = entity1,entrydatetime__lte = startdate).values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','transactiontype','quantity','entrydatetime','stock__id','stock__productname')
         oinventory = opuchases.union(osales).order_by('entrydatetime')
         #idf1 = read_frame(puchases)
        # print(idf1)

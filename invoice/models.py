@@ -26,7 +26,7 @@ class purchasetaxtype(TrackingModel):
 
 class SalesOderHeader(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
-    sorderdate = models.DateTimeField(verbose_name='Sales Order date',auto_now_add=True)
+    sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)
     billno = models.IntegerField(verbose_name='Bill No')
     accountid = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
@@ -99,7 +99,7 @@ class salesOrderdetails(TrackingModel):
 
 class PurchaseReturn(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
-    sorderdate = models.DateTimeField(verbose_name='Sales Order date',auto_now_add=True)
+    sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)
     billno = models.IntegerField(verbose_name='Bill No')
     accountid = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
@@ -174,7 +174,7 @@ class purchaseorder(TrackingModel):
     voucherno = models.IntegerField(verbose_name='Voucher No')
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True)
     billno = models.IntegerField(verbose_name='Bill No')
-    billdate = models.DateTimeField(verbose_name='Bill Date',auto_now_add=True)
+    billdate = models.DateTimeField(verbose_name='Bill Date',null = True)
     terms = models.IntegerField(verbose_name='Terms')
     taxtype = models.IntegerField(verbose_name='TaxType')
     billcash = models.IntegerField(verbose_name='Bill/Cash')
@@ -244,7 +244,7 @@ class salereturn(TrackingModel):
     voucherno = models.IntegerField(verbose_name='Voucher No')
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True)
     billno = models.IntegerField(verbose_name='Bill No')
-    billdate = models.DateField(verbose_name='Bill Date',auto_now_add=True)
+    billdate = models.DateField(verbose_name='Bill Date',null = True)
     terms = models.IntegerField(verbose_name='Terms')
     taxtype = models.IntegerField(verbose_name='TaxType')
     billcash = models.IntegerField(verbose_name='Bill/Cash')
