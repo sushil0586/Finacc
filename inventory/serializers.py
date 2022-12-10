@@ -40,7 +40,7 @@ class ProductSerializer(serializers.ModelSerializer):
                     qty = detail.openingstockboxqty
             else:
                     qty = detail.openingstockqty
-            details = StockTransactions.objects.create(accounthead = os.accounthead,account= os,stock=detail,transactiontype = 'OS',transactionid = detail.id,desc = 'Opening Stock ' + detail.productname,stockttype = 'O',purchasequantity = qty,drcr = 1,debitamount = detail.openingstockvalue,entrydate = detail.created_at,entity = detail.entity,createdby = detail.createdby,entry = entryid,entrydatetime = detail.created_at,accounttype = 'DD',isactive = 1,purchaserate = detail.purchaserate)
+            details = StockTransactions.objects.create(accounthead = os.accounthead,account= os,stock=detail,transactiontype = 'OS',transactionid = detail.id,desc = 'Opening Stock ' + detail.productname,stockttype = 'O',quantity = qty,drcr = 1,debitamount = detail.openingstockvalue,entrydate = detail.created_at,entity = detail.entity,createdby = detail.createdby,entry = entryid,entrydatetime = detail.created_at,accounttype = 'DD',isactive = 1,rate = detail.purchaserate)
             #return detail
         return detail
 

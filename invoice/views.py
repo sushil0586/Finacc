@@ -790,7 +790,8 @@ class TrialbalanceApiView(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity = self.request.query_params.get('entity')
         startdate = self.request.query_params.get('startdate')
-        enddate = self.request.query_params.get('enddate')
+        enddate =  datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
+        #print(enddate)
 
        # yesterday = date.today() - timedelta(days = 100)
 
@@ -800,7 +801,7 @@ class TrialbalanceApiView(ListAPIView):
 
 
         obp =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
-        obn =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt= startdate).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lte = 0)
+        obn =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt= startdate).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
         ob = obp.union(obn)
 
         #print(ob)
@@ -816,12 +817,12 @@ class TrialbalanceApiView(ListAPIView):
         print(dffinal1)
 
         stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lt = 0)
         stkunion = stk.union(stk2)
 
         df = read_frame(stkunion)
 
-        #print(df)
+        print(df)
         
         df['drcr'] = 'CR'
 
@@ -905,7 +906,7 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         accounthead = self.request.query_params.get('accounthead')
         drcrgroup = self.request.query_params.get('drcr')
         startdate = self.request.query_params.get('startdate')
-        enddate = self.request.query_params.get('enddate')
+        enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
         if drcrgroup == 'DR':
 
             ob =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
@@ -915,7 +916,7 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         if drcrgroup == 'CR':
 
             ob =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lte = 0)
-            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lt = 0)
 
 
 
@@ -1017,33 +1018,35 @@ class TrialbalancebyaccountApiView(ListAPIView):
         entity = self.request.query_params.get('entity')
         account1 = self.request.query_params.get('account')
         startdate = self.request.query_params.get('startdate')
-        enddate = self.request.query_params.get('enddate')
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
-
-
+        enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('id','account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
         ob =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accountname').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
-
-
         df1 = read_frame(ob)
-
         df1['desc'] = 'Opening Balance'
-
         df1['entrydatetime'] = startdate
-
         #print(df1)
+        df = read_frame(stk)    
 
-        df = read_frame(stk)
+        print(df)
 
         union_dfs = pd.concat([df1, df], ignore_index=True)
+        print(union_dfs)
 
         #ob = df1.union(df)
 
         union_dfs['transactiontype'] = union_dfs['transactiontype'].fillna(0)
+        union_dfs['id'] = union_dfs['id'].fillna(0)
         union_dfs['transactionid'] = union_dfs['transactionid'].fillna(0)
         union_dfs['desc'] = union_dfs['desc'].fillna(0)
         #union_dfs['entrydatetime'] = union_dfs['desc'].fillna(startdate)
        # print(union_dfs)
         #print(stk)
+
+      #  union_dfs['entrydatetime'] = pd.to_datetime(union_dfs['entrydatetime'])
+
+        
+
+        print(union_dfs)
         return Response(union_dfs.T.to_dict().values())
 
 
@@ -1119,7 +1122,7 @@ class balancestatement(ListAPIView):
     def get(self, request, format=None):
         entity1 = self.request.query_params.get('entity')
         startdate = self.request.query_params.get('startdate')
-        enddate = self.request.query_params.get('enddate')
+        enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
 
         #ob =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__lt  = startdate)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
         #ob2 =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__lt = startdate)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
@@ -1222,7 +1225,7 @@ class balancestatement(ListAPIView):
 
         odfi = odfR
        #print(dfR)
-        odfR['balance'] = dfR['quantity'].astype(float)  * odfR['rate'].astype(float)
+        odfR['balance'] = odfR['quantity'].astype(float)  * odfR['rate'].astype(float)
         odfR = odfR.drop(['stock','transactiontype','entrydatetime','account__id','account__accountname'],axis=1) 
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
@@ -1361,7 +1364,7 @@ class balancestatement(ListAPIView):
       
     
      
-        return Response(bsdf.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead'],ascending=False).T.to_dict().values())
+        return Response(bsdf.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead']).T.to_dict().values())
 
 
 
@@ -1727,7 +1730,7 @@ class incomeandexpensesstatement(ListAPIView):
     def get(self, request, format=None):
         entity1 = self.request.query_params.get('entity')
         startdate = self.request.query_params.get('startdate')
-        enddate = self.request.query_params.get('enddate')
+        enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
         stk =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__range=(startdate, enddate))).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
         stk2 =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__range=(startdate, enddate))).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
 
@@ -1802,7 +1805,7 @@ class incomeandexpensesstatement(ListAPIView):
         #print(idf)
         odfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
        #print(dfR)
-        odfR['balance'] = dfR['quantity'].astype(float)  * odfR['rate'].astype(float)
+        odfR['balance'] = odfR['quantity'].astype(float)  * odfR['rate'].astype(float)
         odfR = odfR.drop(['stock','transactiontype','entrydatetime','account__id','account__accountname'],axis=1) 
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
@@ -1902,7 +1905,7 @@ class incomeandexpensesstatement(ListAPIView):
       
     
      
-        return Response(pldf.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().T.to_dict().values())
+        return Response(pldf.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead']).T.to_dict().values())
 
 
 
@@ -1919,7 +1922,7 @@ class tradingaccountstatement(ListAPIView):
     def get(self, request, format=None):
         entity1 = self.request.query_params.get('entity')
         startdate = self.request.query_params.get('startdate')
-        enddate = self.request.query_params.get('enddate')
+        enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
 
        # ob =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__lt = startdate)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
        # ob2 =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__lt = startdate)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
@@ -1982,7 +1985,7 @@ class tradingaccountstatement(ListAPIView):
         #print(idf)
         odfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
        #print(dfR)
-        odfR['balance'] = dfR['quantity'].astype(float)  * odfR['rate'].astype(float)
+        odfR['balance'] = odfR['quantity'].astype(float)  * odfR['rate'].astype(float)
         odfR = odfR.drop(['stock','transactiontype','entrydatetime','account__id','account__accountname'],axis=1) 
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
@@ -2069,7 +2072,7 @@ class tradingaccountstatement(ListAPIView):
         #print(df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs())
 
 
-        df = df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index()
+        df = df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead'])
 
         print(df)
 
