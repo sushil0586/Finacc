@@ -2212,6 +2212,8 @@ class daybookviewapi(ListAPIView):
     def get_queryset(self):
         #account = self.request.query_params.get('account')
         entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate =  datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
 
 
 
@@ -2219,7 +2221,7 @@ class daybookviewapi(ListAPIView):
 
       #  print(queryset1)
 
-        queryset=entry.objects.filter(entity=entity).prefetch_related(Prefetch('cashtrans', queryset=queryset1,to_attr='account_transactions'))
+        queryset=entry.objects.filter(entity=entity,entrydate1__range = (startdate,enddate)).prefetch_related(Prefetch('cashtrans', queryset=queryset1,to_attr='account_transactions')).order_by('entrydate1')
         # for q in queryset.account_transactions:
         #     print(q)
 
@@ -2247,12 +2249,14 @@ class cbviewapi(ListAPIView):
     def get_queryset(self):
         #account = self.request.query_params.get('account')
         entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate =  datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
 
 
 
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
-        queryset=entry.objects.filter(entity=entity).prefetch_related('cashtrans').order_by('entrydate1')
+        queryset=entry.objects.filter(entity=entity,entrydate1__range = (startdate,enddate)).prefetch_related('cashtrans').order_by('entrydate1')
 
        
 
