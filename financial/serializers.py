@@ -53,6 +53,7 @@ class accountListSerializer(serializers.ModelSerializer):
     accountid = serializers.IntegerField(source = 'id')
     accgst = serializers.CharField(max_length=500,source = 'gstno')
     accpan = serializers.CharField(max_length=500,source = 'pan')
+    
     accanbedeleted = serializers.BooleanField(source = 'canbedeleted')
 
     
