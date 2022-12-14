@@ -35,7 +35,9 @@ class ProductSerializer(serializers.ModelSerializer):
         entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
         os = account.objects.get(entity =detail.entity,accountcode = 9000)
 
-        if detail.openingstockvalue > 0:
+
+
+        if detail.openingstockvalue is not None:
             if (detail.openingstockqty ==0.00):
                     qty = detail.openingstockboxqty
             else:

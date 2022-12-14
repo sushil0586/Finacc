@@ -134,7 +134,7 @@ class accountListApiView(ListAPIView):
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        queryset =  account.objects.filter( Q(entity = entity),Q(accounttrans__accounttype__isnull = True) | Q(accounttrans__accounttype__in = ['M','DD'])).values('accountname','city__cityname','id','gstno','pan','accounthead__name','creditaccounthead__name').annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0),balance = Sum('accounttrans__debitamount',default = 0) - Sum('accounttrans__creditamount',default = 0))
+        queryset =  account.objects.filter( Q(entity = entity),Q(accounttrans__accounttype__isnull = True) | Q(accounttrans__accounttype__in = ['M','DD'])).values('accountname','city__cityname','id','gstno','pan','accounthead__name','creditaccounthead__name','canbedeleted').annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0),balance = Sum('accounttrans__debitamount',default = 0) - Sum('accounttrans__creditamount',default = 0))
 
         #query = queryset.exclude(accounttrans__accounttype  = 'MD')
 

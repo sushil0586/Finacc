@@ -53,6 +53,9 @@ class accountListSerializer(serializers.ModelSerializer):
     accountid = serializers.IntegerField(source = 'id')
     accgst = serializers.CharField(max_length=500,source = 'gstno')
     accpan = serializers.CharField(max_length=500,source = 'pan')
+    accanbedeleted = serializers.CharField(max_length=500,source = 'canbedeleted')
+
+    
 
     
 
@@ -63,7 +66,7 @@ class accountListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = account
-        fields =  ('accountname','debit','credit','accgst','accpan','cityname','accountid','daccountheadname','caccountheadname',)
+        fields =  ('accountname','debit','credit','accgst','accpan','cityname','accountid','daccountheadname','caccountheadname','accanbedeleted',)
 
   
     
@@ -164,7 +167,7 @@ class accountHeadSerializer2(serializers.ModelSerializer):
 
     class Meta:
         model = accountHead
-        fields = ('id','name','code','detailsingroup','balanceType','drcreffect','description','accountheadsr','entity','accountHeadName','detailsingroupName',)
+        fields = ('id','name','code','detailsingroup','balanceType','drcreffect','description','accountheadsr','entity','accountHeadName','detailsingroupName','canbedeleted',)
         #depth = 1
 
 

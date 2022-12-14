@@ -11,7 +11,9 @@
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-                "accountHeadName": "null"
+                "accountHeadName": "null",
+                "canbedeleted": false
+                
             },
             
             {
@@ -22,7 +24,8 @@
                         "drcreffect": "1",
                         "description": "desc",
                         "accountheadsr": null,
-                        "accountHeadName": "null"
+                        "accountHeadName": "null",
+                        "canbedeleted": false
                 
             }
         ],
@@ -40,6 +43,7 @@
                 "description": "desc",
                 "accountheadsr": null,
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -73,7 +77,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  }
                 ]
@@ -91,6 +96,7 @@
                
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -124,7 +130,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": true
        
                                  }
                 ]
@@ -142,6 +149,7 @@
                 
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                    {
      
@@ -175,7 +183,8 @@
         "country": 1,
         "state": 1,
         "district": 1,
-        "city": 1
+        "city": 1,
+        "canbedeleted": false
        
     }
                 ]
@@ -193,6 +202,7 @@
                 
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -226,7 +236,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  }
                 ]
@@ -246,9 +257,8 @@
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-               
-               
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -282,7 +292,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  },
 								  {
@@ -317,7 +328,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  },
 								 {
@@ -352,7 +364,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  },
                                  {
@@ -387,7 +400,8 @@
                                     "country": 1,
                                     "state": 1,
                                     "district": 1,
-                                    "city": 1
+                                    "city": 1,
+                                    "canbedeleted": false
    
                              },
                               {
@@ -422,7 +436,8 @@
                                     "country": 1,
                                     "state": 1,
                                     "district": 1,
-                                    "city": 1
+                                    "city": 1,
+                                    "canbedeleted": false
    
                              },
                              {
@@ -457,7 +472,8 @@
                                     "country": 1,
                                     "state": 1,
                                     "district": 1,
-                                    "city": 1
+                                    "city": 1,
+                                    "canbedeleted": false
    
                              },
                                  {
@@ -492,7 +508,8 @@
                                     "country": 1,
                                     "state": 1,
                                     "district": 1,
-                                    "city": 1
+                                    "city": 1,
+                                    "canbedeleted": false
    
                              },
                              {
@@ -527,7 +544,8 @@
                                 "country": 1,
                                 "state": 1,
                                 "district": 1,
-                                "city": 1
+                                "city": 1,
+                                "canbedeleted": false
 
                          },
                          {
@@ -562,7 +580,8 @@
                             "country": 1,
                             "state": 1,
                             "district": 1,
-                            "city": 1
+                            "city": 1,
+                            "canbedeleted": false
 
                      }
                 ]
@@ -581,6 +600,7 @@
               
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -614,7 +634,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": true
        
                                  }
                 ]
@@ -631,6 +652,7 @@
                 "accountheadsr": null,
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -664,7 +686,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": true
        
                                  }
                 ]
@@ -674,7 +697,7 @@
                
                 "name": "Opening Stock",
                 "code": 9000,
-                "detailsingroup":4,
+                "detailsingroup":1,
                 "balanceType": "Credit",
                 "drcreffect": "1",
                 "description": "desc",
@@ -682,6 +705,7 @@
                 
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -715,7 +739,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  }
                 ]
@@ -735,6 +760,7 @@
                
                
                 "accountHeadName": "null",
+                "canbedeleted": false,
                 "accounthead_accounts":[
                                                 {
                                     
@@ -768,7 +794,8 @@
                                         "country": 1,
                                         "state": 1,
                                         "district": 1,
-                                        "city": 1
+                                        "city": 1,
+                                        "canbedeleted": false
        
                                  }
                                 
