@@ -40,6 +40,7 @@ class accountHead(TrackingModel):
     accountheadsr = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Account head Sr'),blank=True)
     detailsingroup =  models.IntegerField(null=True,blank = True)
     entity = models.ForeignKey(entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
+    canbedeleted      = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
     owner = models.ForeignKey(to= User,  on_delete= models.CASCADE,null= True)
 
     class Meta:
@@ -90,6 +91,7 @@ class account(TrackingModel):
     quanity2            = models.IntegerField(verbose_name=_('Quanity 2'),null=True,blank=True)
     BanKAcno            = models.IntegerField(verbose_name=_('Bank A/c No'),null=True,blank=True)
     composition         = models.BooleanField(verbose_name=_('Bank A/c No'),null=True,blank=True)
+    canbedeleted      = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
 
     def __str__(self):
