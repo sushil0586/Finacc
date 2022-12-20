@@ -763,7 +763,7 @@ class productiondetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = productiondetails
-        fields =  ('id','stock','productname','desc','quantity','issuereceived','entity',)
+        fields =  ('id','stock','productname','desc','quantity','rate','issuereceived','entity',)
 
     def get_productname(self,obj):
          return obj.stock.productname
