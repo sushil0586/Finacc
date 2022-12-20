@@ -395,7 +395,7 @@ class productiondetails(TrackingModel):
     desc = models.CharField(max_length=500, null=True,verbose_name='Description')
     issuereceived = models.BooleanField(verbose_name='Issue/Receipt')
     quantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Issued quantity')
-    #recivedquantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Received quantity')
+    rate =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Rate',null = True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
