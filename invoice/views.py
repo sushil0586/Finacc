@@ -3,11 +3,11 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView
-from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype
+from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer
+purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -248,6 +248,22 @@ class journalmaincancel(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return journalmain.objects.filter(entity = entity)
+
+
+
+class productionmaincancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = productioncancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return journalmain.objects.filter(entity = entity)
+
+
+
+
 
 class stockmaincancel(RetrieveUpdateDestroyAPIView):
 
@@ -579,6 +595,23 @@ class stockordelatestview(ListCreateAPIView):
         return Response(serializer.data)
 
 
+
+
+
+
+class productionlatestview(ListCreateAPIView):
+
+    serializer_class = productionVSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    def get(self,request):
+        entity = self.request.query_params.get('entity')
+        id = productionmain.objects.filter(entity= entity,vouchertype = 'PV').last()
+        serializer = productionVSerializer(id)
+        return Response(serializer.data)
+
+
 class bankordelatestview(ListCreateAPIView):
 
     serializer_class = JournalVSerializer
@@ -655,6 +688,37 @@ class journalmainupdateapiview(RetrieveUpdateDestroyAPIView):
 
 
 
+class productionmainApiView(ListCreateAPIView):
+
+    serializer_class = productionmainSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['id','unitType','entityName']
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        return serializer.save(createdby = self.request.user)
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return productionmain.objects.filter(entity = entity)
+
+
+
+class productionmainupdateapiview(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = productionmainSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return productionmain.objects.filter(entity = entity)
+
+
+
+
 class stockmainApiView(ListCreateAPIView):
 
     serializer_class = stockmainSerializer
@@ -707,6 +771,18 @@ class stockmainpreviousapiview(RetrieveUpdateDestroyAPIView):
         entity = self.request.query_params.get('entity')
        # vouchertype = self.request.query_params.get('vouchertype')
         return stockmain.objects.filter(entity = entity)
+
+
+class productionpreviousapiview(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = productionmainSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "voucherno"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+       # vouchertype = self.request.query_params.get('vouchertype')
+        return productionmain.objects.filter(entity = entity)
 
 
 
@@ -1992,7 +2068,7 @@ class tradingaccountstatement(ListAPIView):
 
         odfR.rename(columns = {'stock__id':'account__id', 'stock__productname':'account__accountname'}, inplace = True)
         odfR['account__accounthead__name'] = 'Opening Stock'
-        odfR['account__accounthead'] = -5
+        odfR['account__accounthead'] = 21000
 
 
         ##################################################################
@@ -2013,14 +2089,7 @@ class tradingaccountstatement(ListAPIView):
         df = df.drop(['debit','credit'],axis=1)
 
 
-        print(df)
-
-
-        
-
-        
-
-        print(dfR)
+       
 
        
 
@@ -2037,7 +2106,7 @@ class tradingaccountstatement(ListAPIView):
 
         df['balance'] = df['balance'].fillna(0)
 
-        print(df)
+      
 
 
         if df['balance'].sum() < 0:
@@ -2066,15 +2135,15 @@ class tradingaccountstatement(ListAPIView):
         df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__accountname':'accountname','account__id':'accountid'}, inplace = True)
 
 
-        print(df)
+      
 
 
         #print(df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs())
 
 
-        df = df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead'])
+        df = df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead'],ascending=False)
 
-        print(df)
+       
 
 
      
@@ -2799,12 +2868,11 @@ class stockviewapi(ListAPIView):
 
 
 
-        queryset1=goodstransaction.objects.filter(entity=entity).order_by('entity').only('account__accountname','stock__productname','transactiontype','transactionid','entrydatetime')
+        queryset1=StockTransactions.objects.filter(entity=entity).order_by('entity').only('account__accountname','stock__productname','transactiontype','transactionid','entrydatetime')
 
-        queryset=Product.objects.filter(entity=entity).prefetch_related(Prefetch('goods', queryset=queryset1,to_attr='account_transactions'))
+        queryset=Product.objects.filter(entity=entity).prefetch_related(Prefetch('stocktrans', queryset=queryset1,to_attr='account_transactions'))
 
-        print(queryset)
-        print('account_transactions')
+       
 
      
         

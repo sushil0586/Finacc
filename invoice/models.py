@@ -372,6 +372,36 @@ class stockdetails(TrackingModel):
 
 
 
+class productionmain(TrackingModel):
+    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    voucherno = models.IntegerField(verbose_name='Voucher No')
+    vouchertype = models.CharField(max_length=50, null=True,verbose_name='Voucher Type',default='PV')
+    entrydate = models.DateTimeField(verbose_name='Entry Date')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+    class Meta:
+        unique_together = ('voucherno','vouchertype','entity',)
+
+    def __str__(self):
+        return f'{self.voucherno} '
+
+
+
+class productiondetails(TrackingModel):
+    stockmain = models.ForeignKey(to = productionmain,related_name='stockdetails', on_delete= models.CASCADE,null=True,blank=True,verbose_name='Journal Main')
+    stock = models.ForeignKey(to = Product, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Product Name')
+    desc = models.CharField(max_length=500, null=True,verbose_name='Description')
+    issuereceived = models.BooleanField(verbose_name='Issue/Receipt')
+    quantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Issued quantity')
+    #recivedquantity =  models.DecimalField(max_digits=10,null = True, decimal_places=2,verbose_name= 'Received quantity')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+
+
 
 
 
@@ -429,7 +459,7 @@ class accountentry(TrackingModel):
 class StockTransactions(TrackingModel):
     accounthead = models.ForeignKey(to = accountHead, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Account Head',related_name='headtrans')
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Account Name',related_name='accounttrans')
-    stock = models.ForeignKey(to = Product, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Product Name')
+    stock = models.ForeignKey(to = Product, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Product Name',related_name='stocktrans')
     saleinvoice = models.ForeignKey(to = SalesOderHeader, on_delete= models.CASCADE,null=True,blank=True,verbose_name='sale invoice no')
     purchasereturninvoice = models.ForeignKey(to = PurchaseReturn, on_delete= models.CASCADE,null=True,blank=True,verbose_name='purchase return invoice no')
     transactiontype = models.CharField(max_length=50, null=True,verbose_name='TransactionType')
