@@ -2781,7 +2781,7 @@ class  stockledgerbookserializer(serializers.ModelSerializer):
 class stockserializer(serializers.ModelSerializer):
 
 
-    goods = goodsserilaizer(source = 'account_transactions', many=True, read_only=True)
+   # goods = goodsserilaizer(source = 'account_transactions', many=True, read_only=True)
     salequantity  = serializers.SerializerMethodField()
     purchasequantity = serializers.SerializerMethodField()
     issuedquantity  = serializers.SerializerMethodField()

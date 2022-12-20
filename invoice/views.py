@@ -2,7 +2,7 @@ from itertools import product
 from django.http import request
 from django.shortcuts import render
 
-from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView
+from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
@@ -251,7 +251,7 @@ class journalmaincancel(RetrieveUpdateDestroyAPIView):
 
 
 
-class productionmaincancel(RetrieveUpdateDestroyAPIView):
+class productionmaincancel(UpdateAPIView):
 
     serializer_class = productioncancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
@@ -773,7 +773,7 @@ class stockmainpreviousapiview(RetrieveUpdateDestroyAPIView):
         return stockmain.objects.filter(entity = entity)
 
 
-class productionpreviousapiview(RetrieveUpdateDestroyAPIView):
+class productionpreviousapiview(RetrieveAPIView):
 
     serializer_class = productionmainSerializer
     permission_classes = (permissions.IsAuthenticated,)
