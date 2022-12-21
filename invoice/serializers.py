@@ -797,21 +797,7 @@ class productionmainSerializer(serializers.ModelSerializer):
             StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.quantity,entrydate = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id)
 
 
-            # if detail.issuereceived == True:
-            #     StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id)
-            # else:
-            #     StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id)
-
-          #  StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate)
-           # stk.createtransactiondetails(detail=detail,stocktype='S')
-
-            # if(detail.orderqty ==0.00):
-            #     qty = detail.pieces
-            # else:
-            #     qty = detail.orderqty
-            # StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = 'S',transactionid = order.id,desc = 'Sale By B.No ' + str(order.billno),stockttype = 'S',salequantity = qty,drcr = 0,creditamount = detail.amount,cgstcr = detail.cgst,sgstcr= detail.sgst,igstcr = detail.igst,entrydate = order.sorderdate,entity = order.entity,createdby = order.owner)
-
-       # stk.createtransaction()
+           
         return order
 
     def update(self, instance, validated_data):
@@ -823,16 +809,16 @@ class productionmainSerializer(serializers.ModelSerializer):
                 pass
         instance.save()
        # stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'Sale')
-        stockdetails.objects.filter(stockmain=instance,entity = instance.entity).delete()
-        goodstransaction.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
+        productiondetails.objects.filter(stockmain=instance,entity = instance.entity).delete()
+       # goodstransaction.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
      #   stk.updateransaction()
 
         journaldetails_data = validated_data.get('stockdetails')
         entryid,created  = entry.objects.get_or_create(entrydate1 = instance.entrydate,entity=instance.entity)
 
         for journaldetail_data in journaldetails_data:
-            detail = stockdetails.objects.create(stockmain = instance, **journaldetail_data)
-            goodstransaction.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,stockttype = detail.issuereceived,issuedquantity = detail.issuedquantity,recivedquantity = detail.recivedquantity,entrydate = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid)
+            detail = productiondetails.objects.create(stockmain = instance, **journaldetail_data)
+           # goodstransaction.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,stockttype = detail.issuereceived,issuedquantity = detail.issuedquantity,recivedquantity = detail.recivedquantity,entrydate = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid)
             #stk.createtransactiondetails(detail=detail,stocktype='S')
 
         
