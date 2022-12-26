@@ -234,7 +234,7 @@ class tdstypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = tdstype
-        fields =('id','tdstypename','tdssection','tdsreturn',)
+        fields = ('id','tdstypename','tdssection','tdsreturn',)
 
 
 
@@ -244,8 +244,8 @@ class tdsreturnSerializer(serializers.ModelSerializer):
    # pcategoryname = serializers.SerializerMethodField()
 
     class Meta:
-        model = tdstype
-        fields =('id','tdsreturnname','tdsreturndesc',)
+        model = tdsreturns
+        fields =('id','tdsreturnname',)
 
 
 

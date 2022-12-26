@@ -73,13 +73,13 @@ class tdsreturnApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
+    #filterset_fields = ['tdsreturn']
 
     def perform_create(self, serializer):
         return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
-        return tdsreturns.objets.all()
+        return tdsreturns.objects.filter()
 
 
 
