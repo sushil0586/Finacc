@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -234,7 +234,18 @@ class tdstypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = tdstype
-        fields =('id','tdstypename','tdstypecode')
+        fields =('id','tdstypename','tdssection','tdsreturn',)
+
+
+
+class tdsreturnSerializer(serializers.ModelSerializer):
+
+
+   # pcategoryname = serializers.SerializerMethodField()
+
+    class Meta:
+        model = tdstype
+        fields =('id','tdsreturnname','tdsreturndesc',)
 
 
 

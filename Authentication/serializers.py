@@ -56,13 +56,15 @@ class Registerserializer(serializers.ModelSerializer):
 
         
 
-    # def create(self, validated_data):
-    #     groups_data = validated_data.pop('groups')
-    #     user = User.objects.create_user(**validated_data)
-    #     for group_data in groups_data:
-    #          # Group.objects.create(user=user, **group_data)
-    #          user.groups.add(group_data)
-    #     return user
+    def create(self, validated_data):
+        user = User.objects.create(**validated_data)
+        print(user)
+        # groups_data = validated_data.pop('groups')
+        # user = User.objects.create_user(**validated_data)
+        # for group_data in groups_data:
+        #      # Group.objects.create(user=user, **group_data)
+        #      user.groups.add(group_data)
+        return user
 
 class Userserializer(serializers.ModelSerializer):
 
@@ -134,6 +136,7 @@ class submenuSerializer(serializers.ModelSerializer):
     class Meta:
         model = submenu
         fields =  ('submenu','subMenuurl',)
+        order_by = ('order')
 
 
 
