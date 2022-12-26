@@ -86,7 +86,7 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
     first_name = models.CharField(_('first name'), max_length=100, blank=True)
     last_name = models.CharField(_('last name'), max_length=100, blank=True)
     email = models.EmailField(_('email address'), blank=False,unique = True)
-    role = models.ForeignKey(userRole, on_delete=models.CASCADE,null=True,blank= True,default = 1)
+    role = models.ForeignKey(userRole, on_delete=models.CASCADE,null=True,blank= True)
     is_staff = models.BooleanField(
         _('staff status'),
         default=False,
@@ -129,6 +129,7 @@ class MainMenu(TrackingModel):
     mainmenu = models.CharField(max_length=50) 
     menuurl = models.CharField(max_length=50, null=True,blank=True)
     menucode = models.CharField(max_length=50)
+    order = models.IntegerField()
 
     class Meta:
         verbose_name = _('Menu')
@@ -143,6 +144,7 @@ class submenu(TrackingModel):
     mainmenu =     models.ForeignKey(MainMenu, on_delete=models.CASCADE,null= True,related_name='submenu')
     submenu =      models.CharField(max_length=50)
     subMenuurl =   models.CharField(max_length=50)
+    order = models.IntegerField()
 
 
     class Meta:
