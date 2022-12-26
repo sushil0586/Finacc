@@ -541,7 +541,7 @@ class tdstype(TrackingModel):
 
 
 class tdsmain(TrackingModel):
-    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    voucherdate = models.DateField(verbose_name='Vocucher Date',default=datetime.date.today)
     voucherno = models.IntegerField(verbose_name='Voucher No')
     creditaccountid = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Credit Account Name',related_name='tdscreditaccount')
     creditdesc = models.CharField(max_length= 255,verbose_name= 'Credit Acc desc',null=True)

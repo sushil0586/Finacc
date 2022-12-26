@@ -87,6 +87,7 @@ urlpatterns  = [
     path('stockmaincancel',views.stockmaincancel.as_view(), name = 'Trialbalance'),
     path('dashboardkpis',views.dashboardkpis.as_view(), name = 'Trialbalance'),
     path('dashboardgraphkpis',views.dashboardgraphkpis.as_view(), name = 'Trialbalance'),
+    path('tdsreturn',views.tdsreturnApiView.as_view(), name = 'Trialbalance'),
 
     
 
