@@ -1059,6 +1059,107 @@
                 "taxtypecode": "1010"
                 
             }
+        ],
+
+        "tdstype": [
+
+            
+            {
+               
+                "tdstypename": "Amount under life insurance",
+                "tdstypecode": "10001"
+                
+            },
+            {
+               
+                "tdstypename": "Bank Interest",
+                "tdstypecode": "1002"
+                
+            },
+            {
+               
+                "tdstypename": "Brokerage or Commission",
+                "tdstypecode": "1003"
+                
+            },
+            {
+               
+                "tdstypename": "Contractor payments",
+                "tdstypecode": "1004"
+                
+            },
+            {
+               
+                "tdstypename": "Compensation on acquiring immovable property",
+                "tdstypecode": "1005"
+                
+            },
+            {
+               
+                "tdstypename": "Commission payments",
+                "tdstypecode": "1006"
+                
+            },
+            {
+               
+                "tdstypename": "Dividend declared",
+                "tdstypecode": "1007"
+                
+            },
+            {
+               
+                "tdstypename": "Interest on securities",
+                "tdstypecode": "1008"
+                
+            },
+            {
+               
+                "tdstypename": "Interest apart from interest on securities",
+                "tdstypecode": "1009"
+                
+            },
+            {
+               
+                "tdstypename": "Insurance Commission",
+                "tdstypecode": "1010"
+                
+            },
+            {
+               
+                "tdstypename": "Payment of rent",
+                "tdstypecode": "1011"
+                
+            },
+            {
+               
+                "tdstypename": "Remuneration paid to the director of a company, etc",
+                "tdstypecode": "1012"
+                
+            },
+            {
+               
+                "tdstypename": "Salary",
+                "tdstypecode": "1011"
+                
+            },
+            {
+               
+                "tdstypename": "Transfer of immovable property",
+                "tdstypecode": "1012"
+                
+            },
+            {
+               
+                "tdstypename": "Salary",
+                "tdstypecode": "1013"
+                
+            },
+            {
+               
+                "tdstypename": "Winning from games like a crossword puzzle, card, lottery, etc  ",
+                "tdstypecode": "1012"
+                
+            }
         ]
 
         }

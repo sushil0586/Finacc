@@ -509,11 +509,30 @@ class goodstransaction(TrackingModel):
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 
+
+
+
+class tdsreturns(TrackingModel):
+    tdsreturnname = models.CharField(max_length= 255,verbose_name= 'Tds return')
+    tdsreturndesc = models.CharField(max_length= 255,verbose_name= 'Tds return desc')
+    # entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    # createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
+
+
+    def __str__(self):
+        return f'{self.tdsreturnname}'
+
+
+
+
+
+
 class tdstype(TrackingModel):
     tdstypename = models.CharField(max_length= 255,verbose_name= 'Tds Type')
-    tdstypecode = models.CharField(max_length= 255,verbose_name= 'Tds Type Code')
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
-    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
+    tdssection = models.CharField(max_length= 255,verbose_name= 'Tds Type Code')
+    tdsreturn = models.ForeignKey(tdsreturns,on_delete=models.CASCADE,verbose_name= 'Tds Return',null = True)
+    # entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    # createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
     def __str__(self):

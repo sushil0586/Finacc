@@ -7,10 +7,16 @@ from financial.models import accountHead,account
 
 class accountheadAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['name','code','accountheadsr','entity','owner']
+    list_filter = (
+        ('entity', admin.RelatedOnlyFieldListFilter),
+    )
     
 class accountAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['accountname','accounthead','accountcode','gstno','entity','owner']
-
+    list_filter = (
+        ('entity', admin.RelatedOnlyFieldListFilter),
+    )
+    
 
 admin.site.register(accountHead, accountheadAdmin)
 

@@ -37,13 +37,17 @@ class RegisterApiView(GenericAPIView):
     authentication_classes = []
     serializer_class = Registerserializer
 
-    def post(self,request):
-        serializer = self.serializer_class(data = request.data)
 
-        if serializer.is_valid():
-            serializer.save()
-            return response.Response(serializer.data,status = status.HTTP_200_OK)
-        return response.Response(serializer.errors,status = status.HTTP_400_BAD_REQUEST)
+    def perform_create(self, serializer):
+        return serializer.save()
+
+    # def post(self,request):
+    #     serializer = self.serializer_class(data = request.data)
+
+    #     if serializer.is_valid():
+    #         serializer.save()
+    #         return response.Response(serializer.data,status = status.HTTP_200_OK)
+    #     return response.Response(serializer.errors,status = status.HTTP_400_BAD_REQUEST)
 
 class LoginApiView(GenericAPIView):
     permission_classes = (permissions.AllowAny,)
@@ -128,8 +132,7 @@ class MenusApiView(ListCreateAPIView):
 
         # print(menus)
 
-        return MainMenu.objects.filter()
-
+        return MainMenu.objects.filter().order_by('order')
 
        # entity = self.request.query_params.get('entity')
        
