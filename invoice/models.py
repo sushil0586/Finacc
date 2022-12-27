@@ -549,7 +549,7 @@ class tdsmain(TrackingModel):
     debitdesc = models.CharField(max_length= 255,verbose_name= 'Debit Acc desc',null=True)
     tdsaccountid = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Tds Account Name',related_name='tdsaccount1')
     tdsdesc = models.CharField(max_length= 255,verbose_name= 'Tds Acc desc',null=True)
-    tdsreturnccountid = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Tds Account Name',related_name='tdsreturnaccount1')
+    tdsreturnccountid = models.ForeignKey(to = tdsreturns, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Tds Account Name',related_name='tdsreturnaccount1')
     tdsreturndesc = models.CharField(max_length= 255,verbose_name= 'tds return Acc desc',null=True)
     tdstype = models.ForeignKey(to = tdstype, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Tds Type',related_name='tdstype')
     amount = models.DecimalField(max_digits=10,decimal_places=2,verbose_name= 'Credit Amount')
