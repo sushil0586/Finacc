@@ -6,6 +6,11 @@ from Authentication.models import User
 from django.utils.translation import gettext as _
 from entity.models import entity
 from financial.models import account
+import barcode                      # additional imports
+from barcode.writer import ImageWriter
+from io import BytesIO
+from django.core.files import File
+import os
 
 
 
@@ -93,6 +98,10 @@ class ProductCategory(TrackingModel):
     def __str__(self):
         return f'{self.pcategoryname} '
 
+
+def get_image_path(instance, filename):
+    return os.path.join(str(instance.entity),'photos',filename)
+
 class Product(TrackingModel):
     productname = models.CharField(max_length= 50,verbose_name=_('Product Name'))
     productcode = models.IntegerField(null = True,blank=True,verbose_name=_('Product Code'))
@@ -126,9 +135,17 @@ class Product(TrackingModel):
     gsttype = models.ForeignKey(to= gsttype,null=True,blank=True, on_delete= models.CASCADE,verbose_name=_('Gst Type'))
     entity = models.ForeignKey(entity,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User,null=True, on_delete= models.CASCADE)
+    barcode = models.ImageField(upload_to=get_image_path, blank=True)
 
     def __str__(self):
-        return f'{self.productname} '
+        return f'{self.productname}'
+
+    def save(self, *args, **kwargs):          # overriding save() 
+        COD128 = barcode.get_barcode_class('code128')
+        rv = BytesIO()
+        code = COD128(f'Mrp: {self.mrp} Our Prrice: {self.salesprice}', writer=ImageWriter()).write(rv)
+        self.barcode.save(f'{self.productname}.png', File(rv), save=False)
+        return super().save(*args, **kwargs)
 
 class Album(models.Model):
     album_name = models.CharField(max_length=100)

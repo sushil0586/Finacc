@@ -54,7 +54,7 @@ class entity(TrackingModel):
 
     
     def __str__(self):
-        return f'{self.unitType} , {self.entityName}'
+        return f'{self.entityName}'
 
 
 
