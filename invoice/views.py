@@ -894,7 +894,7 @@ class tdslist(ListAPIView):
        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
 
 
-        obp =tdsmain.objects.filter(entityid = entity,isactive = 1,voucherdate__range=(startdate, enddate),tdstype__tdsreturn = tdsreturn).values('creditaccountid__accountname','creditaccountid__pan','tdstype__tdssection','debitamount','tdsrate','tdsvalue','surchargerate','surchargevalue','cessrate','cessvalue','hecessrate','hecessvalue','grandtotal','tdstype__tdstypename')
+        obp =tdsmain.objects.filter(entityid = entity,isactive = 1,voucherdate__range=(startdate, enddate),tdstype__tdsreturn = tdsreturn).values('creditaccountid__accountname','creditaccountid__pan','tdstype__tdssection','voucherdate','debitamount','tdsrate','tdsvalue','surchargerate','surchargevalue','cessrate','cessvalue','hecessrate','hecessvalue','grandtotal','depositdate','tdstype__tdstypename')
         # obn =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
         # ob = obp.union(obn)
 
