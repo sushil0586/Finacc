@@ -29,6 +29,7 @@ urlpatterns  = [
     path('bvouccherno',views.bankordelatestview.as_view(), name = 'purchaseorder'),
     path('cvouccherno',views.cashordelatestview.as_view(), name = 'purchaseorder'),
     path('purchasereturn',views.PurchaseReturnApiView.as_view(),name = 'salesorder'),
+    path('gstview',views.gstview.as_view(),name = 'salesorder'),    
     path('purchasereturn/<int:id>',views.PurchaseReturnupdatedelview.as_view(), name = 'salesorder'),
     path('purchasereturndetails',views.PurchaseOrderDetailsApiView.as_view(),name = 'salesorder'),
     path('purchasereturndetails/<int:id>',views.PurchaseOrderDetailsApiView.as_view(), name = 'salesorder'),
