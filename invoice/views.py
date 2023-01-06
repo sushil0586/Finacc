@@ -1,5 +1,5 @@
 from itertools import product
-from django.http import request
+from django.http import request,JsonResponse
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
@@ -8,7 +8,7 @@ from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSeria
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer
-from rest_framework import permissions
+from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
@@ -584,6 +584,97 @@ class purchaseordelatestview(ListCreateAPIView):
 
 
 
+
+class gstview(ListCreateAPIView):
+
+   # serializer_class = JournalVSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    def list(self,request):
+        entity = self.request.query_params.get('entity')
+        stardate = datetime.strptime(self.request.query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
+        enddate = datetime.strptime(self.request.query_params.get('enddate'), '%Y-%m-%d') - timedelta(days = 1)
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+        df = read_frame(stk)
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'rate','linetotal':'invoicevalue','amount':'taxablevalue'}, inplace = True)
+        df['placeofsupply'] = '03-Punjab'
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = ''
+     #   df['reversecharge'] = 'N'
+       
+        df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
+        dfb2b = df.groupby(['invoiceno','invoicedate','applicableoftaxrate','rate','placeofsupply','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values()
+    #    # df['account__accounthead'] = -1
+
+    #    # return Response(df)
+    #     return  Response(df.groupby(['invoiceno','invoicedate','applicableoftaxrate','rate','placeofsupply','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
+    #     id = list(journalmain.objects.filter(entity= entity,vouchertype = 'J').values())
+        #serializer = JournalVSerializer(id)
+
+
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+
+        df = read_frame(stk)
+
+       
+
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'rate','linetotal':'invoicevalue','amount':'taxablevalue'}, inplace = True)
+
+
+        df['placeofsupply'] = '03-Punjab'
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = ''
+     #   df['reversecharge'] = 'N'
+       
+        df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
+       # df['account__accounthead'] = -1
+
+       # return Response(df)
+        dfb2clarge =  df.groupby(['invoiceno','invoicedate','applicableoftaxrate','rate','placeofsupply','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values()
+
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('salesorderheader__billno','salesorderheader__sorderdate','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+
+        df = read_frame(stk)
+
+       
+
+        df.rename(columns = {'salesorderheader__billno':'invoiceno','salesorderheader__sorderdate':'invoicedate1','salesorderheader__sorderdate':'invoicedate1','product__totalgst':'rate','linetotal':'invoicevalue','amount':'taxablevalue'}, inplace = True)
+
+
+
+
+        df['type'] = 'OE'
+        df['placeofsupply'] = '03-Punjab'
+        df['applicableoftaxrate'] = ''
+        df['ecomgstin'] = ''
+     #   df['reversecharge'] = 'N'
+       
+        df['invoicedate'] = pd.to_datetime(df['invoicedate1']).dt.strftime('%d-%B-%Y')
+       # df['account__accounthead'] = -1
+
+       # return Response(df)
+        dfbebsmall =  df.groupby(['type','applicableoftaxrate','rate','placeofsupply','ecomgstin'])[['invoicevalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values()
+
+        stk =salesOrderdetails.objects.filter(Q(isactive = 1),Q(entity = entity),Q(salesorderheader__sorderdate__range = (stardate,enddate))).values('product__hsn','product__productname','product__unitofmeasurement__unitname','orderqty','linetotal','amount','cgst','sgst','igst','cgstcess','sgstcess','igstcess','product__totalgst')
+
+        df = read_frame(stk)
+
+        
+
+        df.rename(columns = {'product__hsn':'hsn', 'product__productname':'description','product__unitofmeasurement__unitname':'uqc','orderqty':'totalquantity','linetotal':'totalvalue','product__totalgst':'rate','amount':'taxablevalue'}, inplace = True)
+
+
+       
+        dfhsn =  df.groupby(['hsn','description','uqc','rate'])[['totalquantity','totalvalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values()
+
+        return Response({"gstb2b": dfb2b,
+                     "gstb2blarge": dfb2clarge,"gstb2bsmall": dfbebsmall,"gsthsn": dfhsn},
+                    status=status.HTTP_200_OK)
+        #return Response(serializer.data)
+
+
+
         
 
 class journalordelatestview(ListCreateAPIView):
@@ -901,6 +992,7 @@ class tdslist(ListAPIView):
         #print(ob)
 
         df = read_frame(obp)
+        df.insert(0, 'S_No', range(1, 1 + len(df)))
 
     #     print(df)
 
@@ -2730,13 +2822,7 @@ class gstrhsnapi(ListAPIView):
         df.rename(columns = {'product__hsn':'hsn', 'product__productname':'description','product__unitofmeasurement__unitname':'uqc','orderqty':'totalquantity','linetotal':'totalvalue','product__totalgst':'rate','amount':'taxablevalue'}, inplace = True)
 
 
-        # df['placeofsuppy'] = '03-Punjab'
-        # df['reversecharge'] = 'N'
-        # df['invoicetype'] = 'RegularB2B'
-        # df['invoicedate1'] = pd.to_datetime(df['invoicedate']).dt.strftime('%d-%B-%Y')
-       # df['account__accounthead'] = -1
-
-       # return Response(df)
+       
         return  Response(df.groupby(['hsn','description','uqc','rate'])[['totalquantity','totalvalue','taxablevalue','cgst','sgst','igst','cgstcess','sgstcess','igstcess']].sum().abs().reset_index().T.to_dict().values())
 
       
