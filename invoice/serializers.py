@@ -284,7 +284,7 @@ class stocktransaction:
         cgstcess = self.order.cgstcess
         sgstcess = self.order.sgstcess
         igstcess = self.order.igstcess
-        gtotal = self.order.gtotal
+        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
         pentity = self.order.entity
         tcs206c1ch2 = self.order.tcs206c1ch2
         tcs206C2 = self.order.tcs206C2
@@ -363,7 +363,7 @@ class stocktransaction:
         cgstcess = self.order.cgstcess
         sgstcess = self.order.sgstcess
         igstcess = self.order.igstcess
-        gtotal = self.order.gtotal
+        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
         pentity = self.order.entity
         tcs206c1ch2 = self.order.tcs206c1ch2
         tcs206C2 = self.order.tcs206C2
