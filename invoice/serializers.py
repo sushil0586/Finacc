@@ -337,7 +337,7 @@ class stocktransaction:
         if tds194q1 > 0:
             #tdsvbo  = tdsmain.objects.filter(entityid= pentity).last().voucherno + 1
 
-            if tdsmain.objects.filter(entityid= pentity).last().voucherno is None:
+            if tdsmain.objects.filter(entityid= pentity).count() == 0:
                 tdsvbo = 1
             else:
                 tdsvbo = tdsmain.objects.filter(entityid= pentity).last().voucherno + 1
@@ -413,7 +413,7 @@ class stocktransaction:
         StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,cgstdr = cgst,sgstdr= sgst,igstdr = igst, entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',subtotal = subtotal,isactive = self.order.isactive,iscashtransaction = iscash)
         #if self.transactiontype == 'P':
         if tcs206c1ch2 > 0:
-            if tdsmain.objects.filter(entityid= pentity).last() is None:
+            if tdsmain.objects.filter(entityid= pentity).count() == 0:
                 tdsvbo = 1
             else:
                 tdsvbo  = tdsmain.objects.filter(entityid= pentity).last() + 1
@@ -434,7 +434,7 @@ class stocktransaction:
 
             tdsmain.objects.filter(entityid = pentity,transactiontype = 'P',transactionno= id).delete()
             
-            if tdsmain.objects.filter(entityid= pentity).last().voucherno is None:
+            if tdsmain.objects.filter(entityid= pentity).count() == 0:
                 tdsvbo = 1
             else:
                 tdsvbo  = tdsmain.objects.filter(entityid= pentity).last().voucherno + 1
@@ -509,7 +509,7 @@ class stocktransactionsale:
         tcs206C2 = self.order.tcs206C2
         tds194q1 = self.order.tds194q1
         expenses = self.order.expenses
-        gtotal = self.order.gtotal
+        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
         pentity = self.order.entity
         purchaseid = account.objects.get(entity =pentity,accountcode = 3000)
         cgstid = account.objects.get(entity =pentity,accountcode = 6001)
@@ -604,7 +604,7 @@ class stocktransactionsale:
         tcs206C2 = self.order.tcs206C2
         tds194q1 = self.order.tds194q1
         expenses = self.order.expenses
-        gtotal = self.order.gtotal
+        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
         pentity = self.order.entity
         tcs206c1ch2id = account.objects.get(entity =pentity,accountcode = 8050)
         tcs206C2id = account.objects.get(entity =pentity,accountcode = 8051)
