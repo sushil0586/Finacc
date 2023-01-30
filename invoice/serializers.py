@@ -284,12 +284,13 @@ class stocktransaction:
         cgstcess = self.order.cgstcess
         sgstcess = self.order.sgstcess
         igstcess = self.order.igstcess
-        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
+        
         pentity = self.order.entity
         tcs206c1ch2 = self.order.tcs206c1ch2
         tcs206C2 = self.order.tcs206C2
         tds194q1 = self.order.tds194q1
         expenses = self.order.expenses
+        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
         #purchaseid = account.objects.get(entity =pentity,accountcode = 1000)
         cgstid = account.objects.get(entity =pentity,accountcode = 6001)
         sgstid = account.objects.get(entity =pentity,accountcode = 6002)
@@ -363,12 +364,13 @@ class stocktransaction:
         cgstcess = self.order.cgstcess
         sgstcess = self.order.sgstcess
         igstcess = self.order.igstcess
-        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
+        
         pentity = self.order.entity
         tcs206c1ch2 = self.order.tcs206c1ch2
         tcs206C2 = self.order.tcs206C2
         tds194q1 = self.order.tds194q1
         expenses = self.order.expenses
+        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
         #purchaseid = account.objects.get(entity =pentity,accountcode = 1000)
         cgstid = account.objects.get(entity =pentity,accountcode = 6001)
         sgstid = account.objects.get(entity =pentity,accountcode = 6002)
