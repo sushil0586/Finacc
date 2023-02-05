@@ -1316,7 +1316,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
         account1 = self.request.query_params.get('account')
         startdate = self.request.query_params.get('startdate')
         enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('id','account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
         ob =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accountname').annotate(debit = Sum('debitamount'),credit = Sum('creditamount')).order_by('entrydatetime')
         df1 = read_frame(ob)
         df1['desc'] = 'Opening Balance'
@@ -1332,7 +1332,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
         #ob = df1.union(df)
 
         union_dfs['transactiontype'] = union_dfs['transactiontype'].fillna(0)
-        union_dfs['id'] = union_dfs['id'].fillna(0)
+       # union_dfs['id'] = union_dfs['id'].fillna(0)
         union_dfs['transactionid'] = union_dfs['transactionid'].fillna(0)
         union_dfs['desc'] = union_dfs['desc'].fillna(0)
         #union_dfs['entrydatetime'] = union_dfs['desc'].fillna(startdate)
