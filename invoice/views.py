@@ -2550,7 +2550,7 @@ class stockledgersummaryapi(ListAPIView):
 
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
-        queryset=Product.objects.filter(entity=entity).prefetch_related('goods').order_by('productname')
+        queryset=Product.objects.filter(entity=entity).prefetch_related('stocktrans').order_by('productname')
 
        
 
@@ -2581,7 +2581,7 @@ class stockledgerbookapi(ListAPIView):
 
       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
-        queryset=Product.objects.filter(entity=entity).prefetch_related('goods').order_by('productname')
+        queryset=Product.objects.filter(entity=entity).prefetch_related('stocktrans').order_by('productname')
 
        
 
