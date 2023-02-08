@@ -1,5 +1,5 @@
 import imp
-from sre_parse import Verbose
+#from sre_parse import Verbose
 from django.db import models
 from django.forms import DateField
 from helpers.models import TrackingModel
