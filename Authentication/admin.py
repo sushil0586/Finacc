@@ -1,8 +1,9 @@
 from django.contrib import admin
 from Authentication.models import User,userRole,MainMenu,submenu,rolepriv
+from import_export.admin import ImportExportMixin
 
 
-class submenusAdmin(admin.ModelAdmin):
+class submenusAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('mainmenu', 'submenu','subMenuurl','order',)
     list_filter = (
         ('mainmenu', admin.RelatedOnlyFieldListFilter),
