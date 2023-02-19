@@ -51,7 +51,7 @@ class SalesOderHeader(TrackingModel):
     tcs206c1ch3 =  models.DecimalField(max_digits=10, decimal_places=2,default=0, verbose_name= 'Tcs tcs206c1ch3')
     tcs206C1 =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C1')
     tcs206C2 =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C2')
-    duedate = models.DateField(verbose_name='Due Date',auto_now_add=True)
+    duedate = models.DateField(verbose_name='Due Date')
     totalgst =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'totalgst')
     subtotal =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Sub Total')
     addless =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Add/Less')
@@ -192,8 +192,8 @@ class purchaseorder(TrackingModel):
     tcs206c1ch3 =  models.DecimalField(max_digits=10, decimal_places=2,default=0, verbose_name= 'Tcs tcs206c1ch3')
     tcs206C1 =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C1')
     tcs206C2 =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C2')
-    duedate = models.DateField(verbose_name='Due Date',default=datetime.date.today)
-    inputdate = models.DateField(verbose_name='Input Date',default=datetime.date.today)
+    duedate = models.DateField(verbose_name='Due Date',null = True)
+    inputdate = models.DateField(verbose_name='Input Date',null = True)
     vehicle = models.CharField(max_length=50, null=True,verbose_name='Vehicle')
     grno = models.CharField(max_length=50,null=True,verbose_name='GR No')
     gstr2astatus = models.BooleanField(verbose_name='GstR 2A Status',default= 1)
@@ -440,7 +440,7 @@ class Transactions(TrackingModel):
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 class entry(TrackingModel):
-    entrydate1 = models.DateField()
+    entrydate1 = models.DateField(verbose_name='entrydate1')
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Account Name',related_name='accountentryrans')
     openingbalance =  models.DecimalField(max_digits=10,null = True,decimal_places=2,verbose_name= 'Opening Amount')
     closingbalance =  models.DecimalField(max_digits=10,null = True,decimal_places=2,verbose_name= 'closing Amount')
