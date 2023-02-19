@@ -16,7 +16,7 @@ SECRET_KEY = 'django-insecure-(zyb)qx!o_p@$vjqscb=p+)8&-(tj(v*ne_=qc(r@7f(%%a5ey
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['146.190.28.215']
+ALLOWED_HOSTS = ['127.0.0.1']
 
 AUTH_USER_MODEL = "Authentication.User"
 # Application definition
@@ -88,10 +88,10 @@ DATABASES = {
    'default': {
        'ENGINE': 'django.db.backends.postgresql',
        'NAME': 'accounts',
-       'USER': 'accountuser',
+       'USER': 'postgres',
        'PASSWORD': 'ansh@1789',
        'HOST': 'localhost',
-       'PORT': '',
+       'PORT': '5432',
   
    }
 }
@@ -125,13 +125,26 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 REST_FRAMEWORK = {
     'COERCE_DECIMAL_TO_STRING': False,
+    # 'DATE_INPUT_FORMATS': ['%d-%m-%Y'],
+    # 'DATETIME_INPUT_FORMATS': ['%d-%m-%Y'],
+    # 'DATETIME_FORMAT': '%d-%m-%Y',
+    'DATETIME_FORMAT': "%d-%m-%Y",
+    'DATE_FORMAT': "%d-%m-%Y",
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'Authentication.jwt.JwtAuthentication',
     ]
 }
+
+# USE_L10N = False
+
+# DATE_INPUT_FORMATS =["%d-%m-%Y"]
+# DATE_FORMATS =   ["%d -%m-%Y"]
+# DATETIME_FORMAT = ["%d-%m-%Y"]
+
+
 # Internationalization
 # https://docs.djangoproject.com/en/3.2/topics/i18n/
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'en-uk'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_L10N = True
