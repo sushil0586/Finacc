@@ -140,7 +140,7 @@ class accountListApiView(ListAPIView):
 
         #annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
 
-        print(queryset.query.__str__())
+       # print(queryset.query.__str__())
         return queryset
 
 

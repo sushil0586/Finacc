@@ -22,7 +22,7 @@ class accountSerializer(serializers.ModelSerializer):
         detail = account.objects.create(**validated_data)
         entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
 
-        if detail.openingbcr > 0 or detail.openingbcr > 0:
+        if detail.openingbcr > 0 or detail.openingbdr > 0:
             if (detail.openingbcr >0.00):
                     drcr = 0
             else:
@@ -30,6 +30,33 @@ class accountSerializer(serializers.ModelSerializer):
             details = StockTransactions.objects.create(accounthead= detail.accounthead,account= detail,transactiontype = 'OA',transactionid = detail.id,desc = 'Opening Balance',drcr=drcr,debitamount=detail.openingbdr,creditamount=detail.openingbcr,entity=detail.entity,createdby= detail.owner,entry = entryid,entrydatetime = detail.created_at,accounttype = 'M',isactive = 1)
             #return detail
         return detail
+
+    def update(self, instance, validated_data):
+
+        print('abc')
+        fields = ['accounthead','creditaccounthead','accountcode','gstno','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','accountno','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        # with transaction.atomic():
+        instance.save()
+        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.created_at,entity=instance.entity)
+        #     entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'OA').delete()
+
+        if instance.openingbcr > 0 or instance.openingbdr > 0:
+            if (instance.openingbcr >0.00):
+                    drcr = 0
+            else:
+                    drcr = 1
+        details = StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
+        #     StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        #     StockTransactions.objects.create(accounthead= instance.debitaccountid.accounthead,account= instance.debitaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        #     StockTransactions.objects.create(accounthead= instance.tdsaccountid.accounthead,account= instance.tdsaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=0,creditamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+
+        return instance
         
 
 
@@ -41,6 +68,7 @@ class accountListSerializer(serializers.ModelSerializer):
 
     debit = serializers.DecimalField(max_digits=10,decimal_places=2)
     credit = serializers.DecimalField(max_digits=10,decimal_places=2)
+    balance = serializers.DecimalField(max_digits=10,decimal_places=2)
     daccountheadname =  serializers.CharField(max_length=500,source = 'accounthead__name')
     caccountheadname =  serializers.CharField(max_length=500,source = 'creditaccounthead__name')
    # accountHeadName = serializers.SerializerMethodField()
@@ -67,7 +95,7 @@ class accountListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = account
-        fields =  ('accountname','debit','credit','accgst','accpan','cityname','accountid','daccountheadname','caccountheadname','accanbedeleted',)
+        fields =  ('accountname','debit','credit','accgst','accpan','cityname','accountid','daccountheadname','caccountheadname','accanbedeleted','balance',)
 
   
     
