@@ -1328,7 +1328,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
         print(df)
 
         union_dfs = pd.concat([df1, df], ignore_index=True)
-        print(union_dfs)
+        #print(union_dfs)
 
         #ob = df1.union(df)
 
@@ -1336,6 +1336,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
        # union_dfs['id'] = union_dfs['id'].fillna(0)
         union_dfs['transactionid'] = union_dfs['transactionid'].fillna(0)
         union_dfs['desc'] = union_dfs['desc'].fillna(0)
+        union_dfs['entrydatetime'] = pd.to_datetime(union_dfs['entrydatetime']).dt.strftime('%d/%m/%y')
         #union_dfs['entrydatetime'] = union_dfs['desc'].fillna(startdate)
        # print(union_dfs)
         #print(stk)
