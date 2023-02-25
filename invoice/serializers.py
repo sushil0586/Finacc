@@ -1128,7 +1128,14 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         #print(validated_data)
         with transaction.atomic():
             salesOrderdetails_data = validated_data.pop('salesorderdetails')
-            order = SalesOderHeader.objects.create(**validated_data)
+            validated_data.pop('billno')
+            billno2 = (SalesOderHeader.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
+
+
+           # print(billno)
+
+           
+            order = SalesOderHeader.objects.create(**validated_data,billno= billno2)
             stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ')
             #print(tracks_data)
             for PurchaseOrderDetail_data in salesOrderdetails_data:
@@ -1235,9 +1242,13 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         #print(validated_data)
+
+        
         salesOrderdetails_data = validated_data.pop('purchasereturndetails')
+        validated_data.pop('billno')
+        billno2 = (PurchaseReturn.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
         with transaction.atomic():
-            order = PurchaseReturn.objects.create(**validated_data)
+            order = PurchaseReturn.objects.create(**validated_data,billno = billno2)
             stk = stocktransactionsale(order, transactiontype= 'PR',debit=1,credit=0,description= 'Purchase Return')
             #print(tracks_data)
             
