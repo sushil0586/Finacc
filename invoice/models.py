@@ -51,7 +51,7 @@ class SalesOderHeader(TrackingModel):
     tcs206c1ch3 =  models.DecimalField(max_digits=10, decimal_places=2,default=0, verbose_name= 'Tcs tcs206c1ch3')
     tcs206C1 =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C1')
     tcs206C2 =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C2')
-    duedate = models.DateField(verbose_name='Due Date')
+    duedate = models.DateField(verbose_name='Due Date',null = True)
     totalgst =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'totalgst')
     subtotal =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Sub Total')
     addless =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Add/Less')
