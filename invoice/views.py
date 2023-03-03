@@ -2662,6 +2662,8 @@ class daybookviewapi(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
+    filterset_fields = {'cashtrans__transactiontype':["in", "exact"]}
+    #filterset_fields = ['cashtrans__accounttype']
     #filterset_fields = ['id']
     def get_queryset(self):
         #account = self.request.query_params.get('account')
@@ -2671,7 +2673,7 @@ class daybookviewapi(ListAPIView):
 
 
 
-        queryset1=StockTransactions.objects.filter(entity=entity,isactive = 1).only('account__accountname','transactiontype','drcr','transactionid','desc').annotate(debit = Sum('debitamount'),credit =Sum('creditamount')).order_by('account')
+        queryset1=StockTransactions.objects.filter(entity=entity,isactive = 1).annotate(debit = Sum('debitamount'),credit =Sum('creditamount')).order_by('account')
 
       #  print(queryset1)
 

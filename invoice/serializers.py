@@ -16,6 +16,7 @@ from django.db.models.functions import Abs
 from num2words import num2words
 import string
 from django.db import  transaction
+from django_filters.rest_framework import DjangoFilterBackend
 
 
 
@@ -1128,7 +1129,11 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             salesOrderdetails_data = validated_data.pop('salesorderdetails')
             validated_data.pop('billno')
-            billno2 = (SalesOderHeader.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
+
+            if SalesOderHeader.objects.filter(entity= validated_data['entity'].id).count() == 0:
+                billno2 = 1
+            else:
+                billno2 = (SalesOderHeader.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
 
 
            # print(billno)
@@ -1939,23 +1944,25 @@ class cashserializer(serializers.ModelSerializer):
     def get_debit(self, obj):
 
        # print(obj.cashtrans('account'))
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 1).exclude(transactiontype = 'OS').aggregate(Sum('debitamount'))['debitamount__sum']
+        
+        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 0).exclude(transactiontype = 'OS').aggregate(Sum('debitamount'))['debitamount__sum']
 
     def get_credit(self, obj):
         # fromDate = parse_datetime(self.context['request'].query_params.get(
         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
         # toDate = parse_datetime(self.context['request'].query_params.get(
         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 1).exclude(transactiontype = 'OS').aggregate(Sum('creditamount'))['creditamount__sum']
+
+        return obj.cashtrans.filter(accounttype = 'M',isactive = 0).aggregate(Sum('creditamount'))['creditamount__sum']
+        #return obj.cashtrans.exclude(accounttype = 'MD',isactive = 0).exclude(transactiontype = 'OS').aggregate(Sum('creditamount'))['creditamount__sum']
 
     def get_entrydate(self,obj):
         return obj.entrydate1
 
     def get_cr(self,obj):
+
+        filter_backends = [DjangoFilterBackend]
+        filterset_fields = {'cashtrans__transactiontype':["in", "exact"]}
         
         #stock =  obj.cashtrans.filter(drcr = False).order_by('account')
        # print(stock)
@@ -1971,6 +1978,9 @@ class cashserializer(serializers.ModelSerializer):
 
     
     def get_dr(self,obj):
+
+        filter_backends = [DjangoFilterBackend]
+        filterset_fields = {'cashtrans__transactiontype':["in", "exact"]}
         #stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True)
         stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,isactive = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'OS').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount= Sum('creditamount'))
         #return account1Serializer(accounts,many=True).data
