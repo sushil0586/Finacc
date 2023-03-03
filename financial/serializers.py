@@ -46,11 +46,23 @@ class accountSerializer(serializers.ModelSerializer):
         #     entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
         StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'OA').delete()
 
-        if instance.openingbcr > 0 or instance.openingbdr > 0:
-            if (instance.openingbcr >0.00):
-                    drcr = 0
-            else:
-                    drcr = 1
+        drcr = 0
+
+        if instance.openingbcr is None:
+            instance.openingbcr = 0
+        
+        if instance.openingbdr is None:
+            instance.openingbdr = 0
+            
+
+        if instance.openingbcr > 0:
+            drcr = 0
+        if instance.openingbdr > 0:
+            drcr = 1
+
+
+
+        
         details = StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
         #     StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
         #     StockTransactions.objects.create(accounthead= instance.debitaccountid.accounthead,account= instance.debitaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
