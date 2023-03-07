@@ -1869,7 +1869,7 @@ class Salebyaccountserializer(serializers.ModelSerializer):
 
     class Meta:
         model = StockTransactions
-        fields = ['id','transactiontype','transactionid','desc','gtotal','cgst','sgst','igst','subtotal','pieces','weightqty','account','accountname','accountcode','city','entrydate',]
+        fields = ['id','transactiontype','transactionid','desc','gtotal','pieces','weightqty','account','accountname','accountcode','city','entrydate',]
 
 
 
@@ -1911,7 +1911,7 @@ class Purchasebyaccountserializer(serializers.ModelSerializer):
 
     class Meta:
         model = StockTransactions
-        fields = ['id','transactiontype','transactionid','desc','gtotal','cgst','sgst','igst','subtotal','pieces','weightqty','account','accountname','accountcode','city',"entrydate",]
+        fields = ['id','transactiontype','transactionid','desc','gtotal','cgst','sgst','igst','pieces','weightqty','account','accountname','accountcode','city',"entrydate",]
         
     
    
