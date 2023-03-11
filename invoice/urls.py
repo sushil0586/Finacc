@@ -8,6 +8,7 @@ urlpatterns  = [
 
    
     path('salesorder',views.SalesOderHeaderApiView.as_view(),name = 'salesorder'),
+    path('gstorderservices',views.gstorderservicesApiView.as_view(),name = 'saleservices'),
     path('salesorder/<int:id>',views.salesOrderupdatedelview.as_view(), name = 'salesorder'),
     path('salesorderpdf/<int:id>',views.salesOrderpdfview.as_view(), name = 'salesorder'),
     path('salesorderdetails',views.salesOrderdetailsApiView.as_view(),name = 'salesorder'),
@@ -18,6 +19,7 @@ urlpatterns  = [
     path('purchaseorderdetails/<int:id>',views.purchaseorderupdatedelview.as_view(), name = 'purchaseorder'),
     path('voucherno',views.purchaseordelatestview.as_view(), name = 'purchaseorder'),
     path('billno',views.salesorderlatestview.as_view(), name = 'purchaseorder'),
+    path('latestbillno',views.salesorderlatestview.as_view(), name = 'purchaseorder'),
     path('prbillno',views.purchasereturnlatestview.as_view(), name = 'purchaseorder'),
     path('journal',views.JournalApiView.as_view(), name = 'journal'),
     path('srvoucherno',views.salesreturnlatestview.as_view(), name = 'journal'),
