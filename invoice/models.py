@@ -24,6 +24,64 @@ class purchasetaxtype(TrackingModel):
     def __str__(self):
         return f'{self.taxtypename} '
 
+
+class gstorderservices(TrackingModel):
+    orderdate = models.DateTimeField(verbose_name='Order date',null = True)
+    billno = models.IntegerField(verbose_name='Bill No')
+    account = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True)
+    taxtype = models.IntegerField(verbose_name='Tax Type',default = 1)
+    billcash = models.IntegerField(verbose_name='Bill/Cash',default = 1)
+    grno = models.CharField(max_length=50,verbose_name='GR No',null=True)
+    vehicle = models.CharField(max_length=50, null=True,verbose_name='Vehicle')
+    orderType = models.CharField(max_length=5,verbose_name='Order Type',null=True)
+    totalgst =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'totalgst')
+    subtotal =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Sub Total')
+    addless =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Add/Less')
+    cgst =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'C.GST')
+    sgst =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'S.GST')
+    igst =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'I.GST')
+    cess = models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Cess',default=0)
+    multiplier = models.IntegerField(verbose_name='multiplier',default=0,blank = True)
+   # totalquanity =  models.DecimalField(max_digits=10, decimal_places=2,default=0 ,blank = True,verbose_name= 'totalquanity')
+    expenses =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'EXpenses')
+    gtotal =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Grand Total')
+    remarks = models.CharField(max_length=500, null=True,verbose_name='Remarks')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+    class Meta:
+        unique_together = ('billno', 'entity','orderType',)
+
+    def __str__(self):
+        return f'{self.billno}'
+
+
+class gstorderservicesdetails(TrackingModel):
+    gstorderservices = models.ForeignKey(to = gstorderservices,related_name='gstorderservicesdetails', on_delete= models.CASCADE,verbose_name= 'Gst services Number')
+    account = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True)
+    accountdesc = models.CharField(max_length=500, null=True,verbose_name='account Desc')
+    # orderqty =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Order Qty')
+    # pieces =  models.IntegerField(verbose_name='pieces')
+    multiplier =  models.IntegerField(verbose_name='multiplier')
+    rate =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Rate')
+    amount =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Amount')
+    cgst =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'CGST')
+    sgst =  models.DecimalField(max_digits=10,null = True,default = 1, decimal_places=2,verbose_name= 'SGST')
+    igst =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'IGST')
+    cess = models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Cess',default=0)
+    linetotal =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Line Total')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+    def __str__(self):
+        return f'{self.account}'
+
+
+    
+
+
+
 class SalesOderHeader(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
     sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)

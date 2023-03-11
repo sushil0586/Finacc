@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -60,6 +60,27 @@ class salesordercancelSerializer(serializers.ModelSerializer):
         instance.save()
       # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
         StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
+        return instance
+    
+
+class gstorderservicecancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = gstorderservices
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        #StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
         return instance
 
 
@@ -1113,6 +1134,88 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
     
     def get_mrp(self,obj):
         return obj.product.mrp
+    
+
+class gstorderservicesdetailsSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+    id = serializers.IntegerField(required=False)
+    accountname = serializers.SerializerMethodField()
+    
+
+    class Meta:
+        model = gstorderservicesdetails
+        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','cess','linetotal','entity',)
+
+    def get_accountname(self,obj):
+        return obj.account.accountname
+
+   
+
+
+
+
+
+class gstorderservicesSerializer(serializers.ModelSerializer):
+    gstorderservicesdetails = gstorderservicesdetailsSerializer(many=True)
+    class Meta:
+        model = gstorderservices
+        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','addless','cgst','sgst','igst','cess','multiplier','expenses','gtotal','remarks','entity','owner','gstorderservicesdetails',)
+
+
+    
+
+    def create(self, validated_data):
+        #print(validated_data)
+        with transaction.atomic():
+            salesOrderdetails_data = validated_data.pop('gstorderservicesdetails')
+            validated_data.pop('billno')
+
+            if gstorderservices.objects.filter(entity= validated_data['entity'].id).count() == 0:
+                billno2 = 1
+            else:
+                billno2 = (gstorderservices.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
+
+
+           # print(billno)
+
+           
+            order = gstorderservices.objects.create(**validated_data,billno= billno2)
+           # stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ')
+            #print(tracks_data)
+            for PurchaseOrderDetail_data in salesOrderdetails_data:
+                detail = gstorderservicesdetails.objects.create(gstorderservices = order, **PurchaseOrderDetail_data)
+               # stk.createtransactiondetails(detail=detail,stocktype='S')
+
+                # if(detail.orderqty ==0.00):
+                #     qty = detail.pieces
+                # else:
+                #     qty = detail.orderqty
+                # StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = 'S',transactionid = order.id,desc = 'Sale By B.No ' + str(order.billno),stockttype = 'S',salequantity = qty,drcr = 0,creditamount = detail.amount,cgstcr = detail.cgst,sgstcr= detail.sgst,igstcr = detail.igst,entrydate = order.sorderdate,entity = order.entity,createdby = order.owner)
+            
+            #stk.createtransaction()
+            return order
+
+    def update(self, instance, validated_data):
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','entity','owner',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        with transaction.atomic():
+            instance.save()
+            stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No:')
+            salesOrderdetails.objects.filter(salesorderheader=instance,entity = instance.entity).delete()
+            stk.updateransaction()
+
+            salesOrderdetails_data = validated_data.get('salesorderdetails')
+
+            for PurchaseOrderDetail_data in salesOrderdetails_data:
+                detail = salesOrderdetails.objects.create(salesorderheader = instance, **PurchaseOrderDetail_data)
+                stk.createtransactiondetails(detail=detail,stocktype='S')
+
+        #  stk.updateransaction()
+            return instance
 
 
 class SalesOderHeaderSerializer(serializers.ModelSerializer):

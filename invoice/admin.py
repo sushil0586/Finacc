@@ -1,5 +1,5 @@
 from django.contrib import admin
-from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,Transactions,StockTransactions,Purchasereturndetails,PurchaseReturn,journalmain,journaldetails,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns
+from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,Transactions,StockTransactions,Purchasereturndetails,PurchaseReturn,journalmain,journaldetails,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails
 from import_export.admin import ImportExportMixin
 
 class TransactionsAdmin(admin.ModelAdmin):
@@ -23,6 +23,8 @@ class tdstypeAdmin(ImportExportMixin,admin.ModelAdmin):
 
 admin.site.register(SalesOderHeader)
 admin.site.register(salesOrderdetails)
+admin.site.register(gstorderservices)
+admin.site.register(gstorderservicesdetails)
 admin.site.register(PurchaseReturn)
 admin.site.register(Purchasereturndetails)
 
