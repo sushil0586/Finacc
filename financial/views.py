@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead
-from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer
+from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer,accountservicesSerializeraccounts
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -54,6 +54,27 @@ class accountHeadupdatedelApiView(RetrieveUpdateDestroyAPIView):
 class customApiView2(ListAPIView):
 
     serializer_class = accountHeadSerializeraccounts
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {'code':["in", "exact"]
+    
+    }
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(owner = self.request.user)
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return accountHead.objects.filter(entity = entity)
+    
+
+
+
+
+class customApiView3(ListAPIView):
+
+    serializer_class = accountservicesSerializeraccounts
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]

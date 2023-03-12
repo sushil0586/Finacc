@@ -1144,7 +1144,7 @@ class gstorderservicesdetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = gstorderservicesdetails
-        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','cess','linetotal','entity',)
+        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','linetotal','entity',)
 
     def get_accountname(self,obj):
         return obj.account.accountname
@@ -1159,7 +1159,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
     gstorderservicesdetails = gstorderservicesdetailsSerializer(many=True)
     class Meta:
         model = gstorderservices
-        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','addless','cgst','sgst','igst','cess','multiplier','expenses','gtotal','remarks','entity','owner','gstorderservicesdetails',)
+        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','multiplier','expensesaftertax','gtotal','remarks','entity','owner','gstorderservicesdetails',)
 
 
     
@@ -1295,6 +1295,25 @@ class SOSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
+        fields =  ['newbillno']
+
+
+
+class SSSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    newbillno = serializers.SerializerMethodField()
+
+    def get_newbillno(self, obj):
+        if not obj.billno :
+            return 1
+        else:
+            return obj.billno + 1
+
+
+    class Meta:
+        model = gstorderservices
         fields =  ['newbillno']
 
 

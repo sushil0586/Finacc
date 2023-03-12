@@ -125,6 +125,16 @@ class accountSerializer2(serializers.ModelSerializer):
     class Meta:
         model = account
         fields =  ('id', 'accounthead','accountname','accountcode','city','gstno','pan',)
+
+
+
+class accountSerializerservices(serializers.ModelSerializer):
+
+    
+
+    class Meta:
+        model = account
+        fields =  ('id', 'accounthead','accountname','accountcode','city','gstno','pan','saccode',)
     
 
 
@@ -152,6 +162,15 @@ class accountHeadSerializeraccounts(serializers.ModelSerializer):
         model = accountHead
         fields = ('code','accounthead_accounts')
         #depth = 1
+
+
+class accountservicesSerializeraccounts(serializers.ModelSerializer):
+    accounthead_accounts = accountSerializerservices(many= True)
+    class Meta:
+        model = accountHead
+        fields = ('code','accounthead_accounts')
+        #depth = 1
+
 
 
 
