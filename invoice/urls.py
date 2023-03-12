@@ -9,6 +9,8 @@ urlpatterns  = [
    
     path('salesorder',views.SalesOderHeaderApiView.as_view(),name = 'salesorder'),
     path('gstorderservices',views.gstorderservicesApiView.as_view(),name = 'saleservices'),
+    path('gstorderservices/<int:id>',views.gstserviceupdatedelview.as_view(), name = 'salesorder'),
+    path('gstserviceprevious/<int:billno>',views.gstserviceprevnextview.as_view(), name = 'salesorder'),
     path('salesorder/<int:id>',views.salesOrderupdatedelview.as_view(), name = 'salesorder'),
     path('salesorderpdf/<int:id>',views.salesOrderpdfview.as_view(), name = 'salesorder'),
     path('salesorderdetails',views.salesOrderdetailsApiView.as_view(),name = 'salesorder'),
@@ -79,6 +81,7 @@ urlpatterns  = [
     path('tdstype',views.tdstypeApiView.as_view(), name = 'purchaseorder'),
     path('tdscancel/<int:id>',views.tdsmaincancel.as_view(), name = 'tdsmain'),
     path('salesordercancel/<int:id>',views.salesordercancel.as_view(), name = 'tdsmain'),
+    path('gstservicescancel/<int:id>',views.gstservicescancel.as_view(), name = 'tdsmain'),
     path('purchaseordercancel/<int:id>',views.purchaseordercancel.as_view(), name = 'tdsmain'),
     path('purchasereturncancel/<int:id>',views.purchasereturncancel.as_view(), name = 'tdsmain'),
     path('salesreturncancel/<int:id>',views.salesreturncancel.as_view(), name = 'tdsmain'),
