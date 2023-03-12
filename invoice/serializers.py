@@ -1373,14 +1373,18 @@ class gstorderservicesdetailsSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
     id = serializers.IntegerField(required=False)
     accountname = serializers.SerializerMethodField()
+    saccode = serializers.SerializerMethodField()
     
 
     class Meta:
         model = gstorderservicesdetails
-        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','linetotal','entity',)
+        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','linetotal','entity','saccode',)
 
     def get_accountname(self,obj):
         return obj.account.accountname
+    
+    def get_saccode(self,obj):
+        return obj.account.saccode
 
    
 
