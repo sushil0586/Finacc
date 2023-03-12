@@ -451,7 +451,8 @@ class gstorderlatestview(ListCreateAPIView):
 
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = gstorderservices.objects.filter(entity= entity).last()
+        ordertype = self.request.query_params.get('ordertype')
+        id = gstorderservices.objects.filter(entity= entity,orderType = ordertype).last()
         serializer = SSSerializer(id)
         return Response(serializer.data)
 
@@ -2458,6 +2459,7 @@ class tradingaccountstatement(ListAPIView):
         dfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
        #print(dfR)
         dfR['balance'] = dfR['quantity'].astype(float) * -1 * dfR['rate'].astype(float)
+        print(dfR)
         dfR = dfR.drop(['stock','transactiontype','entrydatetime','account__id','account__accountname'],axis=1) 
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
@@ -2466,6 +2468,9 @@ class tradingaccountstatement(ListAPIView):
 
         dfR['account__accounthead__name'] = 'Closing Stock'
         dfR['account__accounthead'] = -4
+
+
+        print(dfR)
 
 
 
