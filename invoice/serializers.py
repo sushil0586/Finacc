@@ -812,7 +812,7 @@ class gststocktransaction:
 
         
 
-        if self.transactiontype == 'S':
+        if self.transactiontype == 'ss':
             StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.billno),drcr=self.debit,debitamount=gtotal,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.orderdate,accounttype = 'M')
             # if tcs206C2 > 0:
             #     StockTransactions.objects.create(accounthead = tcs206C2id.accounthead,account= tcs206C2id,transactiontype = self.transactiontype,transactionid = id,desc = 'TCS :' + str(self.description) + ' ' + str(self.order.billno),drcr=self.credit,creditamount=tcs206C2,entity=self.order.entity,createdby= self.order.owner,entry = entryid,entrydatetime = self.order.sorderdate)
@@ -960,24 +960,24 @@ class gststocktransaction:
 
     def createtransactiondetails(self,detail,stocktype):
 
-        if (detail.orderqty ==0.00):
-                qty = detail.pieces
-        else:
-                qty = detail.orderqty
+        # if (detail.orderqty ==0.00):
+        #         qty = detail.pieces
+        # else:
+        #         qty = detail.orderqty
 
         
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.orderdate,entity=self.order.entity)
 
         if self.transactiontype == 'S':
            #details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate)
-            details1 = StockTransactions.objects.create(accounthead = self.order.account.accounthead,account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.orderdate)
-        if self.transactiontype == 'PR':
-            details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate)
-            details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate)
+            details1 = StockTransactions.objects.create(accounthead = detail.account.accounthead,account= detail.account,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),quantity = detail.multiplier,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.orderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'M',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.orderdate)
+        # if self.transactiontype == 'PR':
+        #     details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate)
+        #     details1 = StockTransactions.objects.create(accounthead = self.order.accountid.accounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate)
         #goodstransaction.objects.create(account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,salequantity = qty,entrydatetime = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,goodstransactiontype = 'D')
         #goodstransaction.objects.create(account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,stockttype = stocktype,salequantity = qty,entrydatetime = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,goodstransactiontype = 'M')
 
-        return details
+        return detail
 
     def updatetranasationdetails(self,updateddetails,stocktype):
         if (updateddetails.orderqty ==0.00):
@@ -1396,7 +1396,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
     gstorderservicesdetails = gstorderservicesdetailsSerializer(many=True)
     class Meta:
         model = gstorderservices
-        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','multiplier','expensesaftertax','gtotal','remarks','entity','owner','gstorderservicesdetails',)
+        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','multiplier','expensesaftertax','gtotal','remarks','entity','owner','gstorderservicesdetails','isactive',)
 
 
     
@@ -1417,11 +1417,12 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
 
            
             order = gstorderservices.objects.create(**validated_data,billno= billno2)
+            stk = gststocktransaction(order, transactiontype= 'ss',debit=1,credit=0,description= 'By Sale Bill No: ')
            # stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ')
             #print(tracks_data)
             for PurchaseOrderDetail_data in salesOrderdetails_data:
                 detail = gstorderservicesdetails.objects.create(gstorderservices = order, **PurchaseOrderDetail_data)
-               # stk.createtransactiondetails(detail=detail,stocktype='S')
+                stk.createtransactiondetails(detail=detail,stocktype='ss')
 
                 # if(detail.orderqty ==0.00):
                 #     qty = detail.pieces
@@ -1429,7 +1430,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
                 #     qty = detail.orderqty
                 # StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = 'S',transactionid = order.id,desc = 'Sale By B.No ' + str(order.billno),stockttype = 'S',salequantity = qty,drcr = 0,creditamount = detail.amount,cgstcr = detail.cgst,sgstcr= detail.sgst,igstcr = detail.igst,entrydate = order.sorderdate,entity = order.entity,createdby = order.owner)
             
-            #stk.createtransaction()
+            stk.createtransaction()
             return order
 
     def update(self, instance, validated_data):
