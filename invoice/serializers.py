@@ -1429,7 +1429,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
             return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','entity','owner',]
+        fields = ['orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','multiplier','expensesaftertax','gtotal','remarks','entity','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -1437,15 +1437,15 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
                 pass
         with transaction.atomic():
             instance.save()
-            stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No:')
-            salesOrderdetails.objects.filter(salesorderheader=instance,entity = instance.entity).delete()
-            stk.updateransaction()
+            #stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No:')
+            gstorderservicesdetails.objects.filter(gstorderservices=instance,entity = instance.entity).delete()
+           # stk.updateransaction()
 
-            salesOrderdetails_data = validated_data.get('salesorderdetails')
+            salesOrderdetails_data = validated_data.get('gstorderservicesdetails')
 
             for PurchaseOrderDetail_data in salesOrderdetails_data:
-                detail = salesOrderdetails.objects.create(salesorderheader = instance, **PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='S')
+                detail = gstorderservicesdetails.objects.create(gstorderservices = instance, **PurchaseOrderDetail_data)
+               # stk.createtransactiondetails(detail=detail,stocktype='S')
 
         #  stk.updateransaction()
             return instance
