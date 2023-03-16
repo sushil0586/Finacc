@@ -1786,11 +1786,14 @@ class jobworkchallanSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
        # print(validated_data)
         jobworkchalanDetails_data = validated_data.pop('jobworkchalanDetails')
+        validated_data.pop('voucherno')
+        if jobworkchalan.objects.filter(entity= validated_data['entity'].id,ordertype = validated_data['ordertype']).count() == 0:
+                billno2 = 1
+        else:
+                billno2 = (jobworkchalan.objects.filter(entity= validated_data['entity'].id).last().voucherno) + 1
         with transaction.atomic():
-            order = jobworkchalan.objects.create(**validated_data)
-           # stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ')
-            #print(order.objects.get("id"))
-            #print(tracks_data)
+            order = jobworkchalan.objects.create(**validated_data,voucherno = billno2)
+           
             for PurchaseOrderDetail_data in jobworkchalanDetails_data:
                 detail = jobworkchalanDetails.objects.create(jobworkchalan = order, **PurchaseOrderDetail_data)
             
