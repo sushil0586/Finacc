@@ -20,7 +20,7 @@ class accountSerializer(serializers.ModelSerializer):
         #print(validated_data)
         #journaldetails_data = validated_data.pop('journaldetails')
 
-        validated_data.pop('accountcode')
+        #validated_data.pop('accountcode')
 
         if account.objects.filter(entity= validated_data['entity'].id).count() == 0:
             billno2 = 1
