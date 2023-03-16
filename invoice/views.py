@@ -676,7 +676,7 @@ class jobworkchalanpreviousview(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         ordertype = self.request.query_params.get('ordertype')
-        return jobworkchalan.objects.filter(entity =entity,ordetype = ordertype)
+        return jobworkchalan.objects.filter(entity =entity,ordertype= ordertype)
 
 class purchaseordelatestview(ListCreateAPIView):
 
