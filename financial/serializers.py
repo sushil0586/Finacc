@@ -19,6 +19,7 @@ class accountSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         #print(validated_data)
         #journaldetails_data = validated_data.pop('journaldetails')
+        
 
         #validated_data.pop('accountcode')
 
