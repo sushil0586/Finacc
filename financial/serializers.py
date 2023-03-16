@@ -14,12 +14,19 @@ class accountSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = account
-        fields =  ('__all__')
+        fields =  ('accounthead','creditaccounthead','accountcode','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',)
 
     def create(self, validated_data):
         #print(validated_data)
         #journaldetails_data = validated_data.pop('journaldetails')
-        detail = account.objects.create(**validated_data)
+
+        validated_data.pop('accountcode')
+
+        if account.objects.filter(entity= validated_data['entity'].id).count() == 0:
+            billno2 = 1
+        else:
+            billno2 = (account.objects.filter(entity= validated_data['entity'].id).last().accountcode) + 1
+        detail = account.objects.create(**validated_data,accountcode = billno2)
         entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
 
         if detail.openingbcr > 0 or detail.openingbdr > 0:
@@ -34,7 +41,7 @@ class accountSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
 
         print('abc')
-        fields = ['accounthead','creditaccounthead','accountcode','gstno','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','accountno','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',]
+        fields = ['accounthead','creditaccounthead','accountcode','gstno','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -72,6 +79,23 @@ class accountSerializer(serializers.ModelSerializer):
 
         return instance
         
+
+class accountcodeSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    newcode = serializers.SerializerMethodField()
+
+    def get_newcode(self, obj):
+        if not obj.accountcode:
+            return 1
+        else:
+            return obj.accountcode + 1
+
+
+    class Meta:
+        model = account
+        fields =  ['newcode']
 
 
 

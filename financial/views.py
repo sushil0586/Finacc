@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead
-from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer,accountservicesSerializeraccounts
+from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -12,6 +12,7 @@ from django.db.models import Sum
 from django.db.models import Q
 import numpy as np
 import pandas as pd
+from rest_framework.response import Response
 
 
 class accountHeadApiView(ListCreateAPIView):
@@ -47,6 +48,21 @@ class accountHeadupdatedelApiView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return accountHead.objects.filter(owner = self.request.user)
+    
+
+
+class accountcodelatestview(ListCreateAPIView):
+
+    serializer_class = accountcodeSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    def get(self,request):
+        entity = self.request.query_params.get('entity')
+       
+        id = account.objects.filter(entity= entity).last()
+        serializer = accountcodeSerializer(id)
+        return Response(serializer.data)
 
 
 
@@ -135,7 +151,7 @@ class accountApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['gstno']
+    #filterset_fields = ['gstno']
 
     def perform_create(self, serializer):
         return serializer.save(owner = self.request.user)

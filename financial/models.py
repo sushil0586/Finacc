@@ -56,10 +56,11 @@ class accountHead(TrackingModel):
 
 
 class account(TrackingModel):
+    accountdate = models.DateTimeField(verbose_name='Account date',null = True)
     accounthead = models.ForeignKey(to = accountHead,related_name='accounthead_accounts', on_delete= models.CASCADE,null = True)
     creditaccounthead = models.ForeignKey(to = accountHead,related_name='accounthead_creditaccounts', on_delete= models.CASCADE,null = True)
     accountcode = models.IntegerField(verbose_name=_('Account Code'),null=True,blank=True,default=1000)
-    gstno       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'))
+    gstno       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'),default=0)
     accountname       = models.CharField(max_length=50, null=True,verbose_name=_('Account Name'))
     address1       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 1'))
     address2       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 2'))
@@ -73,12 +74,11 @@ class account(TrackingModel):
     pincode       =models.CharField(max_length=50, null=True,verbose_name=_('Pincode'))
     emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
     agent       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Agent/Group'))
-    pan       = models.CharField(max_length=50, null=True,verbose_name=_('PAN'))
+    pan       = models.CharField(max_length=50, null=True,verbose_name=_('PAN'),default=0)
     tobel10cr       = models.BooleanField(verbose_name=_('Turnover below 10 lac'),null=True)
     approved       = models.BooleanField(verbose_name=_('Wheather aproved'),null=True)
     tdsno       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Tds A/c No'))
     entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE,)
-    accountno       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Account no'))
     rtgsno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Rtgs no'))
     bankname          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Bank Name'))
     Adhaarno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Adhaar No'))
