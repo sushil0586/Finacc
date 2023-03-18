@@ -105,6 +105,9 @@ urlpatterns  = [
     path('dcnote/<int:id>',views.debitcreditnoteupdatedelApiView.as_view(), name = 'Trialbalance'),
     path('dcnotebyvno/<int:voucherno>',views.debitcreditnotebyvoucherno.as_view(), name = 'Trialbalance'),
     path('dcnotelatestvno',views.debitcreditlatestvnoview.as_view(), name = 'Trialbalance'),
+    path('debitcreditcancel/<int:id>',views.debitcreditcancel.as_view(), name = 'Trialbalance'),
+
+    
 
     
 
