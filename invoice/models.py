@@ -724,7 +724,7 @@ class tdsmain(TrackingModel):
 
 
 class debitcreditnote(TrackingModel):
-    voucherdate = models.DateField(verbose_name='Vocucher Date',null=True)
+    voucherdate = models.DateTimeField(verbose_name='Vocucher Date',null=True)
     voucherno = models.IntegerField(verbose_name='Voucher No')
     debitaccount = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='deditaccount',related_name='dcdebitaccount')
     creditaccount = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='credit account',related_name='dccreditaccount')
