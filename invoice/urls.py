@@ -101,6 +101,15 @@ urlpatterns  = [
     path('dashboardgraphkpis',views.dashboardgraphkpis.as_view(), name = 'Trialbalance'),
     path('tdsreturn',views.tdsreturnApiView.as_view(), name = 'Trialbalance'),
     path('tdslist',views.tdslist.as_view(), name = 'Trialbalance'),
+    path('dcnote',views.debitcreditnoteApiView.as_view(), name = 'Trialbalance'),
+    path('dcnote/<int:id>',views.debitcreditnoteupdatedelApiView.as_view(), name = 'Trialbalance'),
+    path('dcnotebyvno/<int:voucherno>',views.debitcreditnotebyvoucherno.as_view(), name = 'Trialbalance'),
+    path('dcnotelatestvno',views.debitcreditlatestvnoview.as_view(), name = 'Trialbalance'),
+
+    
+
+
+    
 
     
 

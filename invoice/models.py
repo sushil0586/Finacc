@@ -472,6 +472,9 @@ class journaldetails(TrackingModel):
 
 
 
+
+
+
 class stockmain(TrackingModel):
     voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
     voucherno = models.IntegerField(verbose_name='Voucher No')
@@ -718,6 +721,31 @@ class tdsmain(TrackingModel):
 
     def __str__(self):
         return f'{self.voucherno}'
+
+
+class debitcreditnote(TrackingModel):
+    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    voucherno = models.IntegerField(verbose_name='Voucher No')
+    debitaccount = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='deditaccount',related_name='dcdebitaccount')
+    creditaccount = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='credit account',related_name='dccreditaccount')
+    detail = models.CharField(max_length=500, null=True,verbose_name='detail')
+    ledgereffect = models.BooleanField(verbose_name='Effect on Ledger')
+    product = models.ForeignKey(to = Product, on_delete= models.CASCADE,verbose_name= 'Product',null = True)
+    quantity =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'quantity')
+    rate =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Rate')
+    amount =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Amount')
+    notvalue =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Credit/Debit Note')
+    tdssection = models.ForeignKey(to = tdstype, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Tds section')
+    vouchertype = models.CharField(max_length=50, null=True,verbose_name='Voucher Type',default='D')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+    #class Meta:
+        #unique_together = ('voucherno','vouchertype','entity',)
+
+    def __str__(self):
+         return f'{self.voucherno} '
 
 
 
