@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -3924,6 +3924,97 @@ class tdsVSerializer(serializers.ModelSerializer):
     class Meta:
         model = journalmain
         fields =  ['newvoucher']
+
+
+class debitcreditnoteSerializer(serializers.ModelSerializer):
+
+    
+
+    class Meta:
+        model = debitcreditnote
+        fields ='__all__'
+
+    def create(self, validated_data):
+        #print(validated_data)
+        #journaldetails_data = validated_data.pop('journaldetails')
+        
+
+        validated_data.pop('voucherno')
+
+        if debitcreditnote.objects.filter(entity= validated_data['entity'].id).count() == 0:
+            billno2 = 1
+        else:
+            billno2 = (debitcreditnote.objects.filter(entity= validated_data['entity'].id).last().voucherno) + 1
+        detail = debitcreditnote.objects.create(**validated_data,voucherno = billno2)
+        entryid,created  = entry.objects.get_or_create(entrydate1 = detail.voucherdate,entity=detail.entity)
+
+        # if detail.openingbcr > 0 or detail.openingbdr > 0:
+        #     if (detail.openingbcr >0.00):
+        #             drcr = 0
+        #     else:
+        #             drcr = 1
+        #     details = StockTransactions.objects.create(accounthead= detail.accounthead,account= detail,transactiontype = 'OA',transactionid = detail.id,desc = 'Opening Balance',drcr=drcr,debitamount=detail.openingbdr,creditamount=detail.openingbcr,entity=detail.entity,createdby= detail.owner,entry = entryid,entrydatetime = detail.created_at,accounttype = 'M',isactive = 1)
+        #     #return detail
+        return detail
+
+    def update(self, instance, validated_data):
+
+        print('abc')
+        fields = ['voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','amount','notvalue','tdssection','vouchertype','entity','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        # with transaction.atomic():
+        instance.save()
+        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.created_at,entity=instance.entity)
+        #     entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+       # StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'OA').delete()
+
+        # drcr = 0
+
+        # if instance.openingbcr is None:
+        #     instance.openingbcr = 0
+        
+        # if instance.openingbdr is None:
+        #     instance.openingbdr = 0
+            
+
+        # if instance.openingbcr > 0:
+        #     drcr = 0
+        #     StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
+        # if instance.openingbdr > 0:
+        #     drcr = 1
+        #     StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
+
+
+
+        
+        #details = StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
+        #     StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        #     StockTransactions.objects.create(accounthead= instance.debitaccountid.accounthead,account= instance.debitaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+        #     StockTransactions.objects.create(accounthead= instance.tdsaccountid.accounthead,account= instance.tdsaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=0,creditamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M')
+
+        return instance
+        
+
+class dcnoSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    voucherno = serializers.SerializerMethodField()
+
+    def get_voucherno(self, obj):
+        if not obj.voucherno:
+            return 1
+        else:
+            return obj.voucherno + 1
+
+
+    class Meta:
+        model = debitcreditnote
+        fields =  ['voucherno']
 
   
 
