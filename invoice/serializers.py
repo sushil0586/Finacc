@@ -3932,7 +3932,7 @@ class debitcreditnoteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = debitcreditnote
-        fields =('voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','basicvalue','cndnamount','tdssection','vouchertype','entity','createdby',)
+        fields =('id','voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','basicvalue','cndnamount','tdssection','vouchertype','entity','createdby','isactive',)
 
     def create(self, validated_data):
         #print(validated_data)
@@ -3960,7 +3960,7 @@ class debitcreditnoteSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
 
         print('abc')
-        fields = ['voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','basicvalue','cndnamount','tdssection','vouchertype','entity','createdby',]
+        fields = ['voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','basicvalue','cndnamount','tdssection','vouchertype','entity','createdby','isactive']
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -4015,6 +4015,27 @@ class dcnoSerializer(serializers.ModelSerializer):
     class Meta:
         model = debitcreditnote
         fields =  ['voucherno']
+
+
+class debitcreditcancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = debitcreditnote
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+        # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+        # StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id,transactiontype = 'T').update(isactive = instance.isactive)
+        return instance
 
   
 
