@@ -3941,7 +3941,7 @@ class debitcreditnoteSerializer(serializers.ModelSerializer):
 
         validated_data.pop('voucherno')
 
-        if debitcreditnote.objects.filter(entity= validated_data['entity'].id).count() == 0:
+        if debitcreditnote.objects.filter(entity= validated_data['entity'].id,vouchertype= validated_data['vouchertype']).count() == 0:
             billno2 = 1
         else:
             billno2 = (debitcreditnote.objects.filter(entity= validated_data['entity'].id,vouchertype= validated_data['vouchertype']).last().voucherno) + 1
