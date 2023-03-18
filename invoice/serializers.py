@@ -3932,7 +3932,7 @@ class debitcreditnoteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = debitcreditnote
-        fields ='__all__'
+        fields =('voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','basicvalue','cndnamount','tdssection','vouchertype','entity','createdby',)
 
     def create(self, validated_data):
         #print(validated_data)
@@ -3960,7 +3960,7 @@ class debitcreditnoteSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
 
         print('abc')
-        fields = ['voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','amount','notvalue','tdssection','vouchertype','entity','createdby',]
+        fields = ['voucherdate','voucherno','debitaccount','creditaccount','detail','ledgereffect','product','quantity','rate','basicvalue','cndnamount','tdssection','vouchertype','entity','createdby',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])

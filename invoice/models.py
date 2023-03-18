@@ -724,7 +724,7 @@ class tdsmain(TrackingModel):
 
 
 class debitcreditnote(TrackingModel):
-    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    voucherdate = models.DateField(verbose_name='Vocucher Date',null=True)
     voucherno = models.IntegerField(verbose_name='Voucher No')
     debitaccount = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='deditaccount',related_name='dcdebitaccount')
     creditaccount = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True,verbose_name='credit account',related_name='dccreditaccount')
@@ -733,8 +733,8 @@ class debitcreditnote(TrackingModel):
     product = models.ForeignKey(to = Product, on_delete= models.CASCADE,verbose_name= 'Product',null = True)
     quantity =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'quantity')
     rate =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Rate')
-    amount =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Amount')
-    notvalue =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Credit/Debit Note')
+    basicvalue =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Amount')
+    cndnamount =  models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Credit/Debit Note')
     tdssection = models.ForeignKey(to = tdstype, on_delete= models.CASCADE,null=True,blank=True,verbose_name='Tds section')
     vouchertype = models.CharField(max_length=50, null=True,verbose_name='Voucher Type',default='D')
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
