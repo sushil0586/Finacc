@@ -1307,8 +1307,8 @@ class TrialbalanceApiView(ListAPIView):
         
 
         
-        df['debit'] = df['debit'].fillna('')
-        df['credit'] = df['credit'].fillna('')
+        df['debit'] = df['debit'].fillna(0).apply(Decimal)
+        df['credit'] = df['credit'].fillna(0).apply(Decimal)
         df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
         df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
         # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
@@ -1429,8 +1429,8 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         else:
             df['credit'] = 0
 
-        df['debit'] = df['debit'].fillna('')
-        df['credit'] = df['credit'].fillna('')
+        df['debit'] = df['debit'].fillna(0).apply(Decimal)
+        df['credit'] = df['credit'].fillna(0).apply(Decimal)
         df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
         df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
         # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
