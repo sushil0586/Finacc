@@ -1309,8 +1309,8 @@ class TrialbalanceApiView(ListAPIView):
         
         df['debit'] = df['debit'].fillna(0).apply(float)
         df['credit'] = df['credit'].fillna(0).apply(float)
-        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
-        df['balance'] = df['debit'] - df['credit'] + df['openingbalance'].apply(float)
+        df['openingbalance'] = (np.where(df['_merge'] == 'left_only', 0,df['balance1'])).apply(float)
+        df['balance'] = (df['debit'] - df['credit'] + df['openingbalance']).apply(float)
         # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
         # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
         df['accountheadname'] = np.where(df['_merge'] == 'right_only', df['accountheadname_y'],df['accountheadname_x'])
@@ -1431,8 +1431,8 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
 
         df['debit'] = df['debit'].fillna(0).apply(float)
         df['credit'] = df['credit'].fillna(0).apply(float)
-        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
-        df['balance'] = df['debit'] - df['credit'] + df['openingbalance'].apply(float)
+        df['openingbalance'] = (np.where(df['_merge'] == 'left_only', 0,df['balance1'])).apply(float)
+        df['balance'] = (df['debit'] - df['credit'] + df['openingbalance']).apply(float)
         # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
         # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
         df['accountname'] = np.where(df['_merge'] == 'right_only', df['accountname_y'],df['accountname_x'])
@@ -1478,10 +1478,10 @@ class TrialbalancebyaccountApiView(ListAPIView):
 
         #ob = df1.union(df)
 
-        union_dfs['transactiontype'] = union_dfs['transactiontype'].fillna('')
+        union_dfs['transactiontype'] = union_dfs['transactiontype'].apply(float)
        # union_dfs['id'] = union_dfs['id'].fillna(0)
-        union_dfs['transactionid'] = union_dfs['transactionid'].fillna('')
-        union_dfs['desc'] = union_dfs['desc'].fillna('')
+        union_dfs['transactionid'] = union_dfs['transactionid'].apply(float)
+        union_dfs['desc'] = union_dfs['desc'].apply(float)
         union_dfs['entrydatetime'] = pd.to_datetime(union_dfs['entrydatetime']).dt.strftime('%d/%m/%y')
         #union_dfs['entrydatetime'] = union_dfs['desc'].fillna(startdate)
        # print(union_dfs)
@@ -1491,7 +1491,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
 
         
 
-        print(union_dfs)
+        #print(union_dfs)
         return Response(union_dfs.sort_values(by=['entrydatetime']).T.to_dict().values())
 
 
