@@ -1307,10 +1307,12 @@ class TrialbalanceApiView(ListAPIView):
         
 
         
-        df['debit'] = df['debit'].fillna('')
-        df['credit'] = df['credit'].fillna('')
-        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
+        df['debit'] = df['debit'].fillna(0).astype(float)
+        df['credit'] = df['credit'].fillna(0).astype(float)
+        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'].astype(float))
+        df['openingbalance'] =  df['openingbalance'].astype(float)
         df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
+        df['balance'] =  df['balance'].astype(float)
         # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
         # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
         df['accountheadname'] = np.where(df['_merge'] == 'right_only', df['accountheadname_y'],df['accountheadname_x'])
