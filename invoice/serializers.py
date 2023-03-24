@@ -1331,7 +1331,10 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
         
         salesOrderdetails_data = validated_data.pop('purchasereturndetails')
         validated_data.pop('billno')
-        billno2 = (PurchaseReturn.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
+        if PurchaseReturn.objects.filter(entity= validated_data['entity'].id).count() == 0:
+                billno2 = 1
+        else:
+                billno2 = (PurchaseReturn.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
         with transaction.atomic():
             order = PurchaseReturn.objects.create(**validated_data,billno = billno2)
             stk = stocktransactionsale(order, transactiontype= 'PR',debit=1,credit=0,description= 'Purchase Return',entrytype= 'I')

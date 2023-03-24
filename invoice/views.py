@@ -1610,7 +1610,8 @@ class TrialbalancebyaccountApiView(ListAPIView):
        # union_dfs['id'] = union_dfs['id'].fillna(0)
         union_dfs['transactionid'] = union_dfs['transactionid'].fillna('')
         union_dfs['desc'] = union_dfs['desc'].fillna('')
-        union_dfs['entrydatetime'] = pd.to_datetime(union_dfs['entrydatetime']).dt.strftime('%d/%m/%y')
+        union_dfs['entrydatetime'] = pd.to_datetime(union_dfs['entrydatetime']).dt.strftime('%d-%m-%Y')
+        union_dfs['sortdatetime'] = pd.to_datetime(union_dfs['entrydatetime'])
         #union_dfs['entrydatetime'] = union_dfs['desc'].fillna(startdate)
        # print(union_dfs)
         #print(stk)
@@ -1619,7 +1620,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
 
         
 
-        print(union_dfs)
+        print(union_dfs.sort_values(by=['entrydatetime']))
         return Response(union_dfs.sort_values(by=['entrydatetime']).T.to_dict().values())
 
 
