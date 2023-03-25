@@ -14,7 +14,7 @@ class accountSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = account
-        fields =  ('accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',)
+        fields =  ('id','accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',)
 
     def create(self, validated_data):
         #print(validated_data)
