@@ -746,6 +746,21 @@ class debitcreditnote(TrackingModel):
 
     def __str__(self):
          return f'{self.voucherno} '
+    
+
+class closingstock(TrackingModel):
+    stockdate = models.DateTimeField(verbose_name='Stock Date',null=True)
+    stock = models.ForeignKey(to = Product, on_delete= models.CASCADE,verbose_name= 'stock Name',null = True)
+    closingrate = models.DecimalField(max_digits=10, decimal_places=2,verbose_name= 'Closing Rate')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+    #class Meta:
+        #unique_together = ('voucherno','vouchertype','entity',)
+
+    def __str__(self):
+         return f'{self.stock} '
 
 
 
