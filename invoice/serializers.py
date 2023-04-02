@@ -2554,7 +2554,7 @@ class  ledgerserializer(serializers.ModelSerializer):
         startdate = self.context['request'].query_params.get('startdate')
         enddate = self.context['request'].query_params.get('enddate')
 
-        stock = obj.accounttrans.filter(entry__entrydate1__range = (startdate,enddate),isactive = 1).exclude(accounttype = 'MD').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
+        stock = obj.accounttrans.filter(entry__entrydate1__range = (startdate,enddate),isactive = 1).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
         #return account1Serializer(accounts,many=True).data
         #return account1Serializer(accounts,many=True).data
         #stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False)

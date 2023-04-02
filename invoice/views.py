@@ -1234,8 +1234,8 @@ class TrialbalanceApiView(ListAPIView):
        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
 
 
-        obp =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype__in = ['MD']).values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
-        obn =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt= startdate).exclude(accounttype__in = ['MD']).values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
+        obp =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
+        obn =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt= startdate).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
         ob = obp.union(obn)
 
         #print(ob)
@@ -1250,8 +1250,8 @@ class TrialbalanceApiView(ListAPIView):
 
         print(dffinal1)
 
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype__in = ['MD']).values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype__in = ['MD']).values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lt = 0)
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lt = 0)
         stkunion = stk.union(stk2)
 
         print(stkunion.query.__str__())
@@ -1299,6 +1299,12 @@ class TrialbalanceApiView(ListAPIView):
             df['credit'] = 0
 
         
+        if 'quantity' in df.columns:
+            df['quantity'] = df['quantity']
+        else:
+            df['quantity'] = 0
+
+        
 
 
 
@@ -1307,13 +1313,13 @@ class TrialbalanceApiView(ListAPIView):
         
 
         
-        df['debit'] = df['debit'].fillna(0).astype(float)
-        df['credit'] = df['credit'].fillna(0).astype(float)
-        df['quantity'] = df['quantity'].fillna(0).astype(float)
-        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'].astype(float))
-        df['openingbalance'] =  df['openingbalance'].astype(float)
+        df['debit'] = df['debit'].astype(float).fillna(0)
+        df['credit'] = df['credit'].astype(float).fillna(0)
+        df['quantity'] = df['quantity'].astype(float).fillna(0)
+        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'].astype(float).fillna(0))
+        df['openingbalance'] =  df['openingbalance'].astype(float).fillna(0)
         df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
-        df['balance'] =  df['balance'].astype(float)
+        df['balance'] =  df['balance'].astype(float).fillna(0)
         # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
         # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
         df['accountheadname'] = np.where(df['_merge'] == 'right_only', df['accountheadname_y'],df['accountheadname_x'])
@@ -1351,19 +1357,19 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
         if drcrgroup == 'DR':
 
-            ob =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
-            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
+            ob =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gte = 0)
+            stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
             #return stk
         
         elif drcrgroup == 'CR':
 
-            ob =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lte = 0)
-            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lt = 0)
+            ob =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lte = 0)
+            stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lt = 0)
 
         else:
 
-            ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
-            stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
+            ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+            stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
 
 
 
@@ -1401,6 +1407,8 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         else:
             df['credit'] = 0
 
+        
+
        # obdf['drcr'] = obdf['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
 
         obdf.rename(columns = {'account__accountname':'accountname','account__id':'account'}, inplace = True)
@@ -1435,9 +1443,14 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         else:
             df['credit'] = 0
 
+        if 'quantity' in df.columns:
+            df['quantity'] = df['quantity']
+        else:
+            df['quantity'] = 0
+
         df['debit'] = df['debit'].fillna(0).astype(float)
         df['credit'] = df['credit'].fillna(0).astype(float)
-        df['quantity'] = df['quantity'].fillna(0).astype(float)
+        df['quantity'] = df['quantity'].astype(float).fillna(0)
         df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'].astype(float))
         df['openingbalance'] = df['openingbalance'].astype(float)
         df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
@@ -1485,8 +1498,8 @@ class ledgersummarylatest(ListAPIView):
 
         # else:
 
-        ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
+        ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
 
 
 
@@ -1597,8 +1610,8 @@ class TrialbalancebyaccountApiView(ListAPIView):
       #  accountheadp = self.request.query_params.get('accounthead')
         startdate = self.request.query_params.get('startdate')
         enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
-        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount'),quantity = Sum('quantity')).order_by('entrydatetime')
-        ob =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').values('account__accountname').annotate(debit = Sum('debitamount'),credit = Sum('creditamount'),quantity = Sum('quantity')).order_by('entrydatetime')
+        stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount'),quantity = Sum('quantity')).order_by('entrydatetime')
+        ob =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname').annotate(debit = Sum('debitamount'),credit = Sum('creditamount'),quantity = Sum('quantity')).order_by('entrydatetime')
         df1 = read_frame(ob)
         df1['desc'] = 'Opening Balance'
         df1['entrydatetime'] = startdate
@@ -1731,7 +1744,7 @@ class generalfunctions:
 
         idf = pd.merge(idf,cdf,on='stock__id',how='outer',indicator=True)
        # idf = read_frame(inventory)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
         idf['quantity'] = np.where(idf['stockttype'].isin(['P','R','OS']), idf['quantity'],-1 * (idf['quantity']))
         idf['quantity'] = idf['quantity'].astype(float)
         idf['CS'] = idf.groupby(['stock__id','stockttype'])['quantity'].cumsum()
@@ -1774,7 +1787,7 @@ class generalfunctions:
         cdf = read_frame(closingprice)
 
         idf = pd.merge(idf,cdf,on='stock__id',how='outer',indicator=True)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
         idf['quantity'] = np.where(idf['stockttype'].isin(['P','OS','R']), idf['quantity'],-1 * (idf['quantity']))
         idf['quantity'] = idf['quantity'].astype(float)
         idf['CS'] = idf.groupby(['stock','stockttype'])['quantity'].cumsum()
@@ -2554,7 +2567,7 @@ class incomeandexpensesstatement(ListAPIView):
 
         idf = pd.merge(idf,cdf,on='stock',how='outer',indicator=True)
        # idf = read_frame(inventory)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
         idf['quantity'] = np.where(idf['stockttype'].isin(['P','OS','R']), idf['quantity'],-1 * (idf['quantity']))
         idf['quantity'] = idf['quantity'].astype(float)
         idf['CS'] = idf.groupby(['stock','stockttype'])['quantity'].cumsum()
@@ -2581,7 +2594,7 @@ class incomeandexpensesstatement(ListAPIView):
         cdf = read_frame(closingprice)
 
         idf = pd.merge(idf,cdf,on='stock__id',how='outer',indicator=True)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
         idf['quantity'] = np.where(idf['stockttype'].isin(['P','OS']), idf['quantity'],-1 * (idf['quantity']))
         #print(idf)
         idf['quantity'] = idf['quantity'].astype(float)
@@ -2693,11 +2706,10 @@ class tradingaccountstatement(ListAPIView):
         startdate = self.request.query_params.get('startdate')
         enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
 
-       # ob =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__lt = startdate)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-       # ob2 =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1),Q(entrydatetime__lt = startdate)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+     
 
-        stk =StockTransactions.objects.filter(isactive = 1,entity = entity1,entrydatetime__range=(startdate, enddate),account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
-        stk2 =StockTransactions.objects.filter(isactive = 1,entity = entity1,entrydatetime__range=(startdate, enddate),account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('accounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lte = 0)
+        stk =StockTransactions.objects.filter(isactive = 1,entity = entity1,entrydatetime__range=(startdate, enddate),account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'PC').values('accounthead__name','account__accounthead','account__id','account__accountname').annotate(balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(isactive = 1,entity = entity1,entrydatetime__range=(startdate, enddate),account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'PC').values('accounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lte = 0)
 
 
 
@@ -2711,67 +2723,44 @@ class tradingaccountstatement(ListAPIView):
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(Q(isactive =1),Q(stockttype__in = ['P','OS','R']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lte = enddate)).values('accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','stockttype','quantity','entrydatetime','stock__id','stock__productname')
-        sales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate).values('accounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','stockttype','quantity','entrydatetime','stock__id','stock__productname')
+        puchases = StockTransactions.objects.filter(isactive =1,stockttype__in = ['P','R'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate).values('stock','stockttype','quantity','entrydatetime','stock__id')
+        sales =    StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate).values('stock','stockttype','quantity','entrydatetime','stock__id')
         inventory = puchases.union(sales).order_by('entrydatetime')
         closingprice = closingstock.objects.filter(entity = entity1).values('stock__id','closingrate')
         #idf1 = read_frame(puchases)
-       # print(idf1)
+        
         idf = read_frame(inventory)
         cdf = read_frame(closingprice)
 
+        print(idf)
+
         idf = pd.merge(idf,cdf,on='stock__id',how='outer',indicator=True)
 
-        #print
-
-
-
-        print(idf)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
-        idf['quantity'] = np.where(idf['stockttype'].isin(['P','OS','R']), idf['quantity'],-1 * (idf['quantity']))
-        #print(idf)
-        idf['quantity'] = idf['quantity'].astype(float)
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
+        idf['quantity'] = np.where(idf['stockttype'].isin(['P','R']), idf['quantity'],-1 * (idf['quantity']))
+       # print(idf)
+        idf['quantity'] = idf['quantity'].astype(float).fillna(0)
         idf['CS'] = idf.groupby(['stock','stockttype'])['quantity'].cumsum()
-        #print(idf)
         dfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
-       #print(dfR)
         dfR['balance'] = dfR['quantity'].astype(float) * -1 * dfR['closingrate'].astype(float)
-        print(dfR)
-        dfR = dfR.drop(['stock','stockttype','entrydatetime','account__id','account__accountname','closingrate','_merge'],axis=1) 
-
-        #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
-
-        dfR.rename(columns = {'stock__id':'account__id', 'stock__productname':'account__accountname'}, inplace = True)
-
+        dfR.head(5)
+        dfR = dfR.drop(['stockttype','entrydatetime','_merge'],axis=1) 
+        dfR.rename(columns = {'stock__id':'account__id', 'stock':'account__accountname'}, inplace = True)
         dfR['accounthead__name'] = 'Closing Stock'
         dfR['account__accounthead'] = -4
-
-
-        print('---------- Closing Stock')
-
-
-        print(dfR)
-
-
-
         ##################################################################
 
 
-        opuchases = StockTransactions.objects.filter(Q(isactive =1),Q(stockttype__in = ['P','OS','R']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lte = startdate)).values('accounthead__name','account__accounthead','account__id','account__accountname','stock','rate','stockttype','quantity','entrydatetime','stock__id','stock__productname')
-        osales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = entity1,entrydatetime__lte = startdate).values('accounthead__name','account__creditaccounthead','account__id','account__accountname','stock','rate','stockttype','quantity','entrydatetime','stock__id','stock__productname')
+        opuchases = StockTransactions.objects.filter(Q(isactive =1),Q(stockttype__in = ['P','OS','R']),Q(accounttype = 'DD'),Q(entity = entity1),Q(entrydatetime__lte = startdate)).values('stock','stockttype','quantity','entrydatetime','stock__id')
+        osales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = entity1,entrydatetime__lte = startdate).values('stock','stockttype','quantity','entrydatetime','stock__id')
 
         closingprice = closingstock.objects.filter(entity = entity1).values('stock__id','closingrate')
         oinventory = opuchases.union(osales).order_by('entrydatetime')
 
         cdf = read_frame(closingprice)
-
-        
-        #idf1 = read_frame(puchases)
-       # print(idf1)
         idf = read_frame(oinventory)
-
         idf = pd.merge(idf,cdf,on='stock__id',how='outer',indicator=True)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
        # idf['stockttype'] = np.where(idf['stockttype'] == 'I','S',idf['stockttype'])
         idf['quantity'] = np.where(idf['stockttype'].isin(['P','OS','R']), idf['quantity'],-1 * (idf['quantity']))
         #print(idf)
@@ -2781,11 +2770,11 @@ class tradingaccountstatement(ListAPIView):
         odfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
        #print(dfR)
         odfR['balance'] = odfR['quantity'].astype(float)  * odfR['closingrate'].astype(float)
-        odfR = odfR.drop(['stock','stockttype','entrydatetime','account__id','account__accountname','closingrate','_merge'],axis=1) 
+        odfR = odfR.drop(['stockttype','entrydatetime','_merge'],axis=1) 
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
 
-        odfR.rename(columns = {'stock__id':'account__id', 'stock__productname':'account__accountname'}, inplace = True)
+        odfR.rename(columns = {'stock__id':'account__id', 'stock':'account__accountname'}, inplace = True)
         odfR['accounthead__name'] = 'Opening Stock'
         odfR['account__accounthead'] = 21000
 
@@ -2805,7 +2794,7 @@ class tradingaccountstatement(ListAPIView):
         stkunion = stk.union(stk2)
 
         df = read_frame(stkunion)
-        df = df.drop(['debit','credit'],axis=1)
+       # df = df.drop(['debit','credit'],axis=1)
 
         #print(df)
 
@@ -2826,20 +2815,20 @@ class tradingaccountstatement(ListAPIView):
 
         #print(df)
 
-        df['balance'] = df['balance'].astype(float)
-
-        df['balance'] = df['balance'].fillna(0)
+        df['balance'] = df['balance'].astype(float).fillna(0)
+        df['quantity'] = df['quantity'].astype(float).fillna(0)
+        df['closingrate'] = df['closingrate'].astype(float).fillna(0)
 
       
 
 
         if df['balance'].sum() <= 0:
-            df.loc[len(df.index)] = ['Gross Profit', -1,'Gross Profit',0,'Gross Profit',0,-df['balance'].sum()]
+            df.loc[len(df.index)] = ['Gross Profit',0.00, -1,0.00,-df['balance'].sum(),'Gross Profit',-1]
         else:
-            df.loc[len(df.index)] = ['Gross Loss', -1,'Gross Loss',0,'Gross Loss',0,-df['balance'].sum()]
+            df.loc[len(df.index)] =  ['Gross Profit',0.00, -1,0.00,-df['balance'].sum(),'Gross Profit',-1]
 
 
-       # print(df)
+        print(df)
 
 
 
@@ -2868,13 +2857,13 @@ class tradingaccountstatement(ListAPIView):
 
         #print(df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs())
 
-        print(df)
+       # print(df)
 
 
-        df = df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])['balance','quantity'].sum().abs().reset_index().sort_values(by=['accounthead'],ascending=False)
+        df = df.groupby(['accounthead','accountheadname','drcr','accountname','accountid','closingrate'])[['balance','quantity']].sum().abs().reset_index().sort_values(by=['accounthead'],ascending=False)
 
 
-        print(df)
+       # print(df)
 
        
 
@@ -3797,7 +3786,7 @@ class closingstocknew(ListAPIView):
 
 
         print(idf)
-        idf['stockttype'] = np.where(idf['stockttype'] == 'R','P',idf['stockttype'])
+        idf['stockttype'] = np.where(idf['stockttype'].isin(['P','R']),'P','S')
         idf['quantity'] = np.where(idf['stockttype'].isin(['P','OS','R']), idf['quantity'],-1 * (idf['quantity']))
         #print(idf)
         idf['quantity'] = idf['quantity'].astype(float)
