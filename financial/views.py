@@ -87,6 +87,30 @@ class customApiView2(ListAPIView):
 
 
 
+class customApiView4(ListAPIView):
+
+    serializer_class = accountSerializer2
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {'accounthead__code':["in", "exact"]
+    
+    }
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(owner = self.request.user)
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        query =  account.objects.filter(entity = entity)
+
+        #print(query.query.__str__())
+
+        return query
+    
+
+
+
 
 class customApiView3(ListAPIView):
 
