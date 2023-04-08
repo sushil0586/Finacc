@@ -832,3 +832,104 @@ class   cbserializer(serializers.ModelSerializer):
         stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,accounttype__in = ['M'],isactive = 1,iscashtransaction= 1)
         #return account1Serializer(accounts,many=True).data
         return stocktranserilaizer(stock, many=True).data
+
+class stockserializer(serializers.ModelSerializer):
+
+
+   # goods = goodsserilaizer(source = 'account_transactions', many=True, read_only=True)
+    salequantity  = serializers.SerializerMethodField()
+    purchasequantity = serializers.SerializerMethodField()
+    issuedquantity  = serializers.SerializerMethodField()
+    recivedquantity = serializers.SerializerMethodField()
+
+
+   # stk = stocktranserilaizer(many=True, read_only=True)
+   # select_related_fields = ('accounthead')
+
+    # debit  = serializers.SerializerMethodField()
+   # day = serializers.CharField()
+
+    class Meta:
+        model = Product
+        fields = ['productname','salequantity','purchasequantity','issuedquantity','recivedquantity']
+
+    def get_salequantity(self, obj):
+
+        print(obj)
+        # fromDate = parse_datetime(self.context['request'].query_params.get(
+        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        # toDate = parse_datetime(self.context['request'].query_params.get(
+        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        return obj.stocktrans.filter(transactiontype = 'S',drcr = False).aggregate(Sum('quantity'))['quantity__sum']
+
+    def get_purchasequantity(self, obj):
+        # fromDate = parse_datetime(self.context['request'].query_params.get(
+        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        # toDate = parse_datetime(self.context['request'].query_params.get(
+        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        return obj.stocktrans.filter(transactiontype = 'P',drcr = True).aggregate(Sum('quantity'))['quantity__sum']
+
+    def get_issuedquantity(self, obj):
+        return obj.stocktrans.filter(transactiontype = 'PC',drcr = True).aggregate(Sum('quantity'))['quantity__sum']
+
+    def get_recivedquantity(self, obj):
+        return obj.stocktrans.filter(transactiontype = 'PC',drcr = False).aggregate(Sum('quantity'))['quantity__sum']
+    
+
+class cashserializer(serializers.ModelSerializer):
+
+
+   # cashtrans = stocktranserilaizer(source = 'account_transactions', many=True, read_only=True)
+    debit  = serializers.SerializerMethodField()
+    credit = serializers.SerializerMethodField()
+    entrydate = serializers.SerializerMethodField()
+    cr = serializers.SerializerMethodField()
+    dr = serializers.SerializerMethodField()
+
+
+
+
+
+   # stk = stocktranserilaizer(many=True, read_only=True)
+   # select_related_fields = ('accounthead')
+
+    # debit  = serializers.SerializerMethodField()
+   # day = serializers.CharField()
+
+    class Meta:
+        model = entry
+        fields = ['id','entrydate','debit','credit','cr','dr',]
+
+    def get_debit(self, obj):
+
+       # print(obj.cashtrans('account'))
+        
+        return obj.cashtrans.exclude(accounttype = 'MD',isactive = 0).exclude(transactiontype = 'OS').aggregate(Sum('debitamount'))['debitamount__sum']
+
+    def get_credit(self, obj):
+        # fromDate = parse_datetime(self.context['request'].query_params.get(
+        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+        # toDate = parse_datetime(self.context['request'].query_params.get(
+        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+
+        return obj.cashtrans.filter(accounttype = 'M',isactive = 0).aggregate(Sum('creditamount'))['creditamount__sum']
+        #return obj.cashtrans.exclude(accounttype = 'MD',isactive = 0).exclude(transactiontype = 'OS').aggregate(Sum('creditamount'))['creditamount__sum']
+
+    def get_entrydate(self,obj):
+        return obj.entrydate1
+
+    def get_cr(self,obj):
+
+        filter_backends = [DjangoFilterBackend]
+        filterset_fields = {'cashtrans__transactiontype':["in", "exact"]}
+        
+        #stock =  obj.cashtrans.filter(drcr = False).order_by('account')
+       # print(stock)
+
+        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False,isactive = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'OS').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'))
+        #return account1Serializer(accounts,many=True).data
+        #stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False)
+
+        stock = stock.annotate(accountname=F('account__accountname')).order_by('account__accountname')
+
+        return stock
