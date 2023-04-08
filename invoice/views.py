@@ -2825,7 +2825,7 @@ class tradingaccountstatement(ListAPIView):
         if df['balance'].sum() <= 0:
             df.loc[len(df.index)] = ['Gross Profit',0.00, -1,0.00,-df['balance'].sum(),'Gross Profit',-1]
         else:
-            df.loc[len(df.index)] =  ['Gross Profit',0.00, -1,0.00,-df['balance'].sum(),'Gross Profit',-1]
+            df.loc[len(df.index)] =  ['Gross Loss',0.00, -1,0.00,-df['balance'].sum(),'Gross Loss',-1]
 
 
         print(df)
