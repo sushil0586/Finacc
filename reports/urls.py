@@ -20,4 +20,12 @@ urlpatterns  = [
     path('incomeandexpensesstatement',views.incomeandexpensesstatement.as_view(), name = 'Trialbalance'),
     path('stockledgerbook',views.stockledgerbookapi.as_view(), name = 'Trialbalance'),
     path('ledgersummary',views.ledgersummarylatest.as_view(), name = 'Trialbalance'),
+    path('ledgerbook',views.ledgerviewapi.as_view(), name = 'Trialbalance'),
+    path('cashbook',views.cbviewapi.as_view(), name = 'Trialbalance'),
+    path('salebook',views.salebyaccountapi.as_view(), name = 'salebok'),
+    path('purchasebook',views.purchasebyaccountapi.as_view(), name = 'purchasebook'),
+    path('daybook',views.daybookviewapi.as_view(), name = 'Trialbalance'),
+    path('trialbalance',views.TrialbalanceApiView.as_view(), name = 'Trialbalance'),
+    path('trialbalancebyaccounthead',views.TrialbalancebyaccountheadApiView.as_view(), name = 'Trialbalance'),
+    path('trialbalancebyaccount',views.TrialbalancebyaccountApiView.as_view(), name = 'Trialbalance'),
 ]
