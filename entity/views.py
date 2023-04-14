@@ -2,10 +2,11 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import entity,entity_details,unitType
-from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer
+from entity.models import entity,entity_details,unitType,entityfinancialyear
+from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
+from Authentication.models import User
 
 
 
@@ -148,3 +149,33 @@ class unitTypeApiView(ListCreateAPIView):
 
 #        # entity = self.request.query_params.get('entity')
 #         return entity_user.objects.filter()
+
+
+
+# class AuthApiView(ListAPIView):
+
+#     permission_classes = (permissions.IsAuthenticated,)
+
+#     serializer_class = Userserializer
+#     permission_classes = (permissions.IsAuthenticated,)
+
+#     def get_queryset(self):
+#         return User.objects.filter(email = self.request.user)
+    
+
+class entityfinancialyearApiView(ListCreateAPIView):
+
+    serializer_class = entityfinancialyearSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['entity']
+
+    def perform_create(self, serializer):
+        return serializer.save(createdby = self.request.user)
+    
+    def get_queryset(self):
+        return entityfinancialyear.objects.filter()
+    
+
+

@@ -39,6 +39,7 @@ urlpatterns = [
     path('api/geography/',include('geography.urls',namespace = 'entity_api')),
     path('api/invoice/',include('invoice.urls',namespace = 'invoice_api')),
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
+    path('api/payroll/',include('payroll.urls',namespace = 'payroll_api')),
     path('swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),

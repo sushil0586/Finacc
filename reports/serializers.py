@@ -933,3 +933,16 @@ class cashserializer(serializers.ModelSerializer):
         stock = stock.annotate(accountname=F('account__accountname')).order_by('account__accountname')
 
         return stock
+      #  return stocktranserilaizer(stock, many=True).data
+
+    
+    def get_dr(self,obj):
+
+        filter_backends = [DjangoFilterBackend]
+        filterset_fields = {'cashtrans__transactiontype':["in", "exact"]}
+        #stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True)
+        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,isactive = 1).exclude(accounttype = 'MD').exclude(transactiontype = 'OS').values('account','entry','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount= Sum('creditamount'))
+        #return account1Serializer(accounts,many=True).data
+        stock = stock.annotate(accountname=F('account__accountname')).order_by('account__accountname')
+        return stock
+       # return stocktranserilaizer(stock, many=True).data
