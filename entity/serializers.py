@@ -1,7 +1,7 @@
 import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import entity,entity_details,unitType
+from entity.models import entity,entity_details,unitType,entityfinancialyear
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
@@ -21,7 +21,51 @@ class unitTypeSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+
+
+class entityfinancialyearSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = entityfinancialyear
+        fields = ('id','entity','desc','finstartyear','finendyear','createdby','isactive')
+
+
+
+    def create(self, validated_data):
+
+
+        r1 = entityfinancialyear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
+
+
+
+        #entity= validated_data['entity'].id
+
+        fy = entityfinancialyear.objects.create(**validated_data)
+
+
+        return fy
+
+
+    
+
+    
+
+
+
+
+
+
+
+
+
 class entityAddSerializer(serializers.ModelSerializer):
+
+    fy = entityfinancialyearSerializer(many=True)
+
+    class Meta:
+        model = entity
+        #fields = ('id','entityName','fy',)
+        fields = ('unitType','entityName','address','ownerName','Country','state','district','city','pincode','phoneoffice','phoneResidence','panno','tds','tdsCircle','style','Commodity','email','tcs206c1honsale','tcs206c1honsale','qtyapplicable','gstno','gstintype','jobwork','user','fy',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
@@ -36,10 +80,41 @@ class entityAddSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
 
 
+    
+
+
+      #  print(validated_data)
+
+
         #print(validated_data)
 
         users = validated_data.pop("user")
+
+        fydata = validated_data.pop("fy")
+
+       
+        # fendyear = validated_data.pop("finendyear")
+
+        
         newentity = entity.objects.create(**validated_data)
+
+        for PurchaseOrderDetail_data in fydata:
+
+                print(PurchaseOrderDetail_data)
+                detail = entityfinancialyear.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
+
+        
+
+
+
+
+
+
+        #fy = entityfinancialyear.objects.create(entity = newentity,finstartyear = fstartyear,finendyear = fendyear)
+
+
+
+
         for user in users:
             newentity.user.add(user)
 
@@ -86,6 +161,15 @@ class entityAddSerializer(serializers.ModelSerializer):
                 serializer2 = self.PTaxType(data =key)
                 serializer2.is_valid(raise_exception=True)
                 serializer2.save(entity = newentity,createdby = users[0])
+
+
+            
+
+
+            
+            #serializer2 = self.fy(data =fydata)
+
+            #serializer2.save(entity = newentity,owner = users[0])
                 
                     
 
@@ -123,9 +207,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
 
 
-    class Meta:
-        model = entity
-        fields = '__all__'
+    
 
 
 
@@ -267,3 +349,30 @@ class entityDetailsSerializer(serializers.ModelSerializer):
         # for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
         #     PurchaseOrderDetails.objects.create(purchaseOrder = order, **PurchaseOrderDetail_data)
         # return order
+
+
+
+
+# class Userserializer(serializers.ModelSerializer):
+
+#     password = serializers.CharField(max_length = 128, min_length = 6, write_only = True)
+
+#    # userentity = entityUserSerializer(many=True)
+
+#     uentity = entityAddSerializer(many=True)
+
+#     rolename = serializers.SerializerMethodField()
+
+
+#     class Meta:
+#         model = User
+#         fields = ('first_name','last_name','email','role','password','uentity','rolename','uentity', )
+#        #depth = 1
+
+    
+#     def get_rolename(self,obj):
+#         if obj.role is None:
+#             return 1   
+#         else:
+#             acc =  obj.role.rolename
+#             return acc

@@ -38,8 +38,6 @@ class entity(TrackingModel):
     tds =           models.CharField(max_length= 255,null= True)
     tdsCircle =        models.CharField(max_length= 255,null= True)
     style =        models.CharField(max_length= 255,null= True)
-    finstartyear =      models.DateTimeField(auto_now = True)
-    finendyear =        models.DateTimeField(auto_now = True)
     Commodity =    models.CharField(max_length= 255,null= True)
     email =    models.CharField(max_length= 255,null= True)
     tcs206c1honsale  = models.BooleanField(blank =True,null = True)
@@ -55,6 +53,22 @@ class entity(TrackingModel):
     
     def __str__(self):
         return f'{self.entityName}'
+    
+
+
+class entityfinancialyear(TrackingModel):
+    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='fy',)
+    desc =      models.CharField(max_length= 255,null= True,verbose_name='description')
+    finstartyear =      models.DateTimeField(verbose_name='Fin Start Date',null = True)
+    finendyear =        models.DateTimeField(verbose_name='Fin End Date',null = True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
+
+
+    def __str__(self):
+        return f'{self.desc}'
+
+
+
 
 
 

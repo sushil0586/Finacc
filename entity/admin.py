@@ -1,6 +1,6 @@
 from io import UnsupportedOperation
 from django.contrib import admin
-from entity.models import unitType,entity,entity_details
+from entity.models import unitType,entity,entity_details,entityfinancialyear
 
 
 # Register your models here.
@@ -17,4 +17,5 @@ admin.site.register(unitType,unitTypeAdmin)
 
 admin.site.register(entity,entityeAdmin)
 admin.site.register(entity_details)
+admin.site.register(entityfinancialyear)
 
