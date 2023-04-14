@@ -175,7 +175,7 @@ class entityfinancialyearApiView(ListCreateAPIView):
         return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
-        return entityfinancialyear.objects.filter()
+        return entityfinancialyear.objects.filter().order_by('-isactive')
     
 
 
