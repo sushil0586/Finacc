@@ -25,9 +25,24 @@ class unitTypeSerializer(serializers.ModelSerializer):
 
 class entityfinancialyearSerializer(serializers.ModelSerializer):
 
+
+    entityname = serializers.SerializerMethodField()
+    gst = serializers.SerializerMethodField()
+
     class Meta:
         model = entityfinancialyear
-        fields = ('id','entity','desc','finstartyear','finendyear','createdby','isactive')
+        fields = ('id','entity','entityname','gst','desc','finstartyear','finendyear','createdby','isactive',)
+
+
+    
+    def get_entityname(self,obj):
+         
+        return obj.entity.entityName
+    
+
+    def get_gst(self,obj):
+         
+        return obj.entity.gstno
 
 
 

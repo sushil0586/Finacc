@@ -65,7 +65,7 @@ class entityfinancialyear(TrackingModel):
 
 
     def __str__(self):
-        return f'{self.desc}'
+        return f'{self.entity}'
 
 
 
