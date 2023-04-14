@@ -179,3 +179,19 @@ class entityfinancialyearApiView(ListCreateAPIView):
     
 
 
+
+# class entityupdatedel(RetrieveUpdateDestroyAPIView):
+
+#     serializer_class = entitySerializer
+#     permission_classes = (permissions.IsAuthenticated,)
+#     lookup_field = "id"
+
+#     def get_queryset(self):
+#         return entity.objects.filter()
+    
+
+
+
+    
+
+
