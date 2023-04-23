@@ -17,6 +17,7 @@ urlpatterns  = [
     path('unittype/<int:id>',views.unitTypeApiView.as_view(), name = 'unittypeid'),
   #  path('user',views.AuthApiView.as_view(), name = 'user'),
     path('entityfy',views.entityfinancialyearApiView.as_view(), name = 'user'),
+    path('entityfylist',views.entityfinancialyeaListView.as_view(), name = 'user'),
     # path('entityuser', views.entityUserApiView.as_view() ,name = 'unittype'),
     # path('entityuser/<int:id>',views.entityUserApiView.as_view(), name = 'unittypeid'),
     # path('entityuseradd', views.entityUseraddApiView .as_view() ,name = 'unittype'),

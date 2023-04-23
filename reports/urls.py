@@ -28,4 +28,8 @@ urlpatterns  = [
     path('trialbalance',views.TrialbalanceApiView.as_view(), name = 'Trialbalance'),
     path('trialbalancebyaccounthead',views.TrialbalancebyaccountheadApiView.as_view(), name = 'Trialbalance'),
     path('trialbalancebyaccount',views.TrialbalancebyaccountApiView.as_view(), name = 'Trialbalance'),
+    path('accountbalance',views.accountbalance.as_view(), name = 'Trialbalance'),
+
+
+    
 ]
