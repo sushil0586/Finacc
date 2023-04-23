@@ -59,6 +59,19 @@ class entityfinancialyearSerializer(serializers.ModelSerializer):
 
 
         return fy
+    
+
+
+class entityfinancialyearListSerializer(serializers.ModelSerializer):
+
+    class Meta:
+
+        model = entityfinancialyear
+        fields = ('id','finstartyear','finendyear','isactive',)
+
+
+    
+    
 
 
     

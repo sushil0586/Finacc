@@ -3792,11 +3792,51 @@ class debitcreditcancelSerializer(serializers.ModelSerializer):
         return instance
     
 
+class StockTransactionsserilizer(serializers.ModelSerializer):
+
+    class Meta:
+        model = StockTransactions
+        fields  = ('accounthead','account','stock','transactiontype','transactionid','desc','stockttype','quantity','rate','drcr','debitamount','creditamount','entry','entrydate','entrydatetime','accounttype')
+
 class closingstockSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = closingstock
         fields  = ('stockdate','stock','closingrate','entity',)
+
+
+class balancesheetclosingserializer(serializers.ModelSerializer):
+    cashtrans = StockTransactionsserilizer(many=True)
+    #closingdate = serializers.DateField(source = 'entrydate1')
+    class Meta:
+        model = entry
+        fields  = ('entrydate1','entity','cashtrans',)
+
+
+    def create(self, validated_data):
+
+
+        print(validated_data)
+
+        entryid,created  = entry.objects.get_or_create(entrydate1 = validated_data['entrydate1'],entity=validated_data['entity'])
+        entrydate = validated_data['entrydate1'] + timedelta(days = 1)
+        entryid2,created  = entry.objects.get_or_create(entrydate1 = entrydate,entity=validated_data['entity'])
+        cashtrans_data = validated_data.pop('cashtrans')
+        for cashtrans in cashtrans_data:
+
+            if cashtrans['drcr'] == 1:
+                StockTransactions.objects.create(entry = entryid, drcr = 0,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = 0,creditamount = cashtrans['debitamount'],accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'])
+                if cashtrans['accounttype'] == 3:
+                    StockTransactions.objects.create(entry = entryid2, drcr = 1,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = cashtrans['debitamount'],creditamount = 0,accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = entrydate)
+            
+            if cashtrans['drcr'] == 0:
+                StockTransactions.objects.create(entry = entryid, drcr = 1,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = cashtrans['creditamount'],creditamount = 0,accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'])
+                StockTransactions.objects.create(entry = entryid2, drcr = 0,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = 0,creditamount = cashtrans['creditamount'],accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = entrydate)
+                
+
+
+        return entryid
+       
 
   
 
