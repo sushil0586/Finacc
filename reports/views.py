@@ -545,7 +545,7 @@ class generalfunctions:
         dfR_1 = dfR_1.drop(['stockttype','entrydatetime','_merge','rate'],axis=1) 
         dfR_1.rename(columns = {'stock__id':'account__id', 'stock':'account__accountname'}, inplace = True)
         dfR_1['accounthead__name'] = 'Closing Stock'
-        account_id = accountHead.objects.get(code = 200).id
+        account_id = accountHead.objects.get(code = 200,entity = self.entityid).id
         dfR_1['account__accounthead'] = account_id
         return dfR_1
 

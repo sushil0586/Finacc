@@ -11,12 +11,13 @@ from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
-from entity.models import entity
+from entity.models import entity,entityfinancialyear
 from django.db.models.functions import Abs
 from num2words import num2words
 import string
 from django.db import  transaction
 from django_filters.rest_framework import DjangoFilterBackend
+#from entity.serializers import entityfinancialyearSerializer
 
 
 
@@ -3794,44 +3795,95 @@ class debitcreditcancelSerializer(serializers.ModelSerializer):
 
 class StockTransactionsserilizer(serializers.ModelSerializer):
 
+    updatedaccount = serializers.IntegerField(write_only=True)
+
     class Meta:
         model = StockTransactions
-        fields  = ('accounthead','account','stock','transactiontype','transactionid','desc','stockttype','quantity','rate','drcr','debitamount','creditamount','entry','entrydate','entrydatetime','accounttype')
+        fields  = ('accounthead','account','stock','transactiontype','transactionid','desc','stockttype','quantity','rate','drcr','debitamount','creditamount','entry','entrydate','entrydatetime','accounttype','updatedaccount',)
 
 class closingstockSerializer(serializers.ModelSerializer):
+
+    
 
     class Meta:
         model = closingstock
         fields  = ('stockdate','stock','closingrate','entity',)
 
 
-class balancesheetclosingserializer(serializers.ModelSerializer):
-    cashtrans = StockTransactionsserilizer(many=True)
-    #closingdate = serializers.DateField(source = 'entrydate1')
+class entityfinancialyearSerializer(serializers.ModelSerializer):
+
+
+    entityname = serializers.SerializerMethodField()
+    gst = serializers.SerializerMethodField()
+
     class Meta:
-        model = entry
-        fields  = ('entrydate1','entity','cashtrans',)
+        model = entityfinancialyear
+        fields = ('id','entity','entityname','gst','desc','finstartyear','finendyear','createdby','isactive',)
+
+
+    
+    def get_entityname(self,obj):
+         
+        return obj.entity.entityName
+    
+
+    def get_gst(self,obj):
+         
+        return obj.entity.gstno
+
 
 
     def create(self, validated_data):
 
 
+        r1 = entityfinancialyear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
+
+
+
+        #entity= validated_data['entity'].id
+
+        fy = entityfinancialyear.objects.create(**validated_data)
+
+
+        return fy
+
+
+class balancesheetclosingserializer(serializers.ModelSerializer):
+    cashtrans = StockTransactionsserilizer(many=True)
+    startdate = serializers.DateField(write_only=True)
+    enddate = serializers.DateField(write_only=True)
+    
+    #closingdate = serializers.DateField(source = 'entrydate1')
+    class Meta:
+        model = entry
+        fields  = ('entrydate1','entity','cashtrans','startdate','enddate',)
+
+
+    def create(self, validated_data):
+
+        entityfinancialyear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
+        entityfinancialyear.objects.create(entity = validated_data['entity'],finstartyear = validated_data['startdate'],finendyear = validated_data['enddate'],createdby = validated_data['createdby'])
+
+
         print(validated_data)
 
         entryid,created  = entry.objects.get_or_create(entrydate1 = validated_data['entrydate1'],entity=validated_data['entity'])
-        entrydate = validated_data['entrydate1'] + timedelta(days = 1)
-        entryid2,created  = entry.objects.get_or_create(entrydate1 = entrydate,entity=validated_data['entity'])
+        #entrydate = validated_data['entrydate1'] + timedelta(days = 1)
+        entryid2,created  = entry.objects.get_or_create(entrydate1 = validated_data['startdate'],entity=validated_data['entity'])
         cashtrans_data = validated_data.pop('cashtrans')
         for cashtrans in cashtrans_data:
 
+            print(cashtrans)
+
             if cashtrans['drcr'] == 1:
                 StockTransactions.objects.create(entry = entryid, drcr = 0,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = 0,creditamount = cashtrans['debitamount'],accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'])
-                if cashtrans['accounttype'] == 3:
-                    StockTransactions.objects.create(entry = entryid2, drcr = 1,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = cashtrans['debitamount'],creditamount = 0,accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = entrydate)
+                if cashtrans['accounttype'] == '3':
+                    StockTransactions.objects.create(entry = entryid2, drcr = 1,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['updatedaccount'],debitamount = cashtrans['debitamount'],creditamount = 0,accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['startdate'])
             
             if cashtrans['drcr'] == 0:
                 StockTransactions.objects.create(entry = entryid, drcr = 1,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = cashtrans['creditamount'],creditamount = 0,accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'])
-                StockTransactions.objects.create(entry = entryid2, drcr = 0,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = 0,creditamount = cashtrans['creditamount'],accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = entrydate)
+                if cashtrans['accounttype'] == '3':
+                    StockTransactions.objects.create(entry = entryid2, drcr = 0,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['updatedaccount'],debitamount = 0,creditamount = cashtrans['creditamount'],accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['startdate'])
                 
 
 
