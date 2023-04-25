@@ -7,6 +7,7 @@ app_name = 'reports'
 
 urlpatterns  = [
     path('closingstockview', views.closingstocknew.as_view(), name='closingstockView'),
+    path('closingstockbalance', views.closingstockBalance.as_view(), name='closingstockView'),
     path('closingstock', views.closingstockView.as_view(), name='closingstockView'),
     path('dashboardkpis',views.dashboardkpis.as_view(), name = 'Trialbalance'),
     path('dashboardgraphkpis',views.dashboardgraphkpis.as_view(), name = 'Trialbalance'),
