@@ -62,21 +62,21 @@ class closingstockBalance(ListAPIView):
             return dfg
 
 
-        puchases = StockTransactions.objects.filter(Q(isactive =1,stockttype__in = ['P','O','R'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate)).values('stock','rate','stockttype','quantity','entrydatetime','stock__id')
-        sales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate).values('stock','rate','stockttype','quantity','entrydatetime','stock__id')
+        puchases = StockTransactions.objects.filter(Q(isactive =1,stockttype__in = ['P','O','R'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate)).values('stock','stockttype','quantity','entrydatetime','stock__id')
+        sales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = entity1,entrydatetime__lte = enddate).values('stock','stockttype','quantity','entrydatetime','stock__id')
         inventory = puchases.union(sales).order_by('entrydatetime')
         closingprice = closingstock.objects.filter(entity = entity1).values('stock__id','closingrate')
         #idf1 = read_frame(puchases)
        # print(idf1)
         idf = read_frame(inventory)
-      #  print(idf)
+        #print(idf)
         cdf = read_frame(closingprice)
         cdf['closingrate'] = cdf['closingrate'].astype(float).fillna(0)
-        print(cdf)
+      #  print(cdf)
         
 
         idf = pd.merge(idf,cdf,on='stock__id',how='outer',indicator=True)
-        print(idf)
+       # print(idf)
 
         idf['closingrate'] = idf['closingrate'].astype(float).fillna(0)
 
@@ -95,14 +95,16 @@ class closingstockBalance(ListAPIView):
        # dfR['rate'] = dfR['rate'].astype(float).fillna(0)
        # print(idf)
         dfR = idf.groupby(['stock'], as_index=False).apply(FiFo).drop(['CS'], axis=1).reset_index(drop=True)
-       # print(dfR)
+        #print(dfR)
 
-        dfR['rate'] = dfR['rate'].fillna(0)
+       # dfR['rate'] = dfR['rate'].fillna(0)
 
         #dfR['closingrate'] = np.where(dfR['closingrate'] >0,dfR['closingrate'],dfR['rate'])
         dfR['balance'] = dfR['quantity'].astype(float)  * dfR['closingrate'].astype(float)
        # print(dfR)
-        dfR = dfR.drop(['rate','_merge','stockttype','entrydatetime'],axis=1) 
+        dfR = dfR.drop(['_merge','stockttype','entrydatetime'],axis=1) 
+
+        #print(dfR)
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
 
@@ -110,10 +112,14 @@ class closingstockBalance(ListAPIView):
 
         dfR.rename(columns = {'stock__id':'stock', 'closingrate':'rate'}, inplace = True)
 
+
+
        
 
 
         print(dfR)
+
+        dfR = dfR.groupby(['stockname','stock','rate'])[['quantity','balance']].sum().abs().reset_index()
 
         return Response(dfR.T.to_dict().values())
 
