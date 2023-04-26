@@ -3850,6 +3850,7 @@ class entityfinancialyearSerializer(serializers.ModelSerializer):
 
 class balancesheetclosingserializer(serializers.ModelSerializer):
     cashtrans = StockTransactionsserilizer(many=True)
+  #  stockrans = StockTransactionsserilizer(many=True)
     startdate = serializers.DateField(write_only=True)
     enddate = serializers.DateField(write_only=True)
     
@@ -3875,8 +3876,8 @@ class balancesheetclosingserializer(serializers.ModelSerializer):
 
             print(cashtrans)
             des = 'balance closing '
-            des2 = 'Tsfer from previous closing '
-
+            des2 = 'Opening Balance'
+    
             if cashtrans['drcr'] == 1:
                 StockTransactions.objects.create(entry = entryid, drcr = 0,entity=validated_data['entity'],accounthead = cashtrans['accounthead'],account = cashtrans['account'],debitamount = 0,creditamount = cashtrans['debitamount'],accounttype = 'M',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'],desc = des)
                 if cashtrans['accounttype'] == '3':

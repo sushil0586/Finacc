@@ -106,7 +106,9 @@ class closingstockBalance(ListAPIView):
 
         #dfi = dfi.drop(['account__id','transactiontype','entrydatetime','account__accountname'],axis=1) 
 
-        dfR.rename(columns = {'stock__id':'stockid', 'closingrate':'rate'}, inplace = True)
+        dfR.rename(columns = {'stock':'stockname'}, inplace = True)
+
+        dfR.rename(columns = {'stock__id':'stock', 'closingrate':'rate'}, inplace = True)
 
        
 
@@ -1487,6 +1489,8 @@ class accountbalance(ListAPIView):
 
         df['drcr'] = np.where(df['credit'] > df['debit'],0,1)
 
+        df = df[~((df.credit == 0.0) & (df.debit == 0.0))]
+
         #df = df.groupby(['accounthead__id','accountname','drcr','account'])[['debit','credit','quantity']].sum().abs().reset_index()
         df.rename(columns = {'account__accountname':'accountname','account__id':'account','account__accounthead': 'accounthead','account__accounthead__name':'accountheadname','account__accounthead__detailsingroup':'accounttype','credit':'creditamount','debit':'debitamount'}, inplace = True)
         return Response(df.sort_values(by=['accountname']).T.to_dict().values())
@@ -1958,6 +1962,8 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         df = df.drop(['accountname_y', 'accountname_x','_merge','balance1','accounthead__id','accounthead'],axis = 1)
 
         print(df)
+
+        df = df[~((df.balance == 0.0) & (df.openingbalance == 0.0))]
         
         return Response(df.sort_values(by=['accountname']).T.to_dict().values())
 
@@ -1981,33 +1987,56 @@ class TrialbalancebyaccountApiView(ListAPIView):
         stk =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','transactiontype','transactionid','entrydatetime','desc').annotate(debit = Sum('debitamount'),credit = Sum('creditamount'),quantity = Sum('quantity')).order_by('entrydatetime')
         ob =StockTransactions.objects.filter(entity = entity,isactive = 1,account = account1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname').annotate(debit = Sum('debitamount'),credit = Sum('creditamount'),quantity = Sum('quantity')).order_by('entrydatetime')
         df1 = read_frame(ob)
-
-        
         df1['desc'] = 'Opening Balance'
         df1['entrydatetime'] = startdate
-       
+
 
         
 
         
 
-        # df1['debit'] = np.where(df1['balance'] >= 0,df1['balance'],0)
-        # df1['credit'] = np.where(df1['balance'] <= 0,-df1['balance'],0)
-        
+        df1['quantity'] = df1['quantity'].astype(float).fillna(0)
+
+        df1['debit'] = df1['debit'].astype(float).fillna(0)
+        df1['credit'] = df1['credit'].astype(float).fillna(0)
+       # df1['balance'] = df1['balance'].astype(float).fillna(0)
+
+
 
         df1 = df1.groupby(['account__accountname','entrydatetime','desc'])[['debit','credit','quantity']].sum().abs().reset_index()
+
+
+        if len(df1.index) > 0:
+
+           # print('--------------------------------------')
+           # print(df1)
+            df1['transactionid'] = -1
+            df1['balance'] = df1['debit'] - df1['credit']
+            df1['balance'] = df1['balance'].astype(float).fillna(0)
+           # df1['balance'] = df1['balance'].astype(float).fillna(0)
+            df1['debit'] = np.where(df1['balance'] >=0,df1['balance'],0)
+            df1['credit'] = np.where(df1['balance'] <=0,df1['balance'],0)
+            df1 =  df1.drop(['balance'],axis = 1)
+
+
+
+
        # df1['balance'] = df1['debit'] - df1['credit']
 
-        df1['balance'] = df1['debit'] - df1['credit']
-
-        df1['debit'] = np.where(df1['balance'] >=0,df1['balance'],0)
-        df1['credit'] = np.where(df1['balance'] <=0,df1['balance'],0)
+        #df1['debit'] = np.where(df1['balance'] >=0,df1['balance'],0)
+        #df1['credit'] = np.where(df1['balance'] <=0,df1['balance'],0)
 
 
-        print(df1)
+        print(len(df1.index)) 
 
-        df1 =  df1.drop(['balance'],axis = 1)
+        #df1 =  df1.drop(['balance'],axis = 1)
+        #print(df1)
         df = read_frame(stk)    
+
+        df['quantity'] = df['quantity'].astype(float).fillna(0)
+
+        df['debit'] = df['debit'].astype(float).fillna(0)
+        df['credit'] = df['credit'].astype(float).fillna(0)
 
         print(df)
 
@@ -2022,6 +2051,9 @@ class TrialbalancebyaccountApiView(ListAPIView):
         union_dfs['desc'] = union_dfs['desc'].fillna('')
         union_dfs['entrydatetime'] = pd.to_datetime(union_dfs['entrydatetime']).dt.strftime('%d-%m-%Y')
         union_dfs['sortdatetime'] = pd.to_datetime(union_dfs['entrydatetime'])
+        union_dfs['sortdatetime'] = union_dfs['sortdatetime'].astype('datetime64[ns]')
+
+        #astype('datetime64[ns]')
         #union_dfs['entrydatetime'] = union_dfs['desc'].fillna(startdate)
        # print(union_dfs)
         #print(stk)
@@ -2031,7 +2063,8 @@ class TrialbalancebyaccountApiView(ListAPIView):
         
 
         print(union_dfs.sort_values(by=['entrydatetime']))
-        return Response(union_dfs.sort_values(by=['entrydatetime']).T.to_dict().values())
+        union_dfs = union_dfs.groupby(['account__accountname','sortdatetime','desc','transactionid','transactiontype','entrydatetime'])[['debit','credit','quantity']].sum().abs().reset_index().sort_values(by ='sortdatetime', ascending = 0)
+        return Response(union_dfs.T.to_dict().values())
     
 
 
