@@ -3850,14 +3850,14 @@ class entityfinancialyearSerializer(serializers.ModelSerializer):
 
 class balancesheetclosingserializer(serializers.ModelSerializer):
     cashtrans = StockTransactionsserilizer(many=True)
-    stockrans = StockTransactionsserilizer(many=True)
+    stocktrans = StockTransactionsserilizer(many=True,write_only = True)
     startdate = serializers.DateField(write_only=True)
     enddate = serializers.DateField(write_only=True)
     
     #closingdate = serializers.DateField(source = 'entrydate1')
     class Meta:
         model = entry
-        fields  = ('entrydate1','entity','cashtrans','startdate','enddate',)
+        fields  = ('entrydate1','entity','cashtrans','startdate','enddate','stocktrans',)
 
 
     def create(self, validated_data):
@@ -3872,7 +3872,7 @@ class balancesheetclosingserializer(serializers.ModelSerializer):
         #entrydate = validated_data['entrydate1'] + timedelta(days = 1)
         entryid2,created  = entry.objects.get_or_create(entrydate1 = validated_data['startdate'],entity=validated_data['entity'])
         cashtrans_data = validated_data.pop('cashtrans')
-        stockrans_data = validated_data.pop('stockrans')
+        stockrans_data = validated_data.pop('stocktrans')
         for cashtrans in cashtrans_data:
 
             print(cashtrans)
@@ -3895,6 +3895,9 @@ class balancesheetclosingserializer(serializers.ModelSerializer):
         acc = account.objects.get(accountcode = 9000)
         acchead = accountHead.objects.get(code = 9000)
 
+        acccloose = account.objects.get(accountcode = 200)
+        accheadclose = accountHead.objects.get(code = 200)
+
         #print(cashtrans)
         des = 'balance closing '
         des2 = 'Opening Balance'
@@ -3904,7 +3907,7 @@ class balancesheetclosingserializer(serializers.ModelSerializer):
             
 
             # if cashtrans['drcr'] == 1:
-            StockTransactions.objects.create(entry = entryid, drcr = 0,entity=validated_data['entity'],accounthead = acchead,account = acc,accounttype = 'DD',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'],desc = des,quantity = cashtrans['quantity'],stock =cashtrans['stock'],stockttype = 'I',rate = cashtrans['rate'])
+            StockTransactions.objects.create(entry = entryid, drcr = 0,entity=validated_data['entity'],accounthead = accheadclose,account = acccloose,accounttype = 'DD',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['entrydate1'],desc = des,quantity = cashtrans['quantity'],stock =cashtrans['stock'],stockttype = 'I',rate = cashtrans['rate'])
             StockTransactions.objects.create(entry = entryid2, drcr = 1,entity=validated_data['entity'],accounthead = acchead,account = acc,accounttype = 'DD',transactionid = -1,createdby = validated_data['createdby'],entrydatetime = validated_data['startdate'],desc = des2,quantity = cashtrans['quantity'],stock= cashtrans['stock'],stockttype = 'R',rate = cashtrans['rate'])
             
             # if cashtrans['drcr'] == 0:

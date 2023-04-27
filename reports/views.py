@@ -728,8 +728,8 @@ class generalfunctions:
                     dfg['quantity'].iloc[0] = dfg['CS'].iloc[0] + subT
             return dfg
         
-        opuchases = StockTransactions.objects.filter(isactive =1,stockttype__in = ['P','O','R'],accounttype = 'DD',entity = self.entityid,entrydatetime__lt = self.startdate).values('stock','stockttype','quantity','entrydatetime','stock__id','rate')
-        osales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = self.entityid,entrydatetime__lt = self.startdate).values('stock','stockttype','quantity','entrydatetime','stock__id','rate')
+        opuchases = StockTransactions.objects.filter(isactive =1,stockttype__in = ['P','O','R'],accounttype = 'DD',entity = self.entityid,entrydatetime__lte = self.startdate).values('stock','stockttype','quantity','entrydatetime','stock__id','rate')
+        osales = StockTransactions.objects.filter(isactive =1,stockttype__in = ['S','I'],accounttype = 'DD',entity = self.entityid,entrydatetime__lte = self.startdate).values('stock','stockttype','quantity','entrydatetime','stock__id','rate')
 
         closingprice = closingstock.objects.filter(entity = self.entityid).values('stock__id','closingrate')
         oinventory = opuchases.union(osales).order_by('entrydatetime')
@@ -1009,6 +1009,62 @@ class incomeandexpensesstatement(ListAPIView):
         
 
         pldf.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__accountname':'accountname','account__id':'accountid'}, inplace = True)
+
+
+        print(pldf)
+
+
+     
+
+
+     
+
+
+
+
+      
+    
+     
+        return Response(pldf.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs().reset_index().sort_values(by=['accounthead']).T.to_dict().values())
+    
+
+class netprofitbalance(ListAPIView):
+
+   # serializer_class = balancesheetserializer
+    permission_classes = (permissions.IsAuthenticated,)
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['entity']
+
+    def get(self, request, format=None):
+        entity1 = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
+        stk = generalfunctions(entityid = entity1,startdate= startdate,enddate=enddate)
+       
+        dfR_initial = stk.getinventorydetails()
+        dfR = stk.getinventorydetails_1(dfR_1 = dfR_initial)
+
+        ##################################################################
+        odfR = stk.getopeningstockdetails()
+        ##################################################################
+        df = stk.getstockdetails()
+        pldf = stk.getprofitandloss()
+
+        pldf = stk.getgppandl(odfR = odfR,df = df, dfR = dfR,pldf=pldf)
+
+        pldf['drcr'] = pldf['balance'].apply(lambda x: 0 if x > 0 else 1)
+        
+          
+
+        
+
+        pldf.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__accountname':'accountname','account__id':'accountid'}, inplace = True)
+
+
+       # print(pldf)
+
+
+        pldf = pldf[((pldf.accountid == -2))]
 
 
      
