@@ -92,6 +92,7 @@ class account(TrackingModel):
     BanKAcno            = models.IntegerField(verbose_name=_('Bank A/c No'),null=True,blank=True)
     composition         = models.BooleanField(verbose_name=_('Bank A/c No'),null=True,blank=True)
     canbedeleted      = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
+    sharepercentage             = models.DecimalField(max_digits=10, decimal_places=2,null=True,blank=True,verbose_name=_('Share Percentage'))
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
 
     def __str__(self):

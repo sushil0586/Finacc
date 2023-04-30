@@ -14,6 +14,7 @@ urlpatterns  = [
     path('entityDetails', views.entityDetailsApiView.as_view() ,name = 'entityDetails'),
     path('entityDetails/<int:id>',views.entityDetailsApiView.as_view(), name = 'entityDetails1'),
     path('unittype', views.unitTypeApiView.as_view() ,name = 'unittype'),
+    path('constitution', views.ConstitutionApiView.as_view() ,name = 'unittype'),
     path('unittype/<int:id>',views.unitTypeApiView.as_view(), name = 'unittypeid'),
   #  path('user',views.AuthApiView.as_view(), name = 'user'),
     path('entityfy',views.entityfinancialyearApiView.as_view(), name = 'user'),

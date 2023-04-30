@@ -15,6 +15,16 @@ class unitType(models.Model):
 
     def __str__(self):
         return f'{self.UnitName}'
+    
+
+class Constitution(models.Model):
+    ConstitutionName =    models.CharField(max_length= 255)
+    ConstitutionDesc =    models.TextField()
+    createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
+
+
+    def __str__(self):
+        return f'{self.ConstitutionName}'
 
 
 
@@ -23,7 +33,6 @@ class unitType(models.Model):
 
 
 class entity(TrackingModel):
-    unitType =    models.ForeignKey(unitType, related_name='Unittype', on_delete=models.CASCADE)
     entityName =  models.CharField(max_length= 255)
     address =     models.CharField(max_length= 255)
     ownerName =   models.CharField(max_length= 255)
@@ -37,15 +46,11 @@ class entity(TrackingModel):
     panno =        models.CharField(max_length= 255,null= True)
     tds =           models.CharField(max_length= 255,null= True)
     tdsCircle =        models.CharField(max_length= 255,null= True)
-    style =        models.CharField(max_length= 255,null= True)
-    Commodity =    models.CharField(max_length= 255,null= True)
     email =    models.CharField(max_length= 255,null= True)
     tcs206c1honsale  = models.BooleanField(blank =True,null = True)
     tds194qonsale  = models.BooleanField(blank =True,null = True)
-    qtyapplicable  = models.BooleanField(blank =True,null = True)
     gstno =        models.CharField(max_length= 255,null= True)
     gstintype =        models.CharField(max_length= 255,null= True)
-    jobwork =    models.CharField(max_length= 255,null= True)
     user = models.ManyToManyField(to = 'Authentication.User',related_name='uentity',null=True,default=[1])
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,default=1,blank=True)
     
@@ -61,6 +66,19 @@ class entityfinancialyear(TrackingModel):
     desc =      models.CharField(max_length= 255,null= True,verbose_name='description')
     finstartyear =      models.DateTimeField(verbose_name='Fin Start Date',null = True)
     finendyear =        models.DateTimeField(verbose_name='Fin End Date',null = True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
+
+
+    def __str__(self):
+        return f'{self.entity}'
+    
+
+class entityconstitution(TrackingModel):
+    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='constitution',)
+    constitution =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True,)
+    shareholder =      models.CharField(max_length= 255,null= True,verbose_name='shareholder')
+    pan =      models.CharField(max_length= 25,null= True,verbose_name='pan')
+    sharepercentage = models.DecimalField(max_digits=10, decimal_places=2,null=True,blank=True,verbose_name='Share Percentage')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
 
 

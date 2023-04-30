@@ -14,7 +14,7 @@ class accountSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = account
-        fields =  ('id','accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',)
+        fields =  ('id','accountcode','accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',)
 
     def create(self, validated_data):
         #print(validated_data)
@@ -42,7 +42,7 @@ class accountSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
 
         print('abc')
-        fields = ['accountdate','accounthead','creditaccounthead','gstno','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',]
+        fields = ['accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -226,7 +226,7 @@ class accountHeadSerializer(serializers.ModelSerializer):
             return obj.accountheadsr.name
 
     def create(self, validated_data):
-        #print(validated_data)
+      #  print(validated_data)
         entity1 = validated_data.get('entity')
         user = validated_data.get('owner')
 
@@ -234,12 +234,13 @@ class accountHeadSerializer(serializers.ModelSerializer):
         order = accountHead.objects.create(**validated_data)
        # print(tracks_data)
         for PurchaseOrderDetail_data in PrchaseOrderDetails_data:
+           #  print(PurchaseOrderDetail_data)
              account.objects.create(accounthead = order,entity=entity1,owner = user, **PurchaseOrderDetail_data)
             
         return order
 
 
-class accountHeadSerializer2(serializers.ModelSerializer):
+class accountHeadSerializer2(serializers.ModelSerializer):  
 
     #detilsinbs = ChoiceField(choices=accountHead.Details_in_BS)
    # accountHeadMain = accountHeadMainSerializer(many=True)
