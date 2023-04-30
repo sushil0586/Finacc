@@ -109,7 +109,7 @@ class entityAddSerializer(serializers.ModelSerializer):
     class Meta:
         model = entity
         #fields = ('id','entityName','fy',)
-        fields = ('entityName','address','ownerName','Country','state','district','city','pincode','phoneoffice','phoneResidence','panno','tds','tdsCircle','email','tcs206c1honsale','tcs206c1honsale','gstno','gstintype','user','fy','constitution',)
+        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','user','fy','constitution',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 

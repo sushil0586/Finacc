@@ -11,7 +11,7 @@ class unitTypeAdmin(admin.ModelAdmin):
     list_display = ['UnitName','UnitDesc','createdby']
 
 class entityeAdmin(admin.ModelAdmin):
-    list_display = ['entityName','address']
+    list_display = ['entityname','address']
 
 admin.site.register(unitType,unitTypeAdmin)
 
