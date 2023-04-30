@@ -1,7 +1,7 @@
 import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import entity,entity_details,unitType,entityfinancialyear
+from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
@@ -14,10 +14,25 @@ import json
 #from Authentication.serializers import userserializer
 
 
+
+class ConstitutionSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Constitution
+        fields = '__all__'
+
+
 class unitTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = unitType
+        fields = '__all__'
+
+
+class entityconstitutionSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = entityconstitution
         fields = '__all__'
 
 
@@ -89,11 +104,12 @@ class entityfinancialyearListSerializer(serializers.ModelSerializer):
 class entityAddSerializer(serializers.ModelSerializer):
 
     fy = entityfinancialyearSerializer(many=True)
+    constitution = entityconstitutionSerializer(many=True)
 
     class Meta:
         model = entity
         #fields = ('id','entityName','fy',)
-        fields = ('unitType','entityName','address','ownerName','Country','state','district','city','pincode','phoneoffice','phoneResidence','panno','tds','tdsCircle','style','Commodity','email','tcs206c1honsale','tcs206c1honsale','qtyapplicable','gstno','gstintype','jobwork','user','fy',)
+        fields = ('entityName','address','ownerName','Country','state','district','city','pincode','phoneoffice','phoneResidence','panno','tds','tdsCircle','email','tcs206c1honsale','tcs206c1honsale','gstno','gstintype','user','fy','constitution',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
@@ -119,6 +135,7 @@ class entityAddSerializer(serializers.ModelSerializer):
         users = validated_data.pop("user")
 
         fydata = validated_data.pop("fy")
+        constitutiondata = validated_data.pop("constitution")
 
        
         # fendyear = validated_data.pop("finendyear")
@@ -128,8 +145,18 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         for PurchaseOrderDetail_data in fydata:
 
-                print(PurchaseOrderDetail_data)
+               # print(PurchaseOrderDetail_data)
                 detail = entityfinancialyear.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
+
+        # for PurchaseOrderDetail_data in constitutiondata:
+
+        #        # print(PurchaseOrderDetail_data)
+        #         detail = entityconstitution.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
+
+        #         if detail.constitution == 1:
+        #             achead = accountHead.objects.get(entity = newentity,code = 6200)
+        #             account.objects.create(accounthead = achead.id,accountname = detail.shareholder,pan = detail.pan)
+
 
         
 
@@ -189,6 +216,31 @@ class entityAddSerializer(serializers.ModelSerializer):
                 serializer2 = self.PTaxType(data =key)
                 serializer2.is_valid(raise_exception=True)
                 serializer2.save(entity = newentity,createdby = users[0])
+
+    
+        for PurchaseOrderDetail_data in constitutiondata:
+
+                # print(PurchaseOrderDetail_data)
+                    detail = entityconstitution.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
+
+                    print(detail.constitution.id)
+
+                    if detail.constitution.id == 1:
+                        achead = accountHead.objects.get(entity = newentity,code = 6200)
+                        detail2 = account.objects.create(accounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage, )
+
+                    if detail.constitution.id == 2:
+
+                        achead = accountHead.objects.get(entity = newentity,code = 6300)
+                        detail2 = account.objects.create(accounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,)
+
+
+        account.objects.filter(accounthead__code = 1000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 3000,entity = newentity))
+        account.objects.filter(accounthead__code = 6000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 6100,entity = newentity))
+        account.objects.filter(accounthead__code = 8000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 7000,entity = newentity))
+
+        
+
 
 
             
@@ -368,7 +420,7 @@ class entityDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = entity_details
-        fields = ('entity','style','commodity','weightDecimal','email','registrationno','division','collectorate',)
+        fields = ('entity','email',)
 
 
    

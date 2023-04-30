@@ -2,8 +2,8 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import entity,entity_details,unitType,entityfinancialyear
-from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer
+from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution
+from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -100,6 +100,22 @@ class unitTypeApiView(ListCreateAPIView):
     
     def get_queryset(self):
         return unitType.objects.filter()
+    
+
+
+class ConstitutionApiView(ListAPIView):
+
+    serializer_class = ConstitutionSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['id','unitType','entityName']
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(createdby = self.request.user)
+    
+    def get_queryset(self):
+        return Constitution.objects.filter()
 
 # class entityUserApiView(ListCreateAPIView):
 

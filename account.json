@@ -15,6 +15,32 @@
                 "canbedeleted": false
                 
             },
+            {
+               
+                "name": "Properieter Capital",
+                "code": 6200,
+                "detailsingroup":3,
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+                "accountHeadName": "null",
+                "canbedeleted": false
+                
+            },
+            {
+               
+                "name": "Partner Capital",
+                "code": 6300,
+                "detailsingroup":3,
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+                "accountHeadName": "null",
+                "canbedeleted": false
+                
+            },
             
             {
                 
@@ -27,6 +53,35 @@
                         "accountHeadName": "null",
                         "canbedeleted": false
                 
+            },
+            {
+               
+                "name": "Sale",
+                "code": 3000,
+                "detailsingroup":1,
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+                "accountHeadName": "null",
+                "canbedeleted": false
+              
+            },
+            {
+               
+                "name": "Sundry Creditors",
+                "code": 7000,
+                "detailsingroup":3,
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+              
+               
+                "accountHeadName": "null",
+                "canbedeleted": false
+              
+
             }
         ],
 
@@ -52,26 +107,26 @@
                                         "accountname": "Purchase",
                                         "address1": "4369 GT Road",
                                         "address2": "sirhind",
-                                        "openingbcr": "1.00",
-                                        "openingndr": "1.00",
-                                        "contactno": "1",
-                                        "emailid": "sushiljyotibansal@gmail.com",
-                                        "agent": "1",
-                                        "pan": "1",
+                                        "openingbcr": "0.00",
+                                        "openingndr": "0.00",
+                                        "contactno": "",
+                                        "emailid": "",
+                                        "agent": "",
+                                        "pan": "",
                                         "tobel10cr": true,
                                         "approved": true,
-                                        "tdsno": "1",
+                                        "tdsno": "",
                                         "rtgsno": null,
                                         "bankname": null,
                                         "Adhaarno": null,
                                         "saccode": null,
                                         "contactperson": null,
-                                        "deprate": "1.00",
-                                        "tdsrate": "1.00",
-                                        "gstshare": "1.00",
-                                        "quanity1": 1,
-                                        "quanity2": 1,
-                                        "BanKAcno": 1,
+                                        "deprate": "0.00",
+                                        "tdsrate": "0.00",
+                                        "gstshare": "0.00",
+                                        "quanity1": 0,
+                                        "quanity2": 0,
+                                        "BanKAcno": 0,
                                         "composition": true,
                                         "country": 1,
                                         "state": 1,
@@ -79,7 +134,42 @@
                                         "city": 1,
                                         "canbedeleted": false
        
-                                 }
+                                 },
+                                 {
+     
+                                    "accountcode": 3000,
+                                    "gstno": "1",
+                                    "accountname": "Sale",
+                                    "address1": "4369 GT Road",
+                                    "address2": "sirhind",
+                                    "openingbcr": "1.00",
+                                    "openingndr": "1.00",
+                                    "contactno": "1",
+                                    "emailid": "sushiljyotibansal@gmail.com",
+                                    "agent": "1",
+                                    "pan": "1",
+                                    "tobel10cr": true,
+                                    "approved": true,
+                                    "tdsno": "1",
+                                    "rtgsno": null,
+                                    "bankname": null,
+                                    "Adhaarno": null,
+                                    "saccode": null,
+                                    "contactperson": null,
+                                    "deprate": "1.00",
+                                    "tdsrate": "1.00",
+                                    "gstshare": "1.00",
+                                    "quanity1": 1,
+                                    "quanity2": 1,
+                                    "BanKAcno": 1,
+                                    "composition": true,
+                                    "country": 1,
+                                    "state": 1,
+                                    "district": 1,
+                                    "city": 1,
+                                    "canbedeleted": false
+                                   
+                                }
                 ]
 
             },
@@ -92,8 +182,6 @@
                 "drcreffect": "1",
                 "description": "desc",
                 "accountheadsr": null,
-               
-               
                 "accountHeadName": "null",
                 "canbedeleted": false,
                 "accounthead_accounts":[
@@ -135,61 +223,10 @@
                 ]
 
             },
-            {
-               
-                "name": "Sale",
-                "code": 3000,
-                "detailsingroup":1,
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-                
-               
-                "accountHeadName": "null",
-                "canbedeleted": false,
-                "accounthead_accounts":[
-                   {
-     
-        "accountcode": 3000,
-        "gstno": "1",
-        "accountname": "Sale",
-        "address1": "4369 GT Road",
-        "address2": "sirhind",
-        "openingbcr": "1.00",
-        "openingndr": "1.00",
-        "contactno": "1",
-        "emailid": "sushiljyotibansal@gmail.com",
-        "agent": "1",
-        "pan": "1",
-        "tobel10cr": true,
-        "approved": true,
-        "tdsno": "1",
-        "rtgsno": null,
-        "bankname": null,
-        "Adhaarno": null,
-        "saccode": null,
-        "contactperson": null,
-        "deprate": "1.00",
-        "tdsrate": "1.00",
-        "gstshare": "1.00",
-        "quanity1": 1,
-        "quanity2": 1,
-        "BanKAcno": 1,
-        "composition": true,
-        "country": 1,
-        "state": 1,
-        "district": 1,
-        "city": 1,
-        "canbedeleted": false
-       
-    }
-                ]
-
-            },
+            
 			{
                
-                "name": "Cash",
+                "name": "Cash In Hand",
                 "code": 4000,
                 "detailsingroup":3,
                 "balanceType": "Credit",
@@ -205,7 +242,7 @@
                                     
                                         "accountcode": 4000,
                                         "gstno": "1",
-                                        "accountname": "Cash",
+                                        "accountname": "Cash In Hand",
                                         "address1": "4369 GT Road",
                                         "address2": "sirhind",
                                         "openingbcr": "1.00",
@@ -505,58 +542,7 @@
 
             },
             
-            {
-               
-                "name": "Sundry Creditors",
-                "code": 7000,
-                "detailsingroup":3,
-                "balanceType": "Credit",
-                "drcreffect": "1",
-                "description": "desc",
-                "accountheadsr": null,
-              
-               
-                "accountHeadName": "null",
-                "canbedeleted": false,
-                "accounthead_accounts":[
-                                                {
-                                    
-                                        "accountcode": 7000,
-                                        "gstno": "1",
-                                        "accountname": "Sushil Bansal",
-                                        "address1": "4369 GT Road",
-                                        "address2": "sirhind",
-                                        "openingbcr": "1.00",
-                                        "openingndr": "1.00",
-                                        "contactno": "1",
-                                        "emailid": "sushiljyotibansal@gmail.com",
-                                        "agent": "1",
-                                        "pan": "1",
-                                        "tobel10cr": true,
-                                        "approved": true,
-                                        "tdsno": "1",
-                                        "rtgsno": null,
-                                        "bankname": null,
-                                        "Adhaarno": null,
-                                        "saccode": null,
-                                        "contactperson": null,
-                                        "deprate": "1.00",
-                                        "tdsrate": "1.00",
-                                        "gstshare": "1.00",
-                                        "quanity1": 1,
-                                        "quanity2": 1,
-                                        "BanKAcno": 1,
-                                        "composition": true,
-                                        "country": 1,
-                                        "state": 1,
-                                        "district": 1,
-                                        "city": 1,
-                                        "canbedeleted": true
-       
-                                 }
-                ]
-
-            },
+            
             {
                
                 "name": "Sundry Debitors",
@@ -604,7 +590,43 @@
                                         "city": 1,
                                         "canbedeleted": true
        
-                                 }
+                                 },
+
+                                 {
+                                    
+                                    "accountcode": 7000,
+                                    "gstno": "1",
+                                    "accountname": "Sushil Bansal",
+                                    "address1": "4369 GT Road",
+                                    "address2": "sirhind",
+                                    "openingbcr": "1.00",
+                                    "openingndr": "1.00",
+                                    "contactno": "1",
+                                    "emailid": "sushiljyotibansal@gmail.com",
+                                    "agent": "1",
+                                    "pan": "1",
+                                    "tobel10cr": true,
+                                    "approved": true,
+                                    "tdsno": "1",
+                                    "rtgsno": null,
+                                    "bankname": null,
+                                    "Adhaarno": null,
+                                    "saccode": null,
+                                    "contactperson": null,
+                                    "deprate": "1.00",
+                                    "tdsrate": "1.00",
+                                    "gstshare": "1.00",
+                                    "quanity1": 1,
+                                    "quanity2": 1,
+                                    "BanKAcno": 1,
+                                    "composition": true,
+                                    "country": 1,
+                                    "state": 1,
+                                    "district": 1,
+                                    "city": 1,
+                                    "canbedeleted": true
+   
+                             }
                 ]
 
             },
@@ -627,6 +649,59 @@
                                         "accountcode": 9000,
                                         "gstno": "1",
                                         "accountname": "Opening Stock",
+                                        "address1": "4369 GT Road",
+                                        "address2": "sirhind",
+                                        "openingbcr": "1.00",
+                                        "openingndr": "1.00",
+                                        "contactno": "1",
+                                        "emailid": "sushiljyotibansal@gmail.com",
+                                        "agent": "1",
+                                        "pan": "1",
+                                        "tobel10cr": true,
+                                        "approved": true,
+                                        "tdsno": "1",
+                                        "rtgsno": null,
+                                        "bankname": null,
+                                        "Adhaarno": null,
+                                        "saccode": null,
+                                        "contactperson": null,
+                                        "deprate": "1.00",
+                                        "tdsrate": "1.00",
+                                        "gstshare": "1.00",
+                                        "quanity1": 1,
+                                        "quanity2": 1,
+                                        "BanKAcno": 1,
+                                        "composition": true,
+                                        "country": 1,
+                                        "state": 1,
+                                        "district": 1,
+                                        "city": 1,
+                                        "canbedeleted": false
+       
+                                 }
+                ]
+
+            },
+
+            {
+               
+                "name": "Closing Stock",
+                "code": 200,
+                "detailsingroup":1,
+                "balanceType": "Credit",
+                "drcreffect": "1",
+                "description": "desc",
+                "accountheadsr": null,
+                
+               
+                "accountHeadName": "null",
+                "canbedeleted": false,
+                "accounthead_accounts":[
+                                                {
+                                    
+                                        "accountcode": 200,
+                                        "gstno": "1",
+                                        "accountname": "Closing Stock",
                                         "address1": "4369 GT Road",
                                         "address2": "sirhind",
                                         "openingbcr": "1.00",
