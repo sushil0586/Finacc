@@ -17,9 +17,10 @@ class unitType(models.Model):
         return f'{self.UnitName}'
     
 
+
 class Constitution(models.Model):
-    ConstitutionName =    models.CharField(max_length= 255)
-    ConstitutionDesc =    models.TextField()
+    constitutionname =    models.CharField(max_length= 255)
+    constitutiondesc =    models.TextField()
     createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
 
 
@@ -33,10 +34,10 @@ class Constitution(models.Model):
 
 
 class entity(TrackingModel):
-    entityName =  models.CharField(max_length= 255)
+    entityname =  models.CharField(max_length= 255)
     address =     models.CharField(max_length= 255)
-    ownerName =   models.CharField(max_length= 255)
-    Country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
+    ownername =   models.CharField(max_length= 255)
+    country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
     state =       models.ForeignKey(state, on_delete=models.CASCADE,null= True)
     district =    models.ForeignKey(district, on_delete=models.CASCADE,null= True)
     city =        models.ForeignKey(city, on_delete=models.CASCADE,null= True)
@@ -45,10 +46,10 @@ class entity(TrackingModel):
     phoneResidence = models.CharField(max_length= 255)
     panno =        models.CharField(max_length= 255,null= True)
     tds =           models.CharField(max_length= 255,null= True)
-    tdsCircle =        models.CharField(max_length= 255,null= True)
+    tdscircle =        models.CharField(max_length= 255,null= True)
     email =    models.CharField(max_length= 255,null= True)
     tcs206c1honsale  = models.BooleanField(blank =True,null = True)
-    tds194qonsale  = models.BooleanField(blank =True,null = True)
+   # tds194qonsale  = models.BooleanField(blank =True,null = True)
     gstno =        models.CharField(max_length= 255,null= True)
     gstintype =        models.CharField(max_length= 255,null= True)
     user = models.ManyToManyField(to = 'Authentication.User',related_name='uentity',null=True,default=[1])
