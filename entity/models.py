@@ -43,7 +43,7 @@ class entity(TrackingModel):
     city =        models.ForeignKey(city, on_delete=models.CASCADE,null= True)
     pincode =    models.CharField(max_length= 255,null= True)
     phoneoffice = models.CharField(max_length= 255)
-    phoneResidence = models.CharField(max_length= 255)
+    phoneresidence = models.CharField(max_length= 255)
     panno =        models.CharField(max_length= 255,null= True)
     tds =           models.CharField(max_length= 255,null= True)
     tdscircle =        models.CharField(max_length= 255,null= True)
