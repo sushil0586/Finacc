@@ -52,7 +52,7 @@ class entityfinancialyearSerializer(serializers.ModelSerializer):
     
     def get_entityname(self,obj):
          
-        return obj.entity.entityName
+        return obj.entity.entityname
     
 
     def get_gst(self,obj):
