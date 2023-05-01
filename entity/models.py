@@ -25,7 +25,7 @@ class Constitution(models.Model):
 
 
     def __str__(self):
-        return f'{self.ConstitutionName}'
+        return f'{self.constitutionname}'
 
 
 
@@ -58,7 +58,7 @@ class entity(TrackingModel):
 
     
     def __str__(self):
-        return f'{self.entityName}'
+        return f'{self.entityname}'
     
 
 
