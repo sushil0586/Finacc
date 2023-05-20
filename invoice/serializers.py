@@ -1039,7 +1039,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 
     
     def get_entityname(self,obj):
-        return string.capwords(obj.entity.entityName)
+        return string.capwords(obj.entity.entityname)
 
     
     def get_entityaddress(self,obj):
