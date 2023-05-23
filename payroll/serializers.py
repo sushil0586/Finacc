@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from payroll.models import salarycomponent,employee,employeesalary,salarytrans
+from payroll.models import salarycomponent,employee,employeesalary,salarytrans,department,designation
 from Authentication.serializers import Registerserializers
 from Authentication.models import User
 from django.contrib.auth.hashers import make_password
@@ -37,7 +37,7 @@ class employeeserializer(serializers.ModelSerializer):
     
     def update(self, instance, validated_data):
 
-        fields = ['entity','createdby',]
+        fields = ['entity','createdby','employeeid','dateofjoining','department','designation','reportingmanager','bankname','bankaccountno','pan','address1','address2','country','state','district','city',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -77,7 +77,7 @@ class employeeserializer(serializers.ModelSerializer):
     #id = serializers.IntegerField()
     class Meta:
         model = employee
-        fields = ('employee','entity','createdby',)
+        fields = ('employee','employeeid','dateofjoining','department','entity','createdby','designation','reportingmanager','bankname','bankaccountno','pan','address1','address2','country','state','district','city',)
         #depth = 1
 
 
@@ -95,5 +95,18 @@ class salarytransserializer(serializers.ModelSerializer):
     class Meta:
         model = salarytrans
         fields = ('id','salaryamountexpected','salaryamountactual','percentageofctc','salaryvalue','entity','createdby','isactive',)
+
+class departmentserializer(serializers.ModelSerializer):
+    #id = serializers.IntegerField()
+    class Meta:
+        model = department
+        fields = ('id','departmentname','departmentcode',)
+
+
+class designationserializer(serializers.ModelSerializer):
+    #id = serializers.IntegerField()
+    class Meta:
+        model = designation
+        fields = ('id','designationname','designationcode',)
 
 

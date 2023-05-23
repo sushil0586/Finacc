@@ -8,9 +8,15 @@ app_name = 'payroll'
 urlpatterns  = [
 
     path('salarycomponent',views.salarycomponentApiView.as_view(),name = 'salarycomponent'),
+    path('salarycomponent/<int:id>',views.salarycomponentupdatedelApiView.as_view(),name = 'salarycomponent'),
     path('employee',views.employeeApiView.as_view(),name = 'salarycomponent'),
     path('employee/<int:employee>',views.employeeupdatedelview.as_view(),name = 'salarycomponent'),
     path('employeesalary',views.employeesalaryApiView.as_view(),name = 'salarycomponent'),
+    path('designation',views.designationApiView.as_view(),name = 'salarycomponent'),
+    path('department',views.departmentApiView.as_view(),name = 'salarycomponent'),
+
+
+    
 
     
 ]
