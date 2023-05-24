@@ -6,7 +6,7 @@ import json
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer
+from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer
 from payroll.models import salarycomponent,employee,employeesalary,designation,department
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
@@ -28,6 +28,7 @@ import pandas as pd
 from decimal import Decimal
 from datetime import timedelta,date,datetime
 from django_pivot.pivot import pivot
+from Authentication.models import User
 
 
 
