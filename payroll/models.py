@@ -67,7 +67,7 @@ class employee(TrackingModel):
 
     employee = models.OneToOneField(to= User, on_delete= models.CASCADE,primary_key=True)
     employeeid = models.CharField(max_length= 200,verbose_name= 'employee id')
-    dateofjoining = models.DateField(verbose_name='Date Of Joining',default=datetime.date.today)
+    dateofjoining = models.DateTimeField(verbose_name='Date Of Joining',auto_now_add=True, blank=True)
     department = models.ForeignKey(department,on_delete=models.CASCADE,verbose_name= 'department',null= True)
     designation = models.ForeignKey(designation,on_delete=models.CASCADE,verbose_name= 'designation',null= True)
     reportingmanager = models.ForeignKey("self", on_delete= models.CASCADE,null=True,verbose_name='Reporting Manager',related_name='rmanager')
