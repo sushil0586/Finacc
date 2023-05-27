@@ -21,6 +21,7 @@ class employeeserializer(serializers.ModelSerializer):
     def create(self, validated_data):
         #print(validated_data)
         emp = validated_data.pop('employee')
+        emp.pop('id')
 
         try:
             
@@ -140,6 +141,32 @@ class employeeListSerializer(serializers.ModelSerializer):
     class Meta:
         model = employee
         fields =  ('employeeid','email',)
+
+
+class employeeListfullSerializer(serializers.ModelSerializer):
+
+
+
+    employeeid = serializers.IntegerField(source = 'employee')
+    email =  serializers.CharField(max_length=500,source = 'employee__email')
+    firstname =  serializers.CharField(max_length=500,source = 'employee__first_name')
+    lastname =  serializers.CharField(max_length=500,source = 'employee__last_name')
+    employee_id =  serializers.CharField(max_length=500,source = 'employeeid')
+    #caccountheadname =  serializers.CharField(max_length=500,source = 'creditaccounthead__name')
+  
+
+    
+
+    
+
+
+
+
+    
+
+    class Meta:
+        model = employee
+        fields =  ('employeeid','email','firstname','lastname','employee_id',)
 
 
 

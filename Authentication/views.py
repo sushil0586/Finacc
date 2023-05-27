@@ -30,7 +30,7 @@ class AuthApiView(ListAPIView):
 
 
 
-class RegisterApiView(GenericAPIView):
+class RegisterApiView(ListCreateAPIView):
 
 
     permission_classes = (permissions.AllowAny,)
@@ -79,8 +79,8 @@ class roleapiview(ListAPIView):
 
     
     def get_queryset(self): 
-        #entity = self.request.query_params.get('entity')
-        return userRole.objects.filter()
+        entity = self.request.query_params.get('entity')
+        return userRole.objects.filter(entity=entity)
 
 class ChangePasswordView(UpdateAPIView):
     serializer_class = ChangePasswordSerializer
