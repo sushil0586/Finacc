@@ -6,7 +6,7 @@ import json
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer
+from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,employeeListSerializer
 from payroll.models import salarycomponent,employee,employeesalary,designation,department
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
@@ -153,3 +153,23 @@ class departmentApiView(ListAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return department.objects.filter(entity = entity)
+    
+
+
+class employeeListApiView(ListAPIView):
+
+    serializer_class = employeeListSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        queryset =  employee.objects.filter( Q(entity = entity)).values('employee','employee__email')
+
+        #query = queryset.exclude(accounttrans__accounttype  = 'MD')
+
+        #annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
+
+       # print(queryset.query.__str__())
+        return queryset
