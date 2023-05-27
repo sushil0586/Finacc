@@ -123,7 +123,7 @@ class employeeListSerializer(serializers.ModelSerializer):
 
 
 
-    employeeid = serializers.IntegerField(source = 'employee')
+    employee_id = serializers.IntegerField(source = 'employee')
     email =  serializers.CharField(max_length=500,source = 'employee__email')
     #caccountheadname =  serializers.CharField(max_length=500,source = 'creditaccounthead__name')
   
@@ -139,7 +139,7 @@ class employeeListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = employee
-        fields =  ('employeeid','email',)
+        fields =  ('employee_id','email',)
 
 
 
