@@ -37,7 +37,7 @@ class employeeserializer(serializers.ModelSerializer):
     
     def update(self, instance, validated_data):
 
-        fields = ['entity','createdby','employeeid','dateofjoining','department','designation','reportingmanager','bankname','bankaccountno','pan','address1','address2','country','state','district','city',]
+        fields = ['entity','createdby','employeeid','dateofjoining','department','designation','reportingmanager','bankname','bankaccountno','pan','address1','address2','country','state','district','city','isactive',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -77,7 +77,7 @@ class employeeserializer(serializers.ModelSerializer):
     #id = serializers.IntegerField()
     class Meta:
         model = employee
-        fields = ('employee','employeeid','dateofjoining','department','entity','createdby','designation','reportingmanager','bankname','bankaccountno','pan','address1','address2','country','state','district','city',)
+        fields = ('employee','employeeid','dateofjoining','department','entity','createdby','designation','reportingmanager','bankname','bankaccountno','pan','address1','address2','country','state','district','city','isactive',)
         #depth = 1
 
 
@@ -116,5 +116,30 @@ class reportingmanagerserializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id','first_name',)
+
+
+
+class employeeListSerializer(serializers.ModelSerializer):
+
+
+
+    employeeid = serializers.IntegerField(source = 'employee')
+    email =  serializers.CharField(max_length=500,source = 'employee__email')
+    #caccountheadname =  serializers.CharField(max_length=500,source = 'creditaccounthead__name')
+  
+
+    
+
+    
+
+
+
+
+    
+
+    class Meta:
+        model = employee
+        fields =  ('employeeid','email',)
+
 
 
