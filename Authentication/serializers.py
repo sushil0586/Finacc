@@ -24,8 +24,8 @@ class Registerserializers(serializers.ModelSerializer):
     def to_representation(self, instance):
         representation = super().to_representation(instance)
         print(representation)
-        if representation['is_active'] == True:
-            return representation
+       # if representation['is_active'] == True:
+        return representation
         
         
 
@@ -84,8 +84,11 @@ class Userserializer(serializers.ModelSerializer):
 
     
     def get_rolename(self,obj):
-        acc =  obj.role.rolename
-        return acc
+        if obj.role is None:
+            return 1   
+        else:
+            acc =  obj.role.rolename
+            return acc
         # if obj.role is None:
         #     return 'null'   
         # else :
@@ -125,7 +128,7 @@ class RoleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = userRole
-        fields = ('id','rolename','roledesc')
+        fields = ('id','rolename','roledesc','entity',)
 
 
 

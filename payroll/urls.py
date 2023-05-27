@@ -15,6 +15,7 @@ urlpatterns  = [
     path('designation',views.designationApiView.as_view(),name = 'salarycomponent'),
     path('department',views.departmentApiView.as_view(),name = 'salarycomponent'),
     path('employeelist',views.employeeListApiView.as_view(),name = 'salarycomponent'),
+    path('employeelistfull/<int:employee>',views.employeeListfullApiView.as_view(),name = 'salarycomponent'),
 
 
     
