@@ -54,6 +54,7 @@ class salarycomponent(TrackingModel):
     salarycomponentcode = models.CharField(max_length= 200,verbose_name= 'Component code')
     componentperiod = models.IntegerField(verbose_name='period',default = 0)
     componenttype = models.IntegerField(verbose_name='Component type',default = 0)
+    calculationtype = models.IntegerField(verbose_name='calculation type',default = 0)
     defaultpercentage =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'default percentage')
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)

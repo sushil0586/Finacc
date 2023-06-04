@@ -9,7 +9,7 @@ class salarycomponentserializer(serializers.ModelSerializer):
     #id = serializers.IntegerField()
     class Meta:
         model = salarycomponent
-        fields = ('id','salarycomponentname','salarycomponentcode','componentperiod','componenttype','defaultpercentage','entity','createdby',)
+        fields = ('id','salarycomponentname','salarycomponentcode','componentperiod','componenttype','defaultpercentage','entity','createdby','calculationtype',)
 
 class employeeserializer(serializers.ModelSerializer):
 
