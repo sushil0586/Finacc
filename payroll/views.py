@@ -195,3 +195,36 @@ class employeeListfullApiView(RetrieveAPIView):
 
        # print(queryset.query.__str__())
         return queryset
+    
+class getsalarystructure(ListAPIView):
+
+   # serializer_class = balancesheetserializer
+    permission_classes = (permissions.IsAuthenticated,)
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['entity']
+
+    def get(self, request, format=None):
+        entity1 = self.request.query_params.get('entity')
+        ctc = self.request.query_params.get('ctc')
+
+
+        aqs = salarycomponent.objects.filter(entity = entity1).values('id','salarycomponentname','salarycomponentcode', 'componentperiod','defaultpercentage','componenttype')
+
+        df = read_frame(aqs)
+
+
+        df = read_frame(aqs)
+      #  df['yearlycomponent'] = df['yearlycomponent'].astype(float)
+       # df['balance'] = df['balance'].astype(float)
+
+        df['yearlycomponent'] = (float(ctc) * df['defaultpercentage'].astype(float))/100.00
+
+        df['monthlycomponent'] = (df['yearlycomponent'].astype(float))/12.00
+
+
+
+
+       # return 1
+     
+      
+        return Response(df.groupby(['id','salarycomponentname','salarycomponentcode','componentperiod','componenttype' ,'defaultpercentage'])[['yearlycomponent','monthlycomponent']].sum().abs().reset_index().sort_values(by=['salarycomponentname']).T.to_dict().values())
