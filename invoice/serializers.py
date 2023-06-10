@@ -1110,7 +1110,7 @@ class gstorderservicesdetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = gstorderservicesdetails
-        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','linetotal','entity','saccode',)
+        fields =  ('id','account','accountname','accountdesc','multiplier','rate','amount','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','linetotal','entity','saccode',)
 
     def get_accountname(self,obj):
         return obj.account.accountname
@@ -1128,7 +1128,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
     gstorderservicesdetails = gstorderservicesdetailsSerializer(many=True)
     class Meta:
         model = gstorderservices
-        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','multiplier','expensesaftertax','gtotal','remarks','entity','owner','gstorderservicesdetails','isactive',)
+        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','multiplier','expensesaftertax','gtotal','remarks','entity','owner','gstorderservicesdetails','isactive',)
 
 
     
@@ -1166,7 +1166,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
             return order
 
     def update(self, instance, validated_data):
-        fields = ['orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','multiplier','expensesaftertax','gtotal','remarks','entity','owner',]
+        fields = ['orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','multiplier','expensesaftertax','gtotal','remarks','entity','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
