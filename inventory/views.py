@@ -24,7 +24,11 @@ class productcategoryApiView(ListCreateAPIView):
     def get_queryset(self):
 
         entity = self.request.query_params.get('entity')
-        return ProductCategory.objects.filter(entity = entity)
+        q1 = ProductCategory.objects.filter(entity__isnull=True)
+        q2 = ProductCategory.objects.filter(entity = entity)
+
+        q3 = q1.union(q2)
+        return q3
 
 class productcategoryupdatedelApiView(RetrieveUpdateDestroyAPIView):
 
@@ -34,7 +38,14 @@ class productcategoryupdatedelApiView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        return ProductCategory.objects.filter(entity = entity)
+
+        if entity:
+            return ProductCategory.objects.filter()
+        else:
+            return ProductCategory.objects.filter()
+
+
+         
 
 
 class CreateTodoApiView(CreateAPIView):
