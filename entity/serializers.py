@@ -6,10 +6,11 @@ from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
 from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2
-from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer
+from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer,ProductCategoryMainSerializer
 from invoice.serializers import purchasetaxtypeserializer
 import os
 import json
+import collections
 
 #from Authentication.serializers import userserializer
 
@@ -121,6 +122,7 @@ class entityAddSerializer(serializers.ModelSerializer):
     TOGSR = TOGserializer
     GSTSR = GSTserializer
     PTaxType = purchasetaxtypeserializer
+    pcategory = ProductCategoryMainSerializer
     def create(self, validated_data):
 
 
@@ -136,6 +138,16 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         fydata = validated_data.pop("fy")
         constitutiondata = validated_data.pop("constitution")
+
+       # print(fydata)
+
+       # print(list(fydata[0]['finstartyear']))
+
+      #  d = collections.OrderedDict()
+
+       
+
+       # print(fydata)
 
        
         # fendyear = validated_data.pop("finendyear")
@@ -156,6 +168,15 @@ class entityAddSerializer(serializers.ModelSerializer):
         #         if detail.constitution == 1:
         #             achead = accountHead.objects.get(entity = newentity,code = 6200)
         #             account.objects.create(accounthead = achead.id,accountname = detail.shareholder,pan = detail.pan)
+
+
+
+
+        accountdate1 = entityfinancialyear.objects.get(entity = newentity).finstartyear
+
+
+
+
 
 
         
@@ -179,7 +200,7 @@ class entityAddSerializer(serializers.ModelSerializer):
             for key in json_data["entity_accountheads"]:
                 serializer2 = self.serializer(data =key)
                 serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,owner = users[0])
+                serializer2.save(entity = newentity,owner = users[0],acountdate = accountdate1)
 
             for key in json_data["accountheads"]:
                 serializer2 = self.accounthead(data =key)
@@ -216,6 +237,10 @@ class entityAddSerializer(serializers.ModelSerializer):
                 serializer2 = self.PTaxType(data =key)
                 serializer2.is_valid(raise_exception=True)
                 serializer2.save(entity = newentity,createdby = users[0])
+            for key in json_data["productcategory"]:
+                serializer2 = self.pcategory(data =key)
+                serializer2.is_valid(raise_exception=True)
+                serializer2.save(createdby = users[0])
 
     
         for PurchaseOrderDetail_data in constitutiondata:
@@ -227,12 +252,12 @@ class entityAddSerializer(serializers.ModelSerializer):
 
                     if detail.constitution.id == 1:
                         achead = accountHead.objects.get(entity = newentity,code = 6200)
-                        detail2 = account.objects.create(accounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage, )
+                        detail2 = account.objects.create(accounthead = achead,creditaccounthead = achead, accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,emailid = newentity.email,accountdate = accountdate1,)
 
                     if detail.constitution.id == 2:
 
                         achead = accountHead.objects.get(entity = newentity,code = 6300)
-                        detail2 = account.objects.create(accounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,)
+                        detail2 = account.objects.create(accounthead = achead,creditaccounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,emailid = newentity.email,accountdate = accountdate1,)
 
 
         account.objects.filter(accounthead__code = 1000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 3000,entity = newentity))

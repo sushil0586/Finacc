@@ -8,6 +8,7 @@ from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,Purch
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock
 from financial.models import account,accountHead
 from inventory.models import Product
+from entity.models import entityfinancialyear
 from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
 from entity.models import entity
@@ -468,7 +469,9 @@ class  ledgerserializer(serializers.ModelSerializer):
 
     def get_openingquantity(self, obj):
 
-        yesterday = date.today() - timedelta(days = 100)
+        currentdates = entityfinancialyear.objects.get(entity = obj.entity,isactive = 1)
+
+        yesterday = currentdates.finstartyear
 
         startdate = datetime.strptime(self.context['request'].query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
        
@@ -476,7 +479,7 @@ class  ledgerserializer(serializers.ModelSerializer):
      
        
     
-        quantity = obj.accounttrans.filter(account = obj.id,entry__entrydate1__range = (yesterday,startdate),entity = obj.entity,isactive = 1).exclude(accounttype = 'MD').aggregate(Sum('quantity'))['quantity__sum']
+        quantity = obj.accounttrans.filter(account = obj.id,entry__entrydate1__gte  = yesterday, entry__entrydate1__lt  = startdate ,entity = obj.entity,isactive = 1).exclude(accounttype = 'MD').aggregate(Sum('quantity'))['quantity__sum']
         #credit = obj.accounttrans.filter(account = obj.id,entry__entrydate1__range = (yesterday,startdate),entity = obj.entity,isactive = 1).exclude(accounttype = 'MD').aggregate(Sum('creditamount'))['creditamount__sum']
         # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
         # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
@@ -498,7 +501,9 @@ class  ledgerserializer(serializers.ModelSerializer):
 
     def get_openingbalance(self, obj):
 
-        yesterday = date.today() - timedelta(days = 100)
+        currentdates = entityfinancialyear.objects.get(entity = obj.entity,isactive = 1)
+
+        yesterday = currentdates.finstartyear
 
         startdate = datetime.strptime(self.context['request'].query_params.get('startdate'), '%Y-%m-%d') - timedelta(days = 1)
        

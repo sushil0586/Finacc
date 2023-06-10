@@ -4,6 +4,28 @@ from invoice.models import entry,StockTransactions
 from financial.models import account
 
 
+
+class ProductCategoryMainSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = ProductCategory
+        fields = ('id','pcategoryname','maincategory','entity',)
+
+    def create(self, validated_data):
+
+        catcount = ProductCategory.objects.filter().count()
+
+        if catcount > 0:
+            return 1
+        
+        category = ProductCategory.objects.create(**validated_data)
+        
+
+
+        
+        return category
+
+
 class ProductCategorySerializer(serializers.ModelSerializer):
 
     maincategoryname = serializers.SerializerMethodField()
@@ -18,6 +40,8 @@ class ProductCategorySerializer(serializers.ModelSerializer):
             return 'null'   
         else :
             return obj.maincategory.pcategoryname
+        
+    
 
 class ProductSerializer(serializers.ModelSerializer):
 

@@ -226,16 +226,19 @@ class accountHeadSerializer(serializers.ModelSerializer):
             return obj.accountheadsr.name
 
     def create(self, validated_data):
-      #  print(validated_data)
+        print(validated_data)
         entity1 = validated_data.get('entity')
         user = validated_data.get('owner')
+        accdate = validated_data.pop("acountdate")
+
+        
 
         PrchaseOrderDetails_data = validated_data.pop('accounthead_accounts')
         order = accountHead.objects.create(**validated_data)
        # print(tracks_data)
         for PurchaseOrderDetail_data in PrchaseOrderDetails_data:
            #  print(PurchaseOrderDetail_data)
-             account.objects.create(accounthead = order,entity=entity1,owner = user, **PurchaseOrderDetail_data)
+             account.objects.create(accounthead = order,entity=entity1,owner = user, **PurchaseOrderDetail_data,accountdate = accdate)
             
         return order
 

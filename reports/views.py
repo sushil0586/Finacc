@@ -1716,6 +1716,97 @@ class accountbalance(ListAPIView):
         return Response(df.sort_values(by=['accountname']).T.to_dict().values())
     
 
+
+class ledgerdetails(ListAPIView):
+
+   # serializer_class = TrialbalanceSerializerbyaccounthead
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['account__accounthead']
+
+
+    
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        # accounthead = self.request.query_params.get('accounthead')
+        # drcrgroup = self.request.query_params.get('drcr')
+
+        utc=pytz.UTC
+
+        print(currentdates.finstartyear)
+
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        
+       # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
+        stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','entry__entrydate1','transactiontype','transactionid','drcr','desc').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
+        df = read_frame(stk)
+
+        df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+       # df['entry__entrydate1'] = df['entry__entrydate1'].dt.strftime('%Y-%m-%d')
+
+       # df['entry__entrydate1'] = utc.localize(datetime.strptime(df['entry__entrydate1'], '%Y-%m-%d'))
+
+
+        print(type(enddate))
+
+        
+
+        openingbalance = df[(df['entry__entrydate1'] >= datetime.date(currentdates.finstartyear)) & (df['entry__entrydate1'] < startdate.date())]
+
+        details = df[(df['entry__entrydate1'] >= startdate.date()) & (df['entry__entrydate1'] < enddate.date())]
+
+        #openingbalance = openingbalance[['account__accountname','debitamount','creditamount','quantity']].copy()
+
+        openingbalance = openingbalance.groupby(['account__accountname'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
+
+
+        
+        openingbalance['balance'] = openingbalance['debitamount'] - openingbalance['creditamount']
+        openingbalance['debitamount'] = np.where(openingbalance['balance'] >= 0,openingbalance['balance'],0)
+        openingbalance['creditamount'] = np.where(openingbalance['balance'] <= 0,-openingbalance['balance'],0)
+
+        openingbalance['drcr'] = np.where(openingbalance['balance'] > 0,False,True)
+
+        openingbalance['entry__entrydate1'] = startdate
+        openingbalance['transactiontype'] = 'O'
+        openingbalance['transactionid'] = -1
+        openingbalance['desc'] = 'Opening'
+
+        openingbalance.drop(['balance'],axis = 1)
+
+
+
+
+        
+        
+        print(openingbalance)
+
+        
+
+        # df['balance'] = df['debit'] - df['credit']
+
+        # df['debit'] = np.where(df['balance'] >= 0,df['balance'],0)
+        # df['credit'] = np.where(df['balance'] <= 0,-df['balance'],0)
+
+
+
+        # df['drcr'] = np.where(df['credit'] > df['debit'],0,1)
+
+        # df = df[~((df.credit == 0.0) & (df.debit == 0.0))]
+
+        # #df = df.groupby(['accounthead__id','accountname','drcr','account'])[['debit','credit','quantity']].sum().abs().reset_index()
+        # df.rename(columns = {'account__accountname':'accountname','account__id':'account','account__accounthead': 'accounthead','account__accounthead__name':'accountheadname','account__accounthead__detailsingroup':'accounttype','credit':'creditamount','debit':'debitamount'}, inplace = True)
+        return Response(details.T.to_dict().values())
+    
+
 class ledgerviewapi(ListAPIView):
 
     serializer_class = ledgerserializer
@@ -2125,20 +2216,57 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         drcrgroup = self.request.query_params.get('drcr')
         startdate = self.request.query_params.get('startdate')
         enddate = self.request.query_params.get('enddate')
-        if drcrgroup == 'DR':
 
-            ob =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gt = 0)
+        utc=pytz.UTC
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+
+
+        if drcrgroup == 'DR':
+            if currentdates.finstartyear == utc.localize(datetime.strptime(startdate, '%Y-%m-%d')):
+
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gt = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gt = 0)
+
+            elif currentdates.isactive == 1:
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gte = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gt = 0)
+               
+            else:
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gte = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__gt = 0)
+               
+
+
             stk =StockTransactions.objects.filter(entity = entity,account__accounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gt = 0)
             #return stk
         
         elif drcrgroup == 'CR':
 
-            ob =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
+            if currentdates.finstartyear == utc.localize(datetime.strptime(startdate, '%Y-%m-%d')):
+
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gt = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
+
+            elif currentdates.isactive == 1:
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gte = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
+               
+            else:
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gte = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
+               
+
+            #ob =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
             stk =StockTransactions.objects.filter(entity = entity,account__creditaccounthead = accounthead,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lt = 0)
 
         else:
 
-            ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+
+            if currentdates.finstartyear == utc.localize(datetime.strptime(startdate, '%Y-%m-%d')):
+
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gt = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+
+            elif currentdates.isactive == 1:
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gte = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+               
+            else:
+                ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lte = startdate,entrydatetime__gte = currentdates.finstartyear).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('accounthead__id','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+
+            #ob =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__lt = startdate).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
             stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accounthead','account__accountname','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
 
 

@@ -90,7 +90,7 @@ class gsttype(TrackingModel):
 
 class ProductCategory(TrackingModel):
     pcategoryname = models.CharField(max_length= 50,verbose_name=_('Product Category'))
-    maincategory = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Main category'),default=True,blank=True)
+    maincategory = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Main category'),blank=True)
     entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
