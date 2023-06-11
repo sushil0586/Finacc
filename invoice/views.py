@@ -44,7 +44,8 @@ class tdsordelatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = tdsmain.objects.filter(entityid= entity).last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = tdsmain.objects.filter(entityid= entity,entityfinid = entityfy).last()
         serializer = tdsVSerializer(id)
         return Response(serializer.data)
 
@@ -480,7 +481,9 @@ class salesorderlatestview(ListAPIView):
 
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = SalesOderHeader.objects.filter(entity= entity).last()
+        entityfy = self.request.query_params.get('entityfinid')
+      #  entityfy = enti
+        id = SalesOderHeader.objects.filter(entity= entity,entityfinid = entityfy).last()
         serializer = SOSerializer(id)
         return Response(serializer.data)
 
@@ -499,7 +502,8 @@ class gstorderlatestview(ListAPIView):
     def get(self,request):
         entity = self.request.query_params.get('entity')
         ordertype = self.request.query_params.get('ordertype')
-        id = gstorderservices.objects.filter(entity= entity,orderType = ordertype).last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = gstorderservices.objects.filter(entity= entity,orderType = ordertype,entityfinid = entityfy).last()
         serializer = SSSerializer(id)
         return Response(serializer.data)
 
@@ -519,7 +523,8 @@ class purchasereturnlatestview(ListAPIView):
 
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = PurchaseReturn.objects.filter(entity= entity).last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = PurchaseReturn.objects.filter(entity= entity,entityfinid = entityfy).last()
         serializer = PRSerializer(id)
         return Response(serializer.data)
 
@@ -575,7 +580,8 @@ class PurchaseReturnlatestview(ListCreateAPIView):
 
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = PurchaseReturn.objects.filter(entity= entity).last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = PurchaseReturn.objects.filter(entity= entity,entityfinid=entityfy).last()
         serializer = PRSerializer(id)
         return Response(serializer.data)
 
@@ -686,7 +692,8 @@ class purchaseordelatestview(ListAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = purchaseorder.objects.filter(entity= entity).last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = purchaseorder.objects.filter(entity= entity,entityfinid = entityfy).last()
         serializer = POSerializer(id)
         return Response(serializer.data)
     
@@ -698,8 +705,9 @@ class jobworklatestview(ListAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
+        entityfy = self.request.query_params.get('entityfinid')
         ordertype = self.request.query_params.get('ordertype')
-        id = jobworkchalan.objects.filter(entity= entity,ordertype = ordertype).last()
+        id = jobworkchalan.objects.filter(entity= entity,ordertype = ordertype,entityfinid = entityfy).last()
         serializer = JwvoucherSerializer(id)
         return Response(serializer.data)
 
@@ -820,7 +828,8 @@ class journalordelatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = journalmain.objects.filter(entity= entity,vouchertype = 'J').last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = journalmain.objects.filter(entity= entity,vouchertype = 'J',entityfinid = entityfy).last()
         serializer = JournalVSerializer(id)
         return Response(serializer.data)
 
@@ -833,7 +842,8 @@ class stockordelatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = stockmain.objects.filter(entity= entity,vouchertype = 'PC').last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = stockmain.objects.filter(entity= entity,vouchertype = 'PC',entityfinid = entityfy).last()
         serializer = stockVSerializer(id)
         return Response(serializer.data)
 
@@ -850,7 +860,8 @@ class productionlatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = productionmain.objects.filter(entity= entity,vouchertype = 'PV').last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = productionmain.objects.filter(entity= entity,vouchertype = 'PV', entityfinid = entityfy).last()
         serializer = productionVSerializer(id)
         return Response(serializer.data)
 
@@ -863,7 +874,8 @@ class bankordelatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = journalmain.objects.filter(entity= entity,vouchertype = 'B').last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = journalmain.objects.filter(entity= entity,vouchertype = 'B',entityfinid = entityfy).last()
         serializer = JournalVSerializer(id)
         return Response(serializer.data)
 
@@ -876,7 +888,8 @@ class cashordelatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = journalmain.objects.filter(entity= entity,vouchertype = 'C').last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = journalmain.objects.filter(entity= entity,vouchertype = 'C',entityfinid = entityfy).last()
         serializer = JournalVSerializer(id)
         return Response(serializer.data)
 
@@ -1039,7 +1052,8 @@ class salesreturnlatestview(ListCreateAPIView):
     filter_backends = [DjangoFilterBackend]
     def get(self,request):
         entity = self.request.query_params.get('entity')
-        id = salereturn.objects.filter(entity= entity).last()
+        entityfy = self.request.query_params.get('entityfinid')
+        id = salereturn.objects.filter(entity= entity,entityfinid = entityfy ).last()
         serializer = SRSerializer(id)
         return Response(serializer.data)
 
@@ -3688,8 +3702,9 @@ class debitcreditlatestvnoview(ListCreateAPIView):
     def get(self,request):
         entity = self.request.query_params.get('entity')
         vouchertype = self.request.query_params.get('vouchertype')
+        entityfy = self.request.query_params.get('entityfinid')
        
-        id = debitcreditnote.objects.filter(entity= entity,vouchertype=vouchertype).last()
+        id = debitcreditnote.objects.filter(entity= entity,vouchertype=vouchertype, entityfinid = entityfy).last()
         serializer = dcnoSerializer(id)
         return Response(serializer.data)
 
