@@ -39,10 +39,7 @@ class productcategoryupdatedelApiView(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
 
-        if entity:
-            return ProductCategory.objects.filter()
-        else:
-            return ProductCategory.objects.filter()
+        return ProductCategory.objects.filter()
 
 
          
