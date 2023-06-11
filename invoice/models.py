@@ -53,7 +53,7 @@ class gstorderservices(TrackingModel):
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     class Meta:
-        unique_together = ('billno', 'entity','orderType',)
+        unique_together = ('billno', 'entity','orderType','entityfinid',)
 
     def __str__(self):
         return f'{self.billno}'
@@ -132,7 +132,7 @@ class SalesOderHeader(TrackingModel):
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     class Meta:
-        unique_together = ('billno', 'entity',)
+        unique_together = ('billno', 'entity','entityfinid',)
 
 
     def __str__(self):
@@ -282,7 +282,7 @@ class jobworkchalan(TrackingModel):
 
     class Meta:
         unique_together = ('voucherno', 'entity',)
-        unique_together = ('billno', 'account','entity','ordertype',)
+        unique_together = ('billno', 'account','entity','ordertype','entityfinid',)
         
 
     def __str__(self):
@@ -353,7 +353,7 @@ class purchaseorder(TrackingModel):
 
     class Meta:
         unique_together = ('voucherno', 'entity',)
-        unique_together = ('billno', 'account','entity',)
+        unique_together = ('billno', 'account','entity','entityfinid',)
         
 
     def __str__(self):
@@ -422,7 +422,7 @@ class salereturn(TrackingModel):
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     class Meta:
-        unique_together = ('voucherno', 'entity',)
+        unique_together = ('voucherno', 'entity','entityfinid',)
 
 
     def __str__(self):
@@ -497,7 +497,7 @@ class stockmain(TrackingModel):
 
 
     class Meta:
-        unique_together = ('voucherno','vouchertype','entity',)
+        unique_together = ('voucherno','vouchertype','entity','entityfinid',)
 
     def __str__(self):
         return f'{self.voucherno} '
@@ -528,7 +528,7 @@ class productionmain(TrackingModel):
 
 
     class Meta:
-        unique_together = ('voucherno','vouchertype','entity',)
+        unique_together = ('voucherno','vouchertype','entity','entityfinid',)
 
     def __str__(self):
         return f'{self.voucherno} '
@@ -724,7 +724,7 @@ class tdsmain(TrackingModel):
 
 
     class Meta:
-        unique_together = ('voucherno', 'entityid',)
+        unique_together = ('voucherno', 'entityid','entityfinid',)
 
 
     def __str__(self):
