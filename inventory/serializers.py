@@ -13,7 +13,7 @@ class ProductCategoryMainSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
 
-        catcount = ProductCategory.objects.filter().count()
+        catcount = ProductCategory.objects.filter(entity__isnull=True).count()
 
         if catcount > 0:
             return 1
