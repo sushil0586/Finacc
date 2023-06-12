@@ -1829,7 +1829,7 @@ class ledgerdetails(ListAPIView):
         bsdf = pd.concat([df2,df]).reset_index()
 
 
-        bsdf =bsdf[['account__accountname','account__id','creditamount','debitamount','desc','entry__entrydate1','transactiontype','transactionid']]
+        bsdf =bsdf[['account__accountname','account__id','creditamount','debitamount','desc','entry__entrydate1','transactiontype','transactionid','drcr','quantity']]
 
       #  bsdf['entrydatetime'] = pd.to_datetime(bsdf['entrydatetime']).dt.strftime('%d-%m-%Y')
 
@@ -1839,7 +1839,7 @@ class ledgerdetails(ListAPIView):
 
 
         j = (bsdf.groupby(['accountname','accountid'])
-       .apply(lambda x: x[['creditamount','debitamount','desc','entrydate','transactiontype','transactionid','displaydate']].to_dict('records'))
+       .apply(lambda x: x[['creditamount','debitamount','desc','entrydate','transactiontype','transactionid','displaydate','drcr','quantity']].to_dict('records'))
        .reset_index()
        .rename(columns={0:'accounts'})).T.to_dict().values()
 
