@@ -1,5 +1,6 @@
-from django.urls import path
+from django.urls import path,include
 from reports import views
+
 
 
 app_name = 'reports'
@@ -22,6 +23,9 @@ urlpatterns  = [
     path('stockledgerbook',views.stockledgerbookapi.as_view(), name = 'Trialbalance'),
     path('ledgersummary',views.ledgersummarylatest.as_view(), name = 'Trialbalance'),
     path('ledgerbook',views.ledgerviewapi.as_view(), name = 'Trialbalance'),
+    path('ledgerdetails',views.ledgerdetails.as_view(), name = 'Trialbalance'),
+
+    
     path('cashbook',views.cbviewapi.as_view(), name = 'Trialbalance'),
     path('salebook',views.salebyaccountapi.as_view(), name = 'salebok'),
     path('purchasebook',views.purchasebyaccountapi.as_view(), name = 'purchasebook'),
@@ -31,6 +35,7 @@ urlpatterns  = [
     path('trialbalancebyaccount',views.TrialbalancebyaccountApiView.as_view(), name = 'Trialbalance'),
     path('accountbalance',views.accountbalance.as_view(), name = 'Trialbalance'),
     path('netprofitbalance',views.netprofitbalance.as_view(), name = 'Trialbalance'),
+   # path('__debug__/', include(debug_toolbar.urls))
 
 
     
