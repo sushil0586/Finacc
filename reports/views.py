@@ -14,7 +14,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -1734,8 +1734,8 @@ class ledgerdetails(ListAPIView):
         enddate = self.request.query_params.get('enddate')
         param_list = request.GET.getlist('account')
         print(param_list)
-        if self.request.query_params.get('account'):
-            accounts =  [int(x) for x in request.GET.get('account', '').split(',')]
+        # if self.request.query_params.get('account'):
+        #     accounts =  [int(x) for x in request.GET.get('account', '').split(',')]
         print(account)
         currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
@@ -2533,6 +2533,45 @@ class TrialbalancebyaccountApiView(ListAPIView):
         print(union_dfs.sort_values(by=['entrydatetime']))
         union_dfs = union_dfs.groupby(['account__accountname','sortdatetime','desc','transactionid','transactiontype','entrydatetime'])[['debit','credit','quantity']].sum().abs().reset_index().sort_values(by ='sortdatetime', ascending = 0)
         return Response(union_dfs.T.to_dict().values())
+    
+
+class accountListapiview(ListAPIView):
+    serializer_class = accountListSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+
+        if self.request.query_params.get('accounthead'):
+            accountheads =  [int(x) for x in request.GET.get('accounthead', '').split(',')]
+            queryset =  StockTransactions.objects.filter(entity = entity,accounthead__in = accountheads).values('account__id','account__accountname').distinct().order_by('account')
+        else:
+            queryset =  StockTransactions.objects.filter(entity = entity).values('account__id','account__accountname').distinct().order_by('account')
+
+        df = read_frame(queryset) 
+        df.rename(columns = {'account__accountname':'accountname','account__id':'account'}, inplace = True)
+
+        return Response(df.T.to_dict().values())
+    
+
+class accountheadListapiview(ListAPIView):
+    serializer_class = accountListSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+        queryset =  StockTransactions.objects.filter(entity = entity).values('accounthead__id','accounthead__name').distinct().order_by('account')
+
+        df = read_frame(queryset) 
+        df.rename(columns = {'accounthead__name':'accountheadname','accounthead__id':'accounthead'}, inplace = True)
+
+        return Response(df.T.to_dict().values())
+
+
     
 
 
