@@ -2551,7 +2551,7 @@ class accountListapiview(ListAPIView):
             queryset =  StockTransactions.objects.filter(entity = entity).values('account__id','account__accountname').distinct().order_by('account')
 
         df = read_frame(queryset) 
-        df.rename(columns = {'account__accountname':'accountname','account__id':'account'}, inplace = True)
+        df.rename(columns = {'account__accountname':'accountname','account__id':'id'}, inplace = True)
 
         return Response(df.T.to_dict().values())
     
@@ -2567,7 +2567,7 @@ class accountheadListapiview(ListAPIView):
         queryset =  StockTransactions.objects.filter(entity = entity).values('accounthead__id','accounthead__name').distinct().order_by('account')
 
         df = read_frame(queryset) 
-        df.rename(columns = {'accounthead__name':'accountheadname','accounthead__id':'accounthead'}, inplace = True)
+        df.rename(columns = {'accounthead__name':'name','accounthead__id':'id'}, inplace = True)
 
         return Response(df.T.to_dict().values())
 
