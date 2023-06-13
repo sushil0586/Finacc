@@ -951,3 +951,16 @@ class cashserializer(serializers.ModelSerializer):
         stock = stock.annotate(accountname=F('account__accountname')).order_by('account__accountname')
         return stock
        # return stocktranserilaizer(stock, many=True).data
+
+class accountListSerializer(serializers.ModelSerializer):
+
+
+
+    
+   # accountname =  serializers.CharField(max_length=500,source = 'account__accountname')
+    accountid =  serializers.CharField(max_length=500,source = 'account__id')
+   
+
+    class Meta:
+        model = StockTransactions
+        fields =  ('accountid',)

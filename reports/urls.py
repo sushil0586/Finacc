@@ -35,6 +35,14 @@ urlpatterns  = [
     path('trialbalancebyaccount',views.TrialbalancebyaccountApiView.as_view(), name = 'Trialbalance'),
     path('accountbalance',views.accountbalance.as_view(), name = 'Trialbalance'),
     path('netprofitbalance',views.netprofitbalance.as_view(), name = 'Trialbalance'),
+    path('accountList',views.accountListapiview.as_view(), name = 'Trialbalance'),
+    path('accountheadList',views.accountheadListapiview.as_view(), name = 'Trialbalance'),
+
+    
+
+    
+
+
    # path('__debug__/', include(debug_toolbar.urls))
 
 
