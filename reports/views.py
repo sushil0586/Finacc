@@ -1801,8 +1801,14 @@ class ledgerdetails(ListAPIView):
 
         ##############################################################
 
+        df['debitamount'] = df['debitamount'].astype(float).fillna(0)
+        df['creditamount'] = df['creditamount'].astype(float).fillna(0)
+        df['quantity'] = df['quantity'].astype(float).fillna(0)
+
         df = df.groupby(['account__accountname','account__id'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
        # print(openingbalance)
+
+        
 
         
         df['balance'] = df['debitamount'] - df['creditamount']
@@ -1837,11 +1843,13 @@ class ledgerdetails(ListAPIView):
 
         bsdf['displaydate'] = pd.to_datetime(bsdf['entrydate']).dt.strftime('%d-%m-%Y')
 
+        j = pd.DataFrame()
 
-        j = (bsdf.groupby(['accountname','accountid'])
-       .apply(lambda x: x[['creditamount','debitamount','desc','entrydate','transactiontype','transactionid','displaydate','drcr','quantity']].to_dict('records'))
-       .reset_index()
-       .rename(columns={0:'accounts'})).T.to_dict().values()
+        if len(bsdf.index) > 0:
+            j = (bsdf.groupby(['accountname','accountid'])
+            .apply(lambda x: x[['creditamount','debitamount','desc','entrydate','transactiontype','transactionid','displaydate','drcr','quantity']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
 
 
 
@@ -2564,7 +2572,7 @@ class accountheadListapiview(ListAPIView):
     
     def get(self, request, format=None):
         entity = self.request.query_params.get('entity')
-        queryset =  StockTransactions.objects.filter(entity = entity).values('accounthead__id','accounthead__name').distinct().order_by('account')
+        queryset =  StockTransactions.objects.filter(entity = entity).values('accounthead__id','accounthead__name').distinct().order_by('accounthead')
 
         df = read_frame(queryset) 
         df.rename(columns = {'accounthead__name':'name','accounthead__id':'id'}, inplace = True)
