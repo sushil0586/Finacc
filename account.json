@@ -1263,6 +1263,52 @@
                 "pcategoryname": "General"
                 
                 
+            },
+
+            
+            {
+               
+                "pcategoryname": "Raw Material"
+                
+                
+            }
+            ,
+            
+            {
+               
+                "pcategoryname": "Finished Goods"
+                
+                
+            },
+            {
+               
+                "pcategoryname": "Semi finished Goods"
+                
+                
+            },
+            {
+               
+                "pcategoryname": "Bye Product"
+                
+                
+            },
+            {
+               
+                "pcategoryname": "Wastage"
+                
+                
+            },
+            {
+               
+                "pcategoryname": "Consumable"
+                
+                
+            },
+            {
+               
+                "pcategoryname": "Others"
+                
+                
             }
         ]
 
