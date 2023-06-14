@@ -15,7 +15,7 @@ class ProductCategoryMainSerializer(serializers.ModelSerializer):
 
         catcount = ProductCategory.objects.filter(entity__isnull=True).count()
 
-        if catcount > 0:
+        if catcount > 8:
             return 1
         
         category = ProductCategory.objects.create(**validated_data)
