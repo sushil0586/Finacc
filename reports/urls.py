@@ -24,6 +24,12 @@ urlpatterns  = [
     path('ledgersummary',views.ledgersummarylatest.as_view(), name = 'Trialbalance'),
     path('ledgerbook',views.ledgerviewapi.as_view(), name = 'Trialbalance'),
     path('ledgerdetails',views.ledgerdetails.as_view(), name = 'Trialbalance'),
+    path('stockledgerdetails',views.stockledgerdetails.as_view(), name = 'Trialbalance'),
+
+    path('stockledgersummary',views.stockledgersummary.as_view(), name = 'Trialbalance'),
+
+
+    
 
     
     path('cashbook',views.cbviewapi.as_view(), name = 'Trialbalance'),
@@ -37,6 +43,10 @@ urlpatterns  = [
     path('netprofitbalance',views.netprofitbalance.as_view(), name = 'Trialbalance'),
     path('accountList',views.accountListapiview.as_view(), name = 'Trialbalance'),
     path('accountheadList',views.accountheadListapiview.as_view(), name = 'Trialbalance'),
+    path('productlist',views.productListapiview.as_view(), name = 'Trialbalance'),
+
+
+    
 
     
 
