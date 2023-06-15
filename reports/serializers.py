@@ -952,7 +952,7 @@ class cashserializer(serializers.ModelSerializer):
         return stock
        # return stocktranserilaizer(stock, many=True).data
 
-class accountListSerializer(serializers.ModelSerializer):
+class accountListSerializer2(serializers.ModelSerializer):
 
 
 

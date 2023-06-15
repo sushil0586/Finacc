@@ -14,7 +14,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -1968,8 +1968,8 @@ class stockledgerdetails(ListAPIView):
 
         df['salequantity'] = np.where(df['stockttype'] == "S",df['quantity'],0)
         df['purchasequantity'] = np.where(df['stockttype'] == "P",df['quantity'],0)
-        df['iquantity'] = np.where(df['stockttype'] == "I",df['quantity'],0)
-        df['rquantity'] = np.where(df['stockttype'] == "R",df['quantity'],0)
+        df['consumptionquanity'] = np.where(df['stockttype'] == "I",df['quantity'],0)
+        df['productionquanity'] = np.where(df['stockttype'] == "R",df['quantity'],0)
       
         openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] < startdate.date())]
 
@@ -1977,20 +1977,20 @@ class stockledgerdetails(ListAPIView):
 
         details['salequantity'] = details['salequantity'].astype(float).fillna(0)
         details['purchasequantity'] = details['purchasequantity'].astype(float).fillna(0)
-        details['rquantity'] = details['rquantity'].astype(float).fillna(0)
-        details['iquantity'] = details['iquantity'].astype(float).fillna(0)
+        details['productionquanity'] = details['productionquanity'].astype(float).fillna(0)
+        details['consumptionquanity'] = details['consumptionquanity'].astype(float).fillna(0)
 
 
         openingbalance['salequantity'] = openingbalance['salequantity'].astype(float).fillna(0)
         openingbalance['purchasequantity'] = openingbalance['purchasequantity'].astype(float).fillna(0)
-        openingbalance['rquantity'] = openingbalance['rquantity'].astype(float).fillna(0)
-        openingbalance['iquantity'] = openingbalance['iquantity'].astype(float).fillna(0)
+        openingbalance['productionquanity'] = openingbalance['productionquanity'].astype(float).fillna(0)
+        openingbalance['consumptionquanity'] = openingbalance['consumptionquanity'].astype(float).fillna(0)
 
 
 
-        df = df.groupby(['productname','productid'])[['salequantity','purchasequantity','rquantity','iquantity']].sum().abs().reset_index()
+        df = df.groupby(['productname','productid'])[['salequantity','purchasequantity','productionquanity','consumptionquanity']].sum().abs().reset_index()
 
-        openingbalance = openingbalance.groupby(['productname','productid'])[['salequantity','purchasequantity','rquantity','iquantity']].sum().abs().reset_index()
+        openingbalance = openingbalance.groupby(['productname','productid'])[['salequantity','purchasequantity','productionquanity','consumptionquanity']].sum().abs().reset_index()
 
 
         details = details.drop(['entry','stockttype','quantity'],axis = 1)
@@ -2019,7 +2019,7 @@ class stockledgerdetails(ListAPIView):
 
         if len(bsdf.index) > 0:
             j = (bsdf.groupby(['productname','productid'])
-            .apply(lambda x: x[['salequantity','purchasequantity','rquantity','iquantity','desc','entrydate','transactiontype','transactionid']].to_dict('records'))
+            .apply(lambda x: x[['salequantity','purchasequantity','productionquanity','iquantity','desc','entrydate','transactiontype','transactionid']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'accounts'})).T.to_dict().values()
 
@@ -2695,7 +2695,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
     
 
 class accountListapiview(ListAPIView):
-    serializer_class = accountListSerializer
+    serializer_class = accountListSerializer2
     permission_classes = (permissions.IsAuthenticated,)
 
     
@@ -2716,7 +2716,7 @@ class accountListapiview(ListAPIView):
     
 
 class accountheadListapiview(ListAPIView):
-    serializer_class = accountListSerializer
+    serializer_class = accountListSerializer2
     permission_classes = (permissions.IsAuthenticated,)
 
     
@@ -2733,7 +2733,7 @@ class accountheadListapiview(ListAPIView):
 
 
 class productListapiview(ListAPIView):
-    serializer_class = accountListSerializer
+    serializer_class = accountListSerializer2
     permission_classes = (permissions.IsAuthenticated,)
 
     
