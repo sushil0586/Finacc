@@ -14,7 +14,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -1591,92 +1591,99 @@ class ledgersummarylatest(ListAPIView):
 
         
         df = read_frame(stk)
-        df['drcr'] = 'CR'
 
-        df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-        df['credit'] = np.where(df['balance'] < 0, df['balance'],0)
-        df['debit'] = np.where(df['balance'] > 0, df['balance'],0)
+        if len(df.index) > 0:
 
-        
+            df['drcr'] = 'CR'
 
-        df.rename(columns = {'account__accountname':'accountname','account__id':'account','account__accounthead': 'accounthead__id'}, inplace = True)
+            df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+            df['credit'] = np.where(df['balance'] < 0, df['balance'],0)
+            df['debit'] = np.where(df['balance'] > 0, df['balance'],0)
 
+            
 
-        obdf = read_frame(ob)
-
-
-        if 'balance1' in df.columns:
-            df['balance1'] = df['balance1']
-        else:
-            df['balance1'] = 0
-
-        
-        if 'debit' in df.columns:
-            df['debit'] = df['debit']
-        else:
-            df['debit'] = 0
-
-        
-        if 'credit' in df.columns:
-            df['credit'] = df['credit']
-        else:
-            df['credit'] = 0
-
-       # obdf['drcr'] = obdf['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-
-        obdf.rename(columns = {'account__accountname':'accountname','account__id':'account'}, inplace = True)
-
-        #obdf['drcr'] = obdf['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-
-        obdf = obdf.groupby(['accountname','account'])[['balance1']].sum().reset_index()
-
-      #  print(obdf)
+            df.rename(columns = {'account__accountname':'accountname','account__id':'account','account__accounthead': 'accounthead__id'}, inplace = True)
 
 
-
-        df = df.groupby(['accounthead__id','accountname','drcr','account'])[['debit','credit','balance','quantity']].sum().abs().reset_index()
-
-        df = pd.merge(df,obdf,on='account',how='outer',indicator=True)
+            obdf = read_frame(ob)
 
 
-        if 'balance1' in df.columns:
-            df['balance1'] = df['balance1']
-        else:
-            df['balance1'] = 0
+            if 'balance1' in df.columns:
+                df['balance1'] = df['balance1']
+            else:
+                df['balance1'] = 0
 
-        
-        if 'debit' in df.columns:
-            df['debit'] = df['debit']
-        else:
-            df['debit'] = 0
+            
+            if 'debit' in df.columns:
+                df['debit'] = df['debit']
+            else:
+                df['debit'] = 0
 
-        
-        if 'credit' in df.columns:
-            df['credit'] = df['credit']
-        else:
-            df['credit'] = 0
+            
+            if 'credit' in df.columns:
+                df['credit'] = df['credit']
+            else:
+                df['credit'] = 0
 
-        df['debit'] = df['debit'].fillna(0).astype(float)
-        df['credit'] = df['credit'].fillna(0).astype(float)
-        df['quantity'] = df['quantity'].fillna(0).astype(float)
-        df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'].astype(float))
-        df['openingbalance'] = df['openingbalance'].astype(float)
-        df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
-        df['balance'] = df['balance'].astype(float)
-        # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
-        # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
-        df['accountname'] = np.where(df['_merge'] == 'right_only', df['accountname_y'],df['accountname_x'])
-        df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-        df['obdrcr'] = df['openingbalance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-        #df['accounthead'] = accounthead
+        # obdf['drcr'] = obdf['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
 
-        df = df.drop(['accountname_y', 'accountname_x','_merge','balance1','accounthead__id','obdrcr','drcr'],axis = 1)
+            obdf.rename(columns = {'account__accountname':'accountname','account__id':'account'}, inplace = True)
 
-        print(df)
+            #obdf['drcr'] = obdf['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
 
-        df.rename(columns = {'account__accountname':'accountname','account':'id','account__accounthead': 'accounthead__id','balance':'balancetotal'}, inplace = True)
-        
-        return Response(df.sort_values(by=['accountname']).T.to_dict().values())
+            obdf = obdf.groupby(['accountname','account'])[['balance1']].sum().reset_index()
+
+        #  print(obdf)
+
+
+
+            df = df.groupby(['accounthead__id','accountname','drcr','account'])[['debit','credit','balance','quantity']].sum().abs().reset_index()
+
+            df = pd.merge(df,obdf,on='account',how='outer',indicator=True)
+
+
+            if 'balance1' in df.columns:
+                df['balance1'] = df['balance1']
+            else:
+                df['balance1'] = 0
+
+            
+            if 'debit' in df.columns:
+                df['debit'] = df['debit']
+            else:
+                df['debit'] = 0
+
+            
+            if 'credit' in df.columns:
+                df['credit'] = df['credit']
+            else:
+                df['credit'] = 0
+
+            df['debit'] = df['debit'].fillna(0).astype(float)
+            df['credit'] = df['credit'].fillna(0).astype(float)
+            df['quantity'] = df['quantity'].fillna(0).astype(float)
+            df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'].astype(float))
+            df['openingbalance'] = df['openingbalance'].astype(float)
+            df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
+            df['balance'] = df['balance'].astype(float)
+            # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
+            # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
+            df['accountname'] = np.where(df['_merge'] == 'right_only', df['accountname_y'],df['accountname_x'])
+            df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+            df['obdrcr'] = df['openingbalance'].apply(lambda x: 'CR' if x < 0 else 'DR')
+            #df['accounthead'] = accounthead
+
+            df = df.drop(['accountname_y', 'accountname_x','_merge','balance1','accounthead__id','obdrcr','drcr'],axis = 1)
+
+            print(df)
+
+            df.rename(columns = {'account__accountname':'accountname','account':'id','account__accounthead': 'accounthead__id','balance':'balancetotal'}, inplace = True)
+
+            finaldf = df.sort_values(by=['accountname']).T.to_dict().values()
+
+            return Response(finaldf)
+         
+        return Response(df)
     
 
 
@@ -1772,6 +1779,47 @@ class ledgerdetails(ListAPIView):
         details['creditamount'] = details['creditamount'].astype(float).fillna(0)
         details['quantity'] = details['quantity'].astype(float).fillna(0)
 
+
+
+        ################################### TransactionType ###################################
+
+
+        if self.request.query_params.get('transactiontype'):
+            transactiontype =  [str(x) for x in request.GET.get('transactiontype', '').split(',')]
+            details = details[(details['transactiontype'].isin(transactiontype))]
+
+       
+       ################################### Debit/Credit ###################################
+        
+        if self.request.query_params.get('drcr') == '1':
+
+            
+
+            details = details[(details['debitamount'] > 0)]
+
+        
+
+        if self.request.query_params.get('drcr') == '0':
+
+            details = details[(details['creditamount'] > 0)]
+
+        
+        ################################### desc ###################################
+
+        
+        if self.request.query_params.get('desc'):
+            details = details[details['desc'].str.contains(self.request.query_params.get('desc'), regex=True, na=True)]
+
+
+        ################################### Range between 2 values ###################################
+
+        
+        if self.request.query_params.get('amountstart') and self.request.query_params.get('amountend') :
+            details = details[((details['debitamount'] >= int(self.request.query_params.get('amountstart'))) & (details['debitamount'] <= int(self.request.query_params.get('amountend')))) | ((details['creditamount'] >= int(self.request.query_params.get('amountstart'))) & (details['creditamount'] <= int(self.request.query_params.get('amountend'))))]
+
+        
+      #  print(details)
+
         
 
         openingbalance = openingbalance[['account__accountname','debitamount','creditamount','quantity','account__id']].copy()
@@ -1798,6 +1846,9 @@ class ledgerdetails(ListAPIView):
         openingbalance['desc'] = 'Opening'
 
         openingbalance.drop(['balance'],axis = 1)
+
+
+        df = pd.concat([openingbalance,details]).reset_index()
 
         ##############################################################
 
@@ -1843,6 +1894,17 @@ class ledgerdetails(ListAPIView):
 
         bsdf['displaydate'] = pd.to_datetime(bsdf['entrydate']).dt.strftime('%d-%m-%Y')
 
+        pd.set_option('display.max_columns', None)
+        bsdf.head()
+
+        print(bsdf)
+
+        
+
+
+
+        
+
         j = pd.DataFrame()
 
         if len(bsdf.index) > 0:
@@ -1858,7 +1920,6 @@ class ledgerdetails(ListAPIView):
         
         
         return Response(j)
-
 
 class stockledgersummary(ListAPIView):
 
@@ -1931,6 +1992,111 @@ class stockledgersummary(ListAPIView):
         
         
         return Response(df1.T.to_dict().values())
+
+
+class cashbookdetails(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
+            
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        utc=pytz.UTC
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+
+        
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
+        if self.request.query_params.get('stock'):
+                stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
+                stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
+        else:
+            stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype__in = ['M','CIH'],iscashtransaction= 1).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype').order_by('entry__entrydate1')
+            
+        df = read_frame(stk)
+
+       
+
+        
+
+        df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+        df.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+        dfd =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] < enddate.date()) & (df['accounttype'] == 'CIH')]
+
+        accdetails =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] < enddate.date()) & (df['accounttype'] == 'M')]
+
+        
+
+        print(accdetails)
+      
+        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] < startdate.date()) & (df['accounttype'] == 'CIH')] 
+
+        openingbalance['entrydate'] = startdate
+
+        openingbalance['entrydate'] = pd.to_datetime(openingbalance['entrydate'], format='%Y-%m-%d').dt.date
+
+        openingbalance = openingbalance.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+        
+
+
+        dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+        print(dfd)
+
+        bsdf = pd.concat([openingbalance,dfd]).reset_index()
+
+        bsdf['balance'] = bsdf['debitamount'] - bsdf['creditamount']
+
+        bsdf['Closingbalance'] = bsdf['balance'].cumsum()
+
+        bsdf['Openingbalance'] = bsdf['Closingbalance'] - bsdf['balance']
+
+        bsdf['receipttotal'] = bsdf['Openingbalance'] +  bsdf['debitamount']
+
+        bsdf['paymenttotal'] = bsdf['Closingbalance'] +  bsdf['creditamount']
+
+        bsdf.rename(columns = {'debitamount':'receipt','creditamount':'payment'}, inplace = True)
+
+        print(bsdf) 
+
+       # print(accdetails[['entrydate','receipttotal','paymenttotal']])
+
+        bsdfnew = accdetails.merge(bsdf,on='entrydate')
+        #bsdfnew = pd.merge(accdetails,bsdf,on='entrydate',how='outer',indicator=True).reset_index()
+
+        print(bsdfnew)
+
+      #  print(bsdf['balance'].cumsum(axis = 0, skipna = True))
+
+        #bsdf = bsdf.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+
+       # print(bsdf)
+
+
+        j = pd.DataFrame()
+        if len(bsdfnew.index) > 0:
+            j = (bsdfnew.groupby(['entrydate','receipt','payment','Closingbalance','Openingbalance','receipttotal','paymenttotal'])
+            .apply(lambda x: x[['accountid','accountname','desc','debitamount','creditamount','drcr']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
+
+        
+
+       
+
+        
+        
+        
+        return Response(j)
 
 
 class stockledgerdetails(ListAPIView):
@@ -2013,10 +2179,10 @@ class stockledgerdetails(ListAPIView):
 
         bsdf = pd.concat([openingbalance,details,df]).reset_index()
 
-       # bsdf = bsdf.drop(['index'],axis = 1)
+       # bsdf = bsdf.drop(['index'],axis = 1) 
 
        
-
+        j = pd.DataFrame()
         if len(bsdf.index) > 0:
             j = (bsdf.groupby(['productname','productid'])
             .apply(lambda x: x[['salequantity','purchasequantity','rquantity','iquantity','desc','entrydate','transactiontype','transactionid']].to_dict('records'))
@@ -2695,7 +2861,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
     
 
 class accountListapiview(ListAPIView):
-    serializer_class = accountListSerializer
+    serializer_class = accountListSerializer2
     permission_classes = (permissions.IsAuthenticated,)
 
     
@@ -2716,16 +2882,22 @@ class accountListapiview(ListAPIView):
     
 
 class accountheadListapiview(ListAPIView):
-    serializer_class = accountListSerializer
+    serializer_class = accountListSerializer2
     permission_classes = (permissions.IsAuthenticated,)
 
     
     
     def get(self, request, format=None):
         entity = self.request.query_params.get('entity')
-        queryset =  StockTransactions.objects.filter(entity = entity).values('accounthead__id','accounthead__name').distinct().order_by('accounthead')
+        queryset =  StockTransactions.objects.filter(entity = entity).values('accounthead__id','accounthead__name').distinct().order_by('accounthead__id')
 
         df = read_frame(queryset) 
+
+        df=df.dropna(subset=['accounthead__id','accounthead__name'])
+
+        
+
+        print(df)
         df.rename(columns = {'accounthead__name':'name','accounthead__id':'id'}, inplace = True)
 
         return Response(df.T.to_dict().values())
@@ -2733,7 +2905,7 @@ class accountheadListapiview(ListAPIView):
 
 
 class productListapiview(ListAPIView):
-    serializer_class = accountListSerializer
+    serializer_class = accountListSerializer2
     permission_classes = (permissions.IsAuthenticated,)
 
     
