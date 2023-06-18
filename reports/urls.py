@@ -27,6 +27,10 @@ urlpatterns  = [
     path('stockledgerdetails',views.stockledgerdetails.as_view(), name = 'Trialbalance'),
 
     path('stockledgersummary',views.stockledgersummary.as_view(), name = 'Trialbalance'),
+    path('cashbookdetails',views.cashbookdetails.as_view(), name = 'Trialbalance'),
+   # path('daybookdetails',views.daybookdetails.as_view(), name = 'Trialbalance'),
+
+    
 
 
     
