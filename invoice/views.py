@@ -92,7 +92,7 @@ class tdsmainApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
+    filterset_fields = ['voucherno','voucherdate','entityfinid']
 
     def perform_create(self, serializer):
         return serializer.save(createdby = self.request.user)
@@ -365,14 +365,19 @@ class SalesOderHeaderApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['billno','sorderdate','entityfinid']
 
     def perform_create(self, serializer):
         return serializer.save(owner = self.request.user)
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        return SalesOderHeader.objects.filter(entity = entity).prefetch_related('salesorderdetails')
+
+     
+     
+
+
+        return SalesOderHeader.objects.filter(entity = entity)
     
 
 class gstorderservicesApiView(ListCreateAPIView):
@@ -381,7 +386,7 @@ class gstorderservicesApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['billno','orderdate','entityfinid']
 
     def perform_create(self, serializer):
         return serializer.save(owner = self.request.user)
@@ -535,7 +540,7 @@ class PurchaseReturnApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['billno','sorderdate','entityfinid']
 
     def perform_create(self, serializer):
         return serializer.save(owner = self.request.user)
@@ -599,7 +604,7 @@ class purchaseorderApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['voucherno','voucherdate','entityfinid']
     @transaction.atomic
     def perform_create(self, serializer):
         return serializer.save(createdby = self.request.user)
@@ -901,7 +906,7 @@ class salesreturnApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['voucherno','voucherdate','entityfinid']
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -919,7 +924,7 @@ class journalmainApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['voucherno','voucherdate','entityfinid']
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -950,7 +955,7 @@ class productionmainApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['voucherno','voucherdate','entityfinid']
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -981,7 +986,7 @@ class stockmainApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['voucherno','voucherdate','entityfinid']
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -3660,7 +3665,7 @@ class debitcreditnoteApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['gstno']
+    filterset_fields = ['voucherdate','voucherno','entityfinid']
 
     def perform_create(self, serializer):
         return serializer.save(createdby = self.request.user)
