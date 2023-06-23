@@ -386,7 +386,7 @@ class gstorderservicesApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['billno','orderdate','entityfinid']
+    filterset_fields = ['billno','orderdate','entityfinid','orderType']
 
     def perform_create(self, serializer):
         return serializer.save(owner = self.request.user)
@@ -924,7 +924,7 @@ class journalmainApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['voucherno','voucherdate','entityfinid']
+    filterset_fields = ['voucherno','voucherdate','entityfinid','vouchertype']
 
     @transaction.atomic
     def perform_create(self, serializer):
