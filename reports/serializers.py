@@ -975,6 +975,7 @@ class ledgerdetailsSerializer(serializers.ModelSerializer):
     accounthead = serializers.CharField(write_only = True)
     account = serializers.CharField(write_only = True)
     transactiontype = serializers.CharField(write_only = True)
+    desc = serializers.CharField(write_only = True)
     drcr = serializers.BooleanField(write_only = True)
     amountstart = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
     amountend = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
@@ -983,6 +984,6 @@ class ledgerdetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StockTransactions
-        fields = ('entity','startdate','enddate','accounthead','account','transactiontype','drcr','amountstart','amountend','aggby')
+        fields = ('entity','startdate','enddate','accounthead','account','transactiontype','drcr','amountstart','amountend','aggby','desc')
 
     #     read_only_fields = ['token']
