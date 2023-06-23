@@ -16,7 +16,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -1754,7 +1754,7 @@ class ledgerapiApiView(GenericAPIView):
 
 class ledgerdetails(ListAPIView):
 
-   # serializer_class = TrialbalanceSerializerbyaccounthead
+    serializer_class = ledgerdetailsSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     # filter_backends = [DjangoFilterBackend]
@@ -1776,23 +1776,6 @@ class ledgerdetails(ListAPIView):
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
-        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
-        # if request.data.get('account') or request.data.get('accounthead'):
-        #     if request.data.get('account') and request.data.get('accounthead'):
-        #         accounts =  [int(x) for x in request.data.get('account', '').split(',')]
-        #         accountheads =  [int(x) for x in request.data.get('accounthead', '').split(',')]
-        #         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,account__in=accounts,accounthead__in=accountheads).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','entry__entrydate1','transactiontype','transactionid','drcr','desc','account__id').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
-        #     elif request.data.get('account'):
-
-        #         accounts =  [int(x) for x in request.data.get('account', '').split(',')]
-        #         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,account__in=accounts).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','entry__entrydate1','transactiontype','transactionid','drcr','desc','account__id').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
-        #     else:
-        #         accountheads =  [int(x) for x in request.data.get('accounthead', '').split(',')]
-        #         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounthead__in=accountheads).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','entry__entrydate1','transactiontype','transactionid','drcr','desc','account__id').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
-
-
-
-        # else:
         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','entry__entrydate1','transactiontype','transactionid','drcr','desc','account__id').annotate(debitamount = Sum('debitamount'),creditamount = Sum('creditamount'),quantity = Sum('quantity')).order_by('entry__entrydate1')
 
         if request.data.get('accounthead'):
@@ -1801,7 +1784,7 @@ class ledgerdetails(ListAPIView):
         
         if request.data.get('account'):
             accounts =  [int(x) for x in request.data.get('account', '').split(',')]
-            #stk = stk.filter(account__in=accounts)
+            stk = stk.filter(account__in=accounts)
         
         if request.data.get('transactiontype'):
             transactiontype =  [str(x) for x in request.data.get('transactiontype', '').split(',')]
@@ -1824,10 +1807,7 @@ class ledgerdetails(ListAPIView):
 
         if request.data.get('amountstart') and request.data.get('amountend'):
             stk = stk.filter((Q(debitamount__gte=Decimal(request.data.get('amountstart'))) & Q(debitamount__lte=Decimal(request.data.get('amountend')))) | (Q(creditamount__gte=Decimal(request.data.get('amountstart'))) & Q(creditamount__lte=Decimal(request.data.get('amountend')))))
-            # stk = stk.filter(debitamount__lte=Decimal(request.data.get('amountend')))
-            # stk = stk.filter(creditamount__gte=Decimal(request.data.get('amountstart')))
-            # stk = stk.filter(creditamount__lte=Decimal(request.data.get('amountend')))
-          #  print(stk.query.__str__())
+           
 
 
             
