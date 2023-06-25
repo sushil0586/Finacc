@@ -64,7 +64,7 @@ class account(TrackingModel):
     accountname       = models.CharField(max_length=50, null=True,verbose_name=_('Account Name'))
     address1       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 1'),blank = True)
     address2       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 2'),blank = True)
-    country       = models.ForeignKey(country,related_name='country',on_delete=models.CASCADE,null=True)
+    country       = models.ForeignKey(country,null=True,on_delete=models.CASCADE)
     state       = models.ForeignKey(to=state,on_delete=models.CASCADE,null=True)
     district    = models.ForeignKey(to=district,on_delete=models.CASCADE,null=True)
     city       = models.ForeignKey(to=city,on_delete=models.CASCADE,null=True)
