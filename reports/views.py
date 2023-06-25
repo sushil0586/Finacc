@@ -16,7 +16,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -1721,12 +1721,12 @@ class ledgersummarylatest(ListAPIView):
 
         if request.data.get('drcr') == '1':
 
-            stk = stk.filter(debitamount__gt=0)
+            stk = stk.filter(balance__gt=0)
           #  print(stk.query.__str__())
         
         if request.data.get('drcr') == '0':
 
-            stk = stk.filter(creditamount__gt=0)
+            stk = stk.filter(balance__lt=0)
            # print(stk.query.__str__())
 
         if request.data.get('amountstart') and request.data.get('amountend'):
@@ -2243,6 +2243,10 @@ class stockledgersummary(ListAPIView):
 
 class stockledgersummarypost(ListAPIView):
 
+    serializer_class = stockledgersummarySerializer
+
+    
+
    
     permission_classes = (permissions.IsAuthenticated,)
 
@@ -2273,7 +2277,7 @@ class stockledgersummarypost(ListAPIView):
                 stk = stk.filter(stock__in = stocks)
         
         if request.data.get('stocktype'):
-                stocktypes =  [int(x) for x in request.GET.get('stocktype', '').split(',')]
+                stocktypes =  [str(x) for x in request.GET.get('stocktype', '').split(',')]
                 stk = stk.filter(stocktype__in = stocktypes)
         
             
@@ -2615,7 +2619,7 @@ class stockledgerdetails(ListAPIView):
                 stk = stk.filter(stock__in = stocks)
         
         if request.data.get('stocktype'):
-                stocktypes =  [int(x) for x in request.GET.get('stocktype', '').split(',')]
+                stocktypes =  [str(x) for x in request.GET.get('stocktype', '').split(',')]
                 stk = stk.filter(stocktype__in = stocktypes)
 
         if request.data.get('transactiontype'):
