@@ -3538,6 +3538,45 @@ class productListapiview(ListAPIView):
         df.rename(columns = {'stock__id':'id','stock__productname':'productname'}, inplace = True)
 
         return Response(df.T.to_dict().values())
+    
+class productcategoryListapiview(ListAPIView):
+    serializer_class = accountListSerializer2
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+        queryset =  StockTransactions.objects.filter(entity = entity,accounttype = 'DD',isactive =1).values('stock__productcategory__id','stock__productcategory__pcategoryname').distinct().order_by('stock__productcategory__id')
+
+        df = read_frame(queryset) 
+        df.rename(columns = {'stock__productcategory__id':'id','stock__productcategory__pcategoryname':'productcategoryname'}, inplace = True)
+
+        return Response(df.T.to_dict().values())
+
+
+
+
+class stocktypeListapiview(ListAPIView):
+    serializer_class = accountListSerializer2
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+        queryset =  StockTransactions.objects.filter(entity = entity,accounttype = 'DD',isactive =1).values('stockttype').distinct().order_by('stockttype')
+
+        df = read_frame(queryset) 
+
+        df['stocktypename'] = np.where(df['stockttype'] == 'S', 'Sale',
+              np.where(df['stockttype'] == 'P', 'Purchase',
+              np.where(df['stockttype'] == 'I', 'Issued', 'recieved')))
+
+
+       # df.rename(columns = {'stock__productcategory__id':'id','stock__productcategory__pcategoryname':'productcategoryname'}, inplace = True)
+
+        return Response(df.T.to_dict().values())
 
 
     
