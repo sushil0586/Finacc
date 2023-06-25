@@ -987,3 +987,67 @@ class ledgerdetailsSerializer(serializers.ModelSerializer):
         fields = ('entity','startdate','enddate','accounthead','account','transactiontype','drcr','amountstart','amountend','aggby','desc')
 
     #     read_only_fields = ['token']
+
+
+class ledgersummarySerializer(serializers.ModelSerializer):
+
+    entity = serializers.IntegerField(write_only = True)
+    startdate = serializers.DateField(write_only = True)
+    enddate = serializers.DateField(write_only = True)
+    accounthead = serializers.CharField(write_only = True)
+    account = serializers.CharField(write_only = True)
+   # transactiontype = serializers.CharField(write_only = True)
+    #desc = serializers.CharField(write_only = True)
+    drcr = serializers.BooleanField(write_only = True)
+    amountstart = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
+    amountend = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
+  #  aggby = serializers.CharField(write_only = True)
+
+
+    class Meta:
+        model = StockTransactions
+        fields = ('entity','startdate','enddate','accounthead','account','drcr','amountstart','amountend')
+
+    #     read_only_fields = ['token']
+
+class stockledgerdetailSerializer(serializers.ModelSerializer):
+
+    entity = serializers.IntegerField(write_only = True)
+    startdate = serializers.DateField(write_only = True)
+    enddate = serializers.DateField(write_only = True)
+    stockcategory = serializers.CharField(write_only = True)
+    stock = serializers.CharField(write_only = True)
+    stocktype = serializers.CharField(write_only = True)
+    transactiontype = serializers.CharField(write_only = True)
+    #desc = serializers.CharField(write_only = True)
+   # drcr = serializers.BooleanField(write_only = True)
+    # amountstart = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
+    # amountend = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
+    aggby = serializers.CharField(write_only = True)
+
+
+    class Meta:
+        model = StockTransactions
+        fields = ('entity','startdate','enddate','stockcategory','stocktype','transactiontype','stock','aggby')
+
+
+
+class stockledgersummarySerializer(serializers.ModelSerializer):
+
+    entity = serializers.IntegerField(write_only = True)
+    startdate = serializers.DateField(write_only = True)
+    enddate = serializers.DateField(write_only = True)
+    stockcategory = serializers.CharField(write_only = True)
+    stock = serializers.CharField(write_only = True)
+    stocktype = serializers.CharField(write_only = True)
+    # transactiontype = serializers.CharField(write_only = True)
+    # #desc = serializers.CharField(write_only = True)
+    # drcr = serializers.BooleanField(write_only = True)
+    # amountstart = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
+    # amountend = serializers.DecimalField(write_only = True,max_digits=10, decimal_places=2)
+   # aggby = serializers.CharField(write_only = True)
+
+
+    class Meta:
+        model = StockTransactions
+        fields = ('entity','startdate','enddate','stockcategory','stocktype','stock')

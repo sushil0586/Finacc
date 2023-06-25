@@ -21,15 +21,20 @@ urlpatterns  = [
     path('gstr1b2bapi',views.gstr1b2bapi.as_view(), name = 'Trialbalance'),
     path('incomeandexpensesstatement',views.incomeandexpensesstatement.as_view(), name = 'Trialbalance'),
     path('stockledgerbook',views.stockledgerbookapi.as_view(), name = 'Trialbalance'),
-    path('ledgersummary',views.ledgersummarylatest.as_view(), name = 'Trialbalance'),
+    path('ledgersummary',views.ledgersummarylatestget.as_view(), name = 'Trialbalance'),
+    path('ledgersummarypost',views.ledgersummarylatest.as_view(), name = 'Trialbalance'),
     path('ledgerbook',views.ledgerviewapi.as_view(), name = 'Trialbalance'),
     path('ledgerdetails',views.ledgerdetails.as_view(), name = 'Trialbalance'),
     path('ledgerdetail1',views.ledgerapiApiView.as_view(), name = 'Trialbalance'),
-    path('stockledgerdetails',views.stockledgerdetails.as_view(), name = 'Trialbalance'),
+    path('stockledgerdetails',views.stockledgerdetailsget.as_view(), name = 'Trialbalance'),
+    path('stockledgerdetailpost',views.stockledgerdetails.as_view(), name = 'Trialbalance'),
 
     path('stockledgersummary',views.stockledgersummary.as_view(), name = 'Trialbalance'),
+    path('stockledgersummarypost',views.stockledgersummarypost.as_view(), name = 'Trialbalance'),
+
+    
     path('cashbookdetails',views.cashbookdetails.as_view(), name = 'Trialbalance'),
-   # path('daybookdetails',views.daybookdetails.as_view(), name = 'Trialbalance'),
+    path('daybookdetails',views.daybookdetails.as_view(), name = 'Trialbalance'),
 
     
 
