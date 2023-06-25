@@ -28,14 +28,14 @@ class accountSerializer(serializers.ModelSerializer):
         else:
             billno2 = (account.objects.filter(entity= validated_data['entity'].id).last().accountcode) + 1
         detail = account.objects.create(**validated_data,accountcode = billno2)
-        entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
+        entryid,created  = entry.objects.get_or_create(entrydate1 = detail.accountdate,entity=detail.entity)
 
         if detail.openingbcr > 0 or detail.openingbdr > 0:
             if (detail.openingbcr >0.00):
                     drcr = 0
             else:
                     drcr = 1
-            details = StockTransactions.objects.create(accounthead= detail.accounthead,account= detail,transactiontype = 'OA',transactionid = detail.id,desc = 'Opening Balance',drcr=drcr,debitamount=detail.openingbdr,creditamount=detail.openingbcr,entity=detail.entity,createdby= detail.owner,entry = entryid,entrydatetime = detail.created_at,accounttype = 'M',isactive = 1)
+            details = StockTransactions.objects.create(accounthead= detail.accounthead,account= detail,transactiontype = 'OS',transactionid = detail.id,desc = 'Opening Balance',drcr=drcr,debitamount=detail.openingbdr,creditamount=detail.openingbcr,entity=detail.entity,createdby= detail.owner,entry = entryid,entrydatetime = detail.accountdate,accounttype = 'M',isactive = 1)
             #return detail
         return detail
 
@@ -50,7 +50,7 @@ class accountSerializer(serializers.ModelSerializer):
                 pass
         # with transaction.atomic():
         instance.save()
-        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.created_at,entity=instance.entity)
+        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.accountdate,entity=instance.entity)
         #     entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
         StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'OA').delete()
 
@@ -65,10 +65,10 @@ class accountSerializer(serializers.ModelSerializer):
 
         if instance.openingbcr > 0:
             drcr = 0
-            StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
+            StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OS',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.accountdate,accounttype = 'M',isactive = 1,entry = entryid)
         if instance.openingbdr > 0:
             drcr = 1
-            StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OA',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.created_at,accounttype = 'M',isactive = 1,entry = entryid)
+            StockTransactions.objects.create(accounthead= instance.accounthead,account= instance,transactiontype = 'OS',transactionid = instance.id,desc = 'Opening Balance',drcr=drcr,debitamount=instance.openingbdr,creditamount=instance.openingbcr,entity=instance.entity,createdby= instance.owner,entrydatetime = instance.accountdate,accounttype = 'M',isactive = 1,entry = entryid)
 
 
 

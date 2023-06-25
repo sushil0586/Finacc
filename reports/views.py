@@ -2084,7 +2084,7 @@ class stockledgersummary(ListAPIView):
         return Response(df1.T.to_dict().values())
 
 
-class cashbookdetails(ListAPIView):
+class daybookdetails(ListAPIView):
 
    
     permission_classes = (permissions.IsAuthenticated,)
@@ -2107,9 +2107,15 @@ class cashbookdetails(ListAPIView):
                 stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
                 stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
         else:
-            stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype__in = ['M','CIH'],iscashtransaction= 1).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype').order_by('entry__entrydate1')
+            stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype__in = ['MD']).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','iscashtransaction').order_by('entry__entrydate1')
             
         df = read_frame(stk)
+
+        datestk = entry.objects.filter(entrydate1__range = (startdate,enddate),isactive = 1,entity = entity).values('entrydate1').order_by('entrydate1')
+
+        dfdate = read_frame(datestk)
+
+        dfdate.rename(columns = {'entrydate1':'entrydate'}, inplace = True)
 
        
 
@@ -2121,13 +2127,9 @@ class cashbookdetails(ListAPIView):
 
         dfd =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] < enddate.date()) & (df['accounttype'] == 'CIH')]
 
-        accdetails =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] < enddate.date()) & (df['accounttype'] == 'M')]
-
-        
-
-        print(accdetails)
+        accdetails =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] <= enddate.date()) & (df['accounttype'] != 'CIH')]
       
-        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] < startdate.date()) & (df['accounttype'] == 'CIH')] 
+        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <= startdate.date()) & (df['accounttype'] == 'CIH') & (df['iscashtransaction'] == True) ] 
 
         openingbalance['entrydate'] = startdate
 
@@ -2138,6 +2140,152 @@ class cashbookdetails(ListAPIView):
 
 
         dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+        dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
+        dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
+
+        dfdnew = pd.merge(dfdate,dfd,on='entrydate',how='outer',indicator=True).reset_index()
+
+       
+
+        dfdnew['debitamount'] = dfdnew['debitamount'].astype(float).fillna(0)
+        dfdnew['creditamount'] = dfdnew['creditamount'].astype(float).fillna(0)
+
+        
+
+        dfdnew = dfdnew.drop(['_merge','index'],axis = 1)
+
+       # dfd = dfdnew
+
+
+        # dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
+        # dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
+
+        bsdf = pd.concat([openingbalance,dfdnew]).reset_index()
+
+        bsdf['balance'] = bsdf['debitamount'] - bsdf['creditamount']
+
+        print(bsdf.dtypes)
+
+        bsdf['balance'] = bsdf['balance'].astype(float).fillna(0)
+
+        bsdf['Closingbalance'] = bsdf['balance'].cumsum()
+
+        #
+
+        
+
+
+        bsdf['Openingbalance'] = bsdf['Closingbalance'] - bsdf['balance']
+
+        bsdf['Openingbalance'] = bsdf['Openingbalance'].astype(float).fillna(0)
+        bsdf['debitamount'] = bsdf['debitamount'].astype(float).fillna(0)
+
+        bsdf['Closingbalance'] = bsdf['Closingbalance'].astype(float).fillna(0)
+        bsdf['creditamount'] = bsdf['creditamount'].astype(float).fillna(0)
+
+        bsdf['receipttotal'] = bsdf['Openingbalance'] +  bsdf['debitamount']
+
+        bsdf['paymenttotal'] = bsdf['Closingbalance'] +  bsdf['creditamount']
+
+        bsdf.rename(columns = {'debitamount':'receipt','creditamount':'payment'}, inplace = True)
+
+        print(bsdf)
+
+
+        #pr
+
+
+        accdetails = accdetails.groupby(['accountid','accountname','transactiontype','transactionid','desc','entrydate','drcr'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+
+        bsdf = pd.merge(bsdf,accdetails,on='entrydate',how='outer',indicator=True).reset_index()
+
+      #  print(bsdf['balance'].cumsum(axis = 0, skipna = True))
+
+        #bsdf = bsdf.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+
+        print(bsdf)
+
+
+        j = pd.DataFrame()
+        if len(bsdf.index) > 0:
+            j = (bsdf.groupby(['entrydate','receipt','payment','Closingbalance','Openingbalance','receipttotal','paymenttotal'])
+            .apply(lambda x: x[['accountid','accountname','desc','debitamount','creditamount','drcr','transactiontype','transactionid']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
+
+        
+          
+        
+        
+        return Response(j)
+
+
+class cashbookdetails(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
+
+
+            
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        utc=pytz.UTC
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+
+        
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
+        if self.request.query_params.get('stock'):
+                stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
+                stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
+        else:
+            stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype__in = ['M','CIH'],iscashtransaction= 1).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype').order_by('entry__entrydate1')
+            
+        df = read_frame(stk)
+
+        print(df)
+
+       
+
+        
+
+        df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+        df.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+        dfd =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] <= enddate.date()) & (df['accounttype'] == 'CIH')]
+
+        accdetails =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] <=   enddate.date()) & (df['accounttype'] == 'M')]
+
+        
+
+    #     print(accdetails)
+      
+        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <= startdate.date()) & (df['accounttype'] == 'CIH')] 
+
+        openingbalance['entrydate'] = startdate
+
+        openingbalance['entrydate'] = pd.to_datetime(openingbalance['entrydate'], format='%Y-%m-%d').dt.date
+
+        openingbalance['debitamount'] = openingbalance['debitamount'].astype(float).fillna(0)
+        openingbalance['creditamount'] = openingbalance['creditamount'].astype(float).fillna(0)
+
+        openingbalance = openingbalance.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+        
+
+        dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
+        dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
+        dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+        print("--------------------dfd")
 
         print(dfd)
 
@@ -2160,6 +2308,8 @@ class cashbookdetails(ListAPIView):
        # print(accdetails[['entrydate','receipttotal','paymenttotal']])
 
         bsdfnew = accdetails.merge(bsdf,on='entrydate')
+
+        print()
         #bsdfnew = pd.merge(accdetails,bsdf,on='entrydate',how='outer',indicator=True).reset_index()
 
         print(bsdfnew)
@@ -2197,6 +2347,107 @@ class stockledgerdetails(ListAPIView):
       
     def get(self, request, format=None):
         #entity = self.request.query_params.get('entity')
+        #entity = request.data.get('entity',None)
+        entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
+            
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        utc=pytz.UTC
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
+        if self.request.query_params.get('stock'):
+                stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
+                stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
+        else:
+            stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
+            
+        df = read_frame(stk)
+
+       
+
+        
+
+        df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+        df.rename(columns = {'stock__productname':'productname','stock__id':'productid','entry__entrydate1':'entrydate'}, inplace = True)
+
+        df['salequantity'] = np.where(df['stockttype'] == "S",df['quantity'],0)
+        df['purchasequantity'] = np.where(df['stockttype'] == "P",df['quantity'],0)
+        df['iquantity'] = np.where(df['stockttype'] == "I",df['quantity'],0)
+        df['rquantity'] = np.where(df['stockttype'] == "R",df['quantity'],0)
+      
+        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] < startdate.date())]
+
+        details = df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] < enddate.date())]
+
+        details['salequantity'] = details['salequantity'].astype(float).fillna(0)
+        details['purchasequantity'] = details['purchasequantity'].astype(float).fillna(0)
+        details['rquantity'] = details['rquantity'].astype(float).fillna(0)
+        details['iquantity'] = details['iquantity'].astype(float).fillna(0)
+
+
+        openingbalance['salequantity'] = openingbalance['salequantity'].astype(float).fillna(0)
+        openingbalance['purchasequantity'] = openingbalance['purchasequantity'].astype(float).fillna(0)
+        openingbalance['rquantity'] = openingbalance['rquantity'].astype(float).fillna(0)
+        openingbalance['iquantity'] = openingbalance['iquantity'].astype(float).fillna(0)
+
+
+
+        df = df.groupby(['productname','productid'])[['salequantity','purchasequantity','rquantity','iquantity']].sum().abs().reset_index()
+
+        openingbalance = openingbalance.groupby(['productname','productid'])[['salequantity','purchasequantity','rquantity','iquantity']].sum().abs().reset_index()
+
+
+        details = details.drop(['entry','stockttype','quantity'],axis = 1)
+
+        df['transactiontype'] = 'ST'
+        df['transactionid'] = '-1'
+        df['desc'] = 'Total'
+        df['entrydate'] = enddate
+
+
+        openingbalance['transactiontype'] = 'O'
+        openingbalance['transactionid'] = '-1'
+        openingbalance['desc'] = 'Opening Balance'
+        openingbalance['entrydate'] = startdate
+
+        
+
+        
+
+
+        bsdf = pd.concat([openingbalance,details,df]).reset_index()
+
+       # bsdf = bsdf.drop(['index'],axis = 1) 
+
+       
+        j = pd.DataFrame()
+        if len(bsdf.index) > 0:
+            j = (bsdf.groupby(['productname','productid'])
+            .apply(lambda x: x[['salequantity','purchasequantity','rquantity','iquantity','desc','entrydate','transactiontype','transactionid']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
+
+
+
+
+        
+        
+        
+        return Response(j)
+
+
+class stockledgerdetailsget(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        #entity = request.data.get('entity',None)
         entity = self.request.query_params.get('entity')
         startdate = self.request.query_params.get('startdate')
         enddate = self.request.query_params.get('enddate')
