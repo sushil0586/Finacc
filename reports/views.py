@@ -1727,10 +1727,14 @@ class ledgersummarylatest(ListAPIView):
         if request.data.get('drcr') == '0':
 
             stk = stk.filter(balance__lt=0)
+
+        if request.data.get('drcr') == 'O':
+
+            stk = stk.filter(transactiontype = 'O')
            # print(stk.query.__str__())
 
         if request.data.get('amountstart') and request.data.get('amountend'):
-            stk = stk.filter((Q(debitamount__gte=Decimal(request.data.get('amountstart'))) & Q(debitamount__lte=Decimal(request.data.get('amountend')))) | (Q(creditamount__gte=Decimal(request.data.get('amountstart'))) & Q(creditamount__lte=Decimal(request.data.get('amountend')))))
+            stk = stk.filter((Q(balance__gte=Decimal(request.data.get('amountstart'))) & Q(balance__lte=Decimal(request.data.get('amountend')))))
 
 
 
@@ -2269,15 +2273,15 @@ class stockledgersummarypost(ListAPIView):
         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
 
         if request.data.get('stockcategory'):
-                stockcategories =  [int(x) for x in request.GET.get('stockcategory', '').split(',')]
+                stockcategories =  [int(x) for x in request.data.get('stockcategory', '').split(',')]
                 stk = stk.filter(stock__productcategory__in = stockcategories)
 
         if request.data.get('stock'):
-                stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
+                stocks =  [int(x) for x in request.data.get('stock', '').split(',')]
                 stk = stk.filter(stock__in = stocks)
         
         if request.data.get('stocktype'):
-                stocktypes =  [str(x) for x in request.GET.get('stocktype', '').split(',')]
+                stocktypes =  [str(x) for x in request.data.get('stocktype', '').split(',')]
                 stk = stk.filter(stocktype__in = stocktypes)
         
             
@@ -2611,16 +2615,22 @@ class stockledgerdetails(ListAPIView):
         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
 
         if request.data.get('stockcategory'):
-                stockcategories =  [int(x) for x in request.GET.get('stockcategory', '').split(',')]
-                stk = stk.filter(stock__productcategory__in = stockcategories)
+                stockcategories =  [int(x) for x in request.data.get('stockcategory', '').split(',')]
+                stk = stk.filter(stock__productcategory__id__in = stockcategories)
 
         if request.data.get('stock'):
-                stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
+                stocks =  [int(x) for x in request.data.get('stock', '').split(',')]
                 stk = stk.filter(stock__in = stocks)
         
         if request.data.get('stocktype'):
-                stocktypes =  [str(x) for x in request.GET.get('stocktype', '').split(',')]
-                stk = stk.filter(stocktype__in = stocktypes)
+                print(request.data.get('stocktype'))
+
+
+                stocktype =  [str(x) for x in request.data.get('stocktype', '').split(',')]
+
+                print(stocktype)
+                stk = stk.filter(stockttype__in=stocktype)
+                print(stk.query.__str__())
 
         if request.data.get('transactiontype'):
             transactiontype =  [str(x) for x in request.data.get('transactiontype', '').split(',')]
