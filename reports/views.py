@@ -10,7 +10,7 @@ from pandas.tseries.offsets import MonthEnd,QuarterEnd
 from decimal import Decimal
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn
+from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain
 # from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 # purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
@@ -2947,6 +2947,51 @@ class salebyaccountapi(ListAPIView):
         df['transactiontype'] = transactiontype
         df['entrydate'] = pd.to_datetime(df['entrydate']).dt.strftime('%d-%m-%y')
         return Response(df.T.to_dict().values())
+
+
+class printvoucherapi(ListAPIView):
+
+    #serializer_class = Salebyaccountserializer
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['id']
+
+
+    def get(self,request):
+        entity = self.request.query_params.get('entity')
+        transactiontype = self.request.query_params.get('transactiontype')
+        transactionid = self.request.query_params.get('transactionid')
+
+        voucher = journalmain.objects.get(entity = entity,id=transactionid)
+       
+        queryset1=StockTransactions.objects.filter(isactive = 1,entity = entity,transactiontype = transactiontype,transactionid = transactionid).exclude(accounttype__in = ['MD']).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','id').order_by('id')
+
+        df = read_frame(queryset1)
+        df.rename(columns = {'account__accountname':'accountname','account__id':'account','entry__entrydate1': 'entrydate'}, inplace = True)
+        df['transactiontype'] = transactiontype
+        df['entrydate'] = pd.to_datetime(df['entrydate']).dt.strftime('%d-%m-%y')
+
+        if transactiontype == 'C':
+            df['voucher'] = 'Cash Voucher'
+        if transactiontype == 'B':
+            df['voucher'] = 'Bank Voucher'
+        if transactiontype == 'J':
+            df['voucher'] = 'Journal Voucher'
+
+        df['voucherno'] = voucher.voucherno
+
+        
+
+
+        j = pd.DataFrame()
+        if len(df.index) > 0:
+            j = (df.groupby(['entrydate','voucher','voucherno'])
+            .apply(lambda x: x[['account','accountname','desc','debitamount','creditamount','drcr']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
+        return Response(j)
     
 class purchasebyaccountapi(ListAPIView):
 

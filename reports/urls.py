@@ -28,22 +28,13 @@ urlpatterns  = [
     path('ledgerdetail1',views.ledgerapiApiView.as_view(), name = 'Trialbalance'),
     path('stockledgerdetails',views.stockledgerdetailsget.as_view(), name = 'Trialbalance'),
     path('stockledgerdetailpost',views.stockledgerdetails.as_view(), name = 'Trialbalance'),
-
     path('stockledgersummary',views.stockledgersummary.as_view(), name = 'Trialbalance'),
     path('stockledgersummarypost',views.stockledgersummarypost.as_view(), name = 'Trialbalance'),
-
-    
     path('cashbookdetails',views.cashbookdetails.as_view(), name = 'Trialbalance'),
     path('daybookdetails',views.daybookdetails.as_view(), name = 'Trialbalance'),
-
-    
-
-
-    
-
-    
     path('cashbook',views.cbviewapi.as_view(), name = 'Trialbalance'),
     path('salebook',views.salebyaccountapi.as_view(), name = 'salebok'),
+    path('printvoucher',views.printvoucherapi.as_view(), name = 'salebok'),
     path('purchasebook',views.purchasebyaccountapi.as_view(), name = 'purchasebook'),
     path('daybook',views.daybookviewapi.as_view(), name = 'Trialbalance'),
     path('trialbalance',views.TrialbalanceApiView.as_view(), name = 'Trialbalance'),
