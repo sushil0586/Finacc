@@ -2964,14 +2964,43 @@ class printvoucherapi(ListAPIView):
         transactiontype = self.request.query_params.get('transactiontype')
         transactionid = self.request.query_params.get('transactionid')
 
-        voucher = journalmain.objects.get(entity = entity,id=transactionid)
+        #voucher = journalmain.objects.get(entity = entity,id=transactionid)
        
-        queryset1=StockTransactions.objects.filter(isactive = 1,entity = entity,transactiontype = transactiontype,transactionid = transactionid).exclude(accounttype__in = ['MD']).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','id').order_by('id')
+        queryset1=StockTransactions.objects.filter(isactive = 1,entity = entity,transactiontype = transactiontype,transactionid = transactionid).exclude(accounttype__in = ['MD']).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','id','voucherno').order_by('id')
 
         df = read_frame(queryset1)
         df.rename(columns = {'account__accountname':'accountname','account__id':'account','entry__entrydate1': 'entrydate'}, inplace = True)
         df['transactiontype'] = transactiontype
         df['entrydate'] = pd.to_datetime(df['entrydate']).dt.strftime('%d-%m-%y')
+
+       
+
+    #    # df['voucherno'] = voucher.voucherno
+    #     pd.set_option('display.max_columns', None)
+        
+
+
+        df = df.groupby(['entrydate','voucherno','account','accountname','desc','drcr'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+        dfsum = df.groupby(['entrydate','voucherno'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+
+        dfsum['account'] = -1
+
+        dfsum['desc'] = ''
+
+        dfsum['drcr'] = True
+
+        
+
+        dfsum['accountname'] = 'Grand Total'
+
+
+        df = pd.concat([df,dfsum]).reset_index()
+
+
+
+       
 
         if transactiontype == 'C':
             df['voucher'] = 'Cash Voucher'
@@ -2979,15 +3008,15 @@ class printvoucherapi(ListAPIView):
             df['voucher'] = 'Bank Voucher'
         if transactiontype == 'J':
             df['voucher'] = 'Journal Voucher'
-
-        df['voucherno'] = voucher.voucherno
-
-        
+        if transactiontype == 'S':
+            df['voucher'] = 'Sale Bill Voucher'
+        if transactiontype == 'P':
+            df['voucher'] = 'Purchase Voucher'
 
 
         j = pd.DataFrame()
         if len(df.index) > 0:
-            j = (df.groupby(['entrydate','voucher','voucherno'])
+            j = (df.groupby(['entrydate','voucherno','voucher'])
             .apply(lambda x: x[['account','accountname','desc','debitamount','creditamount','drcr']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'accounts'})).T.to_dict().values()
