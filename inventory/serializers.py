@@ -2,6 +2,7 @@ from rest_framework import serializers
 from inventory.models import Product,Album,Track,ProductCategory,Ratecalculate,UnitofMeasurement,stkcalculateby,typeofgoods,stkvaluationby,gsttype
 from invoice.models import entry,StockTransactions
 from financial.models import account
+from entity.models import entityfinancialyear
 
 
 
@@ -56,8 +57,12 @@ class ProductSerializer(serializers.ModelSerializer):
         #print(validated_data)
         #journaldetails_data = validated_data.pop('journaldetails')
         detail = Product.objects.create(**validated_data)
-        entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
+       # entryid,created  = entry.objects.get_or_create(entrydate1 = detail.created_at,entity=detail.entity)
         os = account.objects.get(entity =detail.entity,accountcode = 9000)
+
+        accountdate1 = entityfinancialyear.objects.get(entity = detail.entity).finstartyear
+
+        entryid,created  = entry.objects.get_or_create(entrydate1 = accountdate1,entity=detail.entity)
 
 
 
@@ -66,7 +71,7 @@ class ProductSerializer(serializers.ModelSerializer):
                     qty = detail.openingstockboxqty
             else:
                     qty = detail.openingstockqty
-            details = StockTransactions.objects.create(accounthead = os.accounthead,account= os,stock=detail,transactiontype = 'OS',transactionid = detail.id,desc = 'Opening Stock ' + detail.productname,stockttype = 'O',quantity = qty,drcr = 1,debitamount = detail.openingstockvalue,entrydate = detail.created_at,entity = detail.entity,createdby = detail.createdby,entry = entryid,entrydatetime = detail.created_at,accounttype = 'DD',isactive = 1,rate = detail.purchaserate)
+            details = StockTransactions.objects.create(accounthead = os.accounthead,account= os,stock=detail,transactiontype = 'O',transactionid = detail.id,desc = 'Opening Stock ' + detail.productname,stockttype = 'R',quantity = qty,drcr = 1,debitamount = detail.openingstockvalue,entrydate = accountdate1,entity = detail.entity,createdby = detail.createdby,entry = entryid,entrydatetime = accountdate1,accounttype = 'DD',isactive = 1,rate = detail.purchaserate)
             #return detail
         return detail
 
