@@ -3012,6 +3012,12 @@ class printvoucherapi(ListAPIView):
             df['voucher'] = 'Sale Bill Voucher'
         if transactiontype == 'P':
             df['voucher'] = 'Purchase Voucher'
+        if transactiontype == 'T':
+            df['voucher'] = 'TDS Voucher'
+        if transactiontype == 'PR':
+            df['voucher'] = 'Purchase Return Voucher'
+        if transactiontype == 'SR':
+            df['voucher'] = 'Sale Return Voucher'
 
 
         j = pd.DataFrame()
