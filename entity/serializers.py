@@ -5,7 +5,7 @@ from entity.models import entity,entity_details,unitType,entityfinancialyear,ent
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
-from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2
+from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2,accounttypeserializer
 from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer,ProductCategoryMainSerializer
 from invoice.serializers import purchasetaxtypeserializer
 import os
@@ -123,6 +123,7 @@ class entityAddSerializer(serializers.ModelSerializer):
     GSTSR = GSTserializer
     PTaxType = purchasetaxtypeserializer
     pcategory = ProductCategoryMainSerializer
+    acounttype = accounttypeserializer
     def create(self, validated_data):
 
 
@@ -230,6 +231,11 @@ class entityAddSerializer(serializers.ModelSerializer):
 
             for key in json_data["GSTTYPE"]:
                 serializer2 = self.GSTSR(data =key)
+                serializer2.is_valid(raise_exception=True)
+                serializer2.save(entity = newentity,createdby = users[0])
+
+            for key in json_data["ACCOUNTTYPE"]:
+                serializer2 = self.acounttype(data =key)
                 serializer2.is_valid(raise_exception=True)
                 serializer2.save(entity = newentity,createdby = users[0])
 

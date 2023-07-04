@@ -3679,6 +3679,31 @@ class stocktypeListapiview(ListAPIView):
         return Response(df.T.to_dict().values())
 
 
+
+
+class accountbindapiview(ListAPIView):
+    serializer_class = accountListSerializer2
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+
+        if self.request.query_params.get('accounthead'):
+            accountheads =  [int(x) for x in request.GET.get('accounthead', '').split(',')]
+            queryset =  StockTransactions.objects.filter(entity = entity,accounthead__in = accountheads).values('account__id','account__accountname').distinct().order_by('account')
+        else:
+            queryset =  StockTransactions.objects.filter(entity = entity).values('account__id','account__accountname','account__accountcode','account__gstno','account__pan','account__city','account__saccode').annotate(balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+
+           # 'accountname','accountcode','city','gstno','pan','saccode'
+
+        df = read_frame(queryset) 
+        df.rename(columns = {'account__accountname':'accountname','account__id':'id','account__accountcode':'accountcode','account__gstno':'gstno','account__pan':'pan','account__city':'city','account__saccode':'saccode'}, inplace = True)
+
+        return Response(df.T.to_dict().values())
+
+
     
 
 

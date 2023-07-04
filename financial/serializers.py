@@ -1,7 +1,7 @@
 from sys import implementation
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField
-from financial.models import accountHead,account
+from financial.models import accountHead,account,accounttype
 from invoice.models import entry,StockTransactions
 from entity.models import entity,entityfinancialyear
 
@@ -288,6 +288,12 @@ class accountHeadSerializer2(serializers.ModelSerializer):
             return 'Inome and Expenses'
         else:
             return 'Balance Sheet' 
+        
+class accounttypeserializer(serializers.ModelSerializer):
+    #id = serializers.IntegerField()
+    class Meta:
+        model = accounttype
+        fields = ('id','accounttypename','accounttypecode',)
            
 
 

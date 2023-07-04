@@ -13,6 +13,9 @@ from django.db.models import Q
 import numpy as np
 import pandas as pd
 from rest_framework.response import Response
+from invoice.models import entry,StockTransactions
+from django_pandas.io import read_frame
+from entity.models import entity,entityfinancialyear
 
 
 class accountHeadApiView(ListCreateAPIView):
@@ -195,13 +198,15 @@ class accountListApiView(ListAPIView):
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        queryset =  account.objects.filter( Q(entity = entity),Q(accounttrans__accounttype__isnull = True) | Q(accounttrans__accounttype__in = ['M','DD'])).values('accountname','city__cityname','id','gstno','pan','accounthead__name','creditaccounthead__name','canbedeleted').annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0),balance = Sum('accounttrans__debitamount',default = 0) - Sum('accounttrans__creditamount',default = 0))
+
+        currentdates = entityfinancialyear.objects.get(entity = entity,isactive = 1)
+        queryset =  account.objects.filter( Q(entity = entity),Q(accounttrans__accounttype__in = ['M','DD'])).values('accountname','city__cityname','id','gstno','pan','accounthead__name','creditaccounthead__name','canbedeleted').annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0),balance = Sum('accounttrans__debitamount',default = 0) - Sum('accounttrans__creditamount',default = 0))
 
         #query = queryset.exclude(accounttrans__accounttype  = 'MD')
 
         #annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
 
-       # print(queryset.query.__str__())
+        print(queryset.query.__str__())
         return queryset
 
 
@@ -230,3 +235,86 @@ class accountheadApiView3(ListAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return accountHead.objects.filter(entity = entity)
+    
+
+class accountbindapiview(ListAPIView):
+   # serializer_class = accountListSerializer2
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+        currentdates = entityfinancialyear.objects.get(entity = entity,isactive = 1)
+
+
+        # if self.request.query_params.get('accounthead'):
+        #     accountheads =  [int(x) for x in request.GET.get('accounthead', '').split(',')]
+        #     queryset =  StockTransactions.objects.filter(entity = entity,accounthead__in = accountheads).values('account__id','account__accountname').distinct().order_by('account')
+        # else:
+        queryset =  StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(currentdates.finstartyear, currentdates.finendyear)).values('account__id','account__accountname','account__accountcode','account__gstno','account__pan','account__city','account__saccode').annotate(balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+
+        queryset2 =  account.objects.filter(entity = entity).values('id','accountname','accountcode','gstno','pan','city__id','saccode')
+
+           # 'accountname','accountcode','city','gstno','pan','saccode'
+
+        df = read_frame(queryset) 
+        dfa = read_frame(queryset2)
+
+        df = df.fillna('')
+        dfa = dfa.fillna('')
+        dfa['balance'] = 0
+        df.rename(columns = {'account__accountname':'accountname','account__id':'id','account__accountcode':'accountcode','account__gstno':'gstno','account__pan':'pan','account__city':'city','account__saccode':'saccode'}, inplace = True)
+        dfa.rename(columns = {'city__id':'city'}, inplace = True)
+
+        dfnew = pd.concat([df,dfa]).reset_index()
+
+        #print(dfnew)
+
+        
+
+        dffinal = dfnew.groupby(['id','accountname','accountcode','gstno','saccode','city'])[['balance']].sum().reset_index()
+
+
+        dffinal['drcr'] = np.where(dffinal['balance'] < 0 , 'CR','DR')
+
+       # print(dffinal)
+
+        return Response(dffinal.sort_values(by=['accountname']).T.to_dict().values())
+    
+
+
+class accountlistnewapiview(ListAPIView):
+   # serializer_class = accountListSerializer2
+    permission_classes = (permissions.IsAuthenticated,)
+
+    
+    
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+        currentdates = entityfinancialyear.objects.get(entity = entity,isactive = 1)
+
+        # if self.request.query_params.get('accounthead'):
+        #     accountheads =  [int(x) for x in request.GET.get('accounthead', '').split(',')]
+        #     queryset =  StockTransactions.objects.filter(entity = entity,accounthead__in = accountheads).values('account__id','account__accountname').distinct().order_by('account')
+        # else:
+        queryset =  StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(currentdates.finstartyear, currentdates.finendyear)).values('account__id','account__accountname','account__gstno','account__pan','account__city__cityname','account__accounthead__name','account__creditaccounthead__name','account__canbedeleted').annotate(balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+        queryset2 =  account.objects.filter(entity = entity,isactive = 1).values('id','accountname','gstno','pan','city__cityname','accounthead__name','creditaccounthead__name','canbedeleted')
+
+           # 'accountname','accountcode','city','gstno','pan','saccode'
+
+        df = read_frame(queryset) 
+        dfa = read_frame(queryset2)
+        dfa['balance'] = 0
+        df.rename(columns = {'account__accountname':'accountname','account__id':'accountid','account__gstno':'accgst','account__pan':'accpan','account__city__cityname':'cityname','account__accounthead__name':'daccountheadname','account__creditaccounthead__name':'caccountheadname','account__canbedeleted':'canbedeleted'}, inplace = True)
+        dfa.rename(columns = {'id':'accountid','gstno':'accgst','pan':'accpan','city__cityname':'cityname','accounthead__name':'daccountheadname','creditaccounthead__name':'caccountheadname'}, inplace = True)
+        dfnew = pd.concat([df,dfa]).reset_index()
+        dfnew = dfnew.fillna('')
+        dffinal = dfnew.groupby(['accountid','accountname','accgst','cityname','accpan','daccountheadname','caccountheadname','canbedeleted'])[['balance']].sum().reset_index()
+        dffinal['drcr'] = np.where(dffinal['balance'] < 0 , 'CR','DR')
+        dffinal['debit'] = np.where(dffinal['balance'] > 0 , dffinal['balance'],0)
+        dffinal['credit'] = np.where(dffinal['balance'] < 0 , dffinal['balance'],0)
+
+        
+
+        return Response(dffinal.sort_values(by=['accountname']).T.to_dict().values())
