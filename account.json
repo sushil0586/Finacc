@@ -890,7 +890,79 @@
                                         "city": 1,
                                         "canbedeleted": false
        
-                                 }
+                                 },
+                                 {
+                                    
+                                    "accountcode": 8400,
+                                    "gstno": "1",
+                                    "accountname": "Discounts",
+                                    "address1": "4369 GT  Road",
+                                    "address2": "sirhind",
+                                    "openingbcr": "0.00",
+                                    "openingndr": "0.00",
+                                    "contactno": "1",
+                                    "emailid": "sushiljyotibansal@gmail.com",
+                                    "agent": "1",
+                                    "pan": "1",
+                                    "tobel10cr": true,
+                                    "approved": true,
+                                    "tdsno": "1",
+                                    "rtgsno": null,
+                                    "bankname": null,
+                                    "Adhaarno": null,
+                                    "saccode": null,
+                                    "contactperson": null,
+                                    "deprate": "1.00",
+                                    "tdsrate": "1.00",
+                                    "gstshare": "1.00",
+                                    "quanity1": 1,
+                                    "quanity2": 1,
+                                    "BanKAcno": 1,
+                                    "composition": true,
+                                    "country": 1,
+                                    "state": 1,
+                                    "district": 1,
+                                    "city": 1,
+                                    "canbedeleted": false
+   
+                             },
+                             {
+                                    
+                                "accountcode": 8500,
+                                "gstno": "1",
+                                "accountname": "Bank Charges",
+                                "address1": "4369 GT  Road",
+                                "address2": "sirhind",
+                                "openingbcr": "0.00",
+                                "openingndr": "0.00",
+                                "contactno": "1",
+                                "emailid": "sushiljyotibansal@gmail.com",
+                                "agent": "1",
+                                "pan": "1",
+                                "tobel10cr": true,
+                                "approved": true,
+                                "tdsno": "1",
+                                "rtgsno": null,
+                                "bankname": null,
+                                "Adhaarno": null,
+                                "saccode": null,
+                                "contactperson": null,
+                                "deprate": "1.00",
+                                "tdsrate": "1.00",
+                                "gstshare": "1.00",
+                                "quanity1": 1,
+                                "quanity2": 1,
+                                "BanKAcno": 1,
+                                "composition": true,
+                                "country": 1,
+                                "state": 1,
+                                "district": 1,
+                                "city": 1,
+                                "canbedeleted": false
+
+                         }
+
+
                                 
                 ]
 
@@ -1086,6 +1158,28 @@
                
                 "gsttypename": "Exempted",
                 "gsttypecode": "1005"
+                
+            }
+        ],
+        "ACCOUNTTYPE": [
+
+            
+            {
+               
+                "accounttypename": "Bank",
+                "accounttypecode": 1001
+                
+            },
+            {
+               
+                "accounttypename": "Broker",
+                "accounttypecode": 1002
+                
+            },
+            {
+               
+                "accounttypename": "Transporter",
+                "accounttypecode": 1003
                 
             }
         ],

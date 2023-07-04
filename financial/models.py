@@ -11,6 +11,18 @@ from entity.models import entity
 # Create your models here.
 
 
+
+class accounttype(TrackingModel):
+    accounttypename = models.CharField(max_length= 255,verbose_name=_('Acc type Name'))
+    accounttypecode = models.CharField(max_length= 255,verbose_name=_('Acc Type Code'))
+    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
+
+
+    def __str__(self):
+        return f'{self.accounttypename} '
+
+
 Debit = 'Debit'
 Credit = 'Credit'
 

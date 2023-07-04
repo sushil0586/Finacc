@@ -47,6 +47,10 @@ urlpatterns  = [
     path('productlist',views.productListapiview.as_view(), name = 'Trialbalance'),
     path('productcategoryList',views.productcategoryListapiview.as_view(), name = 'Trialbalance'),
     path('stocktypeList',views.stocktypeListapiview.as_view(), name = 'Trialbalance'),
+    path('accountbind',views.accountbindapiview.as_view(), name = 'Trialbalance'),
+
+
+    
 
     
 

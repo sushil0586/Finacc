@@ -764,7 +764,7 @@ class journaldetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = journaldetails
-        fields =  ('id','account','accountname','desc','drcr','debitamount','creditamount','entity',)
+        fields =  ('id','account','accountname','desc','drcr','debitamount','creditamount','discount','bankcharges','tds','chqbank','entity',)
 
     def get_accountname(self,obj):
          return obj.account.accountname
@@ -785,7 +785,16 @@ class journalmainSerializer(serializers.ModelSerializer):
                 print(order.entrydate)
                 id,created  = entry.objects.get_or_create(entrydate1 = order.entrydate,entity = order.entity)
 
-                accountentryid,accountentrycreated  = accountentry.objects.get_or_create(entrydate2 = order.entrydate,account =detail.account,  entity = order.entity)
+                if detail.account.accountcode == 4000:
+                    iscash = True
+                else:
+                    iscash = False
+                # accounttype = 'M'
+
+                if order.vouchertype == 'C':
+                    iscash = True
+
+               # accountentryid,accountentrycreated  = accountentry.objects.get_or_create(entrydate2 = order.entrydate,account =detail.account,  entity = order.entity)
 
                 if order.vouchertype == 'C':
                 # iscash = False
@@ -795,26 +804,48 @@ class journalmainSerializer(serializers.ModelSerializer):
                         
                     cash = account.objects.get(entity =order.entity,accountcode = 4000)
                     if detail.drcr == 1:
+                        if detail.discount > 0:
+                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Cash V.No ' + str(order.voucherno),drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+
                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Cash V.No ' + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = order.voucherno)
                     else:
+                        if detail.discount > 0:
+                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Cash V.No ' + str(order.voucherno),drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+
+                        
                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Cash V.No ' + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = order.voucherno)
 
                     
                 if order.vouchertype == 'B':
                     cash = account.objects.get(id = order.mainaccountid)
                     if detail.drcr == 1:
+                        if detail.discount > 0:
+                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Bank V.No ' + str(order.voucherno),drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                        if detail.bankcharges > 0:
+                            bc = account.objects.get(entity =order.entity,accountcode = 8500)
+                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Bank V.No ' + str(order.voucherno),drcr=0,creditamount=detail.bc,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+
                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Bank V.No ' + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                     else:
+                        if detail.discount > 0:
+                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Bank V.No ' + str(order.voucherno),drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                        if detail.bankcharges > 0:
+                            bc = account.objects.get(entity =order.entity,accountcode = 8500)
+                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Bank V.No ' + str(order.voucherno),drcr=1,debitamount=detail.bc,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+
                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Bank V.No ' + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
-                if detail.account.accountcode == 4000:
-                    iscash = True
-                else:
-                    iscash = False
-                # accounttype = 'M'
-
-                if order.vouchertype == 'C':
-                    iscash = True
+                
 
                 StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No ' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',iscashtransaction= iscash,voucherno = order.voucherno)
 
@@ -1043,7 +1074,7 @@ class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','units','mrp','productdesc','orderqty','pieces','rate','amount','cgstrate','cgst','sgstrate','sgst','igstrate','igst','cess','linetotal','entity',)
+        fields =  ('id','product','productname','hsn','units','mrp','productdesc','orderqty','pieces','rate','amount','account','accountcharges','cgstrate','cgst','sgstrate','sgst','igstrate','igst','cess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -1140,7 +1171,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cess','linetotal','entity',)
+        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -1368,7 +1399,7 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Purchasereturndetails
-        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','cgst','sgst','igst','cess','linetotal','entity',)
+        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -1605,7 +1636,7 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','cgst','sgst','igst','cess','linetotal','entity',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
     
     def get_productname(self,obj):
         return obj.product.productname
@@ -3636,7 +3667,7 @@ class salesreturnDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturnDetails
-        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','cgst','sgst','igst','cess','linetotal','entity',)
+        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
