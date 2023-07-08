@@ -252,7 +252,7 @@ class accountbindapiview(ListAPIView):
         #     accountheads =  [int(x) for x in request.GET.get('accounthead', '').split(',')]
         #     queryset =  StockTransactions.objects.filter(entity = entity,accounthead__in = accountheads).values('account__id','account__accountname').distinct().order_by('account')
         # else:
-        queryset =  StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(currentdates.finstartyear, currentdates.finendyear)).values('account__id','account__accountname','account__accountcode','account__gstno','account__pan','account__city','account__saccode').annotate(balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
+        queryset =  StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(currentdates.finstartyear, currentdates.finendyear)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__id','account__accountname','account__accountcode','account__gstno','account__pan','account__city','account__saccode').annotate(balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
 
         queryset2 =  account.objects.filter(entity = entity).values('id','accountname','accountcode','gstno','pan','city__id','saccode')
 
