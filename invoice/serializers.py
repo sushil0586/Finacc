@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -1165,7 +1165,7 @@ class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','units','mrp','productdesc','orderqty','pieces','rate','amount','account','accountcharges','cgstrate','cgst','sgstrate','sgst','igstrate','igst','cess','linetotal','entity',)
+        fields =  ('id','product','productname','hsn','units','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgstrate','cgst','sgstrate','sgst','igstrate','igst','cess','linetotal','entity',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -1256,6 +1256,19 @@ class salesotherdetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = saleothercharges
         fields =  ('id','salesorderdetail','account','amount',)
+
+
+class purchaseotherdetailsSerializer(serializers.ModelSerializer):
+    
+    #entityUser = entityUserSerializer(many=True)
+    id = serializers.IntegerField(required=False)
+    # productname = serializers.SerializerMethodField()
+    # hsn = serializers.SerializerMethodField()
+    # mrp = serializers.SerializerMethodField()
+
+    class Meta:
+        model = purchaseothercharges
+        fields =  ('id','purchaseorderdetail','account','amount',)
 
     # def get_productname(self,obj):
     #     return obj.product.productname
@@ -1774,6 +1787,7 @@ class jobworkchallanSerializer(serializers.ModelSerializer):
 
 
 class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
+    purchaseothercharges = purchaseotherdetailsSerializer(many=True,required=False)
     id = serializers.IntegerField(required=False)
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
@@ -1783,7 +1797,7 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','purchaseothercharges',)
     
     def get_productname(self,obj):
         return obj.product.productname
@@ -1827,7 +1841,10 @@ class purchaseorderSerializer(serializers.ModelSerializer):
             #print(order.objects.get("id"))
             #print(tracks_data)
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('purchaseothercharges')
                 detail = PurchaseOrderDetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
+                for purchaseothercharge_data in purchaseothercharges_data:
+                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
             
                 stk.createtransactiondetails(detail=detail,stocktype='P')
                 
