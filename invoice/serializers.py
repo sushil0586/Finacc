@@ -1248,27 +1248,31 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 class salesotherdetailsSerializer(serializers.ModelSerializer):
     
     #entityUser = entityUserSerializer(many=True)
-    id = serializers.IntegerField(required=False)
+  #  id = serializers.IntegerField(required=False)
     # productname = serializers.SerializerMethodField()
     # hsn = serializers.SerializerMethodField()
     # mrp = serializers.SerializerMethodField()
 
     class Meta:
         model = saleothercharges
-        fields =  ('id','salesorderdetail','account','amount',)
+        fields =  ('account','amount',)
 
 
 class purchaseotherdetailsSerializer(serializers.ModelSerializer):
     
     #entityUser = entityUserSerializer(many=True)
-    id = serializers.IntegerField(required=False)
+   # id = serializers.IntegerField(required=False)
     # productname = serializers.SerializerMethodField()
     # hsn = serializers.SerializerMethodField()
     # mrp = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
 
     class Meta:
         model = purchaseothercharges
-        fields =  ('id','purchaseorderdetail','account','amount',)
+        fields =  ('account','amount','name',)
+
+    def get_name(self,obj):
+        return obj.account.accountname
 
     # def get_productname(self,obj):
     #     return obj.product.productname
@@ -1787,7 +1791,7 @@ class jobworkchallanSerializer(serializers.ModelSerializer):
 
 
 class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
-    purchaseothercharges = purchaseotherdetailsSerializer(many=True,required=False)
+    otherchargesdetail = purchaseotherdetailsSerializer(many=True,required=False)
     id = serializers.IntegerField(required=False)
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
@@ -1797,7 +1801,7 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','purchaseothercharges',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
     
     def get_productname(self,obj):
         return obj.product.productname
@@ -1834,7 +1838,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
        # print(validated_data)
-        PurchaseOrderDetails_data = validated_data.pop('purchaseorderdetails')
+        PurchaseOrderDetails_data = validated_data.pop('otherchargesdetail')
         with transaction.atomic():
             order = purchaseorder.objects.create(**validated_data)
             stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
@@ -1870,15 +1874,14 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
             PurchaseOrderDetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
         
-            PurchaseOrderDetails_data = validated_data.get('purchaseorderdetails')
+            PurchaseOrderDetails_data = validated_data.get('otherchargesdetail')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
                 purchaseothercharges_data = PurchaseOrderDetail_data.pop('purchaseothercharges')
                 detail = PurchaseOrderDetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='P')
                 for purchaseothercharge_data in purchaseothercharges_data:
-                    purchaseothercharge_data.pop('purchaseorderdetail')
-                    purchaseothercharge_data.pop('id')
+                  
                     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
 
         return instance
