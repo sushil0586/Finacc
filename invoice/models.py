@@ -163,7 +163,7 @@ class salesOrderdetails(TrackingModel):
         return f'{self.product} '
     
 class saleothercharges(TrackingModel):
-    salesorderdetail = models.ForeignKey(to = salesOrderdetails,related_name='saleothercharges', on_delete= models.CASCADE,verbose_name= 'Sale Order Number',null=True)
+    salesorderdetail = models.ForeignKey(to = salesOrderdetails,related_name='otherchargesdetail', on_delete= models.CASCADE,verbose_name= 'Sale Order Number',null=True)
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null = True,)
     amount =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'amount')
 
@@ -236,8 +236,8 @@ class Purchasereturndetails(TrackingModel):
     pieces =  models.IntegerField(verbose_name='pieces')
     rate =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Rate')
     amount =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Amount')
-    account   = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True,null=True,verbose_name= 'Other account')
-    accountcharges =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
+    #account   = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True,null=True,verbose_name= 'Other account')
+    othercharges =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
     cgst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'CGST')
     sgst =  models.DecimalField(max_digits=10,null = True,default = 1, decimal_places=4,verbose_name= 'SGST')
     igst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'IGST')
@@ -251,6 +251,16 @@ class Purchasereturndetails(TrackingModel):
 
     def __str__(self):
         return f'{self.product} '
+    
+
+class Purchasereturnothercharges(TrackingModel):
+    purchasereturnorderdetail = models.ForeignKey(to = Purchasereturndetails,related_name='otherchargesdetail', on_delete= models.CASCADE,verbose_name= 'Sale Order Number',null=True)
+    account = models.ForeignKey(to = account, on_delete= models.CASCADE,null = True,)
+    amount =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'amount')
+
+
+    def __str__(self):
+        return f'{self.purchasereturnorderdetail}'
     
 
 class jobworkchalan(TrackingModel):
@@ -467,8 +477,8 @@ class salereturnDetails(models.Model):
     pieces =  models.IntegerField(verbose_name='pieces')
     rate =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Rate')
     amount =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Amount')
-    account   = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True,null=True,verbose_name= 'Other account')
-    accountcharges =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
+   # account   = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True,null=True,verbose_name= 'Other account')
+    othercharges =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
     cgst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'CGST')
     sgst =  models.DecimalField(max_digits=10,null = True,default = 1, decimal_places=4,verbose_name= 'SGST')
     igst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'IGST')
@@ -479,6 +489,18 @@ class salereturnDetails(models.Model):
     #test =  models.IntegerField(null=True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+
+
+class salereturnothercharges(TrackingModel):
+    salesreturnorderdetail = models.ForeignKey(to = salereturnDetails,related_name='otherchargesdetail', on_delete= models.CASCADE,verbose_name= 'Sale Order Number',null=True)
+    account = models.ForeignKey(to = account, on_delete= models.CASCADE,null = True,)
+    amount =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'amount')
+
+
+    def __str__(self):
+        return f'{self.salesreturnorderdetail}'
 
 
 
