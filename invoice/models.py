@@ -400,7 +400,7 @@ class PurchaseOrderDetails(models.Model):
 
 
 class purchaseothercharges(TrackingModel):
-    purchaseorderdetail = models.ForeignKey(to = PurchaseOrderDetails,related_name='purchaseothercharges', on_delete= models.CASCADE,verbose_name= 'Purchase Order detail',null=True)
+    purchaseorderdetail = models.ForeignKey(to = PurchaseOrderDetails,related_name='otherchargesdetail', on_delete= models.CASCADE,verbose_name= 'Purchase Order detail',null=True)
     account = models.ForeignKey(to = account, on_delete= models.CASCADE,null = True,)
     amount =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'amount')
 
