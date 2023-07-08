@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -1252,10 +1252,14 @@ class salesotherdetailsSerializer(serializers.ModelSerializer):
     # productname = serializers.SerializerMethodField()
     # hsn = serializers.SerializerMethodField()
     # mrp = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
 
     class Meta:
         model = saleothercharges
-        fields =  ('account','amount',)
+        fields =  ('account','amount','name',)
+
+    def get_name(self,obj):
+        return obj.account.accountname
 
 
 class purchaseotherdetailsSerializer(serializers.ModelSerializer):
@@ -1322,7 +1326,7 @@ class purchaseotherdetailsSerializer(serializers.ModelSerializer):
 
 class salesOrderdetailsSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
-    saleothercharges = salesotherdetailsSerializer(many=True,required=False)
+    otherchargesdetail = salesotherdetailsSerializer(many=True,required=False)
     id = serializers.IntegerField(required=False)
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
@@ -1330,7 +1334,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','saleothercharges',)
+        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -1459,13 +1463,13 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ',entrytype= 'I')
             #print(tracks_data)
             for PurchaseOrderDetail_data in salesOrderdetails_data:
-              #  salesorderdetails_data = PurchaseOrderDetail_data.pop('saleothercharges')
+                salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
 
                 detail = salesOrderdetails.objects.create(salesorderheader = order, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='S')
 
-                # for salesorderdetail_data in salesorderdetails_data:
-                #     detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
+                for salesorderdetail_data in salesorderdetails_data:
+                    detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
 
                 # if(detail.orderqty ==0.00):
                 #     qty = detail.pieces
@@ -1492,8 +1496,11 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             salesOrderdetails_data = validated_data.get('salesorderdetails')
 
             for PurchaseOrderDetail_data in salesOrderdetails_data:
+                salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = salesOrderdetails.objects.create(salesorderheader = instance, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='S')
+                for salesorderdetail_data in salesorderdetails_data:
+                    detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
 
         #  stk.updateransaction()
             return instance
@@ -1554,16 +1561,35 @@ class PRSerializer(serializers.ModelSerializer):
         fields =  ['newbillno']
 
 
+
+class purchasereturnotherchargesSerializer(serializers.ModelSerializer):
+    
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+    # productname = serializers.SerializerMethodField()
+    # hsn = serializers.SerializerMethodField()
+    # mrp = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Purchasereturnothercharges
+        fields =  ('account','amount','name',)
+
+    def get_name(self,obj):
+        return obj.account.accountname
+
+
 class purchasereturndetailsSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
     id = serializers.IntegerField(required=False)
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
     mrp = serializers.SerializerMethodField()
+    otherchargesdetail = purchasereturnotherchargesSerializer(many=True)
 
     class Meta:
         model = Purchasereturndetails
-        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
+        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -1600,8 +1626,11 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             #print(tracks_data)
             
             for PurchaseOrderDetail_data in salesOrderdetails_data:
+                otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = Purchasereturndetails.objects.create(purchasereturn = order, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='S')
+                for otherchargedetail in otherchargesdetail:
+                    detail = Purchasereturnothercharges.objects.create(purchasereturnorderdetail = detail, **otherchargedetail)
 
                 
 
@@ -1625,8 +1654,11 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             salesOrderdetails_data = validated_data.get('purchasereturndetails')
 
             for PurchaseOrderDetail_data in salesOrderdetails_data:
+                otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = Purchasereturndetails.objects.create(purchasereturn = instance, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='S')
+                for otherchargedetail in otherchargesdetail:
+                    detail = Purchasereturnothercharges.objects.create(purchasereturnorderdetail = detail, **otherchargedetail)
 
         
         return instance
@@ -3829,17 +3861,36 @@ class SRSerializer(serializers.ModelSerializer):
 
 
 
+class salereturnotherchargesSerializer(serializers.ModelSerializer):
+    
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+    # productname = serializers.SerializerMethodField()
+    # hsn = serializers.SerializerMethodField()
+    # mrp = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = salereturnothercharges
+        fields =  ('account','amount','name',)
+
+    def get_name(self,obj):
+        return obj.account.accountname
+
+
+
 
 class salesreturnDetailsSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
     mrp = serializers.SerializerMethodField()
+    otherchargesdetail = salereturnotherchargesSerializer(many=True)
     #entityUser = entityUserSerializer(many=True)
 
     class Meta:
         model = salereturnDetails
-        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','account','accountcharges','cgst','sgst','igst','cess','linetotal','entity',)
+        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -3873,9 +3924,12 @@ class salesreturnSerializer(serializers.ModelSerializer):
             order = salereturn.objects.create(**validated_data)
             stk = stocktransaction(order, transactiontype= 'SR',debit=1,credit=0,description= 'Sale Return',entrytype= 'I')
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                otherchargesdetail = validated_data.pop('otherchargesdetail')
                 
                 detail = salereturnDetails.objects.create(salereturn = order,**PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='P')
+                for otherchargedetail in otherchargesdetail:
+                    detail2 = salereturnothercharges.objects.create(salesreturnorderdetail = detail,**otherchargedetail)
             
             
             stk.createtransaction()
@@ -3898,8 +3952,11 @@ class salesreturnSerializer(serializers.ModelSerializer):
             PurchaseOrderDetails_data = validated_data.get('salereturndetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                otherchargesdetail = validated_data.pop('otherchargesdetail')
                 detail = salereturnDetails.objects.create(salereturn = instance,**PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='P')
+                for otherchargedetail in otherchargesdetail:
+                    detail2 = salereturnothercharges.objects.create(salesreturnorderdetail = detail,**otherchargedetail)
 
         
 
