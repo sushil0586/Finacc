@@ -1873,8 +1873,13 @@ class purchaseorderSerializer(serializers.ModelSerializer):
             PurchaseOrderDetails_data = validated_data.get('purchaseorderdetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('purchaseothercharges')
                 detail = PurchaseOrderDetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='P')
+                for purchaseothercharge_data in purchaseothercharges_data:
+                    purchaseothercharge_data.pop('purchaseorderdetail')
+                    purchaseothercharge_data.pop('id')
+                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
 
         return instance
 
