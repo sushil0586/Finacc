@@ -1838,14 +1838,14 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
        # print(validated_data)
-        PurchaseOrderDetails_data = validated_data.pop('otherchargesdetail')
+        PurchaseOrderDetails_data = validated_data.pop('purchaseorderdetails')
         with transaction.atomic():
             order = purchaseorder.objects.create(**validated_data)
             stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
             #print(order.objects.get("id"))
             #print(tracks_data)
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('purchaseothercharges')
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = PurchaseOrderDetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
                 for purchaseothercharge_data in purchaseothercharges_data:
                     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
@@ -1874,10 +1874,10 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
             PurchaseOrderDetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
         
-            PurchaseOrderDetails_data = validated_data.get('otherchargesdetail')
+            PurchaseOrderDetails_data = validated_data.get('purchaseorderdetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('purchaseothercharges')
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = PurchaseOrderDetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='P')
                 for purchaseothercharge_data in purchaseothercharges_data:
