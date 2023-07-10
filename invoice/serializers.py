@@ -474,7 +474,7 @@ class stocktransaction:
 
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.billdate,entity=self.order.entity)
 
-        details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
+        details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount - detail.othercharges,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
         details1 = StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
         return details
 
@@ -3890,7 +3890,7 @@ class salesreturnDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturnDetails
-        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
+        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -3924,10 +3924,10 @@ class salesreturnSerializer(serializers.ModelSerializer):
             order = salereturn.objects.create(**validated_data)
             stk = stocktransaction(order, transactiontype= 'SR',debit=1,credit=0,description= 'Sale Return',entrytype= 'I')
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                otherchargesdetail = validated_data.pop('otherchargesdetail')
+                otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 
                 detail = salereturnDetails.objects.create(salereturn = order,**PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='P')
+               # stk.createtransactiondetails(detail=detail,stocktype='P')
                 for otherchargedetail in otherchargesdetail:
                     detail2 = salereturnothercharges.objects.create(salesreturnorderdetail = detail,**otherchargedetail)
             
@@ -3952,7 +3952,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
             PurchaseOrderDetails_data = validated_data.get('salereturndetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                otherchargesdetail = validated_data.pop('otherchargesdetail')
+                otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = salereturnDetails.objects.create(salereturn = instance,**PurchaseOrderDetail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='P')
                 for otherchargedetail in otherchargesdetail:
