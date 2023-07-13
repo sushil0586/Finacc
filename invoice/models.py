@@ -119,6 +119,7 @@ class SalesOderHeader(TrackingModel):
     totalgst =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'totalgst')
     subtotal =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'Sub Total')
     addless =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'Add/Less')
+    discount = models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'Discount')
     cgst =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'C.GST')
     sgst =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'S.GST')
     igst =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'I.GST')
@@ -170,6 +171,11 @@ class saleothercharges(TrackingModel):
 
     def __str__(self):
         return f'{self.salesorderdetail}'
+    
+
+
+
+
 
 
 
@@ -335,6 +341,89 @@ class jobworkchalanDetails(models.Model):
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 
+class purchaseorderimport(TrackingModel):
+    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    voucherno = models.IntegerField(verbose_name='Voucher No')
+    account = models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,blank=True)
+    billno = models.IntegerField(verbose_name='Bill No')
+    billdate = models.DateTimeField(verbose_name='Bill Date',null = True)
+    terms = models.IntegerField(verbose_name='Terms')
+    taxtype = models.IntegerField(verbose_name='TaxType')
+    billcash = models.IntegerField(verbose_name='Bill/Cash')
+    totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
+    totalquanity =  models.DecimalField(max_digits=10, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
+    advance =  models.DecimalField(max_digits=10, decimal_places=4,default=0 ,blank = True,verbose_name= 'advance')
+    remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
+    transport =  models.IntegerField(verbose_name='transport',null = True)
+    broker =  models.IntegerField(verbose_name='broker',null = True)
+    taxid = models.IntegerField(verbose_name='Terms',default = 0)
+    tds194q =  models.DecimalField(max_digits=10, decimal_places=4,default=0, verbose_name= 'TDS 194 @')
+    tds194q1 =  models.DecimalField(max_digits=10, decimal_places=4,default=0, verbose_name= 'TDS 194 @')
+    tcs206c1ch1 =  models.DecimalField(max_digits=10, decimal_places=4,default=0 ,verbose_name= 'Tcs 206C1cH1')
+    tcs206c1ch2 =  models.DecimalField(max_digits=10, decimal_places=4,default=0, verbose_name= 'Tcs 206C1cH2')
+    tcs206c1ch3 =  models.DecimalField(max_digits=10, decimal_places=4,default=0, verbose_name= 'Tcs tcs206c1ch3')
+    tcs206C1 =  models.DecimalField(max_digits=10, decimal_places=4,default=0 ,verbose_name= 'Tcs 206C1')
+    tcs206C2 =  models.DecimalField(max_digits=10, decimal_places=4,default=0 ,verbose_name= 'Tcs 206C2')
+    duedate = models.DateTimeField(verbose_name='Due Date',null = True)
+    inputdate = models.DateTimeField(verbose_name='Input Date',null = True)
+    vehicle = models.CharField(max_length=50, null=True,verbose_name='Vehicle')
+    grno = models.CharField(max_length=50,null=True,verbose_name='GR No')
+    gstr2astatus = models.BooleanField(verbose_name='GstR 2A Status',default= 1)
+    showledgeraccount = models.BooleanField(verbose_name='Show Ledger Account',default= 1)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Sub Total')
+    igst = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'I.GST',default=0)
+    addless =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'Add/Less')
+    cess = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Cess',default=0)
+    expenses = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Expenses',default=0)
+    gtotal = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'G Total')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+    class Meta:
+        unique_together = ('voucherno', 'entity',)
+        unique_together = ('billno', 'account','entity','entityfinid',)
+        
+
+    def __str__(self):
+        return f'{self.voucherno}'
+    
+
+
+class PurchaseOrderimportdetails(models.Model):
+    purchaseorder = models.ForeignKey(to = purchaseorderimport,related_name='PurchaseOrderimportdetails', on_delete= models.CASCADE,verbose_name= 'Purchase Order Number')
+    product = models.ForeignKey(to = Product, on_delete= models.CASCADE,verbose_name= 'Product',null = True,default = 1)
+    productdesc = models.CharField(max_length=500, null=True,verbose_name='Product Desc')
+    orderqty =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Order Qty')
+    pieces =  models.IntegerField(verbose_name='pieces')
+    rate =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Rate')
+    amount =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Amount')
+    igst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'IGST')
+    othercharges =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
+    cess = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Cess',default=0)
+    linetotal =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Line Total')
+    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+
+
+
+class purchaseotherimportcharges(TrackingModel):
+    purchaseorderdetail = models.ForeignKey(to = PurchaseOrderimportdetails,related_name='otherchargesdetail', on_delete= models.CASCADE,verbose_name= 'Purchase Order detail',null=True)
+    account = models.ForeignKey(to = account, on_delete= models.CASCADE,null = True,)
+    amount =  models.DecimalField(max_digits=10, decimal_places=4,default=0,verbose_name= 'amount')
+
+
+    def __str__(self):
+        return f'{self.purchaseorderdetail}'
+
+
+
+
+    
+
+
+
 class purchaseorder(TrackingModel):
     voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
     voucherno = models.IntegerField(verbose_name='Voucher No')
@@ -398,10 +487,7 @@ class PurchaseOrderDetails(models.Model):
     cgst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'CGST')
     sgst =  models.DecimalField(max_digits=10,null = True,default = 1, decimal_places=4,verbose_name= 'SGST')
     igst =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'IGST')
-  #  account   = models.ForeignKey(to = account, on_delete= models.CASCADE,blank=True,null=True,verbose_name= 'Other account')
     othercharges =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
-    # cgstcess = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
-    # sgstcess = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=10, decimal_places=4,verbose_name= 'Line Total')
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')

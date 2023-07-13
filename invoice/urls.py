@@ -7,6 +7,8 @@ app_name = 'invoice'
 urlpatterns  = [
 
    
+    path('purchaseimport',views.purchaseorderimportApiView.as_view(),name = 'salesorder'),
+    path('purchaseimport/<int:id>',views.purchaseorderimportupdatedelview.as_view(),name = 'salesorder'),
     path('salesorder',views.SalesOderHeaderApiView.as_view(),name = 'salesorder'),
     path('gstorderservices',views.gstorderservicesApiView.as_view(),name = 'saleservices'),
     path('gstorderservices/<int:id>',views.gstserviceupdatedelview.as_view(), name = 'salesorder'),
@@ -29,6 +31,7 @@ urlpatterns  = [
     path('prbillno',views.purchasereturnlatestview.as_view(), name = 'purchaseorder'),
     path('journal',views.JournalApiView.as_view(), name = 'journal'),
     path('srvoucherno',views.salesreturnlatestview.as_view(), name = 'journal'),
+    path('pivoucherno',views.purchaseimportlatestview.as_view(), name = 'journal'),
     path('salesreturn',views.salesreturnApiView.as_view(), name = 'journal'),
     path('salesreturn/<int:id>',views.salesreturnupdatedelview.as_view(), name = 'journal'),
     path('jvouccherno',views.journalordelatestview.as_view(), name = 'purchaseorder'),
@@ -54,6 +57,7 @@ urlpatterns  = [
 
     path('purchasereturnbno/<int:billno>',views.PurchaseReturnpreviousview.as_view(), name = 'journal'),
     path('purchaseordervno/<int:voucherno>',views.purchaseorderpreviousview.as_view(), name = 'journal'),
+    path('purchaseimportvno/<int:voucherno>',views.purchaseorderimportpreviousview.as_view(), name = 'journal'),
     path('journalmainvno/<int:voucherno>',views.journalmainpreviousapiview.as_view(), name = 'journal'),
     path('salesreturnvno/<int:voucherno>',views.salesreturnpreviousview.as_view(), name = 'journal'),
     path('stockmainvno/<int:voucherno>',views.stockmainpreviousapiview.as_view(), name = 'journal'),

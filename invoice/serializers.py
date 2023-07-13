@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -475,8 +475,22 @@ class stocktransaction:
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.billdate,entity=self.order.entity)
 
         details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount - detail.othercharges,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
-        details1 = StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
+        details1 = StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount - detail.othercharges,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
         return details
+
+    
+    def createothertransactiondetails(self,detail,stocktype):
+
+        
+
+        entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.billdate,entity=self.order.entity)
+
+      #  details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount - detail.othercharges,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
+        details1 = StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,drcr = self.debit,debitamount = detail.amount ,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'M',isactive = self.order.isactive,voucherno = self.order.voucherno)
+        return details1
+    
+
+    
 
     
 
@@ -593,10 +607,24 @@ class stocktransactionsale:
         
         entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.sorderdate,entity=self.order.entity)
  
-        details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.creditaccounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate,voucherno = self.order.billno)
-        details1 = StockTransactions.objects.create(accounthead = self.order.accountid.creditaccounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate,voucherno = self.order.billno)
+        details = StockTransactions.objects.create(accounthead = detail.product.saleaccount.creditaccounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount - detail.othercharges,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate,voucherno = self.order.billno)
+        details1 = StockTransactions.objects.create(accounthead = self.order.accountid.creditaccounthead,account= self.order.accountid,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,quantity = qty,drcr = self.credit,creditamount = detail.amount - detail.othercharges,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'MD',isactive = self.order.isactive,rate = detail.rate,entrydatetime = self.order.sorderdate,voucherno = self.order.billno)
         
         return details
+    
+
+    def createothertransactiondetails(self,detail,stocktype):
+
+        
+
+        entryid,created  = entry.objects.get_or_create(entrydate1 = self.order.sorderdate,entity=self.order.entity)
+
+      #  details = StockTransactions.objects.create(accounthead = detail.product.purchaseaccount.accounthead,account= detail.product.purchaseaccount,stock=detail.product,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' '  + str(self.order.voucherno),stockttype = stocktype,quantity = qty,drcr = self.debit,debitamount = detail.amount - detail.othercharges,entrydate = self.order.billdate,entity = self.order.entity,createdby = self.order.createdby,entry = entryid,entrydatetime = self.order.billdate,accounttype = 'DD',isactive = self.order.isactive,rate = detail.rate,voucherno = self.order.voucherno)
+        details1 = StockTransactions.objects.create(accounthead = detail.account.creditaccounthead,account= detail.account,transactiontype = self.transactiontype,transactionid = self.order.id,desc = self.description + ' ' + str(self.order.billno),stockttype = stocktype,drcr = self.credit,creditamount = detail.amount,entrydate = self.order.sorderdate,entity = self.order.entity,createdby = self.order.owner,entry = entryid,accounttype = 'M',isactive = self.order.isactive,entrydatetime = self.order.sorderdate,voucherno = self.order.billno)
+        return details1
+
+
+
 
     
 
@@ -846,8 +874,8 @@ class journalmainSerializer(serializers.ModelSerializer):
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
                             bc = account.objects.get(entity =order.entity,accountcode = 8500)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
                         if detail.tds > 0:
                             nnation = ' (tds)'
@@ -865,8 +893,8 @@ class journalmainSerializer(serializers.ModelSerializer):
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
                             bc = account.objects.get(entity =order.entity,accountcode = 8500)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                         if detail.tds > 0:
                             nnation = ' (tds)'
                             tds = account.objects.get(entity =order.entity,accountcode = 8100)
@@ -950,8 +978,8 @@ class journalmainSerializer(serializers.ModelSerializer):
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
                             bc = account.objects.get(entity =instance.entity,accountcode = 8500)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                         
                         if detail.tds > 0:
                             nnation = ' (tds)'
@@ -970,8 +998,8 @@ class journalmainSerializer(serializers.ModelSerializer):
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
                             bc = account.objects.get(entity =instance.entity,accountcode = 8500)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
                         if detail.tds > 0:
                             nnation = ' (tds)'
@@ -1264,11 +1292,6 @@ class salesotherdetailsSerializer(serializers.ModelSerializer):
 
 class purchaseotherdetailsSerializer(serializers.ModelSerializer):
     
-    #entityUser = entityUserSerializer(many=True)
-   # id = serializers.IntegerField(required=False)
-    # productname = serializers.SerializerMethodField()
-    # hsn = serializers.SerializerMethodField()
-    # mrp = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
 
     class Meta:
@@ -1277,42 +1300,117 @@ class purchaseotherdetailsSerializer(serializers.ModelSerializer):
 
     def get_name(self,obj):
         return obj.account.accountname
-
-    # def get_productname(self,obj):
-    #     return obj.product.productname
-
-    # def get_hsn(self,obj):
-    #     return obj.product.hsn
-    
-    # def get_mrp(self,obj):
-    #     return obj.product.mrp
     
 
+class purchaseotherdetailsimportSerializer(serializers.ModelSerializer):
+    
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = purchaseothercharges
+        fields =  ('account','amount','name',)
+
+    def get_name(self,obj):
+        return obj.account.accountname
+    
 
 
-# class salesOrderdetailsSerializer(serializers.ModelSerializer):
+class purchaseorderdetailimportsserializer(serializers.ModelSerializer):
+    otherchargesdetail = purchaseotherdetailsimportSerializer(many=True,required=False)
+    id = serializers.IntegerField(required=False)
+    productname = serializers.SerializerMethodField()
+    hsn = serializers.SerializerMethodField()
+    mrp = serializers.SerializerMethodField()
+   # productdesc1 = serializers.SerializerMethodField()
+    #entityUser = entityUserSerializer(many=True)
 
-#     saleothercharges = salesotherdetailsSerializer(many=True)
-#     #entityUser = entityUserSerializer(many=True)
-#     id = serializers.IntegerField(required=False)
-#     productname = serializers.SerializerMethodField()
-#     hsn = serializers.SerializerMethodField()
-#     mrp = serializers.SerializerMethodField()
+    class Meta:
+        model = PurchaseOrderimportdetails
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','igst','cess','linetotal','entity','otherchargesdetail',)
+    
+    def get_productname(self,obj):
+        return obj.product.productname
+    
+    def get_hsn(self,obj):
+        return obj.product.hsn
+
+    def get_mrp(self,obj):
+        return obj.product.mrp
+    
+
+
+class purchaseorderimportSerializer(serializers.ModelSerializer):
+    PurchaseOrderimportdetails = purchaseorderdetailimportsserializer(many=True)
+   # productname = serializers.SerializerMethodField()
+
+    class Meta:
+        model = purchaseorderimport
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','igst','cess','expenses','gtotal','entityfinid','entity','isactive','PurchaseOrderimportdetails',)
+
+
+    
+    
+
+
+    def create(self, validated_data):
+       # print(validated_data)
+        PurchaseOrderDetails_data = validated_data.pop('PurchaseOrderimportdetails')
+        with transaction.atomic():
+            order = purchaseorderimport.objects.create(**validated_data)
+            stk = stocktransaction(order, transactiontype= 'PI',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
+            #print(order.objects.get("id"))
+            #print(tracks_data)
+            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+                detail = PurchaseOrderimportdetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
+                for purchaseothercharge_data in purchaseothercharges_data:
+                    detail1 = purchaseotherimportcharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                   # stk.createothertransactiondetails(detail=detail1,stocktype='P')
+
+            
+               # stk.createtransactiondetails(detail=detail,stocktype='P')
+                
+            
+           # stk.createtransaction()
+        return order
+
+    def update(self, instance, validated_data):
+        fields = ['voucherdate','voucherno','account','billno','billdate','showledgeraccount','terms','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','igst','cess','expenses','gtotal','entityfinid','entity','isactive']
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        
+
+        # print(instance.id)
+        stk = stocktransaction(instance, transactiontype= 'PI',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype='U')
+        with transaction.atomic():
+           # stk.createtransaction()
+            
+            i = instance.save()
+
+            PurchaseOrderimportdetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
+        
+            PurchaseOrderDetails_data = validated_data.get('PurchaseOrderimportdetails')
+
+            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+                detail = PurchaseOrderimportdetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
+                #stk.createtransactiondetails(detail=detail,stocktype='P')
+                for purchaseothercharge_data in purchaseothercharges_data:
+                  
+                    detail1 = purchaseotherimportcharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                  #  stk.createothertransactiondetails(detail=detail1,stocktype='P')
+
+        return instance
+
 
     
 
-#     class Meta:
-#         model = salesOrderdetails
-#         fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','saleothercharges',)
 
-#     def get_productname(self,obj):
-#         return obj.product.productname
 
-#     def get_hsn(self,obj):
-#         return obj.product.hsn
-    
-#     def get_mrp(self,obj):
-#         return obj.product.mrp
+
 
 
 
@@ -1437,7 +1535,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     salesorderdetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','entity','owner','isactive','salesorderdetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','entity','owner','isactive','salesorderdetails',)
 
 
     
@@ -1470,6 +1568,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
                 for salesorderdetail_data in salesorderdetails_data:
                     detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
+                    stk.createothertransactiondetails(detail=detail2,stocktype='S')
 
                 # if(detail.orderqty ==0.00):
                 #     qty = detail.pieces
@@ -1481,7 +1580,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','entityfinid','entity','owner',]
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount', 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','entityfinid','entity','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -1501,6 +1600,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                 stk.createtransactiondetails(detail=detail,stocktype='S')
                 for salesorderdetail_data in salesorderdetails_data:
                     detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
+                    stk.createothertransactiondetails(detail=detail2,stocktype='S')
 
         #  stk.updateransaction()
             return instance
@@ -1843,6 +1943,9 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
     def get_mrp(self,obj):
         return obj.product.mrp
+    
+
+
 
 
 
@@ -1881,6 +1984,8 @@ class purchaseorderSerializer(serializers.ModelSerializer):
                 detail = PurchaseOrderDetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
                 for purchaseothercharge_data in purchaseothercharges_data:
                     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                    stk.createothertransactiondetails(detail=detail1,stocktype='P')
+
             
                 stk.createtransactiondetails(detail=detail,stocktype='P')
                 
@@ -1915,6 +2020,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
                 for purchaseothercharge_data in purchaseothercharges_data:
                   
                     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                    stk.createothertransactiondetails(detail=detail1,stocktype='P')
 
         return instance
 
@@ -3859,6 +3965,23 @@ class SRSerializer(serializers.ModelSerializer):
         model = salereturn
         fields =  ['newvoucher']
 
+class PISerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    newvoucher = serializers.SerializerMethodField()
+
+    def get_newvoucher(self, obj):
+        if not obj.voucherno:
+            return 1
+        else:
+            return obj.voucherno + 1
+
+
+    class Meta:
+        model = purchaseorderimport
+        fields =  ['newvoucher']
+
 
 
 class salereturnotherchargesSerializer(serializers.ModelSerializer):
@@ -3927,9 +4050,10 @@ class salesreturnSerializer(serializers.ModelSerializer):
                 otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 
                 detail = salereturnDetails.objects.create(salereturn = order,**PurchaseOrderDetail_data)
-               # stk.createtransactiondetails(detail=detail,stocktype='P')
+                stk.createtransactiondetails(detail=detail,stocktype='P')
                 for otherchargedetail in otherchargesdetail:
                     detail2 = salereturnothercharges.objects.create(salesreturnorderdetail = detail,**otherchargedetail)
+                    stk.createothertransactiondetails(detail=detail2,stocktype='P')
             
             
             stk.createtransaction()
@@ -3957,6 +4081,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
                 stk.createtransactiondetails(detail=detail,stocktype='P')
                 for otherchargedetail in otherchargesdetail:
                     detail2 = salereturnothercharges.objects.create(salesreturnorderdetail = detail,**otherchargedetail)
+                    stk.createothertransactiondetails(detail=detail2,stocktype='P')
 
         
 
