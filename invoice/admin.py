@@ -1,5 +1,5 @@
 from django.contrib import admin
-from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,Transactions,StockTransactions,Purchasereturndetails,PurchaseReturn,journalmain,journaldetails,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,Purchasereturnothercharges,salereturnothercharges
+from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,Transactions,StockTransactions,Purchasereturndetails,PurchaseReturn,journalmain,journaldetails,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,Purchasereturnothercharges,salereturnothercharges,purchaseorderimport,PurchaseOrderimportdetails,purchaseotherimportcharges
 from import_export.admin import ImportExportMixin
 
 class TransactionsAdmin(admin.ModelAdmin):
@@ -55,6 +55,9 @@ admin.site.register(saleothercharges)
 admin.site.register(purchaseothercharges)
 admin.site.register(Purchasereturnothercharges)
 admin.site.register(salereturnothercharges)
+admin.site.register(purchaseorderimport)
+admin.site.register(PurchaseOrderimportdetails)
+admin.site.register(purchaseotherimportcharges)
 
 
 
