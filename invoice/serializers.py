@@ -1134,9 +1134,9 @@ class stockmainSerializer(serializers.ModelSerializer):
 
 
             if detail.issuereceived == True:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate, entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'I',accounttype = 'DD',voucherno = order.voucherno)
+                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate, entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'I',accounttype = 'DD',voucherno = order.voucherno,desc = 'Stock V.No ' + str(order.voucherno))
             else:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'R',accounttype = 'DD',voucherno = order.voucherno)
+                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'R',accounttype = 'DD',voucherno = order.voucherno,desc = 'Stock V.No ' + str(order.voucherno))
 
           #  StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate)
            # stk.createtransactiondetails(detail=detail,stocktype='S')
@@ -1160,7 +1160,7 @@ class stockmainSerializer(serializers.ModelSerializer):
         instance.save()
        # stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'Sale')
         stockdetails.objects.filter(stockmain=instance,entity = instance.entity).delete()
-        goodstransaction.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
+        StockTransactions.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
      #   stk.updateransaction()
 
         journaldetails_data = validated_data.get('stockdetails')
@@ -1171,9 +1171,9 @@ class stockmainSerializer(serializers.ModelSerializer):
            # goodstransaction.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,stockttype = detail.issuereceived,issuedquantity = detail.issuedquantity,recivedquantity = detail.recivedquantity,entrydate = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid)
             #stk.createtransactiondetails(detail=detail,stocktype='S')
             if detail.issuereceived == True:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'I',accounttype = 'DD',voucherno = instance.voucherno)
+                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'I',accounttype = 'DD',voucherno = instance.voucherno,desc = 'Stock V.No ' + str(instance.voucherno))
             else:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'R',accounttype = 'DD',voucherno = instance.voucherno)
+                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'R',accounttype = 'DD',voucherno = instance.voucherno,desc = 'Stock V.No   ' + str(instance.voucherno))
 
         
         return instance
@@ -1326,7 +1326,7 @@ class purchaseorderdetailimportsserializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderimportdetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','igst','cess','linetotal','entity','otherchargesdetail',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','actualamount','importamount','othercharges','igst','cess','linetotal','entity','otherchargesdetail',)
     
     def get_productname(self,obj):
         return obj.product.productname
@@ -1361,10 +1361,10 @@ class purchaseorderimportSerializer(serializers.ModelSerializer):
             #print(order.objects.get("id"))
             #print(tracks_data)
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+               # purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = PurchaseOrderimportdetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
-                for purchaseothercharge_data in purchaseothercharges_data:
-                    detail1 = purchaseotherimportcharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                # for purchaseothercharge_data in purchaseothercharges_data:
+                #     detail1 = purchaseotherimportcharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
                    # stk.createothertransactiondetails(detail=detail1,stocktype='P')
 
             
@@ -1395,12 +1395,12 @@ class purchaseorderimportSerializer(serializers.ModelSerializer):
             PurchaseOrderDetails_data = validated_data.get('PurchaseOrderimportdetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+               # purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
                 detail = PurchaseOrderimportdetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
                 #stk.createtransactiondetails(detail=detail,stocktype='P')
-                for purchaseothercharge_data in purchaseothercharges_data:
+                # for purchaseothercharge_data in purchaseothercharges_data:
                   
-                    detail1 = purchaseotherimportcharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                #     detail1 = purchaseotherimportcharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
                   #  stk.createothertransactiondetails(detail=detail1,stocktype='P')
 
         return instance
