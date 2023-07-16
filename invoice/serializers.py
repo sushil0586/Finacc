@@ -1316,7 +1316,7 @@ class purchaseotherdetailsimportSerializer(serializers.ModelSerializer):
 
 
 class purchaseorderdetailimportsserializer(serializers.ModelSerializer):
-    otherchargesdetail = purchaseotherdetailsimportSerializer(many=True,required=False)
+   # otherchargesdetail = purchaseotherdetailsimportSerializer(many=True,required=False)
     id = serializers.IntegerField(required=False)
     productname = serializers.SerializerMethodField()
     hsn = serializers.SerializerMethodField()
@@ -1326,7 +1326,7 @@ class purchaseorderdetailimportsserializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderimportdetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','actualamount','importamount','othercharges','igst','cess','linetotal','entity','otherchargesdetail',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','actualamount','importamount','igst','cess','linetotal','entity',)
     
     def get_productname(self,obj):
         return obj.product.productname

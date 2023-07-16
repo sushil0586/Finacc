@@ -401,7 +401,7 @@ class PurchaseOrderimportdetails(models.Model):
     actualamount =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Actual amount')
     importamount =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Import Amount')
     igst =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'IGST')
-    othercharges =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
+  #  othercharges =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
