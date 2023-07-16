@@ -869,10 +869,10 @@ class generalfunctions:
 
         pldf['balance'] = pldf['balance'].astype(float)
         if df['balance'].sum() > 0:
-            pldf.loc[len(pldf.index)] = ['Net Loss', -2, -2, 'Net Loss',-pldf['balance'].sum()]
+            pldf.loc[len(pldf.index)] = ['Net Profit', -2, -2, 'Net Profit',-pldf['balance'].sum()]
             
         else:
-            pldf.loc[len(pldf.index)] = ['Net Profit ', -2, -2, 'Net Profit',-pldf['balance'].sum()]
+            pldf.loc[len(pldf.index)] = ['Net Loss ', -2, -2, 'Net Loss',-pldf['balance'].sum()]
            
 
         #pldf['drcr'] = pldf['balance'].apply(lambda x: 0 if x > 0 else 1)
@@ -2398,7 +2398,7 @@ class daybookdetails(ListAPIView):
 
         accdetails =df[(df['entrydate'] >= startdate.date()) & (df['entrydate'] <= enddate.date()) & (df['accounttype'] != 'CIH')]
       
-        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <= startdate.date()) & (df['accounttype'] == 'CIH') & (df['iscashtransaction'] == True) ] 
+        openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] < startdate.date()) & (df['accounttype'] == 'CIH') & (df['iscashtransaction'] == True) ] 
 
         openingbalance['entrydate'] = startdate
 
@@ -2412,7 +2412,13 @@ class daybookdetails(ListAPIView):
         dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
         dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
 
+
+        print(dfd)
+
         dfdnew = pd.merge(dfdate,dfd,on='entrydate',how='outer',indicator=True).reset_index()
+
+
+        print(dfdnew)
 
        
 
@@ -2429,7 +2435,11 @@ class daybookdetails(ListAPIView):
         # dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
         # dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
 
+        print(openingbalance)
+
         bsdf = pd.concat([openingbalance,dfdnew]).reset_index()
+
+        print(bsdf)
 
         bsdf['balance'] = bsdf['debitamount'] - bsdf['creditamount']
 
@@ -2461,6 +2471,9 @@ class daybookdetails(ListAPIView):
         print(bsdf)
 
 
+        print('--------------------------------------------------')
+
+
         #pr
 
 
@@ -2474,7 +2487,16 @@ class daybookdetails(ListAPIView):
         #bsdf = bsdf.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
 
 
-        print(bsdf)
+        print('abdnsbdnsdbndbn')
+
+
+        pd.set_option('display.max_columns', None)
+        bsdf.head()
+
+        bsdf = bsdf.fillna(0)
+
+
+     #   print(bsdf)
 
 
         j = pd.DataFrame()
@@ -2511,16 +2533,11 @@ class cashbookdetails(ListAPIView):
 
         
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
-        # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
-        # if self.request.query_params.get('stock'):
-        #         stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
-        #         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
-        # else:
         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype__in = ['M','CIH'],iscashtransaction= 1).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','entry').order_by('entry__entrydate1')
             
         df = read_frame(stk)
 
-        print(df)
+      #  print(df)
 
        
 
@@ -2536,39 +2553,13 @@ class cashbookdetails(ListAPIView):
 
         
 
-        print(accdetails)
       
-        # openingbalance = df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] < startdate.date()) & (df['accounttype'] == 'CIH')] 
-
-        # openingbalance['entrydate'] = startdate
-
-        # openingbalance['entrydate'] = pd.to_datetime(openingbalance['entrydate'], format='%Y-%m-%d').dt.date
-
-        # openingbalance['debitamount'] = openingbalance['debitamount'].astype(float).fillna(0)
-        # openingbalance['creditamount'] = openingbalance['creditamount'].astype(float).fillna(0)
-
-        # openingbalance = openingbalance.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
         
 
         dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
         dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
         dfd = dfd.groupby(['entrydate','entry'])[['debitamount','creditamount']].sum().abs().reset_index()
-
-
-        print("-----------------------------")
-
-
-        print(dfd)
-
-
-      #  print(openingbalance)
-
         bsdf = dfd
-
-     
-
-       # bsdf = pd.concat([dfd]).reset_index()
-
         print(bsdf)
 
         bsdf['balance'] = bsdf['debitamount'] - bsdf['creditamount']
@@ -2582,23 +2573,8 @@ class cashbookdetails(ListAPIView):
         bsdf['paymenttotal'] = bsdf['Closingbalance'] +  bsdf['creditamount']
 
         bsdf.rename(columns = {'debitamount':'receipt','creditamount':'payment'}, inplace = True)
-
-
-       # print(bsdf)
-
-     
-
-       # print(accdetails[['entrydate','receipttotal','paymenttotal']])
-
         bsdfnew = accdetails.merge(bsdf,on='entrydate')
-
-       # print(bsdfnew)
-
         bsdfnew =bsdfnew[(bsdfnew['entrydate'] >= startdate.date()) & (bsdfnew['entrydate'] <=   enddate.date())]
-
-     
-
-
         j = pd.DataFrame()
         if len(bsdfnew.index) > 0:
             j = (bsdfnew.groupby(['entrydate','receipt','payment','Closingbalance','Openingbalance','receipttotal','paymenttotal'])
@@ -2686,7 +2662,12 @@ class stockledgerdetails(ListAPIView):
         details['rquantity'] = details['rquantity'].astype(float).fillna(0)
         details['iquantity'] = details['iquantity'].astype(float).fillna(0)
 
-        details = details.groupby(['productname','productid','transactiontype','transactionid','desc','entrydate'])[['salequantity','purchasequantity','rquantity','iquantity']].sum().abs().reset_index()
+
+        details = details[['productname','productid','transactiontype','transactionid','desc','entrydate','salequantity','purchasequantity','rquantity','iquantity']]
+
+       #details = details.groupby(['productname','productid','transactiontype','transactionid','desc','entrydate'])[['salequantity','purchasequantity','rquantity','iquantity']].sum().abs().reset_index()
+
+       # print(details[['productname','productid','transactiontype','transactionid','desc','entrydate']])
 
         if request.data.get('aggby'):
             details['entrydate'] = pd.to_datetime(details['entrydate'], errors='coerce')
