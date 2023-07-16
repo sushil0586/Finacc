@@ -376,6 +376,7 @@ class purchaseorderimport(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
     gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
+    importgtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Import G Total')
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
