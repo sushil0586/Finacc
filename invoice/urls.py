@@ -93,6 +93,7 @@ urlpatterns  = [
     path('jobworkcancel/<int:id>',views.jobworkchalancancel.as_view(), name = 'tdsmain'),
     path('gstservicescancel/<int:id>',views.gstservicescancel.as_view(), name = 'tdsmain'),
     path('purchaseordercancel/<int:id>',views.purchaseordercancel.as_view(), name = 'tdsmain'),
+    path('purchaseimportcancel/<int:id>',views.purchaseimportcancel.as_view(), name = 'tdsmain'),
     path('purchasereturncancel/<int:id>',views.purchasereturncancel.as_view(), name = 'tdsmain'),
     path('salesreturncancel/<int:id>',views.salesreturncancel.as_view(), name = 'tdsmain'),
     path('journalmaincancel/<int:id>',views.journalmaincancel.as_view(), name = 'tdsmain'),
