@@ -2372,11 +2372,11 @@ class daybookdetails(ListAPIView):
         
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
         # stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).exclude(account__accountcode__in = ['200','9000']).values('account__accounthead','account__accountname','account__id','account__accounthead__name','account__accounthead__detailsingroup',).annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0))
-        if self.request.query_params.get('stock'):
-                stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
-                stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
-        else:
-            stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype__in = ['MD']).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','iscashtransaction').order_by('entry__entrydate1')
+        # if self.request.query_params.get('stock'):
+        #         stocks =  [int(x) for x in request.GET.get('stock', '').split(',')]
+        #         stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,stock__in=stocks,accounttype = 'DD').values('stock__id','stock__productname','entry','transactiontype','transactionid','stockttype','desc','quantity','entry__entrydate1').order_by('entry__entrydate1')
+        # else:
+        stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype__in = ['MD']).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','iscashtransaction').order_by('entry__entrydate1')
             
         df = read_frame(stk)
 
@@ -2508,6 +2508,128 @@ class daybookdetails(ListAPIView):
 
         
           
+        
+        
+        return Response(j)
+
+
+class daydetails(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def post(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity = request.data.get('entity',None)
+        startdate = request.data.get('startdate')
+        enddate = request.data.get('enddate')
+
+
+            
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        utc=pytz.UTC
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+
+        
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype__in = ['M','CIH'],iscashtransaction= 1).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','entry').order_by('entry__entrydate1')
+            
+        df = read_frame(stk)
+
+        stkdetails = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype__in = ['MD']) .values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','entry').order_by('entry__entrydate1')
+
+
+        if request.data.get('transactiontype'):
+            transactiontype =  [str(x) for x in request.data.get('transactiontype', '').split(',')]
+            stkdetails = stkdetails.filter(transactiontype__in=transactiontype)
+            
+        dfdetails = read_frame(stkdetails)
+
+        dfdetails['entry__entrydate1'] = pd.to_datetime(dfdetails['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+        dfdetails.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+       
+
+        
+
+        df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+        df.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+        dfd =df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <= enddate.date()) & (df['accounttype'] == 'CIH')]
+
+       # accdetails =df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <=   enddate.date()) & (df['accounttype'] == 'M')]
+
+
+        accdetails =dfdetails[(dfdetails['entrydate'] >= startdate.date()) & (dfdetails['entrydate'] <= enddate.date()) & (dfdetails['accounttype'] != 'CIH')]
+
+
+
+        accdetails['debitamount'] = accdetails['debitamount'].astype(float).fillna(0)
+        accdetails['creditamount'] = accdetails['creditamount'].astype(float).fillna(0)
+        dfddetails = accdetails.groupby(['entrydate','entry'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+        dfddetails.rename(columns = {'debitamount':'payment','creditamount':'receipt'}, inplace = True)
+
+        
+
+      
+        
+
+        dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
+        dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
+        dfd = dfd.groupby(['entrydate','entry'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+        bsdf1 = pd.merge(dfddetails,dfd,on='entrydate',how='outer',indicator=True).reset_index()
+
+        bsdf1['debitamount'] = bsdf1['debitamount'].astype(float).fillna(0)
+        bsdf1['creditamount'] = bsdf1['creditamount'].astype(float).fillna(0)
+        bsdf1['payment'] = bsdf1['payment'].astype(float).fillna(0)
+        bsdf1['receipt'] = bsdf1['receipt'].astype(float).fillna(0)
+
+        pd.set_option('display.max_columns', None)
+       # bsdf1.head()
+
+        bsdf1 = bsdf1.drop(['_merge','index','entry_y','entry_x'],axis = 1)
+
+       
+        bsdf = bsdf1.sort_values(by='entrydate').reset_index()
+       
+        bsdf['balance'] = bsdf['debitamount'] - bsdf['creditamount']
+
+        bsdf['Closingbalance'] = bsdf['balance'].cumsum()
+
+        bsdf['Openingbalance'] = bsdf['Closingbalance'] - bsdf['balance']
+
+        bsdf['receipttotal'] = bsdf['Openingbalance'] +  bsdf['receipt']
+
+        bsdf['paymenttotal'] = bsdf['Closingbalance'] +  bsdf['payment']
+
+
+        print(bsdf)
+
+
+        bsdf = bsdf.drop(['debitamount','creditamount'],axis = 1)
+
+
+
+        # bsdf.rename(columns = {'debitamount':'receipt','creditamount':'payment'}, inplace = True)
+        bsdfnew = accdetails.merge(bsdf,on='entrydate')
+        bsdfnew =bsdfnew[(bsdfnew['entrydate'] >= startdate.date()) & (bsdfnew['entrydate'] <=   enddate.date())]
+        j = pd.DataFrame()
+        if len(bsdfnew.index) > 0:
+            j = (bsdfnew.groupby(['entrydate','receipt','payment','Closingbalance','Openingbalance','receipttotal','paymenttotal'])
+            .apply(lambda x: x[['accountid','accountname','desc','debitamount','creditamount','drcr']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
+
+        
+
+       
+
+        
         
         
         return Response(j)
