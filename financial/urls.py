@@ -21,6 +21,9 @@ urlpatterns  = [
     path('accountcode',views.accountcodelatestview.as_view(), name = 'purchaseorder'),
     path('accountbind',views.accountbindapiview.as_view(), name = 'Trialbalance'),
     path('accountList',views.accountlistnewapiview.as_view(), name = 'Trialbalance'),
+    path('accounttype',views.accounttypeApiView.as_view(), name = 'Trialbalance'),
+
+    
 
     
 
