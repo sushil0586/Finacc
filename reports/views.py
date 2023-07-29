@@ -2685,13 +2685,15 @@ class cashbooksummary(ListAPIView):
         if self.request.query_params.get('aggby'):
             dfd['entrydate'] = pd.to_datetime(dfd['entrydate'], errors='coerce')
             dfd['entrydate'] = dfd['entrydate'].dt.to_period(self.request.query_params.get('aggby')).dt.end_time
+            dfd['startdate'] = dfd['entrydate'].dt.to_period(self.request.query_params.get('aggby')).dt.start_time
             # details['transactiontype'] = request.data.get('aggby')
             # details['transactionid'] = -1
             # details['drcr'] = True
            # details['desc'] = 'Agg'
             dfd['entrydate'] = pd.to_datetime(dfd['entrydate']).dt.date
+            dfd['startdate'] = pd.to_datetime(dfd['startdate']).dt.date
             #dfd['entrydate'] = pd.to_datetime(dfd['entrydate'], format='%m').dt.strftime('%b')
-            dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+            dfd = dfd.groupby(['startdate','entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
 
         else:
             dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
