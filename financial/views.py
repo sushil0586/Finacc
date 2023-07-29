@@ -2,8 +2,8 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
-from financial.models import account, accountHead
-from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer
+from financial.models import account, accountHead,accounttype
+from financial.serializers import accountHeadSerializer,accountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,accountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -169,6 +169,21 @@ class accountApiView3(ListAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return account.objects.filter(entity = entity)
+
+
+class accounttypeApiView(ListCreateAPIView):
+
+    serializer_class = accounttypeserializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['gstno']
+
+
+    
+    def get_queryset(self):
+       # entity = self.request.query_params.get('entity')
+        return accounttype.objects.filter()
 
 
 
