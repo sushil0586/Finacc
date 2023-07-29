@@ -2635,6 +2635,102 @@ class daydetails(ListAPIView):
         return Response(j)
 
 
+
+class cashbooksummary(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity = self.request.query_params.get('entity')
+        startdate = self.request.query_params.get('startdate')
+        enddate = self.request.query_params.get('enddate')
+
+
+            
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        utc=pytz.UTC
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+
+        
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity,accounttype__in = ['M','CIH'],iscashtransaction= 1).values('account__id','account__accountname','transactiontype','transactionid','desc','entry__entrydate1','debitamount','creditamount','drcr','accounttype','entry').order_by('entry__entrydate1')
+            
+        df = read_frame(stk)
+
+      #  print(df)
+
+       
+
+        
+
+        df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+        df.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+        dfd =df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <= enddate.date()) & (df['accounttype'] == 'CIH')]
+
+        accdetails =df[(df['entrydate'] >= datetime.date(currentdates.finstartyear)) & (df['entrydate'] <=   enddate.date()) & (df['accounttype'] == 'M')]
+
+        
+
+      
+        
+
+        dfd['debitamount'] = dfd['debitamount'].astype(float).fillna(0)
+        dfd['creditamount'] = dfd['creditamount'].astype(float).fillna(0)
+
+        if self.request.query_params.get('aggby'):
+            dfd['entrydate'] = pd.to_datetime(dfd['entrydate'], errors='coerce')
+            dfd['entrydate'] = dfd['entrydate'].dt.to_period(self.request.query_params.get('aggby')).dt.end_time
+            # details['transactiontype'] = request.data.get('aggby')
+            # details['transactionid'] = -1
+            # details['drcr'] = True
+           # details['desc'] = 'Agg'
+            dfd['entrydate'] = pd.to_datetime(dfd['entrydate']).dt.date
+            #dfd['entrydate'] = pd.to_datetime(dfd['entrydate'], format='%m').dt.strftime('%b')
+            dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+
+        else:
+            dfd = dfd.groupby(['entrydate'])[['debitamount','creditamount']].sum().abs().reset_index()
+        bsdf = dfd
+        print(bsdf)
+
+        bsdf['balance'] = bsdf['debitamount'] - bsdf['creditamount']
+
+        bsdf['Closingbalance'] = bsdf['balance'].cumsum()
+
+        bsdf['Openingbalance'] = bsdf['Closingbalance'] - bsdf['balance']
+
+       # bsdf['receipttotal'] = bsdf['Openingbalance'] +  bsdf['debitamount']
+
+       # bsdf['paymenttotal'] = bsdf['Closingbalance'] +  bsdf['creditamount']
+
+        bsdf.rename(columns = {'debitamount':'receipt','creditamount':'payment'}, inplace = True)
+
+        bsdfnew = bsdf
+       # bsdfnew = accdetails.merge(bsdf,on='entrydate')
+
+        bsdfnew =bsdfnew[(bsdfnew['entrydate'] >= startdate.date()) & (bsdfnew['entrydate'] <=   enddate.date())]
+        # j = pd.DataFrame()
+        # if len(bsdfnew.index) > 0:
+        #     j = (bsdfnew.groupby(['entrydate','receipt','payment','Closingbalance','Openingbalance','receipttotal','paymenttotal'])
+        #     .apply(lambda x: x[['accountid','accountname','desc','debitamount','creditamount','drcr']].to_dict('records'))
+        #     .reset_index()
+        #     .rename(columns={0:'accounts'})).T.to_dict().values()
+
+        
+
+       
+
+        
+        
+        
+        return Response(bsdfnew.T.to_dict().values())
+
+
 class cashbookdetails(ListAPIView):
 
    

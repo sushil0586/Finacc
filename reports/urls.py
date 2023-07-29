@@ -31,6 +31,8 @@ urlpatterns  = [
     path('stockledgersummary',views.stockledgersummary.as_view(), name = 'Trialbalance'),
     path('stockledgersummarypost',views.stockledgersummarypost.as_view(), name = 'Trialbalance'),
     path('cashbookdetails',views.cashbookdetails.as_view(), name = 'Trialbalance'),
+    path('cashbooksummary',views.cashbooksummary.as_view(), name = 'Trialbalance'),
+    
     path('daybookdetails',views.daydetails.as_view(), name = 'Trialbalance'),
     path('cashbook',views.cbviewapi.as_view(), name = 'Trialbalance'),
     path('salebook',views.salebyaccountapi.as_view(), name = 'salebok'),
