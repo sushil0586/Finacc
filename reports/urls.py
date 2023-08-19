@@ -25,6 +25,9 @@ urlpatterns  = [
     path('ledgersummarypost',views.ledgersummarylatest.as_view(), name = 'Trialbalance'),
     path('ledgerbook',views.ledgerviewapi.as_view(), name = 'Trialbalance'),
     path('ledgerdetails',views.ledgerdetails.as_view(), name = 'Trialbalance'),
+    path('interestdetails',views.interestdetails.as_view(), name = 'Trialbalance'),
+
+    
     path('ledgerdetail1',views.ledgerapiApiView.as_view(), name = 'Trialbalance'),
     path('stockledgerdetails',views.stockledgerdetailsget.as_view(), name = 'Trialbalance'),
     path('stockledgerdetailpost',views.stockledgerdetails.as_view(), name = 'Trialbalance'),
