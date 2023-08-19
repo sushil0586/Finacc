@@ -2045,8 +2045,10 @@ class ledgerdetails(ListAPIView):
         if request.data.get('aggby'):
             details['entry__entrydate1'] = pd.to_datetime(details['entry__entrydate1'], errors='coerce')
             details['entry__entrydate1'] = details['entry__entrydate1'].dt.to_period(request.data.get('aggby')).dt.end_time
-            details['transactiontype'] = request.data.get('aggby')
-            details['transactionid'] = -1
+            if request.data.get('aggby') != 'D':
+                details['transactiontype'] = request.data.get('aggby')
+                details['transactionid'] = -1
+            
             details['drcr'] = True
            # details['desc'] = 'Agg'
             details['desc'] = pd.to_datetime(details['entry__entrydate1'], format='%m').dt.strftime('%b')
@@ -2166,6 +2168,306 @@ class ledgerdetails(ListAPIView):
         if len(bsdf.index) > 0:
             j = (bsdf.groupby(['accountname','accountid'])
             .apply(lambda x: x[['creditamount','debitamount','desc','entrydate','transactiontype','transactionid','displaydate','drcr','quantity']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'accounts'})).T.to_dict().values()
+
+
+
+
+        
+        
+        
+        return Response(j)
+
+
+
+
+class interestdetails(ListAPIView):
+
+    serializer_class = ledgerdetailsSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # filter_backends = [DjangoFilterBackend]
+    # filterset_fields = {'account':["in", "exact"],'accounthead':["in", "exact"]}
+
+
+    
+    def post(self, request, format=None):
+        #entity = request.data.get('entity')
+        entity = request.data.get('entity',None)
+        startdate = request.data.get('startdate',None)
+        enddate = request.data.get('enddate')
+        # param_list = request.GET.getlist('account')
+        # print(param_list)
+        # if request.data.get('account'):
+        #     accounts =  [int(x) for x in request.GET.get('account', '').split(',')]
+        print(account)
+        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        utc=pytz.UTC
+        startdate = datetime.strptime(startdate, '%Y-%m-%d')
+        enddate = datetime.strptime(enddate, '%Y-%m-%d')
+        stk = StockTransactions.objects.filter(entry__entrydate1__range = (currentdates.finstartyear,enddate),isactive = 1,entity = entity).exclude(accounttype = 'MD').exclude(transactiontype__in = ['PC']).values('account__accountname','entry__entrydate1','account__id').annotate(debitamount = Sum('debitamount',default=0),creditamount = Sum('creditamount',default=0)).order_by('account__id','entry__entrydate1')
+
+        # if request.data.get('accounthead'):
+        #     accountheads =  [int(x) for x in request.data.get('accounthead', '').split(',')]
+        #     stk = stk.filter(accounthead__in=accountheads)
+        
+        if request.data.get('account'):
+            accounts =  [int(x) for x in request.data.get('account', '').split(',')]
+            stk = stk.filter(account__in=accounts)
+        
+        # if request.data.get('transactiontype'):
+        #     transactiontype =  [str(x) for x in request.data.get('transactiontype', '').split(',')]
+        #     stk = stk.filter(transactiontype__in=transactiontype)
+        #    # print(stk.query.__str__())
+        #    # details = details[(details['transactiontype'].isin(transactiontype))]
+
+        # if request.data.get('drcr') == '1':
+
+        #     stk = stk.filter(debitamount__gt=0)
+        #   #  print(stk.query.__str__())
+        
+        # if request.data.get('drcr') == '0':
+
+        #     stk = stk.filter(creditamount__gt=0)
+        #    # print(stk.query.__str__())
+
+        # if request.data.get('desc'):
+        #     stk = stk.filter(desc__icontains=request.data.get('desc'))
+
+        # if request.data.get('amountstart') and request.data.get('amountend'):
+        #     stk = stk.filter((Q(debitamount__gte=Decimal(request.data.get('amountstart'))) & Q(debitamount__lte=Decimal(request.data.get('amountend')))) | (Q(creditamount__gte=Decimal(request.data.get('amountstart'))) & Q(creditamount__lte=Decimal(request.data.get('amountend')))))
+           
+
+
+            
+
+         
+            
+        df = read_frame(stk)
+        df['balance'] = df['debitamount'] - df['creditamount']
+
+
+        df['balance'] = df['balance'].astype(float)
+
+
+
+        #df['Closingbalance'] = df.groupby(['account__id','account__accountname','entry__entrydate1'])['balance'].cumsum()
+
+        
+        df['Closingbalance'] = df.groupby(['account__id','account__accountname','entry__entrydate1'])['balance'].cumsum()
+       # df['entry__entrydate1'] = df.groupby(['account__id','account__accountname'])['entry__entrydate1'].apply(lambda x: x.sort_values())
+        df['diff'] = df.groupby(['account__id','account__accountname'])['entry__entrydate1'].diff() / np.timedelta64(1, 'D')
+
+       # print(df)
+        df['diff'] = df['diff'].shift(-1)
+        df['diff'] = df['diff'].fillna(0)   
+        df['Closingbalance'] = df['Closingbalance'].astype(float).abs()
+
+      #  print(df.dtypes)
+
+
+        df['int'] = ((df['Closingbalance']  * df['diff'] * 6.00/365.00)/100.00).abs().round(2)
+
+
+        df['Total'] = df['balance'].astype(float).abs() +  df['int'].abs()
+
+        df['Total'] = df['Total'].round(2)
+
+        df.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+
+        print(df)
+
+        
+
+
+    #     df['entry__entrydate1'] = pd.to_datetime(df['entry__entrydate1'], format='%Y-%m-%d').dt.date
+
+    #     openingbalance = df[(df['entry__entrydate1'] >= datetime.date(currentdates.finstartyear)) & (df['entry__entrydate1'] < startdate.date())]
+
+    #     details = df[(df['entry__entrydate1'] >= startdate.date()) & (df['entry__entrydate1'] < enddate.date())]
+
+    #     details['debitamount'] = details['debitamount'].astype(float).fillna(0)
+    #     details['creditamount'] = details['creditamount'].astype(float).fillna(0)
+    #     details['quantity'] = details['quantity'].astype(float).fillna(0)
+
+
+
+    #     ################################### TransactionType ###################################
+
+
+    #     # if request.data.get('transactiontype'):
+    #     #     transactiontype =  [str(x) for x in request.data.get('transactiontype', '').split(',')]
+    #     #     details = details[(details['transactiontype'].isin(transactiontype))]
+
+       
+    #    ################################### Debit/Credit ###################################
+        
+    #     # if request.data.get('drcr') == '1':
+
+            
+
+    #     #     details = details[(details['debitamount'] > 0)]
+
+        
+
+    #     # if request.data.get('drcr') == '0':
+
+    #     #     details = details[(details['creditamount'] > 0)]
+
+        
+    #     ################################### desc ###################################
+
+        
+    #     # if request.data.get('desc'):
+    #     #     details = details[details['desc'].str.contains(request.data.get('desc'), regex=True, na=True)]
+
+
+    #     ################################### Range between 2 values ###################################
+
+        
+    #     # if request.data.get('amountstart') and request.data.get('amountend') :
+    #     #     details = details[((details['debitamount'] >= int(request.data.get('amountstart'))) & (details['debitamount'] <= int(request.data.get('amountend')))) | ((details['creditamount'] >= int(request.data.get('amountstart'))) & (details['creditamount'] <= int(request.data.get('amountend'))))]
+
+        
+    #   #  print(details)
+
+    #     # if request.data.get('aggby') == 'M':
+    #     #     details['entry__entrydate1'] = pd.to_datetime(details['entry__entrydate1'], format="%Y-%m") + MonthEnd(0)
+    #     #     details['transactiontype'] = 'A'
+    #     #     details['transactionid'] = -1
+    #     #     details['drcr'] = True
+    #     #    # details['desc'] = 'Agg'
+    #     #     details['desc'] = pd.to_datetime(details['entry__entrydate1'], format='%q').dt.strftime('%b')
+    #     #     details = details.groupby(['account__accountname','account__id','entry__entrydate1','transactiontype','transactionid','drcr','desc'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
+
+    #     if request.data.get('aggby'):
+    #         details['entry__entrydate1'] = pd.to_datetime(details['entry__entrydate1'], errors='coerce')
+    #         details['entry__entrydate1'] = details['entry__entrydate1'].dt.to_period(request.data.get('aggby')).dt.end_time
+    #         if request.data.get('aggby') != 'D':
+    #             details['transactiontype'] = request.data.get('aggby')
+    #             details['transactionid'] = -1
+            
+    #         details['drcr'] = True
+    #        # details['desc'] = 'Agg'
+    #         details['desc'] = pd.to_datetime(details['entry__entrydate1'], format='%m').dt.strftime('%b')
+    #         details = details.groupby(['account__accountname','account__id','entry__entrydate1','transactiontype','transactionid','drcr','desc'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
+        
+    #     # if request.data.get('aggby') == 'W':
+    #     #     details['entry__entrydate1'] = pd.to_datetime(details['entry__entrydate1'], errors='coerce')
+    #     #     details['entry__entrydate1'] = details['entry__entrydate1'].dt.to_period("W").dt.end_time
+    #     #     details['transactiontype'] = 'A'
+    #     #     details['transactionid'] = -1
+    #     #     details['drcr'] = True
+    #     #    # details['desc'] = 'Agg'
+    #     #     details['desc'] = pd.to_datetime(details['entry__entrydate1'], format='%m').dt.strftime('%b')
+    #     #     details = details.groupby(['account__accountname','account__id','entry__entrydate1','transactiontype','transactionid','drcr','desc'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
+            
+
+
+        
+
+    #     openingbalance = openingbalance[['account__accountname','debitamount','creditamount','quantity','account__id']].copy()
+
+    #     openingbalance['debitamount'] = openingbalance['debitamount'].astype(float).fillna(0)
+    #     openingbalance['creditamount'] = openingbalance['creditamount'].astype(float).fillna(0)
+    #     openingbalance['quantity'] = openingbalance['quantity'].astype(float).fillna(0)
+    #    # openingbalance['balance'] = openingbalance['balance'].astype(float).fillna(0)
+
+    #     openingbalance = openingbalance.groupby(['account__accountname','account__id'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
+    #    # print(openingbalance)
+
+        
+    #     openingbalance['balance'] = openingbalance['debitamount'] - openingbalance['creditamount']
+        
+    #     openingbalance['debitamount'] = np.where(openingbalance['balance'] >= 0,openingbalance['balance'],0)
+    #     openingbalance['creditamount'] = np.where(openingbalance['balance'] <= 0,-openingbalance['balance'],0)
+
+    #     openingbalance['drcr'] = np.where(openingbalance['balance'] > 0,True,False)
+
+    #     openingbalance['entry__entrydate1'] = startdate
+    #     openingbalance['transactiontype'] = 'O'
+    #     openingbalance['transactionid'] = -1
+    #     openingbalance['desc'] = 'Opening'
+
+    #     openingbalance.drop(['balance'],axis = 1)
+
+
+    #     df = pd.concat([openingbalance,details]).reset_index()
+
+    #     ##############################################################
+
+    #     df['debitamount'] = df['debitamount'].astype(float).fillna(0)
+    #     df['creditamount'] = df['creditamount'].astype(float).fillna(0)
+    #     df['quantity'] = df['quantity'].astype(float).fillna(0)
+
+    #     df = df.groupby(['account__accountname','account__id'])[['debitamount','creditamount','quantity']].sum().abs().reset_index()
+    #    # print(openingbalance)
+
+        
+
+        
+      #  df['balance'] = df['debitamount'] - df['creditamount']
+        
+        # df['debitamount'] = np.where(df['balance'] >= 0,df['balance'],0)
+        # df['creditamount'] = np.where(df['balance'] <= 0,-df['balance'],0)
+
+      #  df['drcr'] = np.where(df['balance'] > 0,True,False)
+
+    #     df['entry__entrydate1'] = enddate
+    #     df['transactiontype'] = 'T'
+    #     df['transactionid'] = -1
+    #     df['desc'] = 'Total'
+
+    #     df.drop(['balance'],axis = 1)
+
+    #     print(df)
+
+
+    #     #frames = [openingbalance,details]
+
+    #     df2 = pd.concat([openingbalance,details])
+
+    #     bsdf = pd.concat([df2,df]).reset_index()
+
+
+    #     bsdf =bsdf[['account__accountname','account__id','creditamount','debitamount','desc','entry__entrydate1','transactiontype','transactionid','drcr','quantity']]
+
+    #   #  bsdf['entrydatetime'] = pd.to_datetime(bsdf['entrydatetime']).dt.strftime('%d-%m-%Y')
+
+    #     bsdf.rename(columns = {'account__accountname':'accountname','account__id':'accountid','entry__entrydate1':'entrydate'}, inplace = True)
+
+    #     bsdf['displaydate'] = pd.to_datetime(bsdf['entrydate']).dt.strftime('%d-%m-%Y')
+
+    #     pd.set_option('display.max_columns', None)
+    #     bsdf.head()
+
+    #     print(bsdf)
+
+       # bsdf['entrydate'] = pd.to_datetime(bsdf['entrydate'], format="%Y-%m") + MonthEnd(0)
+
+        # bsdf['entrydate'] = pd.to_datetime(bsdf['entrydate'],format="%Y-%m-%d %H:%M:%S")
+
+
+
+        # newdf = bsdf.groupby(['accountname','accountid',bsdf['entrydate'].dt.month])['creditamount','debitamount'].sum().reset_index()
+
+        # newdf['entrydate'] = pd.to_datetime(newdf['entrydate'], format='%m').dt.strftime('%b')
+
+        # print(newdf)
+
+        
+
+
+
+        
+
+        j = pd.DataFrame()
+
+        if len(df.index) > 0:
+            j = (df.groupby(['accountname','accountid'])
+            .apply(lambda x: x[['entrydate','balance','Closingbalance','diff','int','Total']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'accounts'})).T.to_dict().values()
 
@@ -2892,7 +3194,10 @@ class stockledgerdetails(ListAPIView):
         if request.data.get('aggby'):
             details['entrydate'] = pd.to_datetime(details['entrydate'], errors='coerce')
             details['entrydate'] = details['entrydate'].dt.to_period(request.data.get('aggby')).dt.end_time
-            details['transactiontype'] = request.data.get('aggby')
+            if request.data.get('aggby') != 'D':
+                details['transactiontype'] = request.data.get('aggby')
+                details['transactionid'] = -1
+            #details['transactiontype'] = request.data.get('aggby')
             #details['transactionid'] = -1
             #details['drcr'] = True
            # details['desc'] = 'Agg'
