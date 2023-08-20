@@ -2257,7 +2257,7 @@ class interestdetails(ListAPIView):
         
         df['Closingbalance'] = df.groupby(['account__id','account__accountname','entry__entrydate1'])['balance'].cumsum()
        # df['entry__entrydate1'] = df.groupby(['account__id','account__accountname'])['entry__entrydate1'].apply(lambda x: x.sort_values())
-        df['diff'] = df.groupby(['account__id','account__accountname'])['entry__entrydate1'].diff() / np.timedelta64(1, 'D')
+        df['diff'] = df.groupby(['account__id','account__accountname'])['entry__entrydate1'].diff().apply(lambda x: x/pd.Timedelta(1, "d")).fillna(0).astype('int64')
 
        # print(df)
         df['diff'] = df['diff'].shift(-1)
