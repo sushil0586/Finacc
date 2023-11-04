@@ -61,6 +61,27 @@ class entity(TrackingModel):
         return f'{self.entityname}'
     
 
+class subentity(TrackingModel):
+    subentityname =  models.CharField(max_length= 255)
+    address =     models.CharField(max_length= 255)
+   # ownername =   models.CharField(max_length= 255)
+    country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
+    state =       models.ForeignKey(state, on_delete=models.CASCADE,null= True)
+    district =    models.ForeignKey(district, on_delete=models.CASCADE,null= True)
+    city =        models.ForeignKey(city, on_delete=models.CASCADE,null= True)
+    pincode =    models.CharField(max_length= 255,null= True)
+    phoneoffice = models.CharField(max_length= 255,null= True)
+    phoneresidence = models.CharField(max_length= 255,null= True)
+    email =    models.CharField(max_length= 255,null= True)
+    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='subentity',)
+
+    
+
+    
+    def __str__(self):
+        return f'{self.subentityname}'
+    
+
 
 class entityfinancialyear(TrackingModel):
     entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='fy',)

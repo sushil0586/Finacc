@@ -1,7 +1,7 @@
 import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution
+from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
@@ -84,6 +84,14 @@ class entityfinancialyearListSerializer(serializers.ModelSerializer):
 
         model = entityfinancialyear
         fields = ('id','finstartyear','finendyear','isactive',)
+
+
+class subentitySerializer(serializers.ModelSerializer):
+
+    class Meta:
+
+        model = subentity
+        fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','entity')
 
 
     
