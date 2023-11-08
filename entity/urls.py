@@ -21,6 +21,7 @@ urlpatterns  = [
     path('entityfylist',views.entityfinancialyeaListView.as_view(), name = 'user'),
     path('subentity',views.subentityApiView.as_view(),name = 'entityadd'),
     path('subentity/<int:id>',views.subentityupdatedelview.as_view(), name = 'unittypeid'),
+    
     # path('entityuser', views.entityUserApiView.as_view() ,name = 'unittype'),
     # path('entityuser/<int:id>',views.entityUserApiView.as_view(), name = 'unittypeid'),
     # path('entityuseradd', views.entityUseraddApiView .as_view() ,name = 'unittype'),
