@@ -209,6 +209,17 @@ class subentityApiView(ListCreateAPIView):
         return subentity.objects.filter()
     
 
+class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = subentitySerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+      #  entity = self.request.query_params.get('entity')
+        return subentity.objects.filter()
+    
+
 
 
 class entityfinancialyeaListView(ListAPIView):
