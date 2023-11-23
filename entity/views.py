@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
 from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity
-from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer
+from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -209,6 +209,21 @@ class subentityApiView(ListCreateAPIView):
         return subentity.objects.filter()
     
 
+class subentitybyentityApiView(ListCreateAPIView):
+
+    serializer_class = subentitySerializerbyentity
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['entity']
+
+    def perform_create(self, serializer):
+        return serializer.save()
+    
+    def get_queryset(self):
+        return subentity.objects.filter()
+    
+
 class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
 
     serializer_class = subentitySerializer
@@ -226,7 +241,7 @@ class entityfinancialyeaListView(ListAPIView):
 
     serializer_class = entityfinancialyearListSerializer
     permission_classes = (permissions.IsAuthenticated,)
-    
+
 
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['entity']

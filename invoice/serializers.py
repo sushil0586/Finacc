@@ -17,6 +17,8 @@ from num2words import num2words
 import string
 from django.db import  transaction
 from django_filters.rest_framework import DjangoFilterBackend
+import requests
+import json
 #from entity.serializers import entityfinancialyearSerializer
 
 
@@ -384,6 +386,114 @@ class stocktransconstant:
                 tdsvbo = tdsmain.objects.filter(entityid= pentity).last().voucherno + 1
         
         return tdsvbo
+
+
+
+class einvoicebody:
+    def __init__(self):
+        pass
+
+
+
+    def transactiondetails(self,data):
+
+         self.transdetails = json.loads(json.dumps({ 
+                              'TaxSch':'GST',
+                              'SupTyp':'B2B',
+                              'IgsOnIntra': 'N',
+                              'RegRev': '',
+                              'EcmGstin': ''
+                              }, indent=4))
+
+    
+    def docdetails(self,data):
+
+         self.transdetails = json.loads(json.dumps({ 
+                              'Typ':'INV',
+                              'SupTyp':'B2B',
+                              'IgsOnIntra': 'N',
+                              'RegRev': '',
+                              'EcmGstin': ''
+                              }, indent=4))
+        
+
+
+        # # print(self.headers)
+        # # print(type(self.headers))
+
+        # #self.transacti
+
+        # transdetails = json.loads(transdetails)
+
+
+
+
+
+    def createeinvoce(self,data):
+        print(data['entity'].gstno)
+
+        
+
+
+
+
+
+
+
+class generateeinvoice:
+
+    def __init__(self,mastergst):
+        self.mastergst = mastergst
+        self.ipaddress = '10.105.87.909'
+        self.username = self.mastergst.username
+        self.headers = json.dumps({ 
+                              'Content-Type': 'application/json',
+                              'username':self.username,
+                              'password':self.mastergst.password,
+                              'ip_address': self.ipaddress,
+                              'client_id': self.mastergst.client_id,
+                              'client_secret': self.mastergst.client_secret,
+                              'gstin': self.mastergst.gstin}, indent=4)
+        
+
+
+        # print(self.headers)
+        # print(type(self.headers))
+
+        self.headers = json.loads(self.headers)
+
+
+
+        
+
+        
+
+
+    def getauthentication(self):
+
+
+
+        BASE_URL = 'https://api.mastergst.com/einvoice/authenticate'
+
+    
+        
+
+        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
+
+        response = requests.get(f"{BASE_URL}?email=aditi.gupta1789@gmail.com", headers= self.headers)
+
+        print(response)
+
+
+        return response
+
+    
+
+      
+
+
+
+
 
 
 
@@ -1697,9 +1807,53 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
            # print(billno)
 
+
+           # inv = einvoicebody()
+
+           # dataxml = inv.createeinvoce(data = validated_data)
+
+
+           # einv = generateeinvoice()
+
+
+
            
             order = SalesOderHeader.objects.create(**validated_data,billno= billno2)
             stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ',entrytype= 'I')
+
+            
+            # r = einv.getauthentication()
+
+
+        #     print(r.status_code)
+
+        #     if r.status_code == 200:
+        #         res = r.json()
+
+        #         print(res["data"]["AuthToken"])
+        #         #return 1
+        #         #  new = r.json()
+        #         # print('000000000000000000000000000000000000')
+        #         # r.encoding = 'UTF-8'
+        #         # print(r)
+        #         # print(r.text)
+        #         # print(r.ok)           # => True
+        #         # print(r.status_code)  # => 200
+        #         # print(r.headers['Date'])   # => "text/html"
+        #         # print(type(r))
+        #         # print(r.headers)
+        #         # #print(len(r))
+
+
+            
+        #    # r.encoding = 'UTF-8'
+
+            
+
+        #     new = r.json()  
+
+        #     print(new)
+
             #print(tracks_data)
             for PurchaseOrderDetail_data in salesOrderdetails_data:
                 salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
