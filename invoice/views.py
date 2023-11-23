@@ -4,7 +4,7 @@ from django.shortcuts import render
 import json
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport
+from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport,mastergstdetails
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
@@ -30,6 +30,136 @@ import numpy as np
 import pandas as pd
 from decimal import Decimal
 from datetime import timedelta,date,datetime
+import requests
+import json
+
+
+
+
+
+class generateeinvoice:
+
+    def __init__(self,mastergst):
+        self.mastergst = mastergst
+        self.ipaddress = '10.105.87.909'
+        self.username = self.mastergst.username
+        self.headers = json.dumps({ 
+                              'Content-Type': 'application/json',
+                              'username':self.username,
+                              'password':self.mastergst.password,
+                              'ip_address': self.ipaddress,
+                              'client_id': self.mastergst.client_id,
+                              'client_secret': self.mastergst.client_secret,
+                              'gstin': self.mastergst.gstin}, indent=4)
+        
+
+
+        # print(self.headers)
+        # print(type(self.headers))
+
+        self.headers = json.loads(self.headers)
+
+
+
+        
+
+        
+
+
+    def getauthentication(self):
+
+
+
+        BASE_URL = 'https://api.mastergst.com/einvoice/authenticate'
+
+    
+        
+
+        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
+
+        response = requests.get(f"{BASE_URL}?email=aditi.gupta1789@gmail.com", headers= self.headers)
+
+        print(response)
+
+
+        return response
+    
+
+    def getgstdetails(self,gstaccount,authtoken,useremail):
+
+
+
+
+       # "https://api.mastergst.com/einvoice/type/GSTNDETAILS/version/V1_03?param1=29AABCT1332L000&email=aditi.gupta1789%40gmail.com"
+
+
+
+        BASE_URL = 'https://api.mastergst.com/einvoice/type/GSTNDETAILS/version/V1_03'
+
+        self.headers["auth-token"] = authtoken
+
+
+
+    
+        
+
+        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
+
+        response = requests.get(f"{BASE_URL}?param1={gstaccount}&email={useremail}", headers= self.headers)
+
+        print(response)
+
+
+        return response
+    
+
+
+class getgstindetails(ListAPIView):
+
+
+    serializer_class = stockledgersummaryserializer
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {'id':["in", "exact"]
+    
+    }
+    #filterset_fields = ['id']
+    def get(self, request, format=None):
+        
+    
+       # acc = self.request.query_params.get('acc')
+        entitygst = self.request.query_params.get('entitygst')
+        accountgst = self.request.query_params.get('accountgst')
+        mgst = mastergstdetails.objects.get(gstin = entitygst)
+        einv = generateeinvoice(mgst)
+        r = einv.getauthentication()
+        res = r.json()
+        gstdetails = einv.getgstdetails(gstaccount = accountgst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
+        res = gstdetails.json()
+
+
+
+        # if r.status_code == 200:
+        #         res = r.json()
+
+        #         print(res["data"]["AuthToken"])
+
+        # print(r)
+  
+
+     
+        
+     
+        return  Response(res)
+    
+
+
+    
+
+
+
 
 
  

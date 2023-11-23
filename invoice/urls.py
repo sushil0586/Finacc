@@ -113,6 +113,7 @@ urlpatterns  = [
     path('dcnotelatestvno',views.debitcreditlatestvnoview.as_view(), name = 'Trialbalance'),
     path('debitcreditcancel/<int:id>',views.debitcreditcancel.as_view(), name = 'Trialbalance'),
     path('balancesheetclosing',views.balancesheetclosingapiView.as_view(), name = 'Trialbalance'),
+    path('getgstindetails',views.getgstindetails.as_view(), name = 'Trialbalance'),
     #path('closingstock', views.closingstockView.as_view(), name='closingstockView'),
     #path('closingstockview', views.closingstocknew.as_view(), name='closingstockView--1'),
 

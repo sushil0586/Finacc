@@ -6,7 +6,7 @@ from helpers.models import TrackingModel
 from Authentication.models import User
 from financial.models import account,accountHead
 from inventory.models import Product
-from entity.models import entity,entityfinancialyear
+from entity.models import entity,entityfinancialyear,subentity
 from inventory.models import Product
 from django.db.models import Sum 
 import datetime
@@ -128,6 +128,7 @@ class SalesOderHeader(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'EXpenses')
     gtotal =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Grand Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -156,6 +157,7 @@ class salesOrderdetails(TrackingModel):
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
@@ -223,6 +225,7 @@ class PurchaseReturn(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'EXpenses')
     gtotal =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Grand Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -251,6 +254,7 @@ class Purchasereturndetails(TrackingModel):
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
@@ -309,6 +313,7 @@ class jobworkchalan(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
     gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -337,6 +342,8 @@ class jobworkchalanDetails(models.Model):
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
+    
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
@@ -377,6 +384,7 @@ class purchaseorderimport(TrackingModel):
     expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
     gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
     importgtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Import G Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -405,6 +413,7 @@ class PurchaseOrderimportdetails(models.Model):
   #  othercharges =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
@@ -465,6 +474,7 @@ class purchaseorder(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
     gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -492,6 +502,7 @@ class PurchaseOrderDetails(models.Model):
     othercharges =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'other charges',default=0,null=True)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
@@ -546,6 +557,7 @@ class salereturn(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
     gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -575,6 +587,7 @@ class salereturnDetails(models.Model):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
     #test =  models.IntegerField(null=True)
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
@@ -918,6 +931,29 @@ class closingstock(TrackingModel):
 
     def __str__(self):
          return f'{self.stock} '
+    
+
+
+class mastergstdetails(TrackingModel):
+    username = models.CharField(max_length=100, null=True,verbose_name='username')
+    password = models.CharField(max_length=100, null=True,verbose_name='password')
+    client_id = models.CharField(max_length=200, null=True,verbose_name='clientid')
+    client_secret = models.CharField(max_length=200, null=True,verbose_name='client_secret')
+    gstin = models.CharField(max_length=20, null=True,verbose_name='gstin')
+
+    def __str__(self):
+         return f'{self.username}'
+    
+
+class supplytype(TrackingModel):
+    supplytypecode = models.CharField(max_length=10, null=True,verbose_name='supplytypecode')
+    supplytypename = models.CharField(max_length=100, null=True,verbose_name='supplytypename')
+
+    def __str__(self):
+         return f'{self.supplytypecode}'
+
+
+
 
 
 
