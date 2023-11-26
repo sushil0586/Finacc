@@ -227,6 +227,7 @@ class subentitybyentityApiView(ListCreateAPIView):
 class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
 
     serializer_class = subentitySerializer
+    
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 

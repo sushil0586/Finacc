@@ -48,6 +48,7 @@ class gstorderservices(TrackingModel):
     expensesaftertax =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Expenses after tax')
     gtotal =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Grand Total')
     remarks = models.CharField(max_length=500, null=True,verbose_name='Remarks')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
@@ -76,6 +77,7 @@ class gstorderservicesdetails(TrackingModel):
     igstreverse =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'IGST Reverse',null = True,default = 0)
     # cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity')
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
