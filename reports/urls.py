@@ -26,6 +26,7 @@ urlpatterns  = [
     path('ledgerbook',views.ledgerviewapi.as_view(), name = 'Trialbalance'),
     path('ledgerdetails',views.ledgerdetails.as_view(), name = 'Trialbalance'),
     path('interestdetails',views.interestdetails.as_view(), name = 'Trialbalance'),
+    path('gstr3b1',views.gstr3b1.as_view(), name = 'Trialbalance'),
 
     
     path('ledgerdetail1',views.ledgerapiApiView.as_view(), name = 'Trialbalance'),
