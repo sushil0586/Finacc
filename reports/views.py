@@ -567,6 +567,42 @@ class dashboardgraphkpis(ListAPIView):
         )
 
         return Response(df1)
+
+
+class gstr3b1(ListAPIView):
+
+    #serializer_class = balancesheetserializer
+    permission_classes = (permissions.IsAuthenticated,)
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['entity']
+
+    def get(self, request, format=None):
+        entity1 = self.request.query_params.get('entity')
+        stk =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
+        stk2 =StockTransactions.objects.filter(Q(isactive = 1),Q(entity = entity1)).filter(account__accounthead__detailsingroup = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id','account__accountname').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lte = 0)
+
+
+
+        
+
+
+        #print(df.groupby(['accounthead','accountheadname','drcr','accountname','accountid'])[['balance']].sum().abs())
+
+        #return Response(df2)
+
+        df1 = pd.DataFrame(
+       {
+        "NatureofSupplies": ["(a) outward taxable supplies(Other then Zero rated ,Nil rated and Execpted)", "(b) Outward taxable supplies (Zero rated)", "(C) Other outward supplies", "(d) Inward supplies", "(e) Non-GST outward supplies"],
+        "Totaltaxablesupplies": [15000, 7000, 19000,25000,12000],
+         "IntegartedTax": [18000, 14000, 35000,38000,20000],
+         "CentralTax": [3000, 7000, 14000,13000,8000],
+         "StateUTTax": [3000, 7000, 14000,13000,8000],
+         "Cess": [3000, 7000, 14000,13000,8000],
+            },
+            
+        )
+
+        return Response(df1.T.to_dict().values())
     
 
     
@@ -2170,6 +2206,10 @@ class ledgerdetails(ListAPIView):
             .apply(lambda x: x[['creditamount','debitamount','desc','entrydate','transactiontype','transactionid','displaydate','drcr','quantity']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'accounts'})).T.to_dict().values()
+
+
+        
+        print(j)
 
 
 
