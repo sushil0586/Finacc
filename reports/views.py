@@ -618,14 +618,51 @@ class gstr3b1(ListAPIView):
 
         df3 = pd.DataFrame(
        {
-        "Details": ["(A) ITC Available(whether in full or part)", "(1) Import of goods", "(2) Import of services","(3) Import supplies liable to reverse chnarge(Other than 1 & 2 above)", "(4) Inwrad supplies from ISD","(5) All other ITC","(B) ITC Reversed","(1) As per rules 42 & 43 of CGST rules","(2) Others","(C) Net ITC available(A) - (B)"],
-         "integratedtax": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,35000],
-         "CentralTax": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,3500],
-         "StateUTTax": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,3500],
-         "Cess": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,3500],
-         "Isbold": [True, False, False,False, False, False,True,False, False,True],
+        "Details": ["(A) ITC Available(whether in full or part)", "(1) Import of goods", "(2) Import of services","(3) Import supplies liable to reverse chnarge(Other than 1 & 2 above)", "(4) Inwrad supplies from ISD","(5) All other ITC","(B) ITC Reversed","(1) As per rules 42 & 43 of CGST rules","(2) Others","(C) Net ITC available(A) - (B)","(D) Ineligible ITC","(1) AS Per section 17(5)","(2) Others"],
+         "integratedtax": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,35000,1200,1200,1200],
+         "CentralTax": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,3500,1200,1200,1200],
+         "StateUTTax": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,3500,1200,1200,1200],
+         "Cess": [18000, 14000, 35000,18000, 14000, 35000,18000, 14000, 35000,3500,1200,1200,1200],
+         "Isbold": [True, False, False,False, False, False,True,False, False,True,True,False,False],
         
             },
+            
+        )
+
+
+        df4 = pd.DataFrame(
+       {
+        "natureofsupplies": ["From a supplier under composition scheme, Exempt and Nil rated supplies", "Non GST Supply"],
+         "interstatesupplies": [18000, 14000],
+         "intrastatesupplies": [18000, 14000],
+        },
+            
+        )
+
+        df5 = pd.DataFrame(
+       {
+        "description": ["Integrated Tax", "Central Tax","State/UT Tax","Cess"],
+        "Taxpayable": [18000, 14000,18000, 14000],
+        "integratedtax": [18000, 14000,18000, 14000],
+        "centraltax": [18000, 14000,18000, 14000],
+        "stateuttax": [18000, 14000,18000, 14000],
+        "cess": [18000, 14000,18000, 14000],
+        "integratedtax": [18000, 14000,18000, 14000],
+        "taxpaidtdstcs" : [18000, 14000,18000, 14000],
+        "taxcesspaidincash": [18000, 14000,18000, 14000],
+        "interest": [18000, 14000,18000, 14000],
+        "latefee": [18000, 14000,18000, 14000],
+        },
+            
+        )
+
+        df6 = pd.DataFrame(
+       {
+        "details": ["TDS", "TCS"],
+        "integratedtax": [18000, 14000],
+        "centraltax": [18000, 14000],
+        "statetax": [18000, 14000],
+        },
             
         )
 
@@ -633,10 +670,18 @@ class gstr3b1(ListAPIView):
 
 
         headers = json.dumps({ 
+
+                              'Year'  : 2023,
+                              'Month' : 12,
+                              'entity' : 'Reliance industries',
+                              'GSTIN' : '03APXPB5894F',
                               
                               'table1':json.loads(df1.to_json(orient='records')),
                               'table2':json.loads(df2.to_json(orient='records')),
                               'table3':json.loads(df3.to_json(orient='records')),
+                              'table4':json.loads(df4.to_json(orient='records')),
+                              'table5':json.loads(df5.to_json(orient='records')),
+                              'table5':json.loads(df6.to_json(orient='records')),
                                })
 
         # allDays=[]
