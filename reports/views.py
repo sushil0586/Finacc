@@ -681,7 +681,7 @@ class gstr3b1(ListAPIView):
                               'table3':json.loads(df3.to_json(orient='records')),
                               'table4':json.loads(df4.to_json(orient='records')),
                               'table5':json.loads(df5.to_json(orient='records')),
-                              'table5':json.loads(df6.to_json(orient='records')),
+                              'table6':json.loads(df6.to_json(orient='records')),
                                })
 
         # allDays=[]
