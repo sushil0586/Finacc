@@ -227,7 +227,7 @@ class entityAddSerializer(serializers.ModelSerializer):
             for key in json_data["Roles"]:
                 serializer2 = self.roleserializer(data =key)
                 serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity)
+                serializer2.save()
                 #print(key)
 
             for key in json_data["Ratecalc"]:
