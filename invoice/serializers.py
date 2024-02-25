@@ -45,7 +45,7 @@ class tdsmaincancelSerializer(serializers.ModelSerializer):
         StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id,transactiontype = 'T').update(isactive = instance.isactive)
         return instance
 
-class salesinvoicecancelSerializer(serializers.ModelSerializer):
+class saleinvoicecancelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
@@ -87,7 +87,7 @@ class gstorderservicecancelSerializer(serializers.ModelSerializer):
         return instance
 
 
-class purchaseordercancelSerializer(serializers.ModelSerializer):
+class purchaseinvoicecancelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = purchaseorder
@@ -2272,12 +2272,12 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
 
 class purchaseorderSerializer(serializers.ModelSerializer):
-    purchaseorderdetails = PurchaseOrderDetailsSerializer(many=True)
+    purchaseInvoiceDetails = PurchaseOrderDetailsSerializer(many=True)
    # productname = serializers.SerializerMethodField()
 
     class Meta:
         model = purchaseorder
-        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseorderdetails',)
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseInvoiceDetails',)
 
 
     
@@ -2286,7 +2286,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
        # print(validated_data)
-        PurchaseOrderDetails_data = validated_data.pop('purchaseorderdetails')
+        PurchaseOrderDetails_data = validated_data.pop('purchaseInvoiceDetails')
         with transaction.atomic():
             order = purchaseorder.objects.create(**validated_data)
             stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
@@ -2324,7 +2324,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
             PurchaseOrderDetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
         
-            PurchaseOrderDetails_data = validated_data.get('purchaseorderdetails')
+            PurchaseOrderDetails_data = validated_data.get('purchaseInvoiceDetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
                 purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
