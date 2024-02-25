@@ -45,7 +45,7 @@ class tdsmaincancelSerializer(serializers.ModelSerializer):
         StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id,transactiontype = 'T').update(isactive = instance.isactive)
         return instance
 
-class salesordercancelSerializer(serializers.ModelSerializer):
+class salesinvoicecancelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
