@@ -128,7 +128,7 @@ class RoleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = userRole
-        fields = ('id','rolename','roledesc',)
+        fields = ('id','rolename','roledesc','entity',)
 
 
 

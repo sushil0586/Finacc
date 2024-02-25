@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
@@ -1474,7 +1474,7 @@ class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
 
 
 class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
-    salesorderdetails = salesOrderdetailspdfSerializer(many=True)
+    saleInvoiceDetails = salesOrderdetailspdfSerializer(many=True)
 
     entityname = serializers.SerializerMethodField()
     entityaddress = serializers.SerializerMethodField()
@@ -1487,7 +1487,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
     amountinwords = serializers.SerializerMethodField()
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','isactive','salesorderdetails',)
+        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','isactive','saleInvoiceDetails',)
 
     
     def get_entityname(self,obj):
@@ -1783,10 +1783,10 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
 
 
 class SalesOderHeaderSerializer(serializers.ModelSerializer):
-    salesorderdetails = salesOrderdetailsSerializer(many=True)
+    saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive','salesorderdetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive','saleInvoiceDetails',)
 
 
     
@@ -1794,7 +1794,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         #print(validated_data)
         with transaction.atomic():
-            salesOrderdetails_data = validated_data.pop('salesorderdetails')
+            salesOrderdetails_data = validated_data.pop('saleInvoiceDetails')
             validated_data.pop('billno')
 
            # entityfy = entityfinancialyear.objects.get(entity = validated_data['entity'] , isactive = 1)
@@ -1887,7 +1887,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             salesOrderdetails.objects.filter(salesorderheader=instance,entity = instance.entity).delete()
             stk.createtransaction()
 
-            salesOrderdetails_data = validated_data.get('salesorderdetails')
+            salesOrderdetails_data = validated_data.get('saleInvoiceDetails')
 
             for PurchaseOrderDetail_data in salesOrderdetails_data:
                 salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
@@ -2093,6 +2093,24 @@ class POSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = purchaseorder
+        fields =  ['newvoucher']
+
+
+class newPOSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    newvoucher = serializers.SerializerMethodField()
+
+    def get_newvoucher(self, obj):
+        if not obj.voucherno:
+            return 1
+        else:
+            return obj.voucherno + 1
+
+
+    class Meta:
+        model = newpurchaseorder
         fields =  ['newvoucher']
 
 
@@ -2316,6 +2334,94 @@ class purchaseorderSerializer(serializers.ModelSerializer):
                   
                     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
                     stk.createothertransactiondetails(detail=detail1,stocktype='P')
+
+        return instance
+
+class newPurchaseOrderDetailsSerializer(serializers.ModelSerializer):
+   # otherchargesdetail = purchaseotherdetailsSerializer(many=True,required=False)
+    id = serializers.IntegerField(required=False)
+    productname = serializers.SerializerMethodField()
+    hsn = serializers.SerializerMethodField()
+    mrp = serializers.SerializerMethodField()
+   # productdesc1 = serializers.SerializerMethodField()
+    #entityUser = entityUserSerializer(many=True)
+
+    class Meta:
+        model = newPurchaseOrderDetails
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','subentity','entity',)
+    
+    def get_productname(self,obj):
+        return obj.product.productname
+    
+    def get_hsn(self,obj):
+        return obj.product.hsn
+
+    def get_mrp(self,obj):
+        return obj.product.mrp
+
+class newpurchaseorderSerializer(serializers.ModelSerializer):
+    newpurchaseorderdetails = newPurchaseOrderDetailsSerializer(many=True)
+   # productname = serializers.SerializerMethodField()
+
+    class Meta:
+        model = newpurchaseorder
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','newpurchaseorderdetails',)
+
+
+    
+    
+
+
+    def create(self, validated_data):
+       # print(validated_data)
+        PurchaseOrderDetails_data = validated_data.pop('newpurchaseorderdetails')
+        with transaction.atomic():
+            order = newpurchaseorder.objects.create(**validated_data)
+            #stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
+            #print(order.objects.get("id"))
+            #print(tracks_data)
+            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+              #  purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+                detail = newPurchaseOrderDetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
+                # for purchaseothercharge_data in purchaseothercharges_data:
+                #     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                #     stk.createothertransactiondetails(detail=detail1,stocktype='P')
+
+            
+              #  stk.createtransactiondetails(detail=detail,stocktype='P')
+                
+            
+           # stk.createtransaction()
+        return order
+
+    def update(self, instance, validated_data):
+        fields = ['voucherdate','voucherno','account','billno','billdate','showledgeraccount','terms','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity', 'entity','isactive']
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        
+
+        # print(instance.id)
+     #   stk = stocktransaction(instance, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype='U')
+        with transaction.atomic():
+          #  stk.createtransaction()
+            
+            i = instance.save()
+
+            newPurchaseOrderDetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
+        
+            PurchaseOrderDetails_data = validated_data.get('newpurchaseorderdetails')
+
+            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+               # purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+                detail = newPurchaseOrderDetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
+              #  stk.createtransactiondetails(detail=detail,stocktype='P')
+                # for purchaseothercharge_data in purchaseothercharges_data:
+                  
+                #     detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
+                #     stk.createothertransactiondetails(detail=detail1,stocktype='P')
 
         return instance
 

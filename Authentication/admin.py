@@ -9,9 +9,21 @@ class submenusAdmin(ImportExportMixin,admin.ModelAdmin):
         ('mainmenu', admin.RelatedOnlyFieldListFilter),
     )
 
+class userRoleAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ('rolename', 'roledesc','entity',)
+    list_filter = (
+        ('entity', admin.RelatedOnlyFieldListFilter),
+    )
+
+class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ('rolename', 'roledesc','entity',)
+    list_filter = (
+        ('entity', admin.RelatedOnlyFieldListFilter),
+    )
+
 admin.site.register(User)
 
-admin.site.register(userRole)
+admin.site.register(userRole,userRoleAdmin)
 admin.site.register(MainMenu)
 admin.site.register(submenu,submenusAdmin)
 admin.site.register(rolepriv)
