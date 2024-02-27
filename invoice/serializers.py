@@ -1738,6 +1738,50 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
         return obj.product.mrp
     
 
+# class salesOrderdetailsSerializer(serializers.ModelSerializer):
+#     #entityUser = entityUserSerializer(many=True)
+#     otherchargesdetail = salesotherdetailsSerializer(many=True,required=False)
+#     id = serializers.IntegerField(required=False)
+#     productname = serializers.SerializerMethodField()
+#     hsn = serializers.SerializerMethodField()
+#     mrp = serializers.SerializerMethodField()
+
+#     class Meta:
+#         model = salesOrderdetails
+#         fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','subentity','entity','otherchargesdetail',)
+
+#     def get_productname(self,obj):
+#         return obj.product.productname
+
+#     def get_hsn(self,obj):
+#         return obj.product.hsn
+    
+#     def get_mrp(self,obj):
+#         return obj.product.mrp
+    
+
+class saleOrderdetailsSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+   # otherchargesdetail = salesotherdetailsSerializer(many=True,required=False)
+    id = serializers.IntegerField(required=False)
+    productname = serializers.SerializerMethodField()
+    hsn = serializers.SerializerMethodField()
+    mrp = serializers.SerializerMethodField()
+
+    class Meta:
+        model = salesOrderdetail
+        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','subentity','entity',)
+
+    def get_productname(self,obj):
+        return obj.product.productname
+
+    def get_hsn(self,obj):
+        return obj.product.hsn
+    
+    def get_mrp(self,obj):
+        return obj.product.mrp
+    
+
 class gstorderservicesdetailsSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
     id = serializers.IntegerField(required=False)
@@ -1944,7 +1988,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             return instance
 
 class SalesOrderSerializer(serializers.ModelSerializer):
-    salesOrderDetail = salesOrderdetailsSerializer(many=True)
+    salesOrderDetail = saleOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOder
         fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive','salesOrderDetail',)
