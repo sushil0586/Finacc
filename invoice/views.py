@@ -398,6 +398,18 @@ class newpurchaseordercancel(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return newpurchaseorder.objects.filter(entity = entity)
+
+
+class purchaseordercancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = purchaseinvoicecancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return purchaseorder.objects.filter(entity = entity)
+    
     
 class purchaseimportcancel(RetrieveUpdateDestroyAPIView):
 
