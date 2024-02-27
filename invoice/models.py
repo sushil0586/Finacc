@@ -183,7 +183,7 @@ class SalesOder(TrackingModel):
     totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
     totalquanity =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
     advance =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'advance')
-    shippedto =  models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,related_name='shippedto')
+    shippedto =  models.ForeignKey(to = account, on_delete= models.CASCADE,null=True,related_name='soshippedto')
     remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
     transport =  models.IntegerField(verbose_name='Transport',null = True)
     broker =  models.IntegerField(verbose_name='broker',null = True)
