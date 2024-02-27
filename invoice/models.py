@@ -574,7 +574,7 @@ class newpurchaseorder(TrackingModel):
         return f'{self.voucherno} '
     
 class newPurchaseOrderDetails(models.Model):
-    purchaseorder = models.ForeignKey(to = newpurchaseorder,related_name='newpurchaseorderdetails', on_delete= models.CASCADE,verbose_name= 'Purchase Order Number')
+    purchaseorder = models.ForeignKey(to = newpurchaseorder,related_name='purchaseorderdetails', on_delete= models.CASCADE,verbose_name= 'Purchase Order Number')
     product = models.ForeignKey(to = Product, on_delete= models.CASCADE,verbose_name= 'Product',null = True,default = 1)
     productdesc = models.CharField(max_length=500, null=True,verbose_name='Product Desc')
     orderqty =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Order Qty')

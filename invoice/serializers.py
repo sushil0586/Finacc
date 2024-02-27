@@ -2114,6 +2114,24 @@ class newPOSerializer(serializers.ModelSerializer):
         fields =  ['newvoucher']
 
 
+class newPOSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    newvoucher = serializers.SerializerMethodField()
+
+    def get_newvoucher(self, obj):
+        if not obj.voucherno:
+            return 1
+        else:
+            return obj.voucherno + 1
+
+
+    class Meta:
+        model = newpurchaseorder
+        fields =  ['newvoucher']
+
+
 class JwvoucherSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
   #  id = serializers.IntegerField(required=False)
@@ -2360,12 +2378,12 @@ class newPurchaseOrderDetailsSerializer(serializers.ModelSerializer):
         return obj.product.mrp
 
 class newpurchaseorderSerializer(serializers.ModelSerializer):
-    newpurchaseorderdetails = newPurchaseOrderDetailsSerializer(many=True)
+    purchaseorderdetails = newPurchaseOrderDetailsSerializer(many=True)
    # productname = serializers.SerializerMethodField()
 
     class Meta:
         model = newpurchaseorder
-        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','newpurchaseorderdetails',)
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseorderdetails',)
 
 
     
@@ -2374,7 +2392,7 @@ class newpurchaseorderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
        # print(validated_data)
-        PurchaseOrderDetails_data = validated_data.pop('newpurchaseorderdetails')
+        PurchaseOrderDetails_data = validated_data.pop('purchaseorderdetails')
         with transaction.atomic():
             order = newpurchaseorder.objects.create(**validated_data)
             #stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
@@ -2412,7 +2430,7 @@ class newpurchaseorderSerializer(serializers.ModelSerializer):
 
             newPurchaseOrderDetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
         
-            PurchaseOrderDetails_data = validated_data.get('newpurchaseorderdetails')
+            PurchaseOrderDetails_data = validated_data.get('purchaseorderdetails')
 
             for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
                # purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
