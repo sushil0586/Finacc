@@ -60,7 +60,7 @@ urlpatterns  = [
     path('journalmain',views.journalmainApiView.as_view(), name = 'journal'),
     path('journalmain/<int:id>',views.journalmainupdateapiview.as_view(), name = 'journal'),
     path('saleinvoicebno/<int:billno>',views.salesOrderpreviousview.as_view(), name = 'journal'),
-    path('salerderbno/<int:billno>',views.saleOrderpreviousview.as_view(), name = 'journal'),
+    path('saleorderbno/<int:billno>',views.saleOrderpreviousview.as_view(), name = 'journal'),
 
     path('purchasereturnbno/<int:billno>',views.PurchaseReturnpreviousview.as_view(), name = 'journal'),
     path('purchaseinvoicevno/<int:voucherno>',views.purchaseorderpreviousview.as_view(), name = 'journal'),
