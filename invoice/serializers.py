@@ -5,7 +5,7 @@ from os import device_encoding
 from pprint import isreadable
 from select import select
 from rest_framework import serializers
-from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,PurchaseOrderDetails,\
+from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder
 from financial.models import account,accountHead
 from inventory.models import Product
@@ -63,6 +63,26 @@ class saleinvoicecancelSerializer(serializers.ModelSerializer):
         instance.save()
       # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
         StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
+        return instance
+    
+class salesordercancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = SalesOder
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+      #  StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
         return instance
     
 
@@ -1900,6 +1920,124 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         #  stk.updateransaction()
             return instance
 
+class SalesOrderSerializer(serializers.ModelSerializer):
+    salesOrderDetail = salesOrderdetailsSerializer(many=True)
+    class Meta:
+        model = SalesOder
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive','salesOrderDetail',)
+
+
+    
+
+    def create(self, validated_data):
+        #print(validated_data)
+        with transaction.atomic():
+            salesOrderdetails_data = validated_data.pop('salesOrderDetail')
+            validated_data.pop('billno')
+
+           # entityfy = entityfinancialyear.objects.get(entity = validated_data['entity'] , isactive = 1)
+
+            if SalesOder.objects.filter(entity= validated_data['entity'].id).count() == 0:
+                billno2 = 1
+            else:
+                billno2 = (SalesOder.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
+
+
+           # print(billno)
+
+
+           # inv = einvoicebody()
+
+           # dataxml = inv.createeinvoce(data = validated_data)
+
+
+           # einv = generateeinvoice()
+
+
+
+           
+            order = SalesOder.objects.create(**validated_data,billno= billno2)
+            #stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ',entrytype= 'I')
+
+            
+            # r = einv.getauthentication()
+
+
+        #     print(r.status_code)
+
+        #     if r.status_code == 200:
+        #         res = r.json()
+
+        #         print(res["data"]["AuthToken"])
+        #         #return 1
+        #         #  new = r.json()
+        #         # print('000000000000000000000000000000000000')
+        #         # r.encoding = 'UTF-8'
+        #         # print(r)
+        #         # print(r.text)
+        #         # print(r.ok)           # => True
+        #         # print(r.status_code)  # => 200
+        #         # print(r.headers['Date'])   # => "text/html"
+        #         # print(type(r))
+        #         # print(r.headers)
+        #         # #print(len(r))
+
+
+            
+        #    # r.encoding = 'UTF-8'
+
+            
+
+        #     new = r.json()  
+
+        #     print(new)
+
+            #print(tracks_data)
+            for PurchaseOrderDetail_data in salesOrderdetails_data:
+               # salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+
+                detail = salesOrderdetail.objects.create(salesorderheader = order, **PurchaseOrderDetail_data)
+               # stk.createtransactiondetails(detail=detail,stocktype='S')
+
+            #     for salesorderdetail_data in salesorderdetails_data:
+            #      #   detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
+            #        # stk.createothertransactiondetails(detail=detail2,stocktype='S')
+
+            #     # if(detail.orderqty ==0.00):
+            #     #     qty = detail.pieces
+            #     # else:
+            #     #     qty = detail.orderqty
+            #     # StockTransactions.objects.create(accounthead = detail.product.saleaccount.accounthead,account= detail.product.saleaccount,stock=detail.product,transactiontype = 'S',transactionid = order.id,desc = 'Sale By B.No ' + str(order.billno),stockttype = 'S',salequantity = qty,drcr = 0,creditamount = detail.amount,cgstcr = detail.cgst,sgstcr= detail.sgst,igstcr = detail.igst,entrydate = order.sorderdate,entity = order.entity,createdby = order.owner)
+            
+            # stk.createtransaction()
+            return order
+
+    def update(self, instance, validated_data):
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount', 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','entityfinid','subentity','entity','owner',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        with transaction.atomic():
+            instance.save()
+          #  stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No:',entrytype= 'U')
+            salesOrderdetail.objects.filter(salesorderheader=instance,entity = instance.entity).delete()
+          #  stk.createtransaction()
+
+            salesOrderdetails_data = validated_data.get('saleInvoiceDetails')
+
+            for PurchaseOrderDetail_data in salesOrderdetails_data:
+                salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+                detail = salesOrderdetail.objects.create(salesorderheader = instance, **PurchaseOrderDetail_data)
+              #  stk.createtransactiondetails(detail=detail,stocktype='S')
+                # for salesorderdetail_data in salesorderdetails_data:
+                #     detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
+                #     stk.createothertransactiondetails(detail=detail2,stocktype='S')
+
+        #  stk.updateransaction()
+            return instance
+
 class SOSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
   #  id = serializers.IntegerField(required=False)
@@ -1915,6 +2053,23 @@ class SOSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
+        fields =  ['newbillno']
+
+class SOnewSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
+
+    newbillno = serializers.SerializerMethodField()
+
+    def get_newbillno(self, obj):
+        if not obj.billno :
+            return 1
+        else:
+            return obj.billno + 1
+
+
+    class Meta:
+        model = SalesOder
         fields =  ['newbillno']
 
 
