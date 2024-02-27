@@ -519,7 +519,7 @@ class SalesOderHeaderApiView(ListCreateAPIView):
 
         return SalesOderHeader.objects.filter(entity = entity)
 
-class SalesOderHeaderApiView(ListCreateAPIView):
+class SalesOderApiView(ListCreateAPIView):
 
     serializer_class = SalesOrderSerializer
     permission_classes = (permissions.IsAuthenticated,)
