@@ -4,11 +4,11 @@ from django.shortcuts import render
 import json
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from invoice.models import salesOrderdetails,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport,mastergstdetails,newpurchaseorder
+from invoice.models import salesOrderdetails,SalesOder,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport,mastergstdetails,newpurchaseorder
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer
+purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer,SalesOrderSerializer,SOnewSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -518,6 +518,26 @@ class SalesOderHeaderApiView(ListCreateAPIView):
 
 
         return SalesOderHeader.objects.filter(entity = entity)
+
+class SalesOderApiView(ListCreateAPIView):
+
+    serializer_class = SalesOrderSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['billno','sorderdate','entityfinid']
+
+    def perform_create(self, serializer):
+        return serializer.save(owner = self.request.user)
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+
+     
+     
+
+
+        return SalesOder.objects.filter(entity = entity)
     
 
 class gstorderservicesApiView(ListCreateAPIView):
@@ -598,6 +618,16 @@ class salesOrderupdatedelview(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return SalesOderHeader.objects.filter(entity = entity).prefetch_related('saleInvoiceDetails')
+    
+class saleOrderupdatedelview(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = SalesOrderSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return SalesOderHeader.objects.filter(entity = entity).prefetch_related('salesOrderDetail')
 
 
 class salesOrderpreviousview(RetrieveAPIView):
@@ -610,6 +640,18 @@ class salesOrderpreviousview(RetrieveAPIView):
         entity = self.request.query_params.get('entity')
         #billno = self.request.query_params.get('billno')
         return SalesOderHeader.objects.filter(entity = entity)
+
+
+class saleOrderpreviousview(RetrieveAPIView):
+
+    serializer_class = SalesOrderSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "billno"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        #billno = self.request.query_params.get('billno')
+        return SalesOder.objects.filter(entity = entity)
 
 
 
@@ -630,6 +672,26 @@ class salesorderlatestview(ListAPIView):
       #  entityfy = enti
         id = SalesOderHeader.objects.filter(entity= entity,entityfinid = entityfy).last()
         serializer = SOSerializer(id)
+        return Response(serializer.data)
+    
+
+class saleorderlatestview(ListAPIView):
+
+    serializer_class = SOnewSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['id','unitType','entityName']
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(createdby = self.request.user)
+
+    def get(self,request):
+        entity = self.request.query_params.get('entity')
+        entityfy = self.request.query_params.get('entityfinid')
+      #  entityfy = enti
+        id = SalesOder.objects.filter(entity= entity,entityfinid = entityfy).last()
+        serializer = SOnewSerializer(id)
         return Response(serializer.data)
 
 
@@ -868,6 +930,16 @@ class purchaseorderpreviousview(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return purchaseorder.objects.filter(entity =entity)
+
+class purchaseordernewpreviousview(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = newpurchaseorderSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "voucherno"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return newpurchaseorder.objects.filter(entity =entity)
 
 class purchaseorderimportpreviousview(RetrieveUpdateDestroyAPIView):
 
