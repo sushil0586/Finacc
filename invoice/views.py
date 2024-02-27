@@ -8,7 +8,7 @@ from invoice.models import salesOrderdetails,SalesOder,SalesOderHeader,purchaseo
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer,SalesOrderSerializer,SOnewSerializer
+purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer,SalesOrderSerializer,SOnewSerializer,salesordercancelSerializer,purchaseordercancelSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -365,6 +365,16 @@ class salesordercancel(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return SalesOderHeader.objects.filter(entity = entity)
+    
+class saleordercancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = salesordercancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return SalesOder.objects.filter(entity = entity)
 
 
 
@@ -379,15 +389,15 @@ class gstservicescancel(RetrieveUpdateDestroyAPIView):
         return gstorderservices.objects.filter(entity = entity)
 
 
-class purchaseordercancel(RetrieveUpdateDestroyAPIView):
+class newpurchaseordercancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = purchaseinvoicecancelSerializer
+    serializer_class = purchaseordercancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        return purchaseorder.objects.filter(entity = entity)
+        return newpurchaseorder.objects.filter(entity = entity)
     
 class purchaseimportcancel(RetrieveUpdateDestroyAPIView):
 

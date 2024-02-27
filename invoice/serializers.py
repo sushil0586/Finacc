@@ -126,6 +126,29 @@ class purchaseinvoicecancelSerializer(serializers.ModelSerializer):
       # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
         StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
         return instance
+    
+
+
+
+class purchaseordercancelSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = purchaseorder
+        fields = ('isactive',)
+
+    
+    def update(self, instance, validated_data):
+
+        fields = ['isactive','createdby',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        instance.save()
+      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
+       # StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
+        return instance
 
 
 class purchaseimportcancelSerializer(serializers.ModelSerializer):
