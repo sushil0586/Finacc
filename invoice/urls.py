@@ -27,6 +27,7 @@ urlpatterns  = [
     # path('purchaseorderdetails',views.PurchaseOrderDetailsApiView.as_view(),name = 'purchaseorder'),
     # path('purchaseorderdetails/<int:id>',views.purchaseorderupdatedelview.as_view(), name = 'purchaseorder'),
     path('voucherno',views.purchaseordelatestview.as_view(), name = 'purchaseorder'),
+    path('povoucherno',views.newpurchaseordelatestview.as_view(), name = 'purchaseorder'),
     path('billno',views.salesorderlatestview.as_view(), name = 'purchaseorder'),
     path('gstservicesbillno',views.gstorderlatestview.as_view(), name = 'purchaseorder'),
     path('jobworkbillno',views.jobworklatestview.as_view(), name = 'purchaseorder'),
@@ -58,7 +59,7 @@ urlpatterns  = [
     path('saleinvoicebno/<int:billno>',views.salesOrderpreviousview.as_view(), name = 'journal'),
 
     path('purchasereturnbno/<int:billno>',views.PurchaseReturnpreviousview.as_view(), name = 'journal'),
-    path('purchaseordervno/<int:voucherno>',views.purchaseorderpreviousview.as_view(), name = 'journal'),
+    path('purchaseinvoicevno/<int:voucherno>',views.purchaseorderpreviousview.as_view(), name = 'journal'),
     path('purchaseimportvno/<int:voucherno>',views.purchaseorderimportpreviousview.as_view(), name = 'journal'),
     path('journalmainvno/<int:voucherno>',views.journalmainpreviousapiview.as_view(), name = 'journal'),
     path('salesreturnvno/<int:voucherno>',views.salesreturnpreviousview.as_view(), name = 'journal'),

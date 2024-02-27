@@ -904,7 +904,9 @@ class purchaseordelatestview(ListAPIView):
         serializer = POSerializer(id)
         return Response(serializer.data)
 
-class purchaseordelatestview(ListAPIView):
+
+
+class newpurchaseordelatestview(ListAPIView):
 
     serializer_class = newPOSerializer
     permission_classes = (permissions.IsAuthenticated,)
@@ -914,8 +916,21 @@ class purchaseordelatestview(ListAPIView):
         entity = self.request.query_params.get('entity')
         entityfy = self.request.query_params.get('entityfinid')
         id = newpurchaseorder.objects.filter(entity= entity,entityfinid = entityfy).last()
-        serializer = POSerializer(id)
+        serializer = newPOSerializer(id)
         return Response(serializer.data)
+
+# class purchaseordelatestview(ListAPIView):
+
+#     serializer_class = newPOSerializer
+#     permission_classes = (permissions.IsAuthenticated,)
+
+#     filter_backends = [DjangoFilterBackend]
+#     def get(self,request):
+#         entity = self.request.query_params.get('entity')
+#         entityfy = self.request.query_params.get('entityfinid')
+#         id = newpurchaseorder.objects.filter(entity= entity,entityfinid = entityfy).last()
+#         serializer = POSerializer(id)
+#         return Response(serializer.data)
     
 
 
