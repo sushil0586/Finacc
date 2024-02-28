@@ -1,7 +1,7 @@
 from django.db import models
 from django.db.models.fields import NullBooleanField
 from helpers.models import TrackingModel
-from Authentication.models import User
+from Authentication.models import User,userRole,MainMenu,submenu
 from geography.models import country,state,district,city
 #from Authentication.models import User 
 
@@ -141,6 +141,24 @@ class entity_details(models.Model):
 #         constraints = [
 #         models.UniqueConstraint(fields=['entity', 'user'], name='unique entity_user')
 #     ]
+    
+
+class rolepriv(TrackingModel):
+    role =     models.ForeignKey(userRole,null= True,on_delete= models.CASCADE)
+    mainmenu =     models.ForeignKey(MainMenu,null= True,on_delete= models.CASCADE)
+    submenu =     models.ForeignKey(submenu,null= True,on_delete= models.CASCADE)
+    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
+ 
+
+
+    class Meta:
+        verbose_name = ('Role Priveledge')
+        verbose_name_plural = ('Role Priveledges')
+
+
+    
+    def __str__(self):
+        return f'{self.role}'
 
 
 

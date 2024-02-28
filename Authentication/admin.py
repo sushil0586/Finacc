@@ -11,9 +11,9 @@ class submenusAdmin(ImportExportMixin,admin.ModelAdmin):
 
 class userRoleAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('rolename', 'roledesc',)
-    list_filter = (
-        ('entity', admin.RelatedOnlyFieldListFilter),
-    )
+    # list_filter = (
+    #     ('entity', admin.RelatedOnlyFieldListFilter),
+    # )
 
 class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('rolename', 'roledesc','entity',)

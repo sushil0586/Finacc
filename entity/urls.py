@@ -22,6 +22,9 @@ urlpatterns  = [
     path('subentity',views.subentityApiView.as_view(),name = 'entityadd'),
     path('subentity/<int:id>',views.subentityupdatedelview.as_view(), name = 'unittypeid'),
     path('subentitybyentity',views.subentitybyentityApiView.as_view(), name = 'unittypeid'),
+    path('menudetails',views.menudetails.as_view(), name = 'unittypeid'),
+
+    
 
     # path('entityuser', views.entityUserApiView.as_view() ,name = 'unittype'),
     # path('entityuser/<int:id>',views.entityUserApiView.as_view(), name = 'unittypeid'),

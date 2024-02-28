@@ -74,16 +74,16 @@ class Userserializer(serializers.ModelSerializer):
 
     #userentity = entityUserSerializer(many=True)
 
-    rolename = serializers.SerializerMethodField()
+    roleid = serializers.SerializerMethodField()
 
 
     class Meta:
         model = User
-        fields = ('first_name','last_name','email','role','password','uentity','rolename',)
+        fields = ('first_name','last_name','email','role','password','uentity','roleid',)
         depth = 1
 
     
-    def get_rolename(self,obj):
+    def get_roleid(self,obj):
         if obj.role is None:
             return 1   
         else:
