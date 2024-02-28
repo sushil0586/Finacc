@@ -87,7 +87,7 @@ class Userserializer(serializers.ModelSerializer):
         if obj.role is None:
             return 1   
         else:
-            acc =  obj.role.rolename
+            acc =  obj.role.id
             return acc
         # if obj.role is None:
         #     return 'null'   
