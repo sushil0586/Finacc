@@ -2,11 +2,15 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity
+from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,rolepriv
 from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
+from django_pandas.io import read_frame
+import numpy as np
+import pandas as pd
+from rest_framework.response import Response
 
 
 
@@ -263,6 +267,36 @@ class entityfinancialyeaListView(ListAPIView):
 
 #     def get_queryset(self):
 #         return entity.objects.filter()
+    
+
+
+class menudetails(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity1 = self.request.query_params.get('entity')
+        role1 = self.request.query_params.get('role')
+        stk = rolepriv.objects.filter(entity = entity1,role = role1).values('mainmenu__mainmenu','mainmenu__menuurl','mainmenu__menucode','submenu__submenu','submenu__subMenuurl').order_by('mainmenu__order')
+
+        df = read_frame(stk)
+        df.rename(columns = {'mainmenu__mainmenu':'mainmenu','mainmenu__menuurl':'menuurl','mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl'}, inplace = True)
+
+
+        finaldf = pd.DataFrame()
+
+        if len(df.index) > 0:
+            finaldf = (df.groupby(['mainmenu','menuurl','menucode'])
+            .apply(lambda x: x[['submenu','subMenuurl']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'submenu'})).T.to_dict().values()
+
+        return Response(finaldf)
+        
+            
     
 
 

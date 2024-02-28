@@ -61,6 +61,9 @@ class MyUserManager(UserManager):
 class userRole(TrackingModel):
     rolename = models.CharField(max_length=150)
     roledesc = models.CharField(max_length=150)
+
+    def __str__(self):
+        return f'{self.rolename}'
   # entity = models.ForeignKey(to='entity.entity', on_delete=models.CASCADE,null= True)
     
 
