@@ -2,8 +2,8 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,rolepriv
-from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity
+from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role
+from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -11,6 +11,23 @@ from django_pandas.io import read_frame
 import numpy as np
 import pandas as pd
 from rest_framework.response import Response
+
+
+
+
+class roleApiView(ListCreateAPIView):
+
+    serializer_class = roleSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['id','unitType','entityName']
+
+    # def perform_create(self, serializer):
+    #     return serializer.save(createdby = self.request.user)
+    
+    def get_queryset(self):
+        return Role.objects.filter()
 
 
 
@@ -212,6 +229,20 @@ class subentityApiView(ListCreateAPIView):
     def get_queryset(self):
         return subentity.objects.filter()
     
+class rolenewApiView(ListCreateAPIView):
+
+    serializer_class = rolemainSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['entity']
+
+    def perform_create(self, serializer):
+        return serializer.save()
+    
+    def get_queryset(self):
+        return Role.objects.filter()
+    
 
 class subentitybyentityApiView(ListCreateAPIView):
 
@@ -238,6 +269,26 @@ class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
       #  entity = self.request.query_params.get('entity')
         return subentity.objects.filter()
+    
+
+class rolenewupdatedelview(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = rolemainSerializer
+    
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+      #  entity = self.request.query_params.get('entity')
+        return Role.objects.filter()
+    
+
+
+
+
+
+        
+
     
 
 
@@ -270,6 +321,35 @@ class entityfinancialyeaListView(ListAPIView):
     
 
 
+class roledetails(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity1 = self.request.query_params.get('entity')
+        role1 = self.request.query_params.get('role')
+        stk = Role.objects.prefetch_related('roledetails').filter(entity = entity1,id = role1).values('roledetails__submenu__submenu','roledetails__submenu__subMenuurl','roledetails__submenu__id','id','rolename','roledesc','rolelevel')
+
+        df = read_frame(stk)
+        df.rename(columns = {'id':'roleid','rolename':'rolename','roledesc':'roledesc','rolelevel':'rolelevel','roledetails__submenu__submenu':'submenu','roledetails__submenu__subMenuurl':'subMenuurl'}, inplace = True)
+
+
+        finaldf = pd.DataFrame()
+
+        if len(df.index) > 0:
+            finaldf = (df.groupby(['roleid','rolename','roledesc','rolelevel'])
+            .apply(lambda x: x[['submenu','subMenuurl']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'roledetails'})).T.to_dict().values()
+
+        return Response(finaldf)
+    
+
+
+
 class menudetails(ListAPIView):
 
    
@@ -280,10 +360,10 @@ class menudetails(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity1 = self.request.query_params.get('entity')
         role1 = self.request.query_params.get('role')
-        stk = rolepriv.objects.filter(entity = entity1,role = role1).values('mainmenu__mainmenu','mainmenu__menuurl','mainmenu__menucode','submenu__submenu','submenu__subMenuurl').order_by('mainmenu__order')
+        stk = Rolepriv.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl').order_by('mainmenu__order')
 
         df = read_frame(stk)
-        df.rename(columns = {'mainmenu__mainmenu':'mainmenu','mainmenu__menuurl':'menuurl','mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl'}, inplace = True)
+        df.rename(columns = {'submenu__mainmenu__mainmenu':'mainmenu','submenu__mainmenu__menuurl':'menuurl','submenu__mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl'}, inplace = True)
 
 
         finaldf = pd.DataFrame()

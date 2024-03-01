@@ -15,14 +15,20 @@ urlpatterns  = [
     path('entityDetails/<int:id>',views.entityDetailsApiView.as_view(), name = 'entityDetails1'),
     path('unittype', views.unitTypeApiView.as_view() ,name = 'unittype'),
     path('constitution', views.ConstitutionApiView.as_view() ,name = 'unittype'),
+    path('role', views.roleApiView.as_view() ,name = 'unittype'),
     path('unittype/<int:id>',views.unitTypeApiView.as_view(), name = 'unittypeid'),
   #  path('user',views.AuthApiView.as_view(), name = 'user'),
     path('entityfy',views.entityfinancialyearApiView.as_view(), name = 'user'),
     path('entityfylist',views.entityfinancialyeaListView.as_view(), name = 'user'),
     path('subentity',views.subentityApiView.as_view(),name = 'entityadd'),
     path('subentity/<int:id>',views.subentityupdatedelview.as_view(), name = 'unittypeid'),
+    path('rolelatest',views.rolenewApiView.as_view(),name = 'entityadd'),
+    path('rolelatest/<int:id>',views.rolenewupdatedelview.as_view(), name = 'unittypeid'),
     path('subentitybyentity',views.subentitybyentityApiView.as_view(), name = 'unittypeid'),
     path('menudetails',views.menudetails.as_view(), name = 'unittypeid'),
+    path('roledetailsbyroleid',views.roledetails.as_view(), name = 'unittypeid'),
+
+    
 
     
 

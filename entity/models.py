@@ -143,8 +143,19 @@ class entity_details(models.Model):
 #     ]
     
 
-class rolepriv(TrackingModel):
-    role =     models.ForeignKey(userRole,null= True,on_delete= models.CASCADE)
+class Role(TrackingModel):
+    rolename = models.CharField(max_length=150)
+    roledesc = models.CharField(max_length=150)
+    rolelevel = models.IntegerField()
+    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
+
+    def __str__(self):
+        return f'{self.rolename}'
+
+    
+
+class Rolepriv(TrackingModel):
+    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='roledetails')
     mainmenu =     models.ForeignKey(MainMenu,null= True,on_delete= models.CASCADE)
     submenu =     models.ForeignKey(submenu,null= True,on_delete= models.CASCADE)
     entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
@@ -159,6 +170,16 @@ class rolepriv(TrackingModel):
     
     def __str__(self):
         return f'{self.role}'
+    
+
+
+class Userrole(TrackingModel):
+    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE)
+    user =     models.ForeignKey(User,null= True,on_delete= models.CASCADE)
+    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
+
+    def __str__(self):
+        return f'{self.user}'
 
 
 

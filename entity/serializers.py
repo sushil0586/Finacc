@@ -1,7 +1,7 @@
 import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity
+from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
@@ -13,6 +13,63 @@ import json
 import collections
 
 #from Authentication.serializers import userserializer
+
+
+
+class roleprivdetailSerializer(serializers.ModelSerializer):
+    
+
+    class Meta:
+        model = Rolepriv
+        fields =  ('role','mainmenu','submenu','entity',)
+
+
+
+
+class rolemainSerializer(serializers.ModelSerializer):
+    roledetails = roleprivdetailSerializer(many=True)
+    class Meta:
+        model = Role
+        fields = ('id','rolename','roledesc','rolelevel','entity','roledetails',)
+    def create(self, validated_data):
+        roledetails_data = validated_data.pop('roledetails')
+
+        roleid = Role.objects.create(**validated_data)
+        for roledetail_data in roledetails_data:
+            detail = Rolepriv.objects.create(role = roleid, **roledetail_data)
+               
+          
+        return roleid
+    
+    def update(self, instance, validated_data):
+        fields = ['rolename','roledesc','rolelevel','entity',]
+        for field in fields:
+            try:
+                setattr(instance, field, validated_data[field])
+            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+                pass
+        
+        instance.save()
+       
+        Rolepriv.objects.filter(role=instance,entity = instance.entity).delete()
+        roledetails_data = validated_data.get('roledetails')
+
+        for roledetail_data in roledetails_data:
+            detail = Rolepriv.objects.create(role = instance, **roledetail_data)
+                
+
+        
+        return instance
+
+ 
+
+
+
+class roleSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Rolepriv
+        fields = '__all__'
 
 
 
