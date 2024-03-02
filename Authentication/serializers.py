@@ -1,7 +1,7 @@
 import imp
 from django.db import models
 from rest_framework import serializers
-from Authentication.models import User,userRole,MainMenu,submenu,rolepriv
+from Authentication.models import User,userRole,MainMenu,Submenu,rolepriv
 #from entity.models import enti
 #from entity.serializers import entityUserSerializer
 
@@ -134,20 +134,32 @@ class RoleSerializer(serializers.ModelSerializer):
 
 
 class submenuSerializer(serializers.ModelSerializer):
-    
+    mainmenu= serializers.SerializerMethodField()
+    def get_mainmenu(self, obj):
+
+            return obj.mainmenu.mainmenu    
 
     class Meta:
-        model = submenu
-        fields =  ('submenu','subMenuurl',)
+        model = Submenu
+        fields =  ( 'id','submenu','submenucode','subMenuurl','mainmenu',)
         order_by = ('order')
+
+        
 
 
 
 class mainmenuserializer(serializers.ModelSerializer):
     submenu = submenuSerializer(many=True)
+    #accountname= serializers.SerializerMethodField()
     class Meta:
         model = MainMenu
         fields = ('mainmenu','menuurl','menucode','submenu',)
+
+
+        def get_accountname(self, obj):
+         print(obj)
+
+         return obj.account.accountname
 
 
 

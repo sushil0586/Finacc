@@ -12,4 +12,7 @@ urlpatterns  = [
     path('changepassword',views.ChangePasswordView.as_view(), name = 'ChangePassword'),
     path('menus',views.MenusApiView.as_view(), name = 'MenusApiView'),
     path('rolespriv',views.roleprivApiView.as_view(), name = 'MenusApiView'),
+    path('submenus',views.subMenusApiView.as_view(), name = 'MenusApiView'),
+
+    
 ]

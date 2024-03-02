@@ -1,5 +1,5 @@
 from django.contrib import admin
-from Authentication.models import User,userRole,MainMenu,submenu,rolepriv
+from Authentication.models import User,userRole,MainMenu,Submenu,rolepriv
 from import_export.admin import ImportExportMixin
 
 
@@ -25,7 +25,7 @@ admin.site.register(User)
 
 admin.site.register(userRole,userRoleAdmin)
 admin.site.register(MainMenu)
-admin.site.register(submenu,submenusAdmin)
+admin.site.register(Submenu,submenusAdmin)
 admin.site.register(rolepriv)
 
 

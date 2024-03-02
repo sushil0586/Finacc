@@ -331,19 +331,19 @@ class roledetails(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity1 = self.request.query_params.get('entity')
         role1 = self.request.query_params.get('role')
-        stk = Role.objects.prefetch_related('roledetails').filter(entity = entity1,id = role1).values('roledetails__submenu__submenu','roledetails__submenu__subMenuurl','roledetails__submenu__id','id','rolename','roledesc','rolelevel')
+        stk = Role.objects.prefetch_related('submenudetails').filter(entity = entity1,id = role1).values('submenudetails__submenu__id','id','rolename','roledesc','rolelevel')
 
         df = read_frame(stk)
-        df.rename(columns = {'id':'roleid','rolename':'rolename','roledesc':'roledesc','rolelevel':'rolelevel','roledetails__submenu__submenu':'submenu','roledetails__submenu__subMenuurl':'subMenuurl'}, inplace = True)
+        df.rename(columns = {'id':'roleid','rolename':'rolename','roledesc':'roledesc','rolelevel':'rolelevel','submenudetails__submenu__id':'submenuid'}, inplace = True)
 
 
         finaldf = pd.DataFrame()
 
         if len(df.index) > 0:
             finaldf = (df.groupby(['roleid','rolename','roledesc','rolelevel'])
-            .apply(lambda x: x[['submenu','subMenuurl']].to_dict('records'))
+            .apply(lambda x: x[['submenuid']].to_dict('records'))
             .reset_index()
-            .rename(columns={0:'roledetails'})).T.to_dict().values()
+            .rename(columns={0:'submenudetails'})).T.to_dict().values()
 
         return Response(finaldf)
     
@@ -360,7 +360,7 @@ class menudetails(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity1 = self.request.query_params.get('entity')
         role1 = self.request.query_params.get('role')
-        stk = Rolepriv.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl').order_by('mainmenu__order')
+        stk = Rolepriv.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl').order_by('submenu__mainmenu__order')
 
         df = read_frame(stk)
         df.rename(columns = {'submenu__mainmenu__mainmenu':'mainmenu','submenu__mainmenu__menuurl':'menuurl','submenu__mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl'}, inplace = True)

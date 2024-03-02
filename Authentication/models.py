@@ -143,9 +143,10 @@ class MainMenu(TrackingModel):
     def __str__(self):
         return f'{self.mainmenu}'
 
-class submenu(TrackingModel):
+class Submenu(TrackingModel):
     mainmenu =     models.ForeignKey(MainMenu, on_delete=models.CASCADE,null= True,related_name='submenu')
     submenu =      models.CharField(max_length=50)
+    submenucode = models.CharField(max_length=50,null= True,blank = True)
     subMenuurl =   models.CharField(max_length=50)
     order = models.IntegerField()
 
