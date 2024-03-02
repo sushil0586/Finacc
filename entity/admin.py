@@ -25,6 +25,12 @@ class roleadmin(admin.ModelAdmin):
         ('entity', admin.RelatedOnlyFieldListFilter),
     )
 
+class rolesadmin(admin.ModelAdmin):
+    list_display = ['rolename','roledesc','rolelevel','entity']
+    list_filter = (
+        ('entity', admin.RelatedOnlyFieldListFilter),
+    )
+
 admin.site.register(unitType,unitTypeAdmin)
 
 admin.site.register(entity,entityeAdmin)
@@ -34,7 +40,7 @@ admin.site.register(entityconstitution)
 admin.site.register(Constitution)
 admin.site.register(subentity)
 admin.site.register(Rolepriv,menuadmin)
-admin.site.register(Role)
+admin.site.register(Role,rolesadmin)
 
 
 

@@ -27,6 +27,9 @@ urlpatterns  = [
     path('subentitybyentity',views.subentitybyentityApiView.as_view(), name = 'unittypeid'),
     path('menudetails',views.menudetails.as_view(), name = 'unittypeid'),
     path('roledetailsbyroleid',views.roledetails.as_view(), name = 'unittypeid'),
+    path('entitydetailsbyuser',views.entitydetailsbyuser.as_view(), name = 'unittypeid'),
+
+    
 
     
 
