@@ -1,7 +1,7 @@
 import imp
 from django.db import models
 from rest_framework import serializers
-from Authentication.models import User,userRole,MainMenu,Submenu,rolepriv
+from Authentication.models import User,MainMenu,Submenu
 #from entity.models import enti
 #from entity.serializers import entityUserSerializer
 
@@ -121,14 +121,7 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 
-class RoleSerializer(serializers.ModelSerializer):
 
-    #password = serializers.CharField(max_length = 128, min_length = 6, write_only = True)
-
-
-    class Meta:
-        model = userRole
-        fields = ('id','rolename','roledesc',)
 
 
 
@@ -163,19 +156,7 @@ class mainmenuserializer(serializers.ModelSerializer):
 
 
 
-class roleprivserializer(serializers.ModelSerializer):
-    menus = serializers.SerializerMethodField()
 
-    class Meta:
-        model = rolepriv
-        fields = ['role','menus','mainmenu']
-
-    
-    def get_menus(self,obj):
-        print(obj)
-        menus =  MainMenu.objects.filter()
-        return mainmenuserializer(menus, many=True).data
-      #  return menus
 
 
 

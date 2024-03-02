@@ -2,9 +2,9 @@
 from django.shortcuts import render
 from rest_framework import response,status,permissions
 from rest_framework.generics import GenericAPIView,ListAPIView,UpdateAPIView,ListCreateAPIView
-from Authentication.serializers import Registerserializer,LoginSerializer,Userserializer,ChangePasswordSerializer,RoleSerializer,mainmenuserializer,roleprivserializer,submenuSerializer
+from Authentication.serializers import Registerserializer,LoginSerializer,Userserializer,ChangePasswordSerializer,mainmenuserializer,submenuSerializer
 from django.contrib.auth import authenticate
-from Authentication.models import User,userRole,MainMenu,rolepriv,Submenu
+from Authentication.models import User,MainMenu,Submenu
 from rest_framework.response import Response
 
 
@@ -69,18 +69,7 @@ class LoginApiView(GenericAPIView):
 
 
 
-class roleapiview(ListAPIView):
 
-    serializer_class = RoleSerializer
-   # permission_classes = (permissions.IsAuthenticated,)
-
-   # filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
-
-    
-    def get_queryset(self): 
-        entity = self.request.query_params.get('entity')
-        return userRole.objects.filter()
 
 class ChangePasswordView(UpdateAPIView):
     serializer_class = ChangePasswordSerializer
@@ -159,29 +148,7 @@ class subMenusApiView(ListCreateAPIView):
 
 
 
-class roleprivApiView(ListCreateAPIView):
 
-    serializer_class = roleprivserializer
-    permission_classes = (permissions.IsAuthenticated,)
-
-  #  filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
-
-    #def perform_create(self, serializer):
-     #   return serializer.save(owner = self.request.user)
-    
-    def get_queryset(self):
-
-        menus = rolepriv.objects.filter(role = 1).prefetch_related('role')
-
-        print(roleprivserializer(menus, many=True).data)
-        print(menus)
-
-        # menus = rolepriv.objects.filter().select_related('roles')
-
-        # print(menus)
-
-        return menus
 
     
 
