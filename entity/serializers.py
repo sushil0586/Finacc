@@ -2,7 +2,7 @@ import imp
 from struct import pack
 from rest_framework import serializers
 from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
-from Authentication.models import User
+from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
 from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2,accounttypeserializer
@@ -30,18 +30,18 @@ class roleprivdetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Rolepriv
-        fields =  ('role','mainmenu','submenu','entity',)
+        fields =  ('role','submenu','entity',)
 
 
 
 
 class rolemainSerializer(serializers.ModelSerializer):
-    roledetails = roleprivdetailSerializer(many=True)
+    submenudetails = roleprivdetailSerializer(many=True)
     class Meta:
         model = Role
-        fields = ('id','rolename','roledesc','rolelevel','entity','roledetails',)
+        fields = ('id','rolename','roledesc','rolelevel','entity','submenudetails',)
     def create(self, validated_data):
-        roledetails_data = validated_data.pop('roledetails')
+        roledetails_data = validated_data.pop('submenudetails')
 
         roleid = Role.objects.create(**validated_data)
         for roledetail_data in roledetails_data:
@@ -61,7 +61,7 @@ class rolemainSerializer(serializers.ModelSerializer):
         instance.save()
        
         Rolepriv.objects.filter(role=instance,entity = instance.entity).delete()
-        roledetails_data = validated_data.get('roledetails')
+        roledetails_data = validated_data.get('submenudetails')
 
         for roledetail_data in roledetails_data:
             detail = Rolepriv.objects.create(role = instance, **roledetail_data)
@@ -332,8 +332,18 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         
 
-        roleid = Role.objects.first()
-        Userrole.objects.create(entity = newentity,role = roleid,user = users[0])
+        roleid = Role.objects.get(entity = newentity,rolename = 'Admin')
+        roleinstance = Userrole.objects.create(entity = newentity,role = roleid,user = users[0])
+
+
+        
+
+
+        
+
+        submenus = Submenu.objects.all()
+        for submenu in submenus:
+            Rolepriv.objects.create(role = roleid,submenu=submenu,entity = newentity )
 
     
         for PurchaseOrderDetail_data in constitutiondata:

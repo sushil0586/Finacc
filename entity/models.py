@@ -1,7 +1,7 @@
 from django.db import models
 from django.db.models.fields import NullBooleanField
 from helpers.models import TrackingModel
-from Authentication.models import User,userRole,MainMenu,submenu
+from Authentication.models import User,userRole,MainMenu,Submenu
 from geography.models import country,state,district,city
 #from Authentication.models import User 
 
@@ -150,14 +150,13 @@ class Role(TrackingModel):
     entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
 
     def __str__(self):
-        return f'{self.rolename}'
+        return f'{self.rolename} - {self.entity}'
 
     
 
 class Rolepriv(TrackingModel):
-    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='roledetails')
-    mainmenu =     models.ForeignKey(MainMenu,null= True,on_delete= models.CASCADE)
-    submenu =     models.ForeignKey(submenu,null= True,on_delete= models.CASCADE)
+    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='submenudetails')
+    submenu =     models.ForeignKey(Submenu,null= True,on_delete= models.CASCADE)
     entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
  
 
@@ -169,7 +168,7 @@ class Rolepriv(TrackingModel):
 
     
     def __str__(self):
-        return f'{self.role}'
+        return f'{self.submenu} - {self.role} - {self.entity}'
     
 
 
