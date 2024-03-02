@@ -975,25 +975,29 @@
             {
                
                 "rolename": "Admin",
-                "roledesc": "Admin"
+                "roledesc": "Admin",
+                "rolelevel" : 1
                 
             },
             {
                
                 "rolename": "Manager",
-                "roledesc": "Manager"
+                "roledesc": "Manager",
+                "rolelevel" : 2
                 
             },
             {
                
                 "rolename": "Accountant",
-                "roledesc": "Accountant"
+                "roledesc": "Accountant",
+                "rolelevel" : 3
                 
             },
             {
                
                 "rolename": "HR",
-                "roledesc": "HR"
+                "roledesc": "HR",
+                "rolelevel" : 4
                 
             }
 			
@@ -1001,6 +1005,7 @@
 			
 			
         ],
+        
         "Ratecalc": [
 
             

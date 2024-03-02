@@ -1,7 +1,7 @@
 import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv
+from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
 from Authentication.models import User
 from Authentication.serializers import Registerserializers,RoleSerializer
 from financial.models import accountHead,account
@@ -13,6 +13,15 @@ import json
 import collections
 
 #from Authentication.serializers import userserializer
+
+
+
+
+class rolemainSerializer1(serializers.ModelSerializer):
+  
+    class Meta:
+        model = Role
+        fields = ('id','rolename','roledesc','rolelevel','entity',)
 
 
 
@@ -189,7 +198,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
     serializer = accountHeadSerializer
     accounthead = accountHeadSerializer2
-    roleserializer = RoleSerializer
+    roleserializer = rolemainSerializer1
     rateerializer = Ratecalculateserializer
     uomser = UOMserializer
     TOGSR = TOGserializer
@@ -213,7 +222,7 @@ class entityAddSerializer(serializers.ModelSerializer):
         fydata = validated_data.pop("fy")
         constitutiondata = validated_data.pop("constitution")
 
-       # print(fydata)
+       # print(fydata)Userrole
 
        # print(list(fydata[0]['finstartyear']))
 
@@ -284,7 +293,7 @@ class entityAddSerializer(serializers.ModelSerializer):
             for key in json_data["Roles"]:
                 serializer2 = self.roleserializer(data =key)
                 serializer2.is_valid(raise_exception=True)
-                serializer2.save()
+                serializer2.save(entity = newentity)
                 #print(key)
 
             for key in json_data["Ratecalc"]:
@@ -320,6 +329,11 @@ class entityAddSerializer(serializers.ModelSerializer):
                 serializer2 = self.pcategory(data =key)
                 serializer2.is_valid(raise_exception=True)
                 serializer2.save(createdby = users[0])
+
+        
+
+        roleid = Role.objects.first()
+        Userrole.objects.create(entity = newentity,role = roleid,user = users[0])
 
     
         for PurchaseOrderDetail_data in constitutiondata:

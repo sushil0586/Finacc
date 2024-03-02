@@ -2,7 +2,7 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role
+from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole
 from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
@@ -373,6 +373,36 @@ class menudetails(ListAPIView):
             .apply(lambda x: x[['submenu','subMenuurl']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'submenu'})).T.to_dict().values()
+
+        return Response(finaldf)
+    
+
+
+
+class entitydetailsbyuser(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        # entity1 = self.request.query_params.get('entity')
+        # role1 = self.request.query_params.get('role')
+       
+        stk = Userrole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
+
+        df = read_frame(stk)
+        df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','entity__entityname':'entityname','entity__state':'state','entity__gstno':'gstno','user__id':'userid','entity__id':'entityid','role__id':'roleid'}, inplace = True)
+
+
+        finaldf = pd.DataFrame()
+
+        if len(df.index) > 0:
+            finaldf = (df.groupby(['userid','first_name','last_name','email','user'])
+            .apply(lambda x: x[['entityid','entityname','email','gstno','role','roleid']].to_dict('records'))
+            .reset_index()
+            .rename(columns={0:'uentity'})).T.to_dict().values()
 
         return Response(finaldf)
         
