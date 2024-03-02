@@ -3,7 +3,7 @@ from struct import pack
 from rest_framework import serializers
 from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
 from Authentication.models import User,Submenu
-from Authentication.serializers import Registerserializers,RoleSerializer
+from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
 from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2,accounttypeserializer
 from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer,ProductCategoryMainSerializer

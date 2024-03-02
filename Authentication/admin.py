@@ -1,5 +1,5 @@
 from django.contrib import admin
-from Authentication.models import User,userRole,MainMenu,Submenu,rolepriv
+from Authentication.models import User,MainMenu,Submenu
 from import_export.admin import ImportExportMixin
 
 
@@ -9,11 +9,7 @@ class submenusAdmin(ImportExportMixin,admin.ModelAdmin):
         ('mainmenu', admin.RelatedOnlyFieldListFilter),
     )
 
-class userRoleAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ('rolename', 'roledesc',)
-    # list_filter = (
-    #     ('entity', admin.RelatedOnlyFieldListFilter),
-    # )
+
 
 class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('rolename', 'roledesc','entity',)
@@ -23,10 +19,10 @@ class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
 
 admin.site.register(User)
 
-admin.site.register(userRole,userRoleAdmin)
+
 admin.site.register(MainMenu)
 admin.site.register(Submenu,submenusAdmin)
-admin.site.register(rolepriv)
+
 
 
 

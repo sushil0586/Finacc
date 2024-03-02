@@ -1,7 +1,7 @@
 from django.db import models
 from django.db.models.fields import NullBooleanField
 from helpers.models import TrackingModel
-from Authentication.models import User,userRole,MainMenu,Submenu
+from Authentication.models import User,MainMenu,Submenu
 from geography.models import country,state,district,city
 #from Authentication.models import User 
 

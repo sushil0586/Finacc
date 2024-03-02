@@ -58,12 +58,12 @@ class MyUserManager(UserManager):
 
 
 
-class userRole(TrackingModel):
-    rolename = models.CharField(max_length=150)
-    roledesc = models.CharField(max_length=150)
+# class userRole(TrackingModel):
+#     rolename = models.CharField(max_length=150)
+#     roledesc = models.CharField(max_length=150)
 
-    def __str__(self):
-        return f'{self.rolename}'
+#     def __str__(self):
+#         return f'{self.rolename}'
   # entity = models.ForeignKey(to='entity.entity', on_delete=models.CASCADE,null= True)
     
 
@@ -89,7 +89,6 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
     first_name = models.CharField(_('first name'), max_length=100, blank=True)
     last_name = models.CharField(_('last name'), max_length=100, blank=True)
     email = models.EmailField(_('email address'), blank=False,unique = True)
-    role = models.ForeignKey(userRole, on_delete=models.CASCADE,null=True,blank= True)
     is_staff = models.BooleanField(
         _('staff status'),
         default=False,
@@ -161,18 +160,18 @@ class Submenu(TrackingModel):
         return f'{self.submenu}'
 
 
-class rolepriv(TrackingModel):
-    role =     models.ManyToManyField(userRole,null= True,related_name='roles')
-    mainmenu =     models.ManyToManyField(MainMenu,null= True,related_name='mainmenus')
+# class rolepriv(TrackingModel):
+#     role =     models.ManyToManyField(userRole,null= True,related_name='roles')
+#     mainmenu =     models.ManyToManyField(MainMenu,null= True,related_name='mainmenus')
  
 
 
-    class Meta:
-        verbose_name = _('Role Priveledge')
-        verbose_name_plural = _('Role Priveledges')
+#     class Meta:
+#         verbose_name = _('Role Priveledge')
+#         verbose_name_plural = _('Role Priveledges')
 
 
     
-    def __str__(self):
-        return f'{self.role}'
+#     def __str__(self):
+#         return f'{self.role}'
 
