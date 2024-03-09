@@ -412,6 +412,7 @@ class menudetails(ListAPIView):
 
 
 class entitydetailsbyuser(ListAPIView):
+    
 
    
     permission_classes = (permissions.IsAuthenticated,)
@@ -421,18 +422,20 @@ class entitydetailsbyuser(ListAPIView):
         #entity = self.request.query_params.get('entity')
         # entity1 = self.request.query_params.get('entity')
         # role1 = self.request.query_params.get('role')
+
+        stk = User.objects.prefetch_related('userrole').filter(email = self.request.user).values('first_name','last_name','email','userrole__role','userrole__entity__entityname','userrole__entity__id','userrole__entity__state','userrole__entity__gstno','userrole__role__id','id','userrole__user')
        
-        stk = Userrole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
+       # stk = Userrole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
 
         df = read_frame(stk)
-        df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','entity__entityname':'entityname','entity__state':'state','entity__gstno':'gstno','user__id':'userid','entity__id':'entityid','role__id':'roleid'}, inplace = True)
+        df.rename(columns = {'userrole__entity__entityname':'entityname','userrole__entity__state':'state','userrole__entity__gstno':'gstno','id':'userid','userrole__entity__id':'entityid','userrole__role__id':'roleid','userrole__user':'user'}, inplace = True)
 
 
         finaldf = pd.DataFrame()
 
         if len(df.index) > 0:
             finaldf = (df.groupby(['userid','first_name','last_name','email','user'])
-            .apply(lambda x: x[['entityid','entityname','email','gstno','role','roleid']].to_dict('records'))
+            .apply(lambda x: x[['entityid','entityname','email','gstno','roleid']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'uentity'})).T.to_dict().values()
 

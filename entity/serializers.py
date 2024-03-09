@@ -476,8 +476,9 @@ class entitySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Entity
-        fields = ['user','role',]
-        depth =1
+        fields = ('user','role',)
+        
+        
 
   
 
@@ -499,14 +500,14 @@ class entitySerializer(serializers.ModelSerializer):
         return package_ids
 
     def create(self, validated_data):
-        package = validated_data.pop('user', [])
+        package = validated_data.pop('user')
         order = Entity.objects.create(**validated_data)
         order.user.set(self.get_or_create_packages(package))
         return order
 
     def update(self, instance, validated_data):
         print(validated_data)
-        package = validated_data.pop('user', [])
+        package = validated_data.pop('user')
         role = validated_data.pop('role')
         role = Role.objects.get(id = role)
         for key in range(len(package)):
