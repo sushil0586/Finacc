@@ -412,6 +412,7 @@ class menudetails(ListAPIView):
 
 
 class entitydetailsbyuser(ListAPIView):
+    
 
    
     permission_classes = (permissions.IsAuthenticated,)
