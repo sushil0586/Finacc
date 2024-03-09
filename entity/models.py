@@ -78,7 +78,7 @@ class GstAccountsdetails(TrackingModel):
     addrFlno = models.CharField(max_length= 255)
     addrSt = models.CharField(max_length= 255)
     addrLoc = models.CharField(max_length= 255)
-    stateCode = models.ForeignKey(state, on_delete=models.CASCADE,null= True)
+    stateCode = models.CharField(max_length= 255)
     addrPncd = models.CharField(max_length= 10)
     txpType = models.CharField(max_length= 25)
     status = models.CharField(max_length= 25)
