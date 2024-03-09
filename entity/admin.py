@@ -1,6 +1,6 @@
 from io import UnsupportedOperation
 from django.contrib import admin
-from entity.models import unitType,Entity,entity_details,entityfinancialyear,Constitution,entityconstitution,subentity,Rolepriv,Role,Userrole,GstAccountsdetails
+from entity.models import unitType,Entity,entity_details,entityfinancialyear,Constitution,entityconstitution,subentity,Rolepriv,Role,Userrole,GstAccountsdetails,Mastergstdetails
 
 
 # Register your models here.
@@ -54,6 +54,9 @@ admin.site.register(Rolepriv,menuadmin)
 admin.site.register(Role,rolesadmin)
 admin.site.register(Userrole,userrolesadmin)
 admin.site.register(GstAccountsdetails,gstaccountadmin)
+admin.site.register(Mastergstdetails)
+
+
 
 
 

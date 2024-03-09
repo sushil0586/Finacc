@@ -78,7 +78,7 @@ class GstAccountsdetails(TrackingModel):
     addrFlno = models.CharField(max_length= 255)
     addrSt = models.CharField(max_length= 255)
     addrLoc = models.CharField(max_length= 255)
-    stateCode = models.CharField(max_length= 10)
+    stateCode = models.ForeignKey(state, on_delete=models.CASCADE,null= True)
     addrPncd = models.CharField(max_length= 10)
     txpType = models.CharField(max_length= 25)
     status = models.CharField(max_length= 25)
@@ -206,6 +206,18 @@ class Userrole(TrackingModel):
 
     def __str__(self):
         return f'{self.user}'
+    
+
+
+class Mastergstdetails(TrackingModel):
+    username = models.CharField(max_length=100, null=True,verbose_name='username')
+    password = models.CharField(max_length=100, null=True,verbose_name='password')
+    client_id = models.CharField(max_length=200, null=True,verbose_name='clientid')
+    client_secret = models.CharField(max_length=200, null=True,verbose_name='client_secret')
+    gstin = models.CharField(max_length=20, null=True,verbose_name='gstin')
+
+    def __str__(self):
+         return f'{self.username}'
 
 
 

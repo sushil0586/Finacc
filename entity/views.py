@@ -2,7 +2,7 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole
+from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails
 from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer,userbyentitySerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
@@ -12,6 +12,86 @@ import numpy as np
 import pandas as pd
 from rest_framework.response import Response
 from django.db import transaction
+import requests,json
+from django.db.models import Count
+from geography.models import country,state,district,city
+
+
+
+class generateeinvoice:
+
+    def __init__(self,mastergst):
+        self.mastergst = mastergst
+        self.ipaddress = '10.105.87.909'
+        self.username = self.mastergst.username
+        self.headers = json.dumps({ 
+                              'Content-Type': 'application/json',
+                              'username':self.username,
+                              'password':self.mastergst.password,
+                              'ip_address': self.ipaddress,
+                              'client_id': self.mastergst.client_id,
+                              'client_secret': self.mastergst.client_secret,
+                              'gstin': self.mastergst.gstin}, indent=4)
+        
+
+
+        print(self.headers)
+        # print(type(self.headers))
+
+        self.headers = json.loads(self.headers)
+
+
+
+        
+
+        
+
+
+    def getauthentication(self):
+
+
+
+        BASE_URL = 'https://api.mastergst.com/einvoice/authenticate'
+
+    
+        
+
+        print(f"{BASE_URL}?email=sushiljyotibansal@gmail.com")
+
+        response = requests.get(f"{BASE_URL}?email=sushiljyotibansal@gmail.com", headers= self.headers)
+
+        print(response)
+
+
+        return response
+    
+
+    def getgstdetails(self,gstaccount,authtoken,useremail):
+
+
+
+
+       # "https://api.mastergst.com/einvoice/type/GSTNDETAILS/version/V1_03?param1=29AABCT1332L000&email=aditi.gupta1789%40gmail.com"
+
+
+
+        BASE_URL = 'https://api.mastergst.com/einvoice/type/GSTNDETAILS/version/V1_03'
+
+        self.headers["auth-token"] = authtoken
+
+
+
+    
+        
+
+        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
+
+        response = requests.get(f"{BASE_URL}?param1={gstaccount}&email={useremail}", headers= self.headers)
+
+        print(response)
+
+
+        return response
 
 
 
@@ -412,7 +492,6 @@ class menudetails(ListAPIView):
 
 
 class entitydetailsbyuser(ListAPIView):
-    
 
    
     permission_classes = (permissions.IsAuthenticated,)
@@ -422,22 +501,27 @@ class entitydetailsbyuser(ListAPIView):
         #entity = self.request.query_params.get('entity')
         # entity1 = self.request.query_params.get('entity')
         # role1 = self.request.query_params.get('role')
-
-        stk = User.objects.prefetch_related('userrole').filter(email = self.request.user).values('first_name','last_name','email','userrole__role','userrole__entity__entityname','userrole__entity__id','userrole__entity__state','userrole__entity__gstno','userrole__role__id','id','userrole__user')
+        
        
-       # stk = Userrole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
+        stk = Userrole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
 
         df = read_frame(stk)
-        df.rename(columns = {'userrole__entity__entityname':'entityname','userrole__entity__state':'state','userrole__entity__gstno':'gstno','id':'userid','userrole__entity__id':'entityid','userrole__role__id':'roleid','userrole__user':'user'}, inplace = True)
+        df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','entity__entityname':'entityname','entity__state':'state','entity__gstno':'gstno','user__id':'userid','entity__id':'entityid','role__id':'roleid'}, inplace = True)
 
 
         finaldf = pd.DataFrame()
 
         if len(df.index) > 0:
             finaldf = (df.groupby(['userid','first_name','last_name','email','user'])
-            .apply(lambda x: x[['entityid','entityname','email','gstno','roleid']].to_dict('records'))
+            .apply(lambda x: x[['entityid','entityname','email','gstno','role','roleid']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'uentity'})).T.to_dict().values()
+        else:
+            stk = User.objects.filter(email = self.request.user).values('first_name','last_name','email','id')
+            df = read_frame(stk)
+            df.rename(columns = {'id':'userid'}, inplace = True)
+            return Response(df.T.to_dict().values())
+
 
         return Response(finaldf)
     
@@ -469,6 +553,90 @@ class userdetailsbyentity(ListAPIView):
         #     .rename(columns={0:'uentity'})).T.to_dict().values()
 
         return Response(df.T.to_dict().values())
+    
+
+
+class getgstindetails(ListAPIView):
+
+
+  
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {'id':["in", "exact"]
+    
+    }
+    #filterset_fields = ['id']
+    def get(self, request, format=None):
+
+        data =  {
+
+        
+        "Gstin":"29AABCT1332L000",
+                "TradeName":"VIKAS EXPORTS",
+                "LegalName":"VIKASEXPORTS ",
+                "AddrBnm":"Ramgarh",
+                "AddrBno":"134111",
+                "AddrFlno":"1st floor",
+                "AddrSt":"6th main",
+                "AddrLoc":"Ramgarh",
+                "StateCode":"07",
+                "AddrPncd":"134111",
+                "TxpType":"REG",
+                "Status":"ACT",
+                "BlkStatus":"",
+                "DtReg":"2021-05-03",
+                "DtDReg":"2021-05-04"
+        }
+
+        
+
+
+        
+        
+    
+       # acc = self.request.query_params.get('acc')
+        entitygst = self.request.query_params.get('entitygst')
+      #  accountgst = self.request.query_params.get('accountgst')
+
+        if GstAccountsdetails.objects.filter(gstin = entitygst).count() == 0:
+            # mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            # mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            # einv = generateeinvoice(mgst)
+            # r = einv.getauthentication()
+            # res = r.json()
+            # print(res)
+            # gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
+            # res = gstdetails.json()
+            stateid = state.objects.get(statecode = data['StateCode'])
+            GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = data['AddrLoc'],stateCode = stateid,addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
+        
+
+        gstdetails = GstAccountsdetails.objects.filter(gstin = entitygst).values('gstin','tradeName','legalName','addrFlno','addrBnm','addrBno','addrSt','addrLoc','stateCode__id','addrPncd','txpType','status','blkStatus','dtReg','dtDReg')
+
+        df = read_frame(gstdetails)
+        df.rename(columns = {'Gstin':'gstno','TradeName':'entityname','LegalName':'legalname','addrBnm':'address','addrBno':'address2','addrFlno':'addressfloorno','addrSt':'addressstreet','stateCode__id':'stateid','addrPncd':'pincode','txpType':'gstintype','dtReg':'dateofreg','dtDReg':'dateofdreg'}, inplace = True)
+
+
+
+
+
+
+        
+
+
+  
+        
+        
+
+        
+  
+
+     
+        
+     
+        return  Response(df.T.to_dict().values())
         
             
     

@@ -12,6 +12,20 @@ class countryAdmin(ImportExportMixin,admin.ModelAdmin):
 
 class stateAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['statecode','statename']
+
+class districtAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['districtname','districtcode','state']
+    search_fields = ['districtname']
+    list_filter = (
+        ('state', admin.RelatedOnlyFieldListFilter),
+    )
+
+class cityAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['cityname','citycode','distt','pincode']
+    search_fields = ['cityname','pincode']
+    list_filter = (
+        ('distt', admin.RelatedOnlyFieldListFilter),
+    )
    
     
 
@@ -19,6 +33,6 @@ admin.site.register(country,countryAdmin)
 
 admin.site.register(state,stateAdmin)
 
-admin.site.register(district)
+admin.site.register(district,districtAdmin)
 
-admin.site.register(city)
+admin.site.register(city,cityAdmin)
