@@ -15,7 +15,7 @@ import pandas as pd
 from rest_framework.response import Response
 from invoice.models import entry,StockTransactions
 from django_pandas.io import read_frame
-from entity.models import entity,entityfinancialyear
+from entity.models import Entity,entityfinancialyear
 
 
 class accountHeadApiView(ListCreateAPIView):

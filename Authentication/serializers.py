@@ -16,7 +16,7 @@ class Registerserializers(serializers.ModelSerializer):
     class Meta:
         model = User
         
-        fields = ('id','username','first_name','last_name','email','role','password','is_active',)
+        fields = ('id','username','first_name','last_name','email','password','is_active',)
         extra_kwargs = {'id': {'read_only': False},
          'username': {'validators': []},
          'email': {'validators': []}}
@@ -52,7 +52,7 @@ class Registerserializer(serializers.ModelSerializer):
     class Meta:
         model = User
         queryset = User.objects.filter(is_active = 1)
-        fields = ('username','first_name','last_name','role','email','password',)
+        fields = ('username','first_name','last_name','email','password',)
 
         
 
@@ -74,21 +74,16 @@ class Userserializer(serializers.ModelSerializer):
 
     #userentity = entityUserSerializer(many=True)
 
-    roleid = serializers.SerializerMethodField()
+   # roleid = serializers.SerializerMethodField()
 
 
     class Meta:
         model = User
-        fields = ('first_name','last_name','email','role','password','uentity','roleid',)
+        fields = ('first_name','last_name','email','password','uentity',)
         depth = 1
 
     
-    def get_roleid(self,obj):
-        if obj.role is None:
-            return 1   
-        else:
-            acc =  obj.role.id
-            return acc
+    
         # if obj.role is None:
         #     return 'null'   
         # else :

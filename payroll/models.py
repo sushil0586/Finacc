@@ -7,7 +7,7 @@ from helpers.models import TrackingModel
 from Authentication.models import User
 from financial.models import account,accountHead
 from inventory.models import Product
-from entity.models import entity
+from entity.models import Entity
 from inventory.models import Product
 from django.db.models import Sum 
 import datetime
@@ -20,7 +20,7 @@ class department(TrackingModel):
 
     departmentname = models.CharField(max_length= 200,verbose_name= 'department name')
     departmentcode = models.CharField(max_length= 200,verbose_name= 'department code')
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 
@@ -32,7 +32,7 @@ class designation(TrackingModel):
 
     designationname = models.CharField(max_length= 200,verbose_name= 'designation name')
     designationcode = models.CharField(max_length= 200,verbose_name= 'designation code')
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 
@@ -56,7 +56,7 @@ class salarycomponent(TrackingModel):
     componenttype = models.IntegerField(verbose_name='Component type',default = 0)
     calculationtype = models.IntegerField(verbose_name='calculation type',default = 0)
     defaultpercentage =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'default percentage')
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 
@@ -81,7 +81,7 @@ class employee(TrackingModel):
     state       = models.ForeignKey(to=state,on_delete=models.CASCADE,null=True)
     district    = models.ForeignKey(to=district,on_delete=models.CASCADE,null=True)
     city       = models.ForeignKey(to=city,on_delete=models.CASCADE,null=True)
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,related_name='employeeuser')
 
 
@@ -93,7 +93,7 @@ class employeesalary(TrackingModel):
     percentageofctc =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'percentage of ctc')
     salaryvalue=  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Component value')
     monthlysalaryvalue=  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Monthly Component value')
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,related_name='salaryuser1')
 
 
@@ -106,7 +106,7 @@ class salarytrans(TrackingModel):
     netpayable =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Net Payabale')
     paiddays =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Paid days')
     month =  models.IntegerField(verbose_name='period')
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,related_name='salaryuser')
 
 class salarytransdetails(TrackingModel):
@@ -116,7 +116,7 @@ class salarytransdetails(TrackingModel):
     salaryamountactual =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Salary amount Actual')
     arrear =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'arrear')
     totalamount =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Salary amount Total')
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     

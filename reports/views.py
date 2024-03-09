@@ -31,7 +31,7 @@ from rest_framework.renderers import JSONRenderer
 from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
-from entity.models import entity,entityconstitution,entityfinancialyear
+from entity.models import Entity,entityconstitution,entityfinancialyear
 from django_pandas.io import read_frame
 from django.db.models import Q
 import numpy as np

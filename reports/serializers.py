@@ -11,7 +11,7 @@ from inventory.models import Product
 from entity.models import entityfinancialyear
 from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
-from entity.models import entity
+from entity.models import Entity
 from django.db.models.functions import Abs
 from num2words import num2words
 import string

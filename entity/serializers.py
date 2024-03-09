@@ -1,7 +1,7 @@
 import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
+from entity.models import Entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
 from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
@@ -11,6 +11,7 @@ from invoice.serializers import purchasetaxtypeserializer
 import os
 import json
 import collections
+from django.contrib.auth.hashers import make_password
 
 #from Authentication.serializers import userserializer
 
@@ -190,7 +191,7 @@ class entityAddSerializer(serializers.ModelSerializer):
     constitution = entityconstitutionSerializer(many=True)
 
     class Meta:
-        model = entity
+        model = Entity
         #fields = ('id','entityName','fy',)
         fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','user','fy','constitution',)
 
@@ -236,7 +237,7 @@ class entityAddSerializer(serializers.ModelSerializer):
         # fendyear = validated_data.pop("finendyear")
 
         
-        newentity = entity.objects.create(**validated_data)
+        newentity = Entity.objects.create(**validated_data)
 
         for PurchaseOrderDetail_data in fydata:
 
@@ -334,6 +335,8 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         roleid = Role.objects.get(entity = newentity,rolename = 'Admin')
         roleinstance = Userrole.objects.create(entity = newentity,role = roleid,user = users[0])
+
+        subentity.objects.create(subentityname = 'Main-Branch',address = newentity.address,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,pincode = newentity.pincode,phoneoffice = newentity.phoneoffice,phoneresidence = newentity.phoneresidence,entity = newentity)
 
 
         
@@ -464,6 +467,7 @@ class entitySerializer(serializers.ModelSerializer):
 
 
     user = Registerserializers(many=True)
+    role = serializers.IntegerField(write_only=True)
 
 
     serializer = Registerserializers
@@ -471,8 +475,8 @@ class entitySerializer(serializers.ModelSerializer):
     
 
     class Meta:
-        model = entity
-        fields = ['user',]
+        model = Entity
+        fields = ['user','role',]
         depth =1
 
   
@@ -496,9 +500,68 @@ class entitySerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         package = validated_data.pop('user', [])
-        order = entity.objects.create(**validated_data)
+        order = Entity.objects.create(**validated_data)
         order.user.set(self.get_or_create_packages(package))
         return order
+
+    def update(self, instance, validated_data):
+        print(validated_data)
+        package = validated_data.pop('user', [])
+        role = validated_data.pop('role')
+        role = Role.objects.get(id = role)
+        for key in range(len(package)):
+            print(key)
+            try:
+                id = User.objects.get(email = package[key]['email'])
+                instance.user.add(id)
+                Userrole.objects.update(role = role,entity = instance.id,user = id)
+            except User.DoesNotExist:
+                 u = User.objects.create(**package[key])
+                 instance.user.add(u)
+                 Userrole.objects.create(role = role,entity = instance.id,user = u)
+
+            
+            
+           # print(package[key])
+        
+        # #instance.user.set(self.create_or_update_packages(package))
+        # fields = ['id','unitType','entityName','address','ownerName']
+        # for field in fields:
+        #     try:
+        #         setattr(instance, field, validated_data[field])
+        #     except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+        #         pass
+        # print(instance)
+        # instance.save()
+        return instance
+    
+
+class userbyentitySerializer(serializers.ModelSerializer):
+
+
+    class Meta:
+        model = Userrole
+        #fields = ('id','entityName','fy',)
+        fields = ('username','first_name','last_name','email','password','roleid','entityid',)
+
+    def create(self, validated_data):
+
+        print(validated_data)
+
+        entityid = validated_data.pop('entityid')
+        roleid = validated_data.pop('roleid')
+        password = make_password(validated_data.pop('password'))
+
+        userid = User.objects.create(**validated_data,password = password)
+
+        roleinstance = Userrole.objects.create(entity = entityid,role = roleid,user =userid)
+
+        
+        # package = validated_data.pop('user', [])
+        # order = entity.objects.create(**validated_data)
+        # order.user.set(self.get_or_create_packages(package))
+        # return order
+        return userid
 
     def update(self, instance, validated_data):
         print(validated_data)

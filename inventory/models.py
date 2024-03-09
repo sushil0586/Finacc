@@ -4,7 +4,7 @@ from django.db.models.deletion import CASCADE
 from helpers.models import TrackingModel
 from Authentication.models import User
 from django.utils.translation import gettext as _
-from entity.models import entity
+from entity.models import Entity
 from financial.models import account
 import barcode                      # additional imports
 from barcode.writer import ImageWriter
@@ -18,7 +18,7 @@ class GstRate(TrackingModel):
     CSGT = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True)
     SGST = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True)
     IGST = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True)
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -30,7 +30,7 @@ class GstRate(TrackingModel):
 class Ratecalculate(TrackingModel):
     rname = models.CharField(max_length= 255,verbose_name=_('Rate calc Name'))
     rcode = models.CharField(max_length= 255,verbose_name=_('Rate Calc Code'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -40,7 +40,7 @@ class Ratecalculate(TrackingModel):
 class UnitofMeasurement(TrackingModel):
     unitname = models.CharField(max_length= 255,verbose_name=_('UOM calculate'))
     unitcode = models.CharField(max_length= 255,verbose_name=_('UOM calculate'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -50,7 +50,7 @@ class UnitofMeasurement(TrackingModel):
 class stkcalculateby(TrackingModel):
     unitname = models.CharField(max_length= 255,verbose_name=_('UOM calculate'))
     unitcode = models.CharField(max_length= 255,verbose_name=_('UOM calculate'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -60,7 +60,7 @@ class stkcalculateby(TrackingModel):
 class typeofgoods(TrackingModel):
     goodstype = models.CharField(max_length= 255,verbose_name=_('Goods Type'))
     goodscode = models.CharField(max_length= 255,verbose_name=_('Goods Code'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -70,7 +70,7 @@ class typeofgoods(TrackingModel):
 class stkvaluationby(TrackingModel):
     valuationby = models.CharField(max_length= 255,verbose_name=_('Valuation By'))
     valuationcode = models.CharField(max_length= 255,verbose_name=_('valuation code'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -80,7 +80,7 @@ class stkvaluationby(TrackingModel):
 class gsttype(TrackingModel):
     gsttypename = models.CharField(max_length= 255,verbose_name=_('Gst type Name'))
     gsttypecode = models.CharField(max_length= 255,verbose_name=_('Gst Type Code'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -91,7 +91,7 @@ class gsttype(TrackingModel):
 class ProductCategory(TrackingModel):
     pcategoryname = models.CharField(max_length= 50,verbose_name=_('Product Category'))
     maincategory = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Main category'),blank=True)
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -134,7 +134,7 @@ class Product(TrackingModel):
     typeofgoods = models.ForeignKey(to= typeofgoods,null=True,blank=True, on_delete= models.CASCADE,verbose_name=_('Type of goods'))
     stkvaluationby = models.ForeignKey(to= stkvaluationby,null=True,blank=True, on_delete= models.CASCADE,verbose_name=_('Stock valuation by'))
     gsttype = models.ForeignKey(to= gsttype,null=True,blank=True, on_delete= models.CASCADE,verbose_name=_('Gst Type'))
-    entity = models.ForeignKey(entity,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User,null=True, on_delete= models.CASCADE)
     barcode = models.ImageField(upload_to=get_image_path, blank=True)
 

@@ -2,8 +2,8 @@ from django.http import request
 from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole
-from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer
+from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole
+from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer,userbyentitySerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -11,6 +11,7 @@ from django_pandas.io import read_frame
 import numpy as np
 import pandas as pd
 from rest_framework.response import Response
+from django.db import transaction
 
 
 
@@ -47,7 +48,38 @@ class entityAddApiView(ListCreateAPIView):
         return serializer.save(user = [self.request.user])
     
     def get_queryset(self):
-        return entity.objects.filter(user = self.request.user)
+        return Entity.objects.filter(user = self.request.user)
+    
+
+class userAddApiView(CreateAPIView):
+
+    def post(self,request):
+        email = request.data.get('email',None)
+        password = request.data.get('password',None)
+        first_name = request.data.get('first_name',None)
+        last_name = request.data.get('last_name',None)
+        username = request.data.get('username',None)
+        entityid = request.data.get('entityid',None)
+        roleid = request.data.get('roleid',None)
+
+
+        with transaction.atomic():
+            userid = User.objects.create(first_name = first_name,last_name=last_name,username= username,password = password,email = email)
+            roleid = Role.objects.get(entity = entityid,id = roleid)
+            entity = Entity.objects.get(id = entityid)
+            Userrole.objects.create(entity =entity,role =roleid,user=userid)
+            stk = Userrole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','user__password','role__rolename','role__id')
+            df = read_frame(stk)
+            df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','user__password':'password','role__rolename':'rolename','role__id':'roleid'}, inplace = True)
+            return Response(df.T.to_dict().values())
+
+
+        
+
+        
+
+
+        
 
 
 
@@ -65,7 +97,7 @@ class entityApiView(ListCreateAPIView):
         return serializer.save()
     
     def get_queryset(self):
-        return entity.objects.filter(user = self.request.user)
+        return Entity.objects.filter(user = self.request.user)
 
 
 
@@ -79,7 +111,7 @@ class entityupdatedel(RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        return entity.objects.filter()
+        return Entity.objects.filter()
 
 # class entityLoadApiView(ListCreateAPIView):
 
@@ -405,6 +437,35 @@ class entitydetailsbyuser(ListAPIView):
             .rename(columns={0:'uentity'})).T.to_dict().values()
 
         return Response(finaldf)
+    
+
+
+class userdetailsbyentity(ListAPIView):
+
+   
+    permission_classes = (permissions.IsAuthenticated,)
+
+      
+    def get(self, request, format=None):
+        #entity = self.request.query_params.get('entity')
+        entity = self.request.query_params.get('entity')
+        # role1 = self.request.query_params.get('role')
+       
+        stk = Userrole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','user__password','role__rolename','role__id')
+
+        df = read_frame(stk)
+        df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','user__password':'password','role__rolename':'rolename','role__id':'roleid'}, inplace = True)
+
+
+        # finaldf = pd.DataFrame()
+
+        # if len(df.index) > 0:
+        #     finaldf = (df.groupby(['userid','first_name','last_name','email','user'])
+        #     .apply(lambda x: x[['entityid','entityname','email','gstno','role','roleid']].to_dict('records'))
+        #     .reset_index()
+        #     .rename(columns={0:'uentity'})).T.to_dict().values()
+
+        return Response(df.T.to_dict().values())
         
             
     
