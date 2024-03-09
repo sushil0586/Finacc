@@ -478,6 +478,7 @@ class entitySerializer(serializers.ModelSerializer):
         model = Entity
         fields = ('user','role',)
         
+        
 
   
 
