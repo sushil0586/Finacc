@@ -29,7 +29,7 @@ class country(TrackingModel):
 
 class state(TrackingModel):
     statename =    models.CharField(max_length= 255)
-    statecode =    models.CharField(max_length= 25)
+    statecode =    models.CharField(max_length= 255)
     country = models.ForeignKey(country, related_name='state', on_delete=models.CASCADE)
 
     
@@ -48,7 +48,7 @@ class state(TrackingModel):
 class district(TrackingModel):
     districtname =    models.CharField(max_length= 255)
     districtcode =    models.CharField(max_length= 25)
-    state = models.ForeignKey(state, related_name='district', on_delete=models.CASCADE)
+    state = models.ForeignKey(state, related_name='district', on_delete=models.CASCADE,null = True)
 
     
     def __str__(self):
@@ -60,6 +60,7 @@ class district(TrackingModel):
 class city(TrackingModel):
     cityname =    models.CharField(max_length= 255)
     citycode =    models.CharField(max_length= 25)
+    pincode =    models.CharField(max_length= 25)
     distt = models.ForeignKey(district, related_name='city', on_delete=models.CASCADE)
 
 

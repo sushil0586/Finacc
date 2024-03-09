@@ -4,7 +4,7 @@ from django.shortcuts import render
 import json
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from invoice.models import salesOrderdetails,SalesOder,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport,mastergstdetails,newpurchaseorder
+from invoice.models import salesOrderdetails,SalesOder,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport,newpurchaseorder
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
@@ -23,7 +23,7 @@ from rest_framework.renderers import JSONRenderer
 from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
-from entity.models import Entity,GstAccountsdetails
+from entity.models import Entity,GstAccountsdetails,Mastergstdetails
 from django_pandas.io import read_frame
 from django.db.models import Q
 import numpy as np
@@ -32,85 +32,13 @@ from decimal import Decimal
 from datetime import timedelta,date,datetime
 import requests
 import json
+from entity.views import generateeinvoice
 
 
 
 
 
-class generateeinvoice:
 
-    def __init__(self,mastergst):
-        self.mastergst = mastergst
-        self.ipaddress = '10.105.87.909'
-        self.username = self.mastergst.username
-        self.headers = json.dumps({ 
-                              'Content-Type': 'application/json',
-                              'username':self.username,
-                              'password':self.mastergst.password,
-                              'ip_address': self.ipaddress,
-                              'client_id': self.mastergst.client_id,
-                              'client_secret': self.mastergst.client_secret,
-                              'gstin': self.mastergst.gstin}, indent=4)
-        
-
-
-        print(self.headers)
-        # print(type(self.headers))
-
-        self.headers = json.loads(self.headers)
-
-
-
-        
-
-        
-
-
-    def getauthentication(self):
-
-
-
-        BASE_URL = 'https://api.mastergst.com/einvoice/authenticate'
-
-    
-        
-
-        print(f"{BASE_URL}?email=sushiljyotibansal@gmail.com")
-
-        response = requests.get(f"{BASE_URL}?email=sushiljyotibansal@gmail.com", headers= self.headers)
-
-        print(response)
-
-
-        return response
-    
-
-    def getgstdetails(self,gstaccount,authtoken,useremail):
-
-
-
-
-       # "https://api.mastergst.com/einvoice/type/GSTNDETAILS/version/V1_03?param1=29AABCT1332L000&email=aditi.gupta1789%40gmail.com"
-
-
-
-        BASE_URL = 'https://api.mastergst.com/einvoice/type/GSTNDETAILS/version/V1_03'
-
-        self.headers["auth-token"] = authtoken
-
-
-
-    
-        
-
-        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
-
-        response = requests.get(f"{BASE_URL}?param1={gstaccount}&email={useremail}", headers= self.headers)
-
-        print(response)
-
-
-        return response
     
 
 
@@ -132,13 +60,13 @@ class getgstindetails(ListAPIView):
        # acc = self.request.query_params.get('acc')
         entitygst = self.request.query_params.get('entitygst')
         accountgst = self.request.query_params.get('accountgst')
-        mgst = mastergstdetails.objects.get(gstin = entitygst)
-        # einv = generateeinvoice(mgst)
-        # r = einv.getauthentication()
-        # res = r.json()
-        # print(res)
-        # gstdetails = einv.getgstdetails(gstaccount = accountgst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
-        # res = gstdetails.json()
+        mgst = Mastergstdetails.objects.get(gstin = entitygst)
+        einv = generateeinvoice(mgst)
+        r = einv.getauthentication()
+        res = r.json()
+        print(res)
+        gstdetails = einv.getgstdetails(gstaccount = accountgst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
+        res = gstdetails.json()
 
 
        # print

@@ -13,7 +13,12 @@ import json
 import collections
 from django.contrib.auth.hashers import make_password
 
+
 #from Authentication.serializers import userserializer
+
+
+
+
 
 
 
@@ -193,7 +198,7 @@ class entityAddSerializer(serializers.ModelSerializer):
     class Meta:
         model = Entity
         #fields = ('id','entityName','fy',)
-        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','user','fy','constitution',)
+        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','user','fy','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
@@ -466,7 +471,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 class entitySerializer(serializers.ModelSerializer):
 
 
-    user = Registerserializers(many=True)
+    user = Registerserializers(many = False)
     role = serializers.IntegerField(write_only=True)
 
 
@@ -477,7 +482,7 @@ class entitySerializer(serializers.ModelSerializer):
     class Meta:
         model = Entity
         fields = ('user','role',)
-        
+
         
 
   
@@ -509,6 +514,7 @@ class entitySerializer(serializers.ModelSerializer):
         print(validated_data)
         package = validated_data.pop('user')
         role = validated_data.pop('role')
+        package.pop('id')
         role = Role.objects.get(id = role)
         for key in range(len(package)):
             print(key)
