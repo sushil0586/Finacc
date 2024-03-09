@@ -200,7 +200,7 @@ class Rolepriv(TrackingModel):
 
 
 class Userrole(TrackingModel):
-    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE)
+    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='userrole')
     user =     models.ForeignKey(User,null= True,on_delete= models.CASCADE)
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
 

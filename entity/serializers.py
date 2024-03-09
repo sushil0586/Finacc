@@ -514,7 +514,7 @@ class entitySerializer(serializers.ModelSerializer):
             try:
                 id = User.objects.get(email = package[key]['email'])
                 instance.user.add(id)
-                Userrole.objects.update(role = role,entity = instance.id,user = id)
+                Userrole.objects.filter(entity = instance.id,user = id).update(role = role,entity = instance.id,user = id)
             except User.DoesNotExist:
                  u = User.objects.create(**package[key])
                  instance.user.add(u)
