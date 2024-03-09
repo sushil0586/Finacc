@@ -3,7 +3,7 @@ from rest_framework import serializers
 from rest_framework.fields import ChoiceField
 from financial.models import accountHead,account,accounttype
 from invoice.models import entry,StockTransactions
-from entity.models import entity,entityfinancialyear
+from entity.models import Entity,entityfinancialyear
 
 from geography.serializers import countrySerializer
 import os

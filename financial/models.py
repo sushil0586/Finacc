@@ -6,7 +6,7 @@ from helpers.models import TrackingModel
 from django.utils.translation import gettext as _
 from Authentication.models import User 
 from geography.models import country,state,district,city
-from entity.models import entity
+from entity.models import Entity
 
 # Create your models here.
 
@@ -15,7 +15,7 @@ from entity.models import entity
 class accounttype(TrackingModel):
     accounttypename = models.CharField(max_length= 255,verbose_name=_('Acc type Name'))
     accounttypecode = models.CharField(max_length= 255,verbose_name=_('Acc Type Code'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 
@@ -51,7 +51,7 @@ class accountHead(TrackingModel):
     description =   models.CharField(max_length=200,verbose_name=_('Description'),null=True)
     accountheadsr = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Account head Sr'),blank=True)
     detailsingroup =  models.IntegerField(null=True,blank = True)
-    entity = models.ForeignKey(entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
+    entity = models.ForeignKey(Entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
     canbedeleted      = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
     owner = models.ForeignKey(to= User,  on_delete= models.CASCADE,null= True)
 
@@ -90,7 +90,7 @@ class account(TrackingModel):
     tobel10cr       = models.BooleanField(verbose_name=_('Turnover below 10 lac'),null=True)
     approved       = models.BooleanField(verbose_name=_('Wheather aproved'),null=True)
     tdsno       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Tds A/c No'))
-    entity = models.ForeignKey(entity,null=True,on_delete=models.CASCADE,)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE,)
     rtgsno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Rtgs no'))
     bankname          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Bank Name'))
     Adhaarno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Adhaar No'))

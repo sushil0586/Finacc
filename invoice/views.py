@@ -23,7 +23,7 @@ from rest_framework.renderers import JSONRenderer
 from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
-from entity.models import entity
+from entity.models import Entity,GstAccountsdetails
 from django_pandas.io import read_frame
 from django.db.models import Q
 import numpy as np
@@ -54,7 +54,7 @@ class generateeinvoice:
         
 
 
-        # print(self.headers)
+        print(self.headers)
         # print(type(self.headers))
 
         self.headers = json.loads(self.headers)
@@ -75,9 +75,9 @@ class generateeinvoice:
     
         
 
-        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
+        print(f"{BASE_URL}?email=sushiljyotibansal@gmail.com")
 
-        response = requests.get(f"{BASE_URL}?email=aditi.gupta1789@gmail.com", headers= self.headers)
+        response = requests.get(f"{BASE_URL}?email=sushiljyotibansal@gmail.com", headers= self.headers)
 
         print(response)
 
@@ -133,11 +133,15 @@ class getgstindetails(ListAPIView):
         entitygst = self.request.query_params.get('entitygst')
         accountgst = self.request.query_params.get('accountgst')
         mgst = mastergstdetails.objects.get(gstin = entitygst)
-        einv = generateeinvoice(mgst)
-        r = einv.getauthentication()
-        res = r.json()
-        gstdetails = einv.getgstdetails(gstaccount = accountgst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
-        res = gstdetails.json()
+        # einv = generateeinvoice(mgst)
+        # r = einv.getauthentication()
+        # res = r.json()
+        # print(res)
+        # gstdetails = einv.getgstdetails(gstaccount = accountgst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
+        # res = gstdetails.json()
+
+
+       # print
 
 
 
@@ -147,12 +151,38 @@ class getgstindetails(ListAPIView):
         #         print(res["data"]["AuthToken"])
 
         # print(r)
+
+       # print(res)
+        
+        data =  {
+
+        
+        "Gstin":"29AWGPV7107B1Z1",
+                "TradeName":"VIKAS EXPORTS",
+                "LegalName":"VIKASEXPORTS ",
+                "AddrBnm":"RAMANAGARA",
+                "AddrBno":"562160",
+                "AddrFlno":"1st floor",
+                "AddrSt":"6th main",
+                "AddrLoc":"CHANNAPATNA",
+                "StateCode":"29",
+                "AddrPncd":"562160",
+                "TxpType":"REG",
+                "Status":"ACT",
+                "BlkStatus":"",
+                "DtReg":"2021-05-03",
+                "DtDReg":"2021-05-04"
+        }
+
+        print(data['Gstin'])
+
+        GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = data['AddrLoc'],stateCode = data['StateCode'],addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
   
 
      
         
      
-        return  Response(res)
+        return  Response(data)
     
 
 
@@ -2024,7 +2054,7 @@ class Trialview(ListAPIView):
         #         entity=entity).order_by('entity'), to_attr='accounthead_transactions')
         # )
 
-        stk = entity.objects.filter(id = entity1).prefetch_related('entity_accountheads','entity_accountheads__headtrans').all()
+        stk = Entity.objects.filter(id = entity1).prefetch_related('entity_accountheads','entity_accountheads__headtrans').all()
         
         return stk
 

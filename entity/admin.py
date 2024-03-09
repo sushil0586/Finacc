@@ -1,6 +1,6 @@
 from io import UnsupportedOperation
 from django.contrib import admin
-from entity.models import unitType,entity,entity_details,entityfinancialyear,Constitution,entityconstitution,subentity,Rolepriv,Role,Userrole
+from entity.models import unitType,Entity,entity_details,entityfinancialyear,Constitution,entityconstitution,subentity,Rolepriv,Role,Userrole,GstAccountsdetails
 
 
 # Register your models here.
@@ -37,9 +37,14 @@ class userrolesadmin(admin.ModelAdmin):
         ('entity', admin.RelatedOnlyFieldListFilter),
     )
 
+class gstaccountadmin(admin.ModelAdmin):
+    list_display = ['gstin','tradeName','legalName']
+    
+    
+
 admin.site.register(unitType,unitTypeAdmin)
 
-admin.site.register(entity,entityeAdmin)
+admin.site.register(Entity,entityeAdmin)
 admin.site.register(entity_details)
 admin.site.register(entityfinancialyear)
 admin.site.register(entityconstitution)
@@ -48,6 +53,7 @@ admin.site.register(subentity)
 admin.site.register(Rolepriv,menuadmin)
 admin.site.register(Role,rolesadmin)
 admin.site.register(Userrole,userrolesadmin)
+admin.site.register(GstAccountsdetails,gstaccountadmin)
 
 
 

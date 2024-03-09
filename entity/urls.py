@@ -28,6 +28,12 @@ urlpatterns  = [
     path('menudetails',views.menudetails.as_view(), name = 'unittypeid'),
     path('roledetailsbyroleid',views.roledetails.as_view(), name = 'unittypeid'),
     path('entitydetailsbyuser',views.entitydetailsbyuser.as_view(), name = 'unittypeid'),
+    path('userdetailsbyentity',views.userdetailsbyentity.as_view(), name = 'unittypeid'),
+    path('userAddApiView',views.userAddApiView.as_view(), name = 'unittypeid'),
+
+    
+
+    
 
     
 

@@ -11,7 +11,7 @@ from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
-from entity.models import entity,entityfinancialyear
+from entity.models import Entity,entityfinancialyear
 from django.db.models.functions import Abs
 from num2words import num2words
 import string
@@ -4273,7 +4273,7 @@ class entitySerializer1(serializers.ModelSerializer):
    # amount_of_trucks = serializers.IntegerField()
 
     class Meta:
-        model = entity
+        model = Entity
         fields = ('debit','credit','entity_accountheads')
 
     def get_debit(self, obj):

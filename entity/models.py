@@ -33,9 +33,13 @@ class Constitution(models.Model):
         
 
 
-class entity(TrackingModel):
+class Entity(TrackingModel):
     entityname =  models.CharField(max_length= 255)
+    legalname =  models.CharField(max_length= 255)
     address =     models.CharField(max_length= 255)
+    address2 =     models.CharField(max_length= 255,null= True,blank = True)
+    addressfloorno =     models.CharField(max_length= 255,null= True,blank = True)
+    addressstreet =     models.CharField(max_length= 255,null= True,blank = True)
     ownername =   models.CharField(max_length= 255)
     country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
     state =       models.ForeignKey(state, on_delete=models.CASCADE,null= True)
@@ -52,6 +56,10 @@ class entity(TrackingModel):
    # tds194qonsale  = models.BooleanField(blank =True,null = True)
     gstno =        models.CharField(max_length= 255,null= True)
     gstintype =        models.CharField(max_length= 255,null= True)
+    blockstatus = models.CharField(max_length= 10,null= True,verbose_name='Block Status')
+    dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
+    dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
+
     user = models.ManyToManyField(to = 'Authentication.User',related_name='uentity',null=True,default=[1])
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,default=1,blank=True)
     
@@ -59,6 +67,25 @@ class entity(TrackingModel):
     
     def __str__(self):
         return f'{self.entityname}'
+    
+
+class GstAccountsdetails(TrackingModel):
+    gstin = models.CharField(max_length= 25)
+    tradeName = models.CharField(max_length= 255)
+    legalName = models.CharField(max_length= 255)
+    addrBnm = models.CharField(max_length= 255)
+    addrBno = models.CharField(max_length= 255)
+    addrFlno = models.CharField(max_length= 255)
+    addrSt = models.CharField(max_length= 255)
+    addrLoc = models.CharField(max_length= 255)
+    stateCode = models.CharField(max_length= 10)
+    addrPncd = models.CharField(max_length= 10)
+    txpType = models.CharField(max_length= 25)
+    status = models.CharField(max_length= 25)
+    blkStatus = models.CharField(max_length= 10)
+    dtReg = models.DateTimeField(verbose_name='Date of registration',null = True)
+    dtDReg = models.DateTimeField(verbose_name='Date of De registration',null = True)
+
     
 
 class subentity(TrackingModel):
@@ -73,7 +100,7 @@ class subentity(TrackingModel):
     phoneoffice = models.CharField(max_length= 255,null= True)
     phoneresidence = models.CharField(max_length= 255,null= True)
     email =    models.CharField(max_length= 255,null= True)
-    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='subentity',)
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True,related_name='subentity',)
 
     
 
@@ -84,7 +111,7 @@ class subentity(TrackingModel):
 
 
 class entityfinancialyear(TrackingModel):
-    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='fy',)
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True,related_name='fy',)
     desc =      models.CharField(max_length= 255,null= True,verbose_name='description')
     finstartyear =      models.DateTimeField(verbose_name='Fin Start Date',null = True)
     finendyear =        models.DateTimeField(verbose_name='Fin End Date',null = True)
@@ -96,7 +123,7 @@ class entityfinancialyear(TrackingModel):
     
 
 class entityconstitution(TrackingModel):
-    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True,related_name='constitution',)
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True,related_name='constitution',)
     constitution =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True,)
     shareholder =      models.CharField(max_length= 255,null= True,verbose_name='shareholder')
     pan =      models.CharField(max_length= 25,null= True,verbose_name='pan')
@@ -113,7 +140,7 @@ class entityconstitution(TrackingModel):
 
 
 class entity_details(models.Model): 
-    entity = models.OneToOneField(entity,
+    entity = models.OneToOneField(Entity,
         on_delete=models.CASCADE,
         primary_key=True,)
     style =        models.CharField(max_length= 255,null= True)
@@ -147,7 +174,7 @@ class Role(TrackingModel):
     rolename = models.CharField(max_length=150)
     roledesc = models.CharField(max_length=150)
     rolelevel = models.IntegerField()
-    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
 
     def __str__(self):
         return f'{self.rolename} - {self.entity}'
@@ -157,7 +184,7 @@ class Role(TrackingModel):
 class Rolepriv(TrackingModel):
     role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='submenudetails')
     submenu =     models.ForeignKey(Submenu,null= True,on_delete= models.CASCADE)
-    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
  
 
 
@@ -175,7 +202,7 @@ class Rolepriv(TrackingModel):
 class Userrole(TrackingModel):
     role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE)
     user =     models.ForeignKey(User,null= True,on_delete= models.CASCADE)
-    entity =    models.ForeignKey(to= entity, on_delete= models.CASCADE,null=True)
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
 
     def __str__(self):
         return f'{self.user}'
