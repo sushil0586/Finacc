@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'invoice',
     'drf_excel',
     'import_export',
+    'payroll',
 ]
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -84,7 +85,7 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 # DATABASES = {
 #    'default': {
 #        'ENGINE': 'django.db.backends.postgresql',
-#        'NAME': 'accountsNew',
+#        'NAME': 'accounts',
 #        'USER': 'postgres',
 #        'PASSWORD': 'ansh@1789',
 #        'HOST': 'localhost',
@@ -146,6 +147,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 REST_FRAMEWORK = {
     'COERCE_DECIMAL_TO_STRING': False,
+    #'DATE_INPUT_FORMATS': ['%d-%m-%Y'],
     'DATETIME_FORMAT': '%d-%m-%Y',
     'DATE_FORMAT': '%d-%m-%Y',
     'DEFAULT_AUTHENTICATION_CLASSES': [
