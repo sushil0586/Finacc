@@ -14,6 +14,17 @@ import os
 
 
 
+class HsnCode(TrackingModel):
+    hsnCode = models.CharField(max_length= 255,verbose_name=_('Hsn code'))
+    Hsndescription = models.CharField(max_length= 2000,verbose_name=_('Hsn Description'))
+    
+
+
+    def __str__(self):
+        return f'{self.hsnCode} '
+
+
+
 class GstRate(TrackingModel):
     CSGT = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True)
     SGST = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True)

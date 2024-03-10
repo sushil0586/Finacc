@@ -8,7 +8,7 @@ from Authentication.models import User,MainMenu,Submenu
 class Registerserializers(serializers.ModelSerializer):
 
     password = serializers.CharField(max_length = 128, min_length = 6, write_only = True)
-    id = serializers.IntegerField(required = False)
+  #  id = serializers.IntegerField(required = False)
 
    
 
@@ -16,26 +16,26 @@ class Registerserializers(serializers.ModelSerializer):
     class Meta:
         model = User
         
-        fields = ('id','username','first_name','last_name','email','password','is_active',)
-        extra_kwargs = {'id': {'read_only': False},
-         'username': {'validators': []},
-         'email': {'validators': []}}
+        fields = ('username','first_name','last_name','email','password','is_active',)
+    #     extra_kwargs = {'id': {'read_only': False},
+    #      'username': {'validators': []},
+    #      'email': {'validators': []}}
 
-    def to_representation(self, instance):
-        representation = super().to_representation(instance)
-        print(representation)
-       # if representation['is_active'] == True:
-        return representation
+    # def to_representation(self, instance):
+    #     representation = super().to_representation(instance)
+    #     print(representation)
+    #    # if representation['is_active'] == True:
+    #     return representation
         
         
 
-    def create(self, validated_data):
-        groups_data = validated_data.pop('groups')
-        user = User.objects.create_user(**validated_data)
-        for group_data in groups_data:
-             # Group.objects.create(user=user, **group_data)
-             user.groups.add(group_data)
-        return user
+    # def create(self, validated_data):
+    #     groups_data = validated_data.pop('groups')
+    #     user = User.objects.create_user(**validated_data)
+    #     for group_data in groups_data:
+    #          # Group.objects.create(user=user, **group_data)
+    #          user.groups.add(group_data)
+    #     return user
 
 
 

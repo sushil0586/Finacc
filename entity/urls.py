@@ -7,9 +7,9 @@ app_name = 'entity'
 urlpatterns  = [
 
     path('entityadd',views.entityAddApiView.as_view(),name = 'entityadd'),
-    path('entity',views.entityApiView.as_view(),name = 'entity'),
-    path('entitylist',views.entityApiView.as_view(),name = 'entitylist'),
-    path('entity/<int:id>',views.entityupdatedel.as_view(), name = 'entity1'),
+    path('entity',views.userroleApiView.as_view(),name = 'entity'),
+    path('entitylist',views.userroleApiView.as_view(),name = 'entitylist'),
+    path('entity/<int:id>',views.userroleupdatedel.as_view(), name = 'entity1'),
     #path('album/<int:id>',views.Albumupdatedel.as_view(), name = 'Album2'),
     path('entityDetails', views.entityDetailsApiView.as_view() ,name = 'entityDetails'),
     path('entityDetails/<int:id>',views.entityDetailsApiView.as_view(), name = 'entityDetails1'),

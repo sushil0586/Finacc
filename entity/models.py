@@ -21,6 +21,7 @@ class unitType(models.Model):
 class Constitution(models.Model):
     constitutionname =    models.CharField(max_length= 255)
     constitutiondesc =    models.TextField()
+    constcode =    models.CharField(max_length= 255)
     createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
 
 
@@ -35,7 +36,7 @@ class Constitution(models.Model):
 
 class Entity(TrackingModel):
     entityname =  models.CharField(max_length= 255)
-    legalname =  models.CharField(max_length= 255)
+    legalname =  models.CharField(max_length= 255,null=True)
     address =     models.CharField(max_length= 255)
     address2 =     models.CharField(max_length= 255,null= True,blank = True)
     addressfloorno =     models.CharField(max_length= 255,null= True,blank = True)
@@ -59,6 +60,7 @@ class Entity(TrackingModel):
     blockstatus = models.CharField(max_length= 10,null= True,verbose_name='Block Status')
     dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
+    const =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True)
 
     user = models.ManyToManyField(to = 'Authentication.User',related_name='uentity',null=True,default=[1])
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,default=1,blank=True)
@@ -91,7 +93,6 @@ class GstAccountsdetails(TrackingModel):
 class subentity(TrackingModel):
     subentityname =  models.CharField(max_length= 255)
     address =     models.CharField(max_length= 255)
-   # ownername =   models.CharField(max_length= 255)
     country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
     state =       models.ForeignKey(state, on_delete=models.CASCADE,null= True)
     district =    models.ForeignKey(district, on_delete=models.CASCADE,null= True)
@@ -124,7 +125,6 @@ class entityfinancialyear(TrackingModel):
 
 class entityconstitution(TrackingModel):
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True,related_name='constitution',)
-    constitution =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True,)
     shareholder =      models.CharField(max_length= 255,null= True,verbose_name='shareholder')
     pan =      models.CharField(max_length= 25,null= True,verbose_name='pan')
     sharepercentage = models.DecimalField(max_digits=10, decimal_places=2,null=True,blank=True,verbose_name='Share Percentage')
@@ -205,7 +205,7 @@ class Userrole(TrackingModel):
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
 
     def __str__(self):
-        return f'{self.user}'
+        return f'{self.role}'
     
 
 
