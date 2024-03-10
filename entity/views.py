@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
 from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails
-from entity.serializers import entitySerializer,entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer,userbyentitySerializer
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer,userbyentitySerializer,useroleentitySerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -123,7 +123,7 @@ class entityAddApiView(ListCreateAPIView):
 
     filter_backends = [DjangoFilterBackend]
     #filterset_fields = ['id','unitType','entityName']
-
+    @transaction.atomic
     def perform_create(self, serializer):
         return serializer.save(user = [self.request.user])
     
@@ -165,45 +165,35 @@ class userAddApiView(CreateAPIView):
 
 
 
-class entityApiView(ListCreateAPIView):
+class userroleApiView(ListCreateAPIView):
 
-    serializer_class = entitySerializer
+    serializer_class = useroleentitySerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['entity']
 
     def perform_create(self, serializer):
         return serializer.save()
     
     def get_queryset(self):
-        return Entity.objects.filter(user = self.request.user)
+        return Userrole.objects.filter()
 
 
 
 
 
 
-class entityupdatedel(RetrieveUpdateDestroyAPIView):
+class userroleupdatedel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = entitySerializer
+    serializer_class = useroleentitySerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
-        return Entity.objects.filter()
+        return Userrole.objects.filter()
 
-# class entityLoadApiView(ListCreateAPIView):
 
-#     serializer_class = entitySerializer
-#     permission_classes = (permissions.IsAuthenticated,)
-
-#     filter_backends = [DjangoFilterBackend]
-#     filterset_fields = ['id','unitType','entityName']
-
-        
-#     def get_queryset(self):
-#         return entity.objects.filter()
 
 class entityDetailsApiView(ListCreateAPIView):
 
@@ -616,7 +606,7 @@ class getgstindetails(ListAPIView):
         gstdetails = GstAccountsdetails.objects.filter(gstin = entitygst).values('gstin','tradeName','legalName','addrFlno','addrBnm','addrBno','addrSt','addrLoc','stateCode__id','addrPncd','txpType','status','blkStatus','dtReg','dtDReg')
 
         df = read_frame(gstdetails)
-        df.rename(columns = {'Gstin':'gstno','TradeName':'entityname','LegalName':'legalname','addrBnm':'address','addrBno':'address2','addrFlno':'addressfloorno','addrSt':'addressstreet','stateCode__id':'stateid','addrPncd':'pincode','txpType':'gstintype','dtReg':'dateofreg','dtDReg':'dateofdreg'}, inplace = True)
+        df.rename(columns = {'Gstin':'gstno','tradeName':'entityname','LegalName':'legalname','addrBnm':'address','addrBno':'address2','addrFlno':'addressfloorno','addrSt':'addressstreet','stateCode__id':'stateid','addrPncd':'pincode','txpType':'gstintype','dtReg':'dateofreg','dtDReg':'dateofdreg'}, inplace = True)
 
 
 

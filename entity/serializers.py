@@ -198,7 +198,7 @@ class entityAddSerializer(serializers.ModelSerializer):
     class Meta:
         model = Entity
         #fields = ('id','entityName','fy',)
-        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','user','fy','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg',)
+        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','const','user','fy','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
@@ -227,37 +227,12 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         fydata = validated_data.pop("fy")
         constitutiondata = validated_data.pop("constitution")
-
-       # print(fydata)Userrole
-
-       # print(list(fydata[0]['finstartyear']))
-
-      #  d = collections.OrderedDict()
-
-       
-
-       # print(fydata)
-
-       
-        # fendyear = validated_data.pop("finendyear")
-
-        
         newentity = Entity.objects.create(**validated_data)
-
         for PurchaseOrderDetail_data in fydata:
-
-               # print(PurchaseOrderDetail_data)
+              
                 detail = entityfinancialyear.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
 
-        # for PurchaseOrderDetail_data in constitutiondata:
-
-        #        # print(PurchaseOrderDetail_data)
-        #         detail = entityconstitution.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
-
-        #         if detail.constitution == 1:
-        #             achead = accountHead.objects.get(entity = newentity,code = 6200)
-        #             account.objects.create(accounthead = achead.id,accountname = detail.shareholder,pan = detail.pan)
-
+  
 
 
 
@@ -275,7 +250,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
 
 
-        #fy = entityfinancialyear.objects.create(entity = newentity,finstartyear = fstartyear,finendyear = fendyear)
+       
 
 
 
@@ -359,13 +334,13 @@ class entityAddSerializer(serializers.ModelSerializer):
                 # print(PurchaseOrderDetail_data)
                     detail = entityconstitution.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
 
-                    print(detail.constitution.id)
+                    print(newentity.const.constcode)
 
-                    if detail.constitution.id == 1:
+                    if newentity.const.constcode == "01":
                         achead = accountHead.objects.get(entity = newentity,code = 6200)
                         detail2 = account.objects.create(accounthead = achead,creditaccounthead = achead, accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,emailid = newentity.email,accountdate = accountdate1,)
 
-                    if detail.constitution.id == 2:
+                    if newentity.const.id == "02":
 
                         achead = accountHead.objects.get(entity = newentity,code = 6300)
                         detail2 = account.objects.create(accounthead = achead,creditaccounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,emailid = newentity.email,accountdate = accountdate1,)
@@ -374,49 +349,6 @@ class entityAddSerializer(serializers.ModelSerializer):
         account.objects.filter(accounthead__code = 1000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 3000,entity = newentity))
         account.objects.filter(accounthead__code = 6000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 6100,entity = newentity))
         account.objects.filter(accounthead__code = 8000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 7000,entity = newentity))
-
-        
-
-
-
-            
-
-
-            
-            #serializer2 = self.fy(data =fydata)
-
-            #serializer2.save(entity = newentity,owner = users[0])
-                
-                    
-
-        
-
-        # file_path = os.path.join(os.getcwd(), "Roles.json")
-        # with open(file_path, 'r') as jsonfile:
-        #     json_data = json.load(jsonfile)
-        #     print(json_data["Roles"])
-            
-             
-
-
-        
-
-        
-        
-        
-
-        # # pk = (salereturn.objects.last()).voucherno
-        # # print(pk)
-        # #print(order)
-        # for accounthead_data in accountheads_data:
-           
-        #     accounts = accounthead_data.pop('accounthead_accounts')
-           
-        #     accountheadid = accountHead.objects.create(entity = newentity,**accounthead_data,owner =users[0])
-            
-        #     for account1 in accounts:
-                
-        #         account.objects.create(entity = newentity,accounthead = accountheadid,**account1,owner = users[0])
 
         return newentity
 
@@ -468,79 +400,96 @@ class entityAddSerializer(serializers.ModelSerializer):
     #     return rep
 
 
-class entitySerializer(serializers.ModelSerializer):
+class useroleentitySerializer(serializers.ModelSerializer):
 
 
     user = Registerserializers(many = False)
-    role = serializers.IntegerField(write_only=True)
-
-
-    serializer = Registerserializers
-
-    
+      
 
     class Meta:
-        model = Entity
-        fields = ('user','role',)
+        model = Userrole
+        fields = ('id','user','role','entity',)
 
         
 
   
 
-    def get_or_create_packages(self, packages):
-        package_ids = []
-        for package in packages:
-            package_instance, created = User.objects.get_or_create(pk=package.get('id'), defaults=package)
-            package_ids.append(package_instance.pk)
-        return package_ids
+    
 
-    def create_or_update_packages(self, packages):
-        package_ids = []
-        for package in packages:
-            package_id = package.get('id', None)
-            print(package_id)
-
-            package_instance, created = User.objects.update_or_create(pk=package.get('id'), defaults=package)
-            package_ids.append(package_instance.pk)
-        return package_ids
+    
 
     def create(self, validated_data):
-        package = validated_data.pop('user')
-        order = Entity.objects.create(**validated_data)
-        order.user.set(self.get_or_create_packages(package))
-        return order
+        userdetails = validated_data.pop('user')
+
+        # print(userdetails.get('email'))
+
+        # if  User.objects.get(email = userdetails.get('email')).count() > 0:
+        #     return 1
+        # else:
+        user = User.objects.create(**userdetails)
+        userrole = Userrole.objects.create(user = user,**validated_data )
+        return userrole
+
+        
 
     def update(self, instance, validated_data):
-        print(validated_data)
-        package = validated_data.pop('user')
-        role = validated_data.pop('role')
-        package.pop('id')
-        role = Role.objects.get(id = role)
-        for key in range(len(package)):
-            print(key)
-            try:
-                id = User.objects.get(email = package[key]['email'])
-                instance.user.add(id)
-                Userrole.objects.filter(entity = instance.id,user = id).update(role = role,entity = instance.id,user = id)
-            except User.DoesNotExist:
-                 u = User.objects.create(**package[key])
-                 instance.user.add(u)
-                 Userrole.objects.create(role = role,entity = instance.id,user = u)
 
-            
-            
-           # print(package[key])
+        print(validated_data)
+        userdetails = validated_data.pop('user')
+        print(userdetails.get('email'))
+
+        if User.objects.filter(email = userdetails.get('email')):
+            print('1111111111111111111111111111111')
+            userdetails = userdetails.pop('email')
+            User.objects.filter(id = instance.user__id).update(username = userdetails.get('username'),first_name = userdetails.get('first_name'),last_name = userdetails.get('last_name'))
+        else:
+            print('222222222222222222222222222')
+            User.objects.filter(id = instance.user.id).update(**userdetails)
+
         
-        # #instance.user.set(self.create_or_update_packages(package))
-        # fields = ['id','unitType','entityName','address','ownerName']
+        newuser = Userrole.objects.filter(id = instance.id).update(role = validated_data.get('role'))
+
+        # fields = ['role','entity']
         # for field in fields:
         #     try:
         #         setattr(instance, field, validated_data[field])
         #     except KeyError:  # validated_data may not contain all fields during HTTP PATCH
         #         pass
-        # print(instance)
-        # instance.save()
-        return instance
+
+
+        
+
+       # User.objects.filter(id = instance.user).update(**userdetails)
+        # print(validated_data)
+        # package = validated_data.pop('user')
+        # role = validated_data.pop('role')
+        # package.pop('id')
+        # role = Role.objects.get(id = role)
+        # for key in range(len(package)):
+        #     print(key)
+        #     try:
+        #         id = User.objects.get(email = package[key]['email'])
+        #         instance.user.add(id)
+        #         Userrole.objects.filter(entity = instance.id,user = id).update(role = role,entity = instance.id,user = id)
+        #     except User.DoesNotExist:
+        #          u = User.objects.create(**package[key])
+        #          instance.user.add(u)
+        #          Userrole.objects.create(role = role,entity = instance.id,user = u)
+
+            
+            
+        #    # print(package[key])
+        
+        # # #instance.user.set(self.create_or_update_packages(package))
+        # # fields = ['id','unitType','entityName','address','ownerName']
+        # # for field in fields:
+        # #     try:
+        # #         setattr(instance, field, validated_data[field])
+        # #     except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+        # #         pass
+        # # print(instance)
+        # # instance.save()
+        return newuser
     
 
 class userbyentitySerializer(serializers.ModelSerializer):

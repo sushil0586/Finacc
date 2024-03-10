@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from inventory.models import Product,Album,Track,ProductCategory,Ratecalculate,UnitofMeasurement,stkcalculateby,typeofgoods,stkvaluationby,gsttype
+from inventory.models import Product,Album,Track,ProductCategory,Ratecalculate,UnitofMeasurement,stkcalculateby,typeofgoods,stkvaluationby,gsttype,HsnCode
 from invoice.models import entry,StockTransactions
 from financial.models import account
 from entity.models import entityfinancialyear
@@ -107,6 +107,13 @@ class GSTserializer(serializers.ModelSerializer):
     class Meta:
         model = gsttype
         fields = ('id','gsttypename','gsttypecode',)
+
+
+class HSNserializer(serializers.ModelSerializer):
+    class Meta:
+        model = HsnCode
+        fields = ('id','HSNCode','Hsndescription',)
+
 
 
         
