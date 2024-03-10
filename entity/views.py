@@ -462,17 +462,17 @@ class menudetails(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity1 = self.request.query_params.get('entity')
         role1 = self.request.query_params.get('role')
-        stk = Rolepriv.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl').order_by('submenu__mainmenu__order')
+        stk = Rolepriv.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl','submenu__submenucode').order_by('submenu__mainmenu__order')
 
         df = read_frame(stk)
-        df.rename(columns = {'submenu__mainmenu__mainmenu':'mainmenu','submenu__mainmenu__menuurl':'menuurl','submenu__mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl'}, inplace = True)
+        df.rename(columns = {'submenu__mainmenu__mainmenu':'mainmenu','submenu__mainmenu__menuurl':'menuurl','submenu__mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl','submenu__submenucode':'submenucode'}, inplace = True)
 
 
         finaldf = pd.DataFrame()
 
         if len(df.index) > 0:
             finaldf = (df.groupby(['mainmenu','menuurl','menucode'])
-            .apply(lambda x: x[['submenu','subMenuurl']].to_dict('records'))
+            .apply(lambda x: x[['submenu','subMenuurl','submenucode']].to_dict('records'))
             .reset_index()
             .rename(columns={0:'submenu'})).T.to_dict().values()
 
