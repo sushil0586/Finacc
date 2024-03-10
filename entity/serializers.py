@@ -408,7 +408,7 @@ class useroleentitySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Userrole
-        fields = ('id','user','role','entity',)
+        fields = ('user','role','entity',)
 
         
 
