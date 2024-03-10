@@ -528,10 +528,10 @@ class userdetailsbyentity(ListAPIView):
         entity = self.request.query_params.get('entity')
         # role1 = self.request.query_params.get('role')
        
-        stk = Userrole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','user__password','role__rolename','role__id','user__is_active','user__id')
+        stk = Userrole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','role__rolename','role__id','user__is_active','id')
 
         df = read_frame(stk)
-        df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','user__password':'password','role__rolename':'rolename','role__id':'roleid','user__is_active':'is_active','user__id':'userid'}, inplace = True)
+        df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','role__rolename':'rolename','role__id':'roleid','user__is_active':'is_active','id':'userid'}, inplace = True)
 
 
         # finaldf = pd.DataFrame()
