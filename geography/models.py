@@ -61,7 +61,7 @@ class city(TrackingModel):
     cityname =    models.CharField(max_length= 255)
     citycode =    models.CharField(max_length= 25)
     pincode =    models.CharField(max_length= 25)
-    distt = models.ForeignKey(district, related_name='city', on_delete=models.CASCADE)
+    distt = models.ForeignKey(district, related_name='city', on_delete=models.CASCADE,null = True)
 
 
     
