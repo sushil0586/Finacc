@@ -15,7 +15,9 @@ import pandas as pd
 from rest_framework.response import Response
 from invoice.models import entry,StockTransactions
 from django_pandas.io import read_frame
-from entity.models import Entity,entityfinancialyear
+from entity.models import Entity,entityfinancialyear,GstAccountsdetails,Mastergstdetails
+from geography.models import country,state,district,city
+from entity.views import generateeinvoice
 
 
 class accountHeadApiView(ListCreateAPIView):
@@ -333,3 +335,97 @@ class accountlistnewapiview(ListAPIView):
         
 
         return Response(dffinal.sort_values(by=['accountname']).T.to_dict().values())
+    
+
+
+class getgstindetails(ListAPIView):
+
+
+  
+  #  filter_class = accountheadFilter
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {'id':["in", "exact"]
+    
+    }
+    #filterset_fields = ['id']
+    def get(self, request, format=None):
+
+        data =  {
+
+        
+        "Gstin":"29AABCT1332L000",
+                "TradeName":"VIKAS EXPORTS",
+                "LegalName":"VIKASEXPORTS ",
+                "AddrBnm":"Ramgarh",
+                "AddrBno":"134111",
+                "AddrFlno":"1st floor",
+                "AddrSt":"6th main",
+                "AddrLoc":"Ramgarh",
+                "StateCode":"07",
+                "AddrPncd":"134111",
+                "TxpType":"REG",
+                "Status":"ACT",
+                "BlkStatus":"",
+                "DtReg":"2021-05-03",
+                "DtDReg":"2021-05-04"
+        }
+
+        
+
+
+        
+        
+    
+       # acc = self.request.query_params.get('acc')
+        entitygst = self.request.query_params.get('entitygst')
+      #  accountgst = self.request.query_params.get('accountgst')
+
+        if GstAccountsdetails.objects.filter(gstin = entitygst).count() == 0:
+            mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            einv = generateeinvoice(mgst)
+            r = einv.getauthentication()
+            res = r.json()
+            print(res)
+            gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'sushiljyotibansal@gmail.com' )
+            res = gstdetails.json()
+            print(res)
+            data = res["data"]
+            try:
+                stateid = state.objects.get(statecode = data['StateCode'])
+            except state.DoesNotExist:
+                stateid = None
+            try:
+                cityid = city.objects.get(pincode = data['AddrPncd'])
+            except city.DoesNotExist:
+                cityid = None
+            
+            GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = cityid,stateCode = stateid,addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
+        
+
+        gstdetails = GstAccountsdetails.objects.filter(gstin = entitygst).values('gstin','tradeName','legalName','addrFlno','addrBnm','addrBno','addrSt','addrLoc__id','stateCode__id','stateCode__country__id','addrLoc__distt__id','addrPncd','txpType','status','blkStatus','dtReg','dtDReg')
+
+        df = read_frame(gstdetails)
+        df.rename(columns = {'Gstin':'gstno','tradeName':'entityname','LegalName':'legalname','addrBnm':'address','addrBno':'address2','addrFlno':'addressfloorno','addrSt':'addressstreet','stateCode__id':'stateid','addrPncd':'pincode','txpType':'gstintype','dtReg':'dateofreg','dtDReg':'dateofdreg','addrLoc__id':'cityid','stateCode__country__id':'countryid','addrLoc__distt__id':'disttid'}, inplace = True)
+
+
+
+
+
+
+        
+
+
+  
+        
+        
+
+        
+  
+
+     
+        
+     
+        return  Response(df.T.to_dict().values())

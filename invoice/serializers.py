@@ -1530,7 +1530,7 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
     amountinwords = serializers.SerializerMethodField()
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
     
     def get_entityname(self,obj):
@@ -1873,7 +1873,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
     
@@ -1962,7 +1962,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount', 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','entityfinid','subentity','entity','owner',]
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount', 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','eway','einvoice','einvoicepluseway','entityfinid','subentity','entity','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])

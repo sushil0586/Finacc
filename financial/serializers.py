@@ -15,7 +15,7 @@ class accountSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = account
-        fields =  ('id','accountcode','accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','accounttype','owner',)
+        fields =  ('id','accountcode','accountdate','accounthead','gstno','creditaccounthead','accountname','legalname','address1','address2', 'addressfloorno','addressstreet','gstintype','blockstatus','dateofreg','dateofdreg','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','composition','accounttype','owner',)
 
     def create(self, validated_data):
         #print(validated_data)
@@ -49,7 +49,7 @@ class accountSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
 
         print('abc')
-        fields = ['accountdate','accounthead','gstno','creditaccounthead','accountname','address1','address2','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','accounttype','composition','owner',]
+        fields = ['accountdate','accounthead','gstno','creditaccounthead','accountname','legalname','address1','address2','addressfloorno','addressstreet','gstintype','blockstatus','dateofreg','dateofdreg','country','state','district','city','openingbcr','openingbdr','contactno','pincode','emailid','agent','pan','tobel10cr','approved','tdsno','entity','rtgsno','bankname','Adhaarno','saccode','contactperson','deprate','tdsrate','gstshare','quanity1','quanity2','BanKAcno','accounttype','composition','owner',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])

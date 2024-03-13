@@ -6,6 +6,7 @@ from inventory.models import Album, Product, Track,ProductCategory,gsttype,typeo
 from inventory.serializers import ProductSerializer,AlbumSerializer,Trackserializer,ProductCategorySerializer,GSTserializer,TOGserializer,UOMserializer,Ratecalculateserializer,HSNserializer
 from rest_framework import permissions,filters
 from django_filters.rest_framework import DjangoFilterBackend
+from django.db import DatabaseError, transaction
 
 
 
@@ -73,6 +74,7 @@ class productApiView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter,filters.OrderingFilter]
     search_fields = ['productname', 'productdesc','id']
 
+    @transaction.atomic
     def perform_create(self, serializer):
         return serializer.save(createdby = self.request.user)
     
