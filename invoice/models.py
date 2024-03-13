@@ -133,6 +133,9 @@ class SalesOderHeader(TrackingModel):
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
+    eway =   models.BooleanField(default=False)
+    einvoice =   models.BooleanField(default=False)
+    einvoicepluseway =   models.BooleanField(default=False)
     owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     class Meta:
@@ -1086,15 +1089,7 @@ class closingstock(TrackingModel):
     
 
 
-class mastergstdetails(TrackingModel):
-    username = models.CharField(max_length=100, null=True,verbose_name='username')
-    password = models.CharField(max_length=100, null=True,verbose_name='password')
-    client_id = models.CharField(max_length=200, null=True,verbose_name='clientid')
-    client_secret = models.CharField(max_length=200, null=True,verbose_name='client_secret')
-    gstin = models.CharField(max_length=20, null=True,verbose_name='gstin')
 
-    def __str__(self):
-         return f'{self.username}'
     
 
 class supplytype(TrackingModel):

@@ -84,7 +84,7 @@ class generateeinvoice:
     
         
 
-        print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
+        #print(f"{BASE_URL}?email=aditi.gupta1789@gmail.com")
 
         response = requests.get(f"{BASE_URL}?param1={gstaccount}&email={useremail}", headers= self.headers)
 
@@ -591,16 +591,25 @@ class getgstindetails(ListAPIView):
       #  accountgst = self.request.query_params.get('accountgst')
 
         if GstAccountsdetails.objects.filter(gstin = entitygst).count() == 0:
-            # mgst = Mastergstdetails.objects.get(gstin = entitygst)
-            # mgst = Mastergstdetails.objects.get(gstin = entitygst)
-            # einv = generateeinvoice(mgst)
-            # r = einv.getauthentication()
-            # res = r.json()
-            # print(res)
-            # gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
-            # res = gstdetails.json()
-            stateid = state.objects.get(statecode = data['StateCode'])
-            cityid = city.objects.get(pincode = data['AddrPncd'])
+            mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            einv = generateeinvoice(mgst)
+            r = einv.getauthentication()
+            res = r.json()
+            print(res)
+            gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'sushiljyotibansal@gmail.com' )
+            res = gstdetails.json()
+            print(res)
+            data = res["data"]
+            try:
+                stateid = state.objects.get(statecode = data['StateCode'])
+            except state.DoesNotExist:
+                stateid = None
+            try:
+                cityid = city.objects.get(pincode = data['AddrPncd'])
+            except city.DoesNotExist:
+                cityid = None
+            
             GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = cityid,stateCode = stateid,addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
         
 
