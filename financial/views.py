@@ -378,7 +378,7 @@ class getgstindetails(ListAPIView):
             res = gstdetails.json()
             err = json.loads(res["status_desc"])
             if err[0]['ErrorCode'] == '3001':
-                return response.Response({'message': "Gst no is not avaialble"},status = status.HTTP_401_UNAUTHORIZED)
+                return response.Response({'message': "Gst no is not avaialable"},status = status.HTTP_401_UNAUTHORIZED)
             # if json.loads(res["status_desc"])["ErrorCode"] == "3001":
             #     return json.loads(res["status_desc"])
 
