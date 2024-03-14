@@ -15,6 +15,7 @@ from django.db import transaction
 import requests,json
 from django.db.models import Count
 from geography.models import country,state,district,city
+from rest_framework import response,status,permissions
 
 
 
@@ -560,29 +561,7 @@ class getgstindetails(ListAPIView):
     #filterset_fields = ['id']
     def get(self, request, format=None):
 
-        data =  {
-
         
-        "Gstin":"29AABCT1332L000",
-                "TradeName":"VIKAS EXPORTS",
-                "LegalName":"VIKASEXPORTS ",
-                "AddrBnm":"Ramgarh",
-                "AddrBno":"134111",
-                "AddrFlno":"1st floor",
-                "AddrSt":"6th main",
-                "AddrLoc":"Ramgarh",
-                "StateCode":"07",
-                "AddrPncd":"134111",
-                "TxpType":"REG",
-                "Status":"ACT",
-                "BlkStatus":"",
-                "DtReg":"2021-05-03",
-                "DtDReg":"2021-05-04"
-        }
-
-        
-
-
         
         print('999999999999999999999999999999999999999')
     
@@ -596,20 +575,24 @@ class getgstindetails(ListAPIView):
            #mgst = Mastergstdetails.objects.get(gstin = entitygst)
             
             try:
-                mgst = Mastergstdetails.objects.get(gstin = entitygst)
-
+                mgst = Mastergstdetails.objects.get()
+                #mgst = Mastergstdetails.objects.get(gstin = entitygst)
             except Mastergstdetails.DoesNotExist:
                 mgst = None
-            
-            print("11111111111111111111111111111111111111111111")
-           # print(mgst)
+                return 1
+          
+          #  mgst = Mastergstdetails.objects.get(gstin = entitygst)
             einv = generateeinvoice(mgst)
             r = einv.getauthentication()
             res = r.json()
             print(res)
             gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'sushiljyotibansal@gmail.com' )
             res = gstdetails.json()
-            print(res)
+            err = json.loads(res["status_desc"])
+            if err[0]['ErrorCode'] == '3001':
+                return response.Response({'message': "Gst no is not available"},status = status.HTTP_401_UNAUTHORIZED)
+            # if json.loads(res["status_desc"])["ErrorCode"] == "3001":
+            #     return json.loads(res["status_desc"])
             data = res["data"]
             try:
                 stateid = state.objects.get(statecode = data['StateCode'])
