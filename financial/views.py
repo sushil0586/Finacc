@@ -1,5 +1,6 @@
 from django.http import request
 from django.shortcuts import render
+from rest_framework import response,status,permissions
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype
@@ -352,30 +353,7 @@ class getgstindetails(ListAPIView):
     #filterset_fields = ['id']
     def get(self, request, format=None):
 
-        data =  {
-
-        
-        "Gstin":"29AABCT1332L000",
-                "TradeName":"VIKAS EXPORTS",
-                "LegalName":"VIKASEXPORTS ",
-                "AddrBnm":"Ramgarh",
-                "AddrBno":"134111",
-                "AddrFlno":"1st floor",
-                "AddrSt":"6th main",
-                "AddrLoc":"Ramgarh",
-                "StateCode":"07",
-                "AddrPncd":"134111",
-                "TxpType":"REG",
-                "Status":"ACT",
-                "BlkStatus":"",
-                "DtReg":"2021-05-03",
-                "DtDReg":"2021-05-04"
-        }
-
-        
-
-
-        
+           
         
     
        # acc = self.request.query_params.get('acc')
@@ -383,15 +361,28 @@ class getgstindetails(ListAPIView):
       #  accountgst = self.request.query_params.get('accountgst')
 
         if GstAccountsdetails.objects.filter(gstin = entitygst).count() == 0:
-            mgst = Mastergstdetails.objects.get(gstin = entitygst)
-            mgst = Mastergstdetails.objects.get(gstin = entitygst)
+
+            try:
+                mgst = Mastergstdetails.objects.get()
+                #mgst = Mastergstdetails.objects.get(gstin = entitygst)
+            except Mastergstdetails.DoesNotExist:
+                mgst = None
+                return 1
+          
+          #  mgst = Mastergstdetails.objects.get(gstin = entitygst)
             einv = generateeinvoice(mgst)
             r = einv.getauthentication()
             res = r.json()
             print(res)
             gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'sushiljyotibansal@gmail.com' )
             res = gstdetails.json()
-            print(res)
+            err = json.loads(res["status_desc"])
+            if err[0]['ErrorCode'] == '3001':
+                return Response({'message': "Gst no is not avaialble"},status = status.HTTP_401_UNAUTHORIZED)
+            # if json.loads(res["status_desc"])["ErrorCode"] == "3001":
+            #     return json.loads(res["status_desc"])
+
+            
             data = res["data"]
             try:
                 stateid = state.objects.get(statecode = data['StateCode'])
