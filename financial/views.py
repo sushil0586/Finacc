@@ -405,7 +405,7 @@ class getgstindetails(ListAPIView):
             GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = cityid,stateCode = stateid,addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
         
 
-        gstdetails = GstAccountsdetails.objects.filter(gstin = entitygst).values('gstin','tradeName','legalName','addrFlno','addrBnm','addrBno','addrSt','addrLoc__id','stateCode__id','stateCode__country__id','addrLoc__distt__id','addrPncd','txpType','status','blkStatus','dtReg','dtDReg').first()
+        gstdetails = GstAccountsdetails.objects.filter(gstin = entitygst).values('gstin','tradeName','legalName','addrFlno','addrBnm','addrBno','addrSt','addrLoc__id','stateCode__id','stateCode__country__id','addrLoc__distt__id','addrPncd','txpType','status','blkStatus','dtReg','dtDReg')
 
         df = read_frame(gstdetails)
         df.rename(columns = {'Gstin':'gstno','tradeName':'entityname','LegalName':'legalname','addrBnm':'address','addrBno':'address2','addrFlno':'addressfloorno','addrSt':'addressstreet','stateCode__id':'stateid','addrPncd':'pincode','txpType':'gstintype','dtReg':'dateofreg','dtDReg':'dateofdreg','addrLoc__id':'cityid','stateCode__country__id':'countryid','addrLoc__distt__id':'disttid'}, inplace = True)
