@@ -138,7 +138,7 @@ class Product(TrackingModel):
     is_product = models.BooleanField(default=True)
     purchaseaccount = models.ForeignKey(account,related_name = 'purchaseaccount',on_delete=models.CASCADE,null=True,blank=True)
     saleaccount = models.ForeignKey(account,on_delete=models.CASCADE,null=True,blank=True)
-    hsn = models.IntegerField(default=1001,blank=True,verbose_name=_('Hsn Code'))
+    hsn = models.ForeignKey(HsnCode,on_delete=models.CASCADE, blank=True,verbose_name=_('Hsn Code'),null = True)
     ratecalculate = models.ForeignKey(to= Ratecalculate,null=True,on_delete= models.CASCADE,verbose_name=_('Rate calculate'))
     unitofmeasurement = models.ForeignKey(to= UnitofMeasurement,null=True,blank=True, on_delete= models.CASCADE,verbose_name=_('Unit of Measurement'))
     stkcalculateby = models.ForeignKey(to= stkcalculateby,null=True,blank=True, on_delete= models.CASCADE,verbose_name=_('Stock Calculated By'))

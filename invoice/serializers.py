@@ -1493,7 +1493,7 @@ class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
         return obj.product.productname
 
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
 
     def get_cgstrate(self,obj):
         return obj.product.cgst
@@ -1626,7 +1626,7 @@ class purchaseorderdetailimportsserializer(serializers.ModelSerializer):
         return obj.product.productname
     
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
 
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -1732,7 +1732,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
 
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
     
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -1776,7 +1776,7 @@ class saleOrderdetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
 
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
     
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -2212,7 +2212,7 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
 
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
     
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -2407,7 +2407,7 @@ class jobworkchallanDetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
     
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
 
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -2492,7 +2492,7 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
     
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
 
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -2594,7 +2594,7 @@ class newPurchaseOrderDetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
     
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
 
     def get_mrp(self,obj):
         return obj.product.mrp
@@ -4660,7 +4660,7 @@ class salesreturnDetailsSerializer(serializers.ModelSerializer):
         return obj.product.productname
 
     def get_hsn(self,obj):
-        return obj.product.hsn
+        return obj.product.hsn.hsnCode
 
     def get_mrp(self,obj):
         return obj.product.mrp

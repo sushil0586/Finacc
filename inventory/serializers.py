@@ -112,7 +112,7 @@ class GSTserializer(serializers.ModelSerializer):
 class HSNserializer(serializers.ModelSerializer):
     class Meta:
         model = HsnCode
-        fields = ('id','HSNCode','Hsndescription',)
+        fields = ('id','hsnCode','Hsndescription',)
 
 
 
