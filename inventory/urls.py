@@ -21,6 +21,9 @@ urlpatterns  = [
     path('gst',views.gstApiView.as_view(), name = 'tog'),
     path('ratecalculator',views.rateApiView.as_view(), name = 'ratecalculator'),
     path('uom',views.uomApiView.as_view(), name = 'uom'),
+    path('hsn',views.hsnApiView.as_view(), name = 'uom'),
+
+    
     
    
 ] 
