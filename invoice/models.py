@@ -9,7 +9,7 @@ from inventory.models import Product
 from entity.models import Entity,entityfinancialyear,subentity
 from inventory.models import Product
 from django.db.models import Sum 
-ort datetime
+import datetime
 
 
 # Create your models here.
