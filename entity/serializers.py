@@ -1,4 +1,4 @@
-import imp
+#import imp
 from struct import pack
 from rest_framework import serializers
 from entity.models import Entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
