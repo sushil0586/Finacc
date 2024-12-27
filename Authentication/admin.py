@@ -12,15 +12,12 @@ class submenusAdmin(ImportExportMixin,admin.ModelAdmin):
 
 
 class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ('rolename', 'roledesc','entity',)
-    list_filter = (
-        ('entity', admin.RelatedOnlyFieldListFilter),
-    )
+    list_display = ('mainmenu', 'menuurl','menucode','order',)
 
 admin.site.register(User)
 
 
-admin.site.register(MainMenu)
+admin.site.register(MainMenu,MainMenuAdmin)
 admin.site.register(Submenu,submenusAdmin)
 
 
