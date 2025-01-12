@@ -1,5 +1,5 @@
 
-import imp
+#import imp
 from itertools import product
 from os import device_encoding
 from pprint import isreadable
