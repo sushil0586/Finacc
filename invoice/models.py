@@ -162,6 +162,7 @@ class salesOrderdetails(TrackingModel):
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
+    isService = models.CharField(max_length=10,default = 'N',verbose_name='is Service')
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)

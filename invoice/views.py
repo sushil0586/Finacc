@@ -1423,109 +1423,48 @@ class tdslist(ListAPIView):
 
     filter_backends = [DjangoFilterBackend]
     #filterset_fields = ['id','unitType','entityName']
-    def get(self, request, format=None):
-        #entity = self.request.query_params.get('entity')
-        entity = self.request.query_params.get('entity')
-        startdate = self.request.query_params.get('startdate')
-        enddate =  datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
-        tdsreturn = self.request.query_params.get('tdsreturn')
-        #print(enddate)
-
-       # yesterday = date.today() - timedelta(days = 100)
-
-       # startdate1 = self.request.query_params.get('startdate')
-        #stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0) )
-       # stk =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__creditaccounthead__name','account__creditaccounthead','account_id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0))
-
-
-        obp =tdsmain.objects.filter(entityid = entity,isactive = 1,voucherdate__range=(startdate, enddate),tdstype__tdsreturn = tdsreturn).values('creditaccountid__accountname','creditaccountid__pan','tdstype__tdssection','voucherdate','debitamount','tdsrate','tdsvalue','surchargerate','surchargevalue','cessrate','cessvalue','hecessrate','hecessvalue','grandtotal','depositdate','tdstype__tdstypename')
-        # obn =StockTransactions.objects.filter(entity = entity,isactive = 1).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance1 = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance1__lt = 0)
-        # ob = obp.union(obn)
-
-        #print(ob)
-
-        df = read_frame(obp)
-        df.insert(0, 'S_No', range(1, 1 + len(df)))
-
-    #     print(df)
-
-        df.rename(columns = {'creditaccountid__accountname':'deducteeaccountname', 'creditaccountid__pan':'deducteepan','tdstype__tdssection':'tdssection','tdstype__tdstypename':'deductionremarks'}, inplace = True)
-
-    #     dffinal1 = df.groupby(['accounthead','accountheadname'])[['balance1']].sum().reset_index()
-
-    #     print(dffinal1)
-
-    #     stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__gte = 0)
-    #     stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype = 'MD').values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0)).filter(balance__lt = 0)
-    #     stkunion = stk.union(stk2)
-
-    #     df = read_frame(stkunion)
-
-    #     print(df)
+    def get(self, request, *args, **kwargs):
+        entity = request.query_params.get('entity')
+        startdate = request.query_params.get('startdate')
+        enddate = request.query_params.get('enddate')
+        tdsreturn = request.query_params.get('tdsreturn')
         
-    #     df['drcr'] = 'CR'
+        if not all([entity, startdate, enddate, tdsreturn]):
+            return Response({"detail": "Missing required query parameters."}, status=400)
 
-    #     df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-    #     df['credit'] = np.where(df['balance'] < 0, df['balance'],0)
-    #     df['debit'] = np.where(df['balance'] > 0, df['balance'],0)
-    #     #df['credit'] = df['balance'].apply(lambda x: df['balance'] if x < 0 else 0)
-    #     #df['debit'] = df['balance'].apply(lambda x: 0 if x < 0 else df['balance'])
-
-    #    #print(df)
+        try:
+            startdate = datetime.strptime(startdate, '%Y-%m-%d')
+            enddate = datetime.strptime(enddate, '%Y-%m-%d') + timedelta(days=1)
+        except ValueError:
+            return Response({"detail": "Invalid date format. Use YYYY-MM-DD."}, status=400)
         
-
-    
-
-
-    #     df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__id':'account'}, inplace = True)
-
-    #     dffinal = df.groupby(['accounthead','accountheadname','drcr'])[['debit','credit','balance']].sum().abs().reset_index()
-
-    #     df = pd.merge(dffinal,dffinal1,on='accounthead',how='outer',indicator=True)
-
-
-    #     if 'balance1' in df.columns:
-    #         df['balance1'] = df['balance1']
-    #     else:
-    #         df['balance1'] = 0
-
+        # Perform the query
+        tds_data = tdsmain.objects.filter(
+            entityid=entity,
+            isactive=1,
+            voucherdate__range=(startdate, enddate),
+            tdstype__tdsreturn=tdsreturn
+        ).values(
+            'creditaccountid__accountname', 'creditaccountid__pan', 'tdstype__tdssection', 'voucherdate',
+            'debitamount', 'tdsrate', 'tdsvalue', 'surchargerate', 'surchargevalue', 'cessrate', 'cessvalue',
+            'hecessrate', 'hecessvalue', 'grandtotal', 'depositdate', 'tdstype__tdstypename'
+        )
         
-    #     if 'debit' in df.columns:
-    #         df['debit'] = df['debit']
-    #     else:
-    #         df['debit'] = 0
-
+        # Convert queryset to DataFrame
+        df = read_frame(tds_data)
         
-    #     if 'credit' in df.columns:
-    #         df['credit'] = df['credit']
-    #     else:
-    #         df['credit'] = 0
-
+        # Insert Serial Number column
+        df.insert(0, 'S_No', range(1, len(df) + 1))
         
-
-
-
+        # Rename columns
+        df.rename(columns={
+            'creditaccountid__accountname': 'deducteeaccountname',
+            'creditaccountid__pan': 'deducteepan',
+            'tdstype__tdssection': 'tdssection',
+            'tdstype__tdstypename': 'deductionremarks'
+        }, inplace=True)
         
-
-        
-
-        
-    #     df['debit'] = df['debit'].fillna(0)
-    #     df['credit'] = df['credit'].fillna(0)
-    #     df['openingbalance'] = np.where(df['_merge'] == 'left_only', 0,df['balance1'])
-    #     df['balance'] = df['debit'] - df['credit'] + df['openingbalance']
-    #     # df['openingbalance'] = np.where(df['_merge'] == 'both',df['balance1'],df['openingbalance'])
-    #     # df['openingbalance'] = np.where(df['_merge'] == 'right_only', 0,df['balance'])
-    #     df['accountheadname'] = np.where(df['_merge'] == 'right_only', df['accountheadname_y'],df['accountheadname_x'])
-    #     df['drcr'] = df['balance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-    #     df['obdrcr'] = df['openingbalance'].apply(lambda x: 'CR' if x < 0 else 'DR')
-
-    #     df = df.drop(['accountheadname_y', 'accountheadname_x','_merge','balance1'],axis = 1)
-
-    #     print(df)
-
-
-      
+        # Return the data as a response
         return Response(df.T.to_dict().values())
 
 
