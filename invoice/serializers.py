@@ -1677,119 +1677,72 @@ class stockmainSerializer(serializers.ModelSerializer):
 
 
 
-class salesOrderdetailspdfSerializer(serializers.ModelSerializer):
-    #entityUser = entityUserSerializer(many=True)
+class SalesOrderDetailsPDFSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
-    productname = serializers.SerializerMethodField()
-    hsn = serializers.SerializerMethodField()
-    mrp = serializers.SerializerMethodField()
-    units = serializers.SerializerMethodField()
-    cgstrate = serializers.SerializerMethodField()
-    sgstrate = serializers.SerializerMethodField()
+    productname = serializers.CharField(source='product.productname', read_only=True)
+    hsn = serializers.CharField(source='product.hsn.hsnCode', read_only=True)
+    mrp = serializers.DecimalField(source='product.mrp', max_digits=10, decimal_places=2, read_only=True)
+    units = serializers.CharField(source='product.unitofmeasurement.unitname', read_only=True)
+    cgstrate = serializers.DecimalField(source='product.cgst', max_digits=5, decimal_places=2, read_only=True)
+    sgstrate = serializers.DecimalField(source='product.sgst', max_digits=5, decimal_places=2, read_only=True)
     igstrate = serializers.SerializerMethodField()
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','units','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgstrate','cgst','sgstrate','sgst','igstrate','igst','cess','linetotal','entity',)
+        fields = (
+            'id', 'product', 'productname', 'hsn', 'units', 'mrp', 'productdesc', 'orderqty', 'pieces', 
+            'rate', 'amount', 'othercharges', 'cgstrate', 'cgst', 'sgstrate', 'sgst', 'igstrate', 
+            'igst', 'cess', 'linetotal', 'entity',
+        )
 
-    def get_productname(self,obj):
-        return obj.product.productname
-
-    def get_hsn(self,obj):
-        return obj.product.hsn.hsnCode
-
-    def get_cgstrate(self,obj):
-        return obj.product.cgst
-    
-    def get_sgstrate(self,obj):
-        return obj.product.sgst
-
-    def get_igstrate(self,obj):
-        if obj.igst == 0:
-            return 0
-        return obj.product.igst
-    
-    def get_mrp(self,obj):
-        return obj.product.mrp
-
-    def get_units(self,obj):
-        return obj.product.unitofmeasurement.unitname
+    def get_igstrate(self, obj):
+        return obj.product.igst if obj.igst else 0
 
 
-        
-
-
-class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
-    saleInvoiceDetails = salesOrderdetailspdfSerializer(many=True)
-
-    entityname = serializers.SerializerMethodField()
-    entitypan = serializers.SerializerMethodField()
-    entitydesc = serializers.SerializerMethodField()
+class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
+    saleInvoiceDetails = SalesOrderDetailsPDFSerializer(many=True, read_only=True)
+    entityname = serializers.CharField(source='entity.entityname', read_only=True)
+    entitypan = serializers.CharField(source='entity.panno', read_only=True)
+    entitydesc = serializers.CharField(source='entity.entitydesc', read_only=True)
     entityaddress = serializers.SerializerMethodField()
-    entitygst = serializers.SerializerMethodField()
-    billtoname = serializers.SerializerMethodField()
+    entitygst = serializers.CharField(source='entity.gstno', read_only=True)
+    billtoname = serializers.CharField(source='accountid.accountname', read_only=True)
     billtoaddress = serializers.SerializerMethodField()
-    billtogst = serializers.SerializerMethodField()
-    shiptoname = serializers.SerializerMethodField()
+    billtogst = serializers.CharField(source='accountid.gstno', read_only=True)
+    shiptoname = serializers.CharField(source='shippedto.accountname', read_only=True)
     shiptoaddress = serializers.SerializerMethodField()
     amountinwords = serializers.SerializerMethodField()
-    phoneno = serializers.SerializerMethodField()
-    phoneno2 = serializers.SerializerMethodField()
+    phoneno = serializers.CharField(source='accountid.contactno', read_only=True)
+    phoneno2 = serializers.CharField(source='accountid.contactno2', read_only=True)
+
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','eway','einvoice','einvoicepluseway','isactive','phoneno','phoneno2','entitydesc','entitypan','saleInvoiceDetails',)
+        fields = (
+            'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress', 'billtogst', 
+            'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply', 
+            'totalquanity', 'totalpieces', 'advance', 'shippedto', 'shiptoname', 'shiptoaddress', 
+            'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1', 
+            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal', 
+            'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords', 
+            'subentity', 'entity', 'entityname', 'entityaddress', 'entitygst', 'owner', 'eway', 
+            'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc', 
+            'entitypan', 'saleInvoiceDetails',
+        )
 
-    
-    def get_entityname(self,obj):
-        return string.capwords(obj.entity.entityname)
-    
-    def get_entitydesc(self,obj):
-        return obj.entity.entitydesc
-    
-    def get_entitypan(self,obj):
-        return obj.entity.panno
-    
-    
-    
+    def get_entityaddress(self, obj):
+        entity = obj.entity
+        return f"{entity.address} {entity.city.cityname} {entity.state.statename} {entity.pincode}"
 
-    
+    def get_billtoaddress(self, obj):
+        account = obj.accountid
+        return f"{account.address1} {account.address2}"
 
-    
-    def get_entityaddress(self,obj):
-        return obj.entity.address + ' ' + obj.entity.city.cityname + ' ' + obj.entity.state.statename + ' ' + obj.entity.pincode
+    def get_shiptoaddress(self, obj):
+        shippedto = obj.shippedto
+        return f"{shippedto.address1} {shippedto.address2}"
 
-    def get_entitygst(self,obj):
-        return obj.entity.gstno
-
-    def get_billtoname(self,obj):
-        return string.capwords(obj.accountid.accountname)
-    
-    def get_phoneno(self,obj):
-        return obj.accountid.contactno
-    
-    def get_phoneno2(self,obj):
-        return obj.accountid.contactno2
-
-    
-    def get_billtoaddress(self,obj):
-        return obj.accountid.address1 + ' ' + obj.accountid.address2
-
-    def get_billtogst(self,obj):
-        return obj.accountid.gstno
-
-
-    def get_shiptoname(self,obj):
-        return string.capwords(obj.shippedto.accountname)
-
-
-
-    
-    def get_shiptoaddress(self,obj):
-        return obj.shippedto.address1 + ' ' + obj.shippedto.address2
-
-    
-    def get_amountinwords(self,obj):
-        return string.capwords(num2words(obj.gtotal)) + ' only'
+    def get_amountinwords(self, obj):
+        return f"{string.capwords(num2words(obj.gtotal))} only"
     
 
 
