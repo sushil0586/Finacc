@@ -13,7 +13,7 @@ class submenusAdmin(ImportExportMixin,admin.ModelAdmin):
 
 class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('mainmenu', 'menuurl','menucode','order',)
-   
+
 
 admin.site.register(User)
 
