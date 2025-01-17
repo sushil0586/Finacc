@@ -1,6 +1,7 @@
 from itertools import product
 from django.http import request,JsonResponse
 from django.shortcuts import render
+
 import json
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
@@ -33,6 +34,7 @@ from datetime import timedelta,date,datetime
 import requests
 import json
 from entity.views import generateeinvoice
+import inflect
 
 
 
@@ -588,6 +590,160 @@ class salesOrderpdfview(RetrieveAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return SalesOderHeader.objects.filter(entity = entity).prefetch_related('saleInvoiceDetails')
+    
+
+
+class salesorderpdf(RetrieveAPIView):
+     
+    def get(self, request, format=None):
+        # Fetch the sales order ID from the request parameters
+        saleorderid = request.query_params.get('id')
+        
+        if not saleorderid:
+            return Response({"error": "Missing 'id' parameter."}, status=400)
+
+        # Query the sales order details
+        details = (
+        salesOrderdetails.objects.filter(salesorderheader__id=saleorderid)
+            .select_related(
+                'product', 
+                'product__hsn', 
+                'product__unitofmeasurement'
+            )
+            .only(
+                'id', 'product__productname', 'productdesc', 
+                'orderqty', 'pieces', 'rate', 'amount'
+            )
+            .values(
+                'id', 'product__productname', 'product__hsn__hsnCode', 
+                'product__unitofmeasurement__unitname', 'product__mrp', 'productdesc',
+                'orderqty', 'pieces', 'rate', 'amount', 'othercharges',
+                'product__cgst', 'cgst', 'product__sgst', 'sgst',
+                'product__igst', 'igst', 'cess', 'linetotal', 'entity', 
+                'salesorderheader__id','salesorderheader__entity__entityname',
+                'salesorderheader__entity__address', 'salesorderheader__entity__city__cityname','salesorderheader__entity__state__statename','salesorderheader__entity__pincode',
+                'salesorderheader__entity__gstno','salesorderheader__accountid__accountname',
+                'salesorderheader__accountid__address1','salesorderheader__accountid__address2',
+                'salesorderheader__accountid__gstno',
+                'salesorderheader__shippedto__accountname',
+                'salesorderheader__shippedto__address1','salesorderheader__shippedto__address2',
+                'salesorderheader__gtotal',
+                'salesorderheader__sorderdate',
+                'salesorderheader__billno',
+                'salesorderheader__accountid',
+                'salesorderheader__latepaymentalert',
+                'salesorderheader__grno',
+                'salesorderheader__terms',
+                'salesorderheader__taxtype',
+                'salesorderheader__billcash',
+                'salesorderheader__supply',
+                'salesorderheader__remarks',
+                'salesorderheader__transport',
+                'salesorderheader__broker',
+                'salesorderheader__taxid',
+                'salesorderheader__tds194q',
+                
+
+
+            )
+            )
+
+
+        print(connection.queries)
+
+        # Check if details exist
+        if not details.exists():
+            return Response([])
+
+        # Convert the queryset to a pandas DataFrame
+        df = read_frame(details)
+
+        # Rename columns for better readability
+        column_mapping = {
+            'product__productname': 'productname',
+            'product__hsn__hsnCode': 'hsn',
+            'product__unitofmeasurement__unitname': 'units',
+            'product__mrp': 'mrp',
+            'product__cgst': 'cgstrate',
+            'product__sgst': 'sgstrate',
+            'product__igst': 'igstrate',
+            'salesorderheader__id': 'salesorderid',
+            'salesorderheader__entity__entityname':'entityname',
+            'salesorderheader__entity__address':'address',
+            'salesorderheader__entity__city__cityname':'cityname',
+            'salesorderheader__entity__state__statename':'statename',
+            'salesorderheader__entity__pincode':'pincode',
+            'salesorderheader__entity__gstno':'entitygst',
+            'salesorderheader__accountid__accountname':'accountname',
+            'salesorderheader__accountid__address1':'address1',
+            'salesorderheader__accountid__address2':'address2',
+            'salesorderheader__accountid__gstno':'billtogst',
+            'salesorderheader__shippedto__accountname':'shippedtoaccountname',
+            'salesorderheader__shippedto__address1':'shippedtoaddress1',
+            'salesorderheader__shippedto__address2':'shippedtoaddress2',
+            'salesorderheader__gtotal':'gtotal',
+            'salesorderheader__sorderdate':'sorderdate',
+            'salesorderheader__billno':'billno',
+            'salesorderheader__accountid': 'accountid',
+            'salesorderheader__latepaymentalert':'latepaymentalert',
+            'salesorderheader__grno':'grno',
+            'salesorderheader__terms':'terms',
+            'salesorderheader__taxtype':'taxtype',
+            'salesorderheader__billcash':'billcash',
+            'salesorderheader__supply':'supply',
+            'salesorderheader__remarks':'remarks',
+            'salesorderheader__transport':'transport',
+            'salesorderheader__broker': 'broker',
+            'salesorderheader__taxid':'taxid',
+            'salesorderheader__tds194q':'tds194q'
+            
+           
+
+
+
+
+
+
+        }
+        df.rename(columns=column_mapping, inplace=True)
+        df["entityaddress"] = df["address"].str.cat(df[["cityname", "statename","pincode"]], sep=" ")
+        df["billtoaddress"] = df["address1"].str.cat(df[["address2"]], sep=" ")
+        df["shiptoaddress"] = df["shippedtoaddress1"].str.cat(df[["shippedtoaddress2"]], sep=" ")
+        df["entityname"] = df["entityname"].str.upper()
+        df["billtoname"] = df["accountname"].str.upper()
+        df["shiptoname"] = df["shippedtoaccountname"].str.upper()
+
+        p = inflect.engine()
+        df["amountinwords"] = df["gtotal"].apply(lambda x: p.number_to_words(x))
+
+       # print(df)
+
+
+
+        # Group data by sales order ID and format records
+        grouped_data = (
+            df.groupby(['salesorderid','entityname','entityaddress','amountinwords','gtotal','sorderdate','billno','billtoname','accountid','billtoaddress','address1','address2','billtogst','shiptoname','shiptoaddress','latepaymentalert','grno','terms','taxtype','billcash','supply','transport','broker','taxid','tds194q'])
+              .apply(lambda x: x[
+                  [
+                      'id', 'productname', 'hsn', 'units', 'mrp', 'productdesc', 
+                      'orderqty', 'pieces', 'rate', 'amount', 'othercharges',
+                      'cgstrate', 'cgst', 'sgstrate', 'sgst', 'igstrate', 'igst', 
+                      'cess', 'linetotal', 'entity'
+                  ]
+              ].to_dict('records'))
+              .reset_index(name='accounts')
+        )
+
+        # Convert to dictionary format
+        result = grouped_data.to_dict(orient='records')
+
+        return Response(result)
+             
+
+        
+    
+
+
 
 class salesOrderupdatedelview(RetrieveUpdateDestroyAPIView):
 

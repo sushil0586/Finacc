@@ -90,6 +90,7 @@ class account(TrackingModel):
     openingbcr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Cr'))
     openingbdr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Dr'))
     contactno       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no'))
+    contactno2       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no2'))
     pincode       =models.CharField(max_length=50, null=True,verbose_name=_('Pincode'))
     emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
     agent       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Agent/Group'))

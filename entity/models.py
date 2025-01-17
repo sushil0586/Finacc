@@ -36,6 +36,7 @@ class Constitution(models.Model):
 
 class Entity(TrackingModel):
     entityname =  models.CharField(max_length= 255)
+    entitydesc =  models.CharField(max_length= 255,null=True)
     legalname =  models.CharField(max_length= 255,null=True)
     address =     models.CharField(max_length= 255)
     address2 =     models.CharField(max_length= 255,null= True,blank = True)

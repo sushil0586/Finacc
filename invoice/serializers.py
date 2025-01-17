@@ -1723,6 +1723,8 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailspdfSerializer(many=True)
 
     entityname = serializers.SerializerMethodField()
+    entitypan = serializers.SerializerMethodField()
+    entitydesc = serializers.SerializerMethodField()
     entityaddress = serializers.SerializerMethodField()
     entitygst = serializers.SerializerMethodField()
     billtoname = serializers.SerializerMethodField()
@@ -1731,13 +1733,26 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
     shiptoname = serializers.SerializerMethodField()
     shiptoaddress = serializers.SerializerMethodField()
     amountinwords = serializers.SerializerMethodField()
+    phoneno = serializers.SerializerMethodField()
+    phoneno2 = serializers.SerializerMethodField()
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','billtoname','billtoaddress','billtogst','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','shiptoname','shiptoaddress','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','amountinwords','subentity','entity','entityname', 'entityaddress','entitygst','owner','eway','einvoice','einvoicepluseway','isactive','phoneno','phoneno2','entitydesc','entitypan','saleInvoiceDetails',)
 
     
     def get_entityname(self,obj):
         return string.capwords(obj.entity.entityname)
+    
+    def get_entitydesc(self,obj):
+        return obj.entity.entitydesc
+    
+    def get_entitypan(self,obj):
+        return obj.entity.panno
+    
+    
+    
+
+    
 
     
     def get_entityaddress(self,obj):
@@ -1748,6 +1763,12 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 
     def get_billtoname(self,obj):
         return string.capwords(obj.accountid.accountname)
+    
+    def get_phoneno(self,obj):
+        return obj.accountid.contactno
+    
+    def get_phoneno2(self,obj):
+        return obj.accountid.contactno2
 
     
     def get_billtoaddress(self,obj):
@@ -1759,6 +1780,8 @@ class SalesOderHeaderpdfSerializer(serializers.ModelSerializer):
 
     def get_shiptoname(self,obj):
         return string.capwords(obj.shippedto.accountname)
+
+
 
     
     def get_shiptoaddress(self,obj):
@@ -2212,7 +2235,7 @@ class SOSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
-        fields =  ['newbillno']
+        fields =  ['newbillno','sorderdate']
 
 class SOnewSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
