@@ -34,37 +34,23 @@ class generateeinvoice:
                               'client_secret': self.mastergst.client_secret,
                               'gstin': self.mastergst.gstin}, indent=4)
         
-
-
-        print(self.headers)
-        # print(type(self.headers))
-
+     
         self.headers = json.loads(self.headers)
 
-
-
-        
-
-        
+           
 
 
     def getauthentication(self):
-
-
-
         BASE_URL = 'https://api.mastergst.com/einvoice/authenticate'
-
-    
-        
-
-        print(f"{BASE_URL}?email=sushiljyotibansal@gmail.com")
-
         response = requests.get(f"{BASE_URL}?email=sushiljyotibansal@gmail.com", headers= self.headers)
-
-        print(response)
-
-
         return response
+    
+    def getheaderdetails(self,authtoken):
+        
+        self.headers["auth-token"] = authtoken
+        return self.headers
+    
+
     
 
     def getgstdetails(self,gstaccount,authtoken,useremail):
@@ -93,6 +79,8 @@ class generateeinvoice:
 
 
         return response
+    
+   
 
 
 
