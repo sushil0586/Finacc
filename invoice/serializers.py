@@ -1908,7 +1908,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
         model = salesOrderdetails
         fields = (
             'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces', 
-            'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
+            'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','isigst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
             'subentity', 'entity', 'otherchargesdetail',
         )
 
@@ -2062,7 +2062,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','isigst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
     
