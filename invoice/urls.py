@@ -127,6 +127,7 @@ urlpatterns  = [
     path('getgstindetails',views.getgstindetails.as_view(), name = 'Trialbalance'),
     #path('closingstock', views.closingstockView.as_view(), name='closingstockView'),
     #path('closingstockview', views.closingstocknew.as_view(), name='closingstockView--1'),
+    path('sales-order-gst-summary/', views.SalesOrderGSTSummaryView.as_view(), name='sales-order-gst-summary'),
 
     
 
