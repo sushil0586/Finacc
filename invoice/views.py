@@ -9,7 +9,7 @@ from invoice.models import salesOrderdetails,SalesOder,SalesOderHeader,purchaseo
 from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOrderHeaderPDFSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer,SalesOrderSerializer,SOnewSerializer,salesordercancelSerializer,purchaseordercancelSerializer
+purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOrderHeaderPDFSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer,SalesOrderSerializer,SOnewSerializer,salesordercancelSerializer,purchaseordercancelSerializer,SalesOrderGSTSummarySerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -35,6 +35,7 @@ import requests
 import json
 from entity.views import generateeinvoice
 import inflect
+from rest_framework.views import APIView
 
 
 
@@ -4238,6 +4239,32 @@ class balancesheetclosingapiView(ListCreateAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return entry.objects.filter(entity = entity)
+    
+
+
+class SalesOrderGSTSummaryView(APIView):
+    def get(self, request, *args, **kwargs):
+        # Get the salesorderheader from query parameters
+        salesorderheader_id = request.query_params.get('salesorderheader')
+        
+        if not salesorderheader_id:
+            return Response(
+                {"error": "salesorderheader parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get aggregated data for the provided salesorderheader
+            aggregated_data = SalesOrderGSTSummarySerializer.get_aggregated_data(salesorderheader_id)
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Serialize the aggregated data
+        serializer = SalesOrderGSTSummarySerializer(aggregated_data, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
         
 
 

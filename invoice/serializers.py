@@ -9,7 +9,7 @@ from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrde
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder
 from financial.models import account,accountHead
 from inventory.models import Product
-from django.db.models import Sum,Count,F
+from django.db.models import Sum,Count,F,Q
 from datetime import timedelta,date,datetime
 from entity.models import Entity,entityfinancialyear,Mastergstdetails
 from django.db.models.functions import Abs
@@ -23,6 +23,7 @@ import pandas as pd
 from django_pandas.io import read_frame
 import numpy as np
 import entity.views as entityview
+from django.db.models import Prefetch
 #from entity.views import generateeinvoice
 #from entity.serializers import entityfinancialyearSerializer
 
@@ -1896,25 +1897,34 @@ class purchaseorderimportSerializer(serializers.ModelSerializer):
 
 
 class salesOrderdetailsSerializer(serializers.ModelSerializer):
-    #entityUser = entityUserSerializer(many=True)
-    otherchargesdetail = salesotherdetailsSerializer(many=True,required=False)
+    # Assume that the 'otherchargesdetail' has a related field and needs optimization
+    otherchargesdetail = salesotherdetailsSerializer(many=True, required=False)
     id = serializers.IntegerField(required=False)
-    productname = serializers.SerializerMethodField()
-    hsn = serializers.SerializerMethodField()
-    mrp = serializers.SerializerMethodField()
+    productname = serializers.CharField(source='product.productname', read_only=True)
+    hsn = serializers.CharField(source='product.hsn.hsnCode', read_only=True)
+    mrp = serializers.FloatField(source='product.mrp', read_only=True)
 
     class Meta:
         model = salesOrderdetails
-        fields =  ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','subentity','entity','otherchargesdetail',)
+        fields = (
+            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces', 
+            'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
+            'subentity', 'entity', 'otherchargesdetail',
+        )
 
-    def get_productname(self,obj):
-        return obj.product.productname
-
-    def get_hsn(self,obj):
-        return obj.product.hsn.hsnCode
-    
-    def get_mrp(self,obj):
-        return obj.product.mrp
+    def to_representation(self, instance):
+        # Prefetch related data in the 'to_representation' method for optimization
+        # Prefetch related 'otherchargesdetail' to reduce query load
+        if hasattr(self, 'context') and 'request' in self.context:
+            queryset = salesOrderdetails.objects.prefetch_related(
+                Prefetch('otherchargesdetail', queryset=saleothercharges.objects.all())
+            ).get(id=instance.id)
+            
+            # Call parent class method to serialize optimized queryset data
+            
+            return super().to_representation(queryset)
+        
+        return super().to_representation(instance)
     
 
 # class salesOrderdetailsSerializer(serializers.ModelSerializer):
@@ -2058,69 +2068,76 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     
 
     def create(self, validated_data):
-        #print(validated_data)
         with transaction.atomic():
-            salesOrderdetails_data = validated_data.pop('saleInvoiceDetails')
+            sales_order_details_data = validated_data.pop('saleInvoiceDetails')
             validated_data.pop('billno')
 
-           # entityfy = entityfinancialyear.objects.get(entity = validated_data['entity'] , isactive = 1)
+            # Get the last order's billno for the same entity and increment it by 1
+            last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
+            billno2 = last_order.billno + 1 if last_order else 1
 
-            if SalesOderHeader.objects.filter(entity= validated_data['entity'].id).count() == 0:
-                billno2 = 1
-            else:
-                billno2 = (SalesOderHeader.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
+            # Create the sales order header
+            order = SalesOderHeader.objects.create(**validated_data, billno=billno2)
 
-                   
-            order = SalesOderHeader.objects.create(**validated_data,billno= billno2)
-            stk = stocktransactionsale(order, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No: ',entrytype= 'I')
+            # Initialize stock transaction
+            stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0, description='By Sale Bill No: ', entrytype='I')
 
-            
-            for PurchaseOrderDetail_data in salesOrderdetails_data:
-                salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
+            # Process each sales order detail
+            for order_detail_data in sales_order_details_data:
+                sales_order_other_charges = order_detail_data.pop('otherchargesdetail')
 
-                detail = salesOrderdetails.objects.create(salesorderheader = order, **PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='S')
+                # Create sales order detail and link to the order
+                detail = salesOrderdetails.objects.create(salesorderheader=order, **order_detail_data)
 
-                for salesorderdetail_data in salesorderdetails_data:
-                    detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
-                    stk.createothertransactiondetails(detail=detail2,stocktype='S')
+                # Create stock transaction for the detail
+                stk.createtransactiondetails(detail=detail, stocktype='S')
 
-                
-            
+                # Process other charges related to the detail
+                for other_charge_data in sales_order_other_charges:
+                    sale_other_charge = saleothercharges.objects.create(salesorderdetail=detail, **other_charge_data)
+                    stk.createothertransactiondetails(detail=sale_other_charge, stocktype='S')
+
+            # Finalize the stock transaction
             stk.createtransaction()
 
-
-            einvoice = einvoicebody(order,invoicetype= 'INV')
+            # Create the e-invoice
+            einvoice = einvoicebody(order, invoicetype='INV')
             einvoice.createeinvoce()
 
-            
             return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount', 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','isactive','eway','einvoice','einvoicepluseway','entityfinid','subentity','entity','owner',]
+        fields = [
+            'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
+            'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
+            'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless',
+            'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'isactive',
+            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'owner',
+        ]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
             except KeyError:  # validated_data may not contain all fields during HTTP PATCH
                 pass
+
         with transaction.atomic():
             instance.save()
-            stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'By Sale Bill No:',entrytype= 'U')
-            salesOrderdetails.objects.filter(salesorderheader=instance,entity = instance.entity).delete()
+            stk = stocktransactionsale(instance, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='U')
+            salesOrderdetails.objects.filter(salesorderheader=instance, entity=instance.entity).delete()
             stk.createtransaction()
 
             salesOrderdetails_data = validated_data.get('saleInvoiceDetails')
 
             for PurchaseOrderDetail_data in salesOrderdetails_data:
                 salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
-                detail = salesOrderdetails.objects.create(salesorderheader = instance, **PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='S')
+                detail = salesOrderdetails.objects.create(salesorderheader=instance, **PurchaseOrderDetail_data)
+                stk.createtransactiondetails(detail=detail, stocktype='S')
                 for salesorderdetail_data in salesorderdetails_data:
-                    detail2 = saleothercharges.objects.create(salesorderdetail = detail, **salesorderdetail_data)
-                    stk.createothertransactiondetails(detail=detail2,stocktype='S')
+                    detail2 = saleothercharges.objects.create(salesorderdetail=detail, **salesorderdetail_data)
+                    stk.createothertransactiondetails(detail=detail2, stocktype='S')
 
         #  stk.updateransaction()
-            return instance
+        return instance
 
 class SalesOrderSerializer(serializers.ModelSerializer):
     salesOrderDetail = saleOrderdetailsSerializer(many=True)
@@ -5110,6 +5127,36 @@ class balancesheetclosingserializer(serializers.ModelSerializer):
 
 
         return entryid
+
+
+class SalesOrderGSTSummarySerializer(serializers.Serializer):
+    salesorderheader = serializers.IntegerField()
+    product_cgst_percent = serializers.DecimalField(max_digits=14, decimal_places=2)
+    product_sgst_percent = serializers.DecimalField(max_digits=14, decimal_places=2)
+    product_igst_percent = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_cgst_amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_sgst_amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_igst_amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+    @staticmethod
+    def get_aggregated_data(salesorderheader_id):
+        """
+        Fetch aggregated GST amounts grouped by percentages and sales order header.
+        """
+        aggregated_data = (
+            salesOrderdetails.objects.filter(salesorderheader_id=salesorderheader_id)
+            .select_related("product")  # Fetch related product data efficiently
+            .values("salesorderheader")  # Group by sales order header
+            .annotate(
+                product_cgst_percent=F("product__cgst"),  # Rename product__cgst
+                product_sgst_percent=F("product__sgst"),  # Rename product__sgst
+                product_igst_percent=F("product__igst"),  # Rename product__igst
+                total_cgst_amount=Sum("cgst", filter=Q(product__cgst__isnull=False)),
+                total_sgst_amount=Sum("sgst", filter=Q(product__sgst__isnull=False)),
+                total_igst_amount=Sum("igst", filter=Q(product__igst__isnull=False)),
+            )
+        )
+        return aggregated_data
        
 
   

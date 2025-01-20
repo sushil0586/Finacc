@@ -125,6 +125,7 @@ class SalesOderHeader(TrackingModel):
     cgst =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'C.GST')
     sgst =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'S.GST')
     igst =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'I.GST')
+    
     # cgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
@@ -158,6 +159,9 @@ class salesOrderdetails(TrackingModel):
     cgst =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'CGST')
     sgst =  models.DecimalField(max_digits=14,null = True,default = 1, decimal_places=4,verbose_name= 'SGST')
     igst =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'IGST')
+    cgstpercent =  models.DecimalField(max_digits=14,null = True, decimal_places=4,verbose_name= 'CGST')
+    sgstpercent =  models.DecimalField(max_digits=14,null = True,default = 1, decimal_places=4,verbose_name= 'SGST')
+    igstpercent =  models.DecimalField(max_digits=14,null = True, decimal_places=4,verbose_name= 'IGST')
     # cgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
