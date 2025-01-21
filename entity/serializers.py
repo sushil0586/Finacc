@@ -6,7 +6,7 @@ from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
 from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2,accounttypeserializer
-from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer,ProductCategoryMainSerializer
+from inventory.serializers import RateCalculateSerializer,UOMSerializer,TOGSerializer,TOGSerializer,ProductCategoryMainSerializer
 from invoice.serializers import purchasetaxtypeserializer,InvoiceTypeSerializer
 import os
 import json
@@ -205,10 +205,12 @@ class entityAddSerializer(serializers.ModelSerializer):
     serializer = accountHeadSerializer
     accounthead = accountHeadSerializer2
     roleserializer = rolemainSerializer1
-    rateerializer = Ratecalculateserializer
-    uomser = UOMserializer
-    TOGSR = TOGserializer
-    GSTSR = GSTserializer
+
+ 
+    rateerializer = RateCalculateSerializer
+    uomser = UOMSerializer
+    TOGSR = TOGSerializer
+    GSTSR = TOGSerializer
     PTaxType = purchasetaxtypeserializer
 
     InvoiceType = InvoiceTypeSerializer

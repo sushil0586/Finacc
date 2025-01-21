@@ -1,29 +1,39 @@
 from django.urls import path
 from inventory import views
 
-
 app_name = 'inventory'
 
-urlpatterns  = [
+urlpatterns = [
+    # Product Category
+    path('productcategory', views.ProductCategoryApiView.as_view(), name='productcategory'),
+    path('productcategory/<int:id>', views.ProductCategoryUpdateDeleteApiView.as_view(), name='productcategoryupdate'),
 
+    # Product
+    # path('createProduct', views.CreateTodoApiView.as_view(), name='createProduct'),
+    # path('listProduct', views.ListproductApiView.as_view(), name='listProduct'),
+    path('product', views.ProductApiView.as_view(), name='product'),
+    path('product/<int:id>', views.ProductUpdateDeleteApiView.as_view(), name='productupdate'),
 
-    path('productcategory',views.productcategoryApiView.as_view(), name = 'productcategory'),
-    path('productcategory/<int:id>',views.productcategoryupdatedelApiView.as_view(), name = 'productcategoryupdatedel'),
-    path('createProduct',views.CreateTodoApiView.as_view(), name = 'product1'),
-    path('ListProduct',views.ListproductApiView.as_view(), name = 'listproduct'),
-    path('product',views.productApiView.as_view(), name = 'product'),
-    path('product/<int:id>',views.productupdatedel.as_view(), name = 'product2'),
-    path('album',views.AlbumApiView.as_view(), name = 'Album'),
-    path('album/<int:id>',views.Albumupdatedel.as_view(), name = 'Album2'),
-    path('track',views.TrackApiView.as_view(), name = 'Track'),
-    path('<int:id>',views.TrackApiView.as_view(), name = 'track2'),
-    path('tog',views.togApiView.as_view(), name = 'tog'),
-    path('gst',views.gstApiView.as_view(), name = 'tog'),
-    path('ratecalculator',views.rateApiView.as_view(), name = 'ratecalculator'),
-    path('uom',views.uomApiView.as_view(), name = 'uom'),
-    path('hsn',views.hsnApiView.as_view(), name = 'uom'),
+    # Album
+    path('album', views.AlbumApiView.as_view(), name='album'),
+    path('album/<int:id>', views.AlbumUpdateDeleteApiView.as_view(), name='albumupdate'),
 
-    
-    
-   
-] 
+    # Track
+    path('track', views.TrackApiView.as_view(), name='track'),
+    path('track/<int:id>', views.TrackApiView.as_view(), name='trackupdate'),  # You had a duplicate path here, renamed to 'trackupdate'
+
+    # Type of Goods (TOG)
+    path('tog', views.TOGApiView.as_view(), name='tog'),
+
+    # GST
+    path('gst', views.GSTApiView.as_view(), name='gst'),
+
+    # Rate Calculator
+    path('ratecalculator', views.RateApiView.as_view(), name='ratecalculator'),
+
+    # Unit of Measurement (UOM)
+    path('uom', views.UOMApiView.as_view(), name='uom'),
+
+    # HSN Code
+    path('hsn', views.HSNApiView.as_view(), name='hsn'),
+]

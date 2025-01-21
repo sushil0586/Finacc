@@ -1,224 +1,167 @@
-from django.http import request
 from django.shortcuts import render
-
-from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
-from inventory.models import Album, Product, Track,ProductCategory,gsttype,typeofgoods,Ratecalculate,UnitofMeasurement,HsnCode
-from inventory.serializers import ProductSerializer,AlbumSerializer,Trackserializer,ProductCategorySerializer,GSTserializer,TOGserializer,UOMserializer,Ratecalculateserializer,HSNserializer
-from rest_framework import permissions,filters
+from rest_framework.generics import (
+    CreateAPIView, ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
+)
+from rest_framework import permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db import DatabaseError, transaction
+from django.db import transaction
+
+from inventory.models import (
+    Album, Product, Track, ProductCategory, gsttype, typeofgoods, Ratecalculate,
+    UnitofMeasurement, HsnCode
+)
+from inventory.serializers import (
+    ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
+    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer
+)
 
 
+class EntityFilterMixin:
+    """Mixin to handle entity filtering across views."""
+    def get_entity(self):
+        return self.request.query_params.get('entity')
+
+    def filter_by_entity(self, queryset, entity=None):
+        """Helper method to filter by entity."""
+        if not entity:
+            entity = self.get_entity()
+        return queryset.filter(entity=entity)
 
 
-class productcategoryApiView(ListCreateAPIView):
-
+class ProductCategoryApiView(ListCreateAPIView, EntityFilterMixin):
     serializer_class = ProductCategorySerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-
-        entity = self.request.query_params.get('entity')
+        entity = self.get_entity()
         q1 = ProductCategory.objects.filter(entity__isnull=True)
-        q2 = ProductCategory.objects.filter(entity = entity)
+        q2 = ProductCategory.objects.filter(entity=entity)
+        return q1.union(q2)
 
-        q3 = q1.union(q2)
-        return q3
 
-class productcategoryupdatedelApiView(RetrieveUpdateDestroyAPIView):
-
+class ProductCategoryUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin):
     serializer_class = ProductCategorySerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-
-        return ProductCategory.objects.filter()
+        return ProductCategory.objects.all()
 
 
-         
-
-
-class CreateTodoApiView(CreateAPIView):
+class ProductApiView(ListCreateAPIView, EntityFilterMixin):
     serializer_class = ProductSerializer
     permission_classes = (permissions.IsAuthenticated,)
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['productname', 'productdesc', 'id']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
-
-
-class ListproductApiView(ListAPIView):
-
-    serializer_class = ProductSerializer
-    permission_classes = (permissions.IsAuthenticated,)
+        return serializer.save(createdby=self.request.user)
 
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return Product.objects.filter(entity = entity)
+        entity = self.get_entity()
+        return Product.objects.filter(entity=entity)
 
-class productApiView(ListCreateAPIView):
 
-    serializer_class = ProductSerializer
-    permission_classes = (permissions.IsAuthenticated,)
-
-    # filter_backends = [DjangoFilterBackend]
-    # filterset_fields = ['id','productname',]
-
-    filter_backends = [filters.SearchFilter,filters.OrderingFilter]
-    search_fields = ['productname', 'productdesc','id']
-
-    @transaction.atomic
-    def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return Product.objects.filter(entity = entity)
-
-class productupdatedel(RetrieveUpdateDestroyAPIView):
-
+class ProductUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin):
     serializer_class = ProductSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return Product.objects.filter()
+        return Product.objects.all()
 
 
 class AlbumApiView(ListCreateAPIView):
-
     serializer_class = AlbumSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['id','album_name', 'artist', 'tracks']
+    filterset_fields = ['id', 'album_name', 'artist', 'tracks']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
-    
+        return serializer.save(owner=self.request.user)
+
     def get_queryset(self):
-        return Album.objects.filter(owner = self.request.user)
+        return Album.objects.filter(owner=self.request.user)
 
 
-class Albumupdatedel(RetrieveUpdateDestroyAPIView):
-
+class AlbumUpdateDeleteApiView(RetrieveUpdateDestroyAPIView):
     serializer_class = AlbumSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
-        return Album.objects.filter(owner = self.request.user)
+        return Album.objects.filter(owner=self.request.user)
 
 
 class TrackApiView(ListCreateAPIView):
-
-    serializer_class = Trackserializer
+    serializer_class = TrackSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['id','album','order','title','duration']
+    filterset_fields = ['id', 'album', 'order', 'title', 'duration']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
-    
+        return serializer.save(owner=self.request.user)
+
     def get_queryset(self):
-        return Track.objects.filter(owner = self.request.user)
+        return Track.objects.filter(owner=self.request.user)
 
-class uomApiView(ListCreateAPIView):
 
-    serializer_class = UOMserializer
+class UOMApiView(ListCreateAPIView, EntityFilterMixin):
+    serializer_class = UOMSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-
-        entity = self.request.query_params.get('entity')
-        return UnitofMeasurement.objects.filter(entity = entity)
+        return self.filter_by_entity(UnitofMeasurement.objects.all())
 
 
-
-class gstApiView(ListCreateAPIView):
-
-    serializer_class = GSTserializer
+class GSTApiView(ListCreateAPIView, EntityFilterMixin):
+    serializer_class = GSTSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
+        return self.filter_by_entity(gsttype.objects.all())
 
-        entity = self.request.query_params.get('entity')
-        return gsttype.objects.filter(entity = entity)
-    
 
-class hsnApiView(ListAPIView):
-
-    serializer_class = HSNserializer
+class HSNApiView(ListAPIView):
+    serializer_class = HSNSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
 
-    # def perform_create(self, serializer):
-    #     return serializer.save(createdby = self.request.user)
-    
     def get_queryset(self):
+        return HsnCode.objects.all()
 
-       # entity = self.request.query_params.get('entity')
-        return HsnCode.objects.filter()
 
-class togApiView(ListCreateAPIView):
-
-    serializer_class = TOGserializer
+class TOGApiView(ListCreateAPIView, EntityFilterMixin):
+    serializer_class = TOGSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-
-        entity = self.request.query_params.get('entity')
-        return typeofgoods.objects.filter(entity = entity)
+        return self.filter_by_entity(typeofgoods.objects.all())
 
 
-class rateApiView(ListCreateAPIView):
-
-    serializer_class = Ratecalculateserializer
+class RateApiView(ListCreateAPIView, EntityFilterMixin):
+    serializer_class = RateCalculateSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['id','ProductName','is_stockable']
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-
-        entity = self.request.query_params.get('entity')
-        return Ratecalculate.objects.filter(entity = entity)
-
-
-
-
-
-
-
+        return self.filter_by_entity(Ratecalculate.objects.all())
