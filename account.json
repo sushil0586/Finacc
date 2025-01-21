@@ -1038,49 +1038,242 @@
 
         "UOM": [
 
-            
+
+            {
+                "unitname": "BAGS",
+                "unitcode": "BAG"
+            },
+            {
+                "unitname": "BALE",
+                "unitcode": "BAL"
+            },
+            {
+                "unitname": "BUNDLES",
+                "unitcode": "BDL"
+            },
+            {
+                "unitname": "BUNDLES",
+                "unitcode": "BKL"
+            },
+            {
+                "unitname": "BILLION OF UNITS",
+                "unitcode": "BOU"
+            },
+            {
+                "unitname": "BOTTLES",
+                "unitcode": "BTL"
+            },
+            {
+                "unitname": "BOX",
+                "unitcode": "BOX"
+            },
+            {
+                "unitname": "BOTTLES",
+                "unitcode": "BTL"
+            },
+            {
+                "unitname": "BUNCHES",
+                "unitcode": "BUN"
+            },
+            {
+                "unitname": "CANS",
+                "unitcode": "CAN"
+            },
+            {
+                "unitname": "CUBIC METERS",
+                "unitcode": "CBM"
+            },
+            {
+                "unitname": "CUBIC CENTIMETERS",
+                "unitcode": "CCM"
+            },
+            {
+                "unitname": "CENTIMETERS",
+                "unitcode": "CMS"
+            },
+            {
+                "unitname": "CUBIC CENTIMETERS",
+                "unitcode": "CCM"
+            },
+            {
+                "unitname": "CARTOONS",
+                "unitcode": "CTS"
+            },
             {
                
-                "unitname": "Metric Ton ",
-                "unitcode": "M.ton"
+                "unitname": "DOZENS",
+                "unitcode": "DOZ"
                 
             },
             {
                
-                "unitname": "Quintal",
-                "unitcode": "Quintal"
+                "unitname": "DRUMS",
+                "unitcode": "DRM"
                 
             },
             {
                
-                "unitname": "kg",
-                "unitcode": "kg"
+                "unitname": "GREAT GROSS",
+                "unitcode": "GGK"
                 
             },
             {
                
-                "unitname": "Litres",
-                "unitcode": "Litres"
+                "unitname": "GRAMMES",
+                "unitcode": "GMS"
                 
             },
             {
                
-                "unitname": "Case",
-                "unitcode": "Case"
+                "unitname": "GROSS",
+                "unitcode": "GRS"
                 
             },
             {
                
-                "unitname": "Box",
-                "unitcode": "Box"
+                "unitname": "GROSS YARDS",
+                "unitcode": "GYD"
                 
             },
             {
                
-                "unitname": "Packet",
-                "unitcode": "Packet"
+                "unitname": "KILOGRAMS",
+                "unitcode": "KGS"
+                
+            },
+            {
+               
+                "unitname": "KILOMETER",
+                "unitcode": "KLR"
+                
+            },
+            {
+               
+                "unitname": "LITRES",
+                "unitcode": "LTR"
+                
+            },
+            {
+               
+                "unitname": "MILLILITRE",
+                "unitcode": "MLT"
+                
+            },
+            {
+               
+                "unitname": "METERS",
+                "unitcode": "MTR"
+                
+            },
+            {
+               
+                "unitname": "METRIC TON",
+                "unitcode": "MTS"
+                
+            },
+            {
+               
+                "unitname": "PACKS",
+                "unitcode": "PAC"
+                
+            },
+            {
+               
+                "unitname": "PIECES",
+                "unitcode": "PCS"
+                
+            },
+            {
+               
+                "unitname": "PAIRS",
+                "unitcode": "PRS"
+                
+            },
+            {
+               
+                "unitname": "QUINTAL",
+                "unitcode": "QTL"
+                
+            },
+            {
+               
+                "unitname": "ROLLS",
+                "unitcode": "ROL"
+                
+            },
+            {
+               
+                "unitname": "SETS",
+                "unitcode": "SET"
+                
+            },
+            {
+               
+                "unitname": "SQUARE FEET",
+                "unitcode": "SQF"
+                
+            },
+            {
+               
+                "unitname": "KILOLITRE",
+                "unitcode": "KME"
+                
+            },
+            {
+               
+                "unitname": "SQUARE YARDS",
+                "unitcode": "SQY"
+                
+            },
+            {
+               
+                "unitname": "TABLETS",
+                "unitcode": "TBS"
+                
+            },
+            {
+               
+                "unitname": "TEN GROSS",
+                "unitcode": "TGM"
+                
+            },
+            {
+               
+                "unitname": "THOUSANDS",
+                "unitcode": "THD"
+                
+            },
+            {
+               
+                "unitname": "TONNES",
+                "unitcode": "TON"
+                
+            },
+            {
+               
+                "unitname": "TUBES",
+                "unitcode": "TUB"
+                
+            },
+            {
+               
+                "unitname": "US GALLONS",
+                "unitcode": "UGS"
+                
+            },
+            {
+               
+                "unitname": "YARDS",
+                "unitcode": "YDS"
+                
+            },
+            {
+               
+                "unitname": "OTHERS",
+                "unitcode": "OTH"
                 
             }
+           
 
 
 
@@ -1249,6 +1442,42 @@
                
                 "taxtypename": "Not applicable",
                 "taxtypecode": "1010"
+                
+            }
+        ],
+
+
+        "InvoiceType": [
+
+            
+            {
+               
+                "invoicetype": "Regular B2B",
+                "invoicetypecode": "B2B"
+                
+            },
+            {
+               
+                "invoicetype": "SEZ supplies with Payment",
+                "invoicetypecode": "SEZW"
+                
+            },
+            {
+               
+                "invoicetype": "SEZ supplies without Payment",
+                "invoicetypecode": "SEZWO"
+                
+            },
+            {
+               
+                "invoicetype": "Deemed Exp",
+                "invoicetypecode": "DE"
+                
+            },
+            {
+               
+                "invoicetype": "Intra-State supplies attracting IGST ",
+                "invoicetypecode": "IGST"
                 
             }
         ],

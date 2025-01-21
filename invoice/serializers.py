@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType
 from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F,Q
@@ -28,6 +28,12 @@ from django.db.models import Prefetch
 #from entity.serializers import entityfinancialyearSerializer
 
 
+
+class InvoiceTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceType
+        fields = ['id', 'invoicetype', 'invoicetypecode', 'entity', 'createdby']
+        read_only_fields = ['id', 'createdby']
 
 
 
@@ -1715,19 +1721,20 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     amountinwords = serializers.SerializerMethodField()
     phoneno = serializers.CharField(source='accountid.contactno', read_only=True)
     phoneno2 = serializers.CharField(source='accountid.contactno2', read_only=True)
+    gst_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOderHeader
         fields = (
-            'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress', 'billtogst', 
-            'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply', 
-            'totalquanity', 'totalpieces', 'advance', 'shippedto', 'shiptoname', 'shiptoaddress', 
-            'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1', 
-            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal', 
-            'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords', 
-            'subentity', 'entity', 'entityname', 'entityaddress', 'entitygst', 'owner', 'eway', 
-            'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc', 
-            'entitypan', 'saleInvoiceDetails',
+            'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress', 'billtogst',
+            'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
+            'totalquanity', 'totalpieces', 'advance', 'shippedto', 'shiptoname', 'shiptoaddress',
+            'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
+            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
+            'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
+            'subentity', 'entity', 'entityname', 'entityaddress', 'entitygst', 'owner', 'eway',
+            'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc',
+            'entitypan', 'saleInvoiceDetails', 'gst_summary'
         )
 
     def get_entityaddress(self, obj):
@@ -1744,6 +1751,25 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
 
     def get_amountinwords(self, obj):
         return f"{string.capwords(num2words(obj.gtotal))} only"
+
+    def get_gst_summary(self, obj):
+        """
+        Fetch and serialize GST summary data for the sales order header.
+        """
+        salesorderheader_id = obj.id
+        aggregated_data = (
+            salesOrderdetails.objects.filter(salesorderheader_id=salesorderheader_id)
+            .values("salesorderheader")
+            .annotate(
+                product_cgst_percent=F("cgstpercent"),
+                product_sgst_percent=F("sgstpercent"),
+                product_igst_percent=F("igstpercent"),
+                total_cgst_amount=Sum("cgst", filter=Q(sgstpercent__isnull=False)),
+                total_sgst_amount=Sum("sgst", filter=Q(sgstpercent__isnull=False)),
+                total_igst_amount=Sum("igst", filter=Q(igstpercent__isnull=False)),
+            )
+        )
+        return list(aggregated_data)
     
 
 
@@ -2062,7 +2088,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','isigst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
     
@@ -2111,7 +2137,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
             'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
             'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless',
-            'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'isactive',
+            'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst','isigst','invoicetype','reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'isactive',
             'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'owner',
         ]
         for field in fields:
@@ -2205,7 +2231,7 @@ class SOSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
-        fields =  ['newbillno','sorderdate']
+        fields =  ['newbillno']
 
 class SOnewSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
