@@ -5,11 +5,41 @@ from django.shortcuts import render
 import json
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from invoice.models import salesOrderdetails,SalesOder,SalesOderHeader,purchaseorder,PurchaseOrderDetails,journal,salereturn,salereturnDetails,PurchaseReturn,Purchasereturndetails,StockTransactions,journalmain,entry,stockdetails,stockmain,goodstransaction,purchasetaxtype,tdsmain,tdstype,productionmain,tdsreturns,gstorderservices,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,purchaseorderimport,newpurchaseorder
-from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
-purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
-PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
-purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,saleinvoicecancelSerializer,purchaseinvoicecancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOrderHeaderPDFSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer,balancesheetclosingserializer,purchaseorderimportSerializer,PISerializer,purchaseimportcancelSerializer,newpurchaseorderSerializer,newPurchaseOrderDetailsSerializer,newPOSerializer,SalesOrderSerializer,SOnewSerializer,salesordercancelSerializer,purchaseordercancelSerializer,SalesOrderGSTSummarySerializer
+from invoice.models import (
+    salesOrderdetails, SalesOder, SalesOderHeader, purchaseorder, PurchaseOrderDetails,
+    journal, salereturn, salereturnDetails, PurchaseReturn, Purchasereturndetails,
+    StockTransactions, journalmain, entry, stockdetails, stockmain, goodstransaction,
+    purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
+    jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
+    newpurchaseorder, InvoiceType
+)
+
+from invoice.serializers import (
+    SalesOderHeaderSerializer, salesOrderdetailsSerializer, purchaseorderSerializer,
+    PurchaseOrderDetailsSerializer, POSerializer, SOSerializer, journalSerializer,
+    SRSerializer, salesreturnSerializer, salesreturnDetailsSerializer, JournalVSerializer,
+    PurchasereturnSerializer, purchasereturndetailsSerializer, PRSerializer,
+    TrialbalanceSerializer, TrialbalanceSerializerbyaccounthead,
+    TrialbalanceSerializerbyaccount, accountheadserializer, accountHead, accountserializer,
+    accounthserializer, stocktranserilaizer, cashserializer, journalmainSerializer,
+    stockdetailsSerializer, stockmainSerializer, PRSerializer, SRSerializer,
+    stockVSerializer, stockserializer, Purchasebyaccountserializer, Salebyaccountserializer,
+    entitySerializer1, cbserializer, ledgerserializer, ledgersummaryserializer,
+    stockledgersummaryserializer, stockledgerbookserializer, balancesheetserializer,
+    gstr1b2bserializer, gstr1hsnserializer, purchasetaxtypeserializer, tdsmainSerializer,
+    tdsVSerializer, tdstypeSerializer, tdsmaincancelSerializer, saleinvoicecancelSerializer,
+    purchaseinvoicecancelSerializer, purchasereturncancelSerializer, salesreturncancelSerializer,
+    journalcancelSerializer, stockcancelSerializer, SalesOrderHeaderPDFSerializer,
+    productionmainSerializer, productionVSerializer, productioncancelSerializer,
+    tdsreturnSerializer, gstorderservicesSerializer, SSSerializer, gstorderservicecancelSerializer,
+    jobworkchallancancelSerializer, JwvoucherSerializer, jobworkchallanSerializer,
+    debitcreditnoteSerializer, dcnoSerializer, debitcreditcancelSerializer,
+    closingstockSerializer, balancesheetclosingserializer, purchaseorderimportSerializer,
+    PISerializer, purchaseimportcancelSerializer, newpurchaseorderSerializer,
+    newPurchaseOrderDetailsSerializer, newPOSerializer, SalesOrderSerializer,
+    SOnewSerializer, salesordercancelSerializer, purchaseordercancelSerializer,
+    SalesOrderGSTSummarySerializer,InvoiceTypeSerializer
+)
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -36,6 +66,25 @@ import json
 from entity.views import generateeinvoice
 import inflect
 from rest_framework.views import APIView
+from rest_framework.viewsets import ModelViewSet
+
+
+
+
+class InvoiceTypeViewSet(ListAPIView):
+    # queryset = InvoiceType.objects.all()
+    serializer_class = InvoiceTypeSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def perform_create(self, serializer):
+        # Automatically set the `createdby` field to the logged-in user
+        serializer.save(createdby=self.request.user)
+
+    
+    def get_queryset(self):
+
+        entity = self.request.query_params.get('entity')
+        return InvoiceType.objects.filter(entity = entity)
 
 
 

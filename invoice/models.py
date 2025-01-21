@@ -23,6 +23,18 @@ class purchasetaxtype(TrackingModel):
 
     def __str__(self):
         return f'{self.taxtypename} '
+    
+
+class InvoiceType(TrackingModel):
+    invoicetype = models.CharField(max_length=100, verbose_name='Invoice Type')
+    invoicetypecode = models.CharField(max_length=20, verbose_name='Invoice Type Code')
+    entity = models.ForeignKey(Entity, null=True, on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return f'{self.invoicetype} '
+
+        
 
 
 class gstorderservices(TrackingModel):
@@ -126,9 +138,8 @@ class SalesOderHeader(TrackingModel):
     sgst =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'S.GST')
     igst =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'I.GST')
     isigst =   models.BooleanField(default=False,verbose_name= 'IsIgst')
-    
-    # cgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
-    # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
+    invoicetype = models.ForeignKey(InvoiceType,on_delete=models.CASCADE,verbose_name= 'Invoice Type',null= True)
+    reversecharge =   models.BooleanField(default=False,verbose_name= 'Reverse charge')
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'EXpenses')
     gtotal =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Grand Total')

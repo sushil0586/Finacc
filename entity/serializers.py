@@ -7,7 +7,7 @@ from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
 from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2,accounttypeserializer
 from inventory.serializers import Ratecalculateserializer,UOMserializer,TOGserializer,GSTserializer,ProductCategoryMainSerializer
-from invoice.serializers import purchasetaxtypeserializer
+from invoice.serializers import purchasetaxtypeserializer,InvoiceTypeSerializer
 import os
 import json
 import collections
@@ -210,147 +210,156 @@ class entityAddSerializer(serializers.ModelSerializer):
     TOGSR = TOGserializer
     GSTSR = GSTserializer
     PTaxType = purchasetaxtypeserializer
+
+    InvoiceType = InvoiceTypeSerializer
     pcategory = ProductCategoryMainSerializer
     acounttype = accounttypeserializer
-    def create(self, validated_data):
 
-
-    
-
-
-      #  print(validated_data)
-
-
-        #print(validated_data)
-
-        users = validated_data.pop("user")
-
-        fydata = validated_data.pop("fy")
-        constitutiondata = validated_data.pop("constitution")
-        newentity = Entity.objects.create(**validated_data)
-        for PurchaseOrderDetail_data in fydata:
-              
-                detail = entityfinancialyear.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
-
-  
-
-
-
-        accountdate1 = entityfinancialyear.objects.get(entity = newentity).finstartyear
-
-
-
-
-
-
-        
-
-
-
-
-
-
-       
-
-
-
-
-        for user in users:
-            newentity.user.add(user)
-
+    def process_json_file(self, newentity, users, accountdate1):
+        # Load JSON data once
         file_path = os.path.join(os.getcwd(), "account.json")
         with open(file_path, 'r') as jsonfile:
             json_data = json.load(jsonfile)
-            for key in json_data["entity_accountheads"]:
-                serializer2 = self.serializer(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,owner = users[0],acountdate = accountdate1)
 
-            for key in json_data["accountheads"]:
-                serializer2 = self.accounthead(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,owner = users[0])
+        # Mapping serializers to corresponding JSON keys
+        serializers_mapping = {
+            "entity_accountheads": (self.serializer, {"entity": newentity, "owner": users[0], "acountdate": accountdate1}),
+            "accountheads": (self.accounthead, {"entity": newentity, "owner": users[0]}),
+            "Roles": (self.roleserializer, {"entity": newentity}),
+            "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": users[0]}),
+            "UOM": (self.uomser, {"entity": newentity, "createdby": users[0]}),
+            "TOG": (self.TOGSR, {"entity": newentity, "createdby": users[0]}),
+            "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": users[0]}),
+            "ACCOUNTTYPE": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
+            "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": users[0]}),
+            "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": users[0]}),
+            "productcategory": (self.pcategory, {"createdby": users[0]}),
+        }
 
-            for key in json_data["Roles"]:
-                serializer2 = self.roleserializer(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity)
-                #print(key)
-
-            for key in json_data["Ratecalc"]:
-                serializer2 = self.rateerializer(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,createdby = users[0])
-
-            for key in json_data["UOM"]:
-                serializer2 = self.uomser(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,createdby = users[0])
-
-            for key in json_data["TOG"]:
-                serializer2 = self.TOGSR(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,createdby = users[0])
-
-            for key in json_data["GSTTYPE"]:
-                serializer2 = self.GSTSR(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,createdby = users[0])
-
-            for key in json_data["ACCOUNTTYPE"]:
-                serializer2 = self.acounttype(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,createdby = users[0])
-
-            for key in json_data["PurchaseType"]:
-                serializer2 = self.PTaxType(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(entity = newentity,createdby = users[0])
-            for key in json_data["productcategory"]:
-                serializer2 = self.pcategory(data =key)
-                serializer2.is_valid(raise_exception=True)
-                serializer2.save(createdby = users[0])
-
-        
-
-        roleid = Role.objects.get(entity = newentity,rolename = 'Admin')
-        roleinstance = Userrole.objects.create(entity = newentity,role = roleid,user = users[0])
-
-        subentity.objects.create(subentityname = 'Main-Branch',address = newentity.address,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,pincode = newentity.pincode,phoneoffice = newentity.phoneoffice,phoneresidence = newentity.phoneresidence,entity = newentity)
+        # Iterate through the JSON keys and process data
+        for key, (serializer_class, extra_kwargs) in serializers_mapping.items():
+            if key in json_data:
+                objects_to_create = []
+                for item in json_data[key]:
+                    serializer = serializer_class(data=item)
+                    serializer.is_valid(raise_exception=True)
+                    objects_to_create.append(serializer.save(**extra_kwargs))
 
 
-        
+    def create(self, validated_data):
+        # Extract related data
+        users = validated_data.pop("user")
+        fydata = validated_data.pop("fy")
+        constitutiondata = validated_data.pop("constitution")
 
+        # Create the main entity
+        newentity = Entity.objects.create(**validated_data)
 
-        
+        # Bulk create financial year details
+        fy_details = [
+            entityfinancialyear(entity=newentity, **data, createdby=users[0])
+            for data in fydata
+        ]
+        entityfinancialyear.objects.bulk_create(fy_details)
 
+        # Retrieve account start date
+        accountdate1 = fy_details[0].finstartyear if fy_details else None
+
+        # Add users to the entity
+        newentity.user.add(*users)
+
+        # Process additional JSON file logic
+        self.process_json_file(newentity=newentity, users=users, accountdate1=accountdate1)
+
+        # Create admin role and user role
+        roleid = Role.objects.get(entity=newentity, rolename="Admin")
+        Userrole.objects.create(entity=newentity, role=roleid, user=users[0])
+
+        # Create default subentity
+        subentity.objects.create(
+            subentityname="Main-Branch",
+            address=newentity.address,
+            country=newentity.country,
+            state=newentity.state,
+            district=newentity.district,
+            city=newentity.city,
+            pincode=newentity.pincode,
+            phoneoffice=newentity.phoneoffice,
+            phoneresidence=newentity.phoneresidence,
+            entity=newentity,
+        )
+
+        # Bulk create role privileges
         submenus = Submenu.objects.all()
-        for submenu in submenus:
-            Rolepriv.objects.create(role = roleid,submenu=submenu,entity = newentity )
+        role_privileges = [
+            Rolepriv(role=roleid, submenu=submenu, entity=newentity) for submenu in submenus
+        ]
+        Rolepriv.objects.bulk_create(role_privileges)
 
-    
-        for PurchaseOrderDetail_data in constitutiondata:
+        # Process constitution data
+        constitution_details = []
+        account_details = []
 
-                # print(PurchaseOrderDetail_data)
-                    detail = entityconstitution.objects.create(entity = newentity, **PurchaseOrderDetail_data,createdby =users[0])
+        for data in constitutiondata:
+            detail = entityconstitution(entity=newentity, **data, createdby=users[0])
+            constitution_details.append(detail)
 
-                    print(newentity.const.constcode)
+            # Logic for account creation based on constitution code
+            if newentity.const.constcode == "01":
+                achead = accountHead.objects.get(entity=newentity, code=6200)
+                account_details.append(
+                    account(
+                        accounthead=achead,
+                        creditaccounthead=achead,
+                        accountname=detail.shareholder,
+                        pan=detail.pan,
+                        entity=newentity,
+                        owner=users[0],
+                        sharepercentage=detail.sharepercentage,
+                        country=newentity.country,
+                        state=newentity.state,
+                        district=newentity.district,
+                        city=newentity.city,
+                        emailid=newentity.email,
+                        accountdate=accountdate1,
+                    )
+                )
+            elif newentity.const.id == "02":
+                achead = accountHead.objects.get(entity=newentity, code=6300)
+                account_details.append(
+                    account(
+                        accounthead=achead,
+                        creditaccounthead=achead,
+                        accountname=detail.shareholder,
+                        pan=detail.pan,
+                        entity=newentity,
+                        owner=users[0],
+                        sharepercentage=detail.sharepercentage,
+                        country=newentity.country,
+                        state=newentity.state,
+                        district=newentity.district,
+                        city=newentity.city,
+                        emailid=newentity.email,
+                        accountdate=accountdate1,
+                    )
+                )
 
-                    if newentity.const.constcode == "01":
-                        achead = accountHead.objects.get(entity = newentity,code = 6200)
-                        detail2 = account.objects.create(accounthead = achead,creditaccounthead = achead, accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,emailid = newentity.email,accountdate = accountdate1,)
+        entityconstitution.objects.bulk_create(constitution_details)
+        account.objects.bulk_create(account_details)
 
-                    if newentity.const.id == "02":
-
-                        achead = accountHead.objects.get(entity = newentity,code = 6300)
-                        detail2 = account.objects.create(accounthead = achead,creditaccounthead = achead,accountname = detail.shareholder,pan = detail.pan,entity = newentity,owner = users[0],sharepercentage = detail.sharepercentage,country = newentity.country,state = newentity.state,district = newentity.district,city = newentity.city,emailid = newentity.email,accountdate = accountdate1,)
-
-
-        account.objects.filter(accounthead__code = 1000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 3000,entity = newentity))
-        account.objects.filter(accounthead__code = 6000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 6100,entity = newentity))
-        account.objects.filter(accounthead__code = 8000,entity = newentity).update(creditaccounthead = accountHead.objects.get(code = 7000,entity = newentity))
+        # Update accounts in bulk
+        account_updates = [
+            {"code": 1000, "credit_code": 3000},
+            {"code": 6000, "credit_code": 6100},
+            {"code": 8000, "credit_code": 7000},
+        ]
+        for update in account_updates:
+            account.objects.filter(accounthead__code=update["code"], entity=newentity).update(
+                creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=newentity)
+            )
 
         return newentity
+
 
 
 

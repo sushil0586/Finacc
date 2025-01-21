@@ -125,6 +125,7 @@ urlpatterns  = [
     path('debitcreditcancel/<int:id>',views.debitcreditcancel.as_view(), name = 'Trialbalance'),
     path('balancesheetclosing',views.balancesheetclosingapiView.as_view(), name = 'Trialbalance'),
     path('getgstindetails',views.getgstindetails.as_view(), name = 'Trialbalance'),
+    path('InvoiceTypes',views.InvoiceTypeViewSet.as_view(), name = 'InvoiceTypeViewSet'),
     #path('closingstock', views.closingstockView.as_view(), name='closingstockView'),
     #path('closingstockview', views.closingstocknew.as_view(), name='closingstockView--1'),
     path('sales-order-gst-summary/', views.SalesOrderGSTSummaryView.as_view(), name='sales-order-gst-summary'),
