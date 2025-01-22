@@ -224,8 +224,8 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Mapping serializers to corresponding JSON keys
         serializers_mapping = {
-            "entity_accountheads": (self.serializer, {"entity": newentity, "owner": users[0], "acountdate": accountdate1}),
-            "accountheads": (self.accounthead, {"entity": newentity, "owner": users[0]}),
+            "entity_accountheads": (self.serializer, {"entity": newentity, "createdby": users[0], "acountdate": accountdate1}),
+            "accountheads": (self.accounthead, {"entity": newentity, "createdby": users[0]}),
             "Roles": (self.roleserializer, {"entity": newentity}),
             "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": users[0]}),
             "UOM": (self.uomser, {"entity": newentity, "createdby": users[0]}),
@@ -315,7 +315,7 @@ class entityAddSerializer(serializers.ModelSerializer):
                         accountname=detail.shareholder,
                         pan=detail.pan,
                         entity=newentity,
-                        owner=users[0],
+                        createdby=users[0],
                         sharepercentage=detail.sharepercentage,
                         country=newentity.country,
                         state=newentity.state,
@@ -334,7 +334,7 @@ class entityAddSerializer(serializers.ModelSerializer):
                         accountname=detail.shareholder,
                         pan=detail.pan,
                         entity=newentity,
-                        owner=users[0],
+                        createdby=users[0],
                         sharepercentage=detail.sharepercentage,
                         country=newentity.country,
                         state=newentity.state,

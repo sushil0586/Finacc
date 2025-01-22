@@ -82,10 +82,10 @@ class AlbumApiView(ListCreateAPIView):
     filterset_fields = ['id', 'album_name', 'artist', 'tracks']
 
     def perform_create(self, serializer):
-        return serializer.save(owner=self.request.user)
+        return serializer.save(createdby=self.request.user)
 
     def get_queryset(self):
-        return Album.objects.filter(owner=self.request.user)
+        return Album.objects.filter(createdby=self.request.user)
 
 
 class AlbumUpdateDeleteApiView(RetrieveUpdateDestroyAPIView):
@@ -94,7 +94,7 @@ class AlbumUpdateDeleteApiView(RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        return Album.objects.filter(owner=self.request.user)
+        return Album.objects.filter(createdby=self.request.user)
 
 
 class TrackApiView(ListCreateAPIView):
@@ -104,10 +104,10 @@ class TrackApiView(ListCreateAPIView):
     filterset_fields = ['id', 'album', 'order', 'title', 'duration']
 
     def perform_create(self, serializer):
-        return serializer.save(owner=self.request.user)
+        return serializer.save(createdby=self.request.user)
 
     def get_queryset(self):
-        return Track.objects.filter(owner=self.request.user)
+        return Track.objects.filter(createdby=self.request.user)
 
 
 class UOMApiView(ListCreateAPIView, EntityFilterMixin):

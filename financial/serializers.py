@@ -20,7 +20,7 @@ class AccountSerializer(serializers.ModelSerializer):
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
             'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare', 'quanity1',
-            'quanity2', 'BanKAcno', 'composition', 'accounttype', 'owner',
+            'quanity2', 'BanKAcno', 'composition', 'accounttype', 'createdby',
         )
 
     def create(self, validated_data):
@@ -50,7 +50,7 @@ class AccountSerializer(serializers.ModelSerializer):
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
             'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'Adhaarno', 'saccode',
             'contactperson', 'deprate', 'tdsrate', 'gstshare', 'quanity1', 'quanity2', 'BanKAcno', 'accounttype',
-            'composition', 'owner'
+            'composition', 'createdby'
         ]
         
         # Update instance fields
@@ -86,7 +86,7 @@ class AccountSerializer(serializers.ModelSerializer):
             StockTransactions.objects.create(
                 accounthead=detail.accounthead, account=detail, transactiontype='O', transactionid=detail.id,
                 desc='Opening Balance', drcr=drcr, debitamount=detail.openingbdr, creditamount=detail.openingbcr,
-                entity=detail.entity, createdby=detail.owner, entry=entryid, entrydatetime=accountdate1,
+                entity=detail.entity, createdby=detail.createdby, entry=entryid, entrydatetime=accountdate1,
                 accounttype='M', isactive=1
             )
         
@@ -232,7 +232,7 @@ class AccountHeadSerializer(serializers.ModelSerializer):
         # Extract nested account details and other fields
         account_details_data = validated_data.pop('accounthead_accounts', [])
         entity = validated_data.get('entity')
-        user = validated_data.get('owner')
+        user = validated_data.get('createdby')
         account_date = validated_data.pop("acountdate", None)
 
         # Create the account head
@@ -243,7 +243,7 @@ class AccountHeadSerializer(serializers.ModelSerializer):
             account(
                 accounthead=account_head_instance,
                 entity=entity,
-                owner=user,
+                createdby=user,
                 accountdate=account_date,
                 **detail_data
             )

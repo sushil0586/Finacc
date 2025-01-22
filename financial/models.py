@@ -53,7 +53,7 @@ class accountHead(TrackingModel):
     detailsingroup =  models.IntegerField(null=True,blank = True)
     entity = models.ForeignKey(Entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
     canbedeleted      = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
-    owner = models.ForeignKey(to= User,  on_delete= models.CASCADE,null= True)
+    createdby = models.ForeignKey(to= User,  on_delete= models.CASCADE,null= True)
 
     class Meta:
         verbose_name = _('Account head')
@@ -114,7 +114,7 @@ class account(TrackingModel):
     canbedeleted        = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
     accounttype         =     models.ForeignKey(to = accounttype, on_delete= models.SET_NULL,null = True)
     sharepercentage             = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Share Percentage'))
-    owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
 
     def __str__(self):
         return f'{self.accountname} , {self.gstno}'

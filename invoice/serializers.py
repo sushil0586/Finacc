@@ -967,41 +967,41 @@ class stocktransactionsale:
         if self.order.billcash == 0:
             iscash = True
             cash = const.getcashid(pentity)
-            StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
 
-        StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', quantity=qty, voucherno=self.order.billno)
+        StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', quantity=qty, voucherno=self.order.billno)
         
         if tcs206C2 > 0:
-            StockTransactions.objects.create(accounthead=tcs206C2id.accounthead, account=tcs206C2id, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tcs206C2, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tcs206C2, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=tcs206C2id.accounthead, account=tcs206C2id, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tcs206C2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tcs206C2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
         
         if tcs206c1ch2 > 0:
-            StockTransactions.objects.create(accounthead=tcs206c1ch2id.accounthead, account=tcs206c1ch2id, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tcs206c1ch2, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tcs206c1ch2, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=tcs206c1ch2id.accounthead, account=tcs206c1ch2id, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tcs206c1ch2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tcs206c1ch2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
         
         if expenses > 0:
-            StockTransactions.objects.create(accounthead=expensesid.accounthead, account=expensesid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=expenses, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=expensesid.accounthead, account=expensesid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=expenses, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
         
         if tds194q1 > 0:
             tdsvbo = const.gettdsvbono(pentity)
             tdsreturnid = const.gettdsreturnid()
             tdstypeid = const.gettdstypeid()
             tdsmain.objects.create(voucherdate=self.order.sorderdate, voucherno=tdsvbo, creditaccountid=self.order.accountid, debitaccountid=tds194q1id, tdsaccountid=tds194q1id, tdsreturnccountid=tdsreturnid, tdstype=tdstypeid, debitamount=subtotal, tdsrate=self.order.tds194q, entityid=pentity, transactiontype=self.transactiontype, transactionno=id, tdsvalue=tds194q1)
-            StockTransactions.objects.create(accounthead=tds194q1id.accounthead, account=tds194q1id, transactiontype=self.transactiontype, transactionid=id, desc='TD194Q:' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tds194q1, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TDS194Q:' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tds194q1, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=tds194q1id.accounthead, account=tds194q1id, transactiontype=self.transactiontype, transactionid=id, desc='TD194Q:' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tds194q1, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TDS194Q:' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tds194q1, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
 
         if igst > 0:
-            StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
         
         if cgst > 0:
-            StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
         
         if sgst > 0:
-            StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
         
         if cess > 0:
-            StockTransactions.objects.create(accounthead=cessid.accounthead, account=cessid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cess, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=cessid.accounthead, account=cessid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cess, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
             
         return id
 
@@ -1032,7 +1032,7 @@ class stocktransactionsale:
             creditamount=detail.amount - detail.othercharges,
             entrydate=self.order.sorderdate,
             entity=self.order.entity,
-            createdby=self.order.owner,
+            createdby=self.order.createdby,
             entry=entryid,
             accounttype='DD',
             isactive=self.order.isactive,
@@ -1054,7 +1054,7 @@ class stocktransactionsale:
             creditamount=detail.amount - detail.othercharges,
             entrydate=self.order.sorderdate,
             entity=self.order.entity,
-            createdby=self.order.owner,
+            createdby=self.order.createdby,
             entry=entryid,
             accounttype='MD',
             isactive=self.order.isactive,
@@ -1078,7 +1078,7 @@ class stocktransactionsale:
             creditamount=detail.amount,
             entrydate=self.order.sorderdate,
             entity=self.order.entity,
-            createdby=self.order.owner,
+            createdby=self.order.createdby,
             entry=entryid,
             accounttype='M',
             isactive=self.order.isactive,
@@ -1130,17 +1130,17 @@ class gststocktransaction:
             if self.order.billcash == 0:
                 iscash = True
                 cash = const.getcashid(pentity)
-                StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
-                StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
 
-            StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', voucherno=self.order.billno)
 
             if igst > 0:
-                StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if cgst > 0:
-                StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if sgst > 0:
-                StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
 
         if self.transactiontype == 'sp':
             if self.entrytype == 'U':
@@ -1149,17 +1149,17 @@ class gststocktransaction:
             if self.order.billcash == 0:
                 iscash = True
                 cash = const.getcashid(pentity)
-                StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
-                StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
 
-            StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=gtotal, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=gtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', voucherno=self.order.billno)
 
             if igst > 0:
-                StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=igst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=igst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if cgst > 0:
-                StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=cgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=cgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if sgst > 0:
-                StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=sgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=sgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
 
         if self.transactiontype == 'pr':
             if self.entrytype == 'U':
@@ -1168,24 +1168,24 @@ class gststocktransaction:
             if self.order.billcash == 0:
                 iscash = True
                 cash = const.getcashid(pentity)
-                StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
-                StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
 
-            StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=subtotal, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', voucherno=self.order.billno)
+            StockTransactions.objects.create(accounthead=self.order.account.accounthead, account=self.order.account, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=subtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, accounttype='M', voucherno=self.order.billno)
 
             if igst > 0:
-                StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=igst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=igst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if cgst > 0:
-                StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=cgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=cgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if sgst > 0:
-                StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=sgst, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=sgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
 
             if igstr > 0:
-                StockTransactions.objects.create(accounthead=igstrid.accounthead, account=igstrid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igstr, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=igstrid.accounthead, account=igstrid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igstr, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if cgstr > 0:
-                StockTransactions.objects.create(accounthead=cgstrid.accounthead, account=cgstrid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgstr, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=cgstrid.accounthead, account=cgstrid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgstr, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
             if sgstr > 0:
-                StockTransactions.objects.create(accounthead=sgstrid.accounthead, account=sgstrid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgstr, entity=self.order.entity, createdby=self.order.owner, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
+                StockTransactions.objects.create(accounthead=sgstrid.accounthead, account=sgstrid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgstr, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.orderdate, voucherno=self.order.billno)
 
         return id
 
@@ -1208,7 +1208,7 @@ class gststocktransaction:
                 creditamount=detail.amount,
                 entrydate=self.order.orderdate,
                 entity=self.order.entity,
-                createdby=self.order.owner,
+                createdby=self.order.createdby,
                 entry=entryid,
                 accounttype='M',
                 isactive=self.order.isactive,
@@ -1228,7 +1228,7 @@ class gststocktransaction:
                 debitamount=detail.amount,
                 entrydate=self.order.orderdate,
                 entity=self.order.entity,
-                createdby=self.order.owner,
+                createdby=self.order.createdby,
                 entry=entryid,
                 accounttype='M',
                 isactive=self.order.isactive,
@@ -1248,7 +1248,7 @@ class gststocktransaction:
                 debitamount=detail.amount,
                 entrydate=self.order.orderdate,
                 entity=self.order.entity,
-                createdby=self.order.owner,
+                createdby=self.order.createdby,
                 entry=entryid,
                 accounttype='M',
                 isactive=self.order.isactive,
@@ -1708,7 +1708,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
-            'subentity', 'entity', 'entityname', 'entityaddress', 'entitygst', 'owner', 'eway',
+            'subentity', 'entity', 'entityname', 'entityaddress', 'entitygst', 'createdby', 'eway',
             'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc',
             'entitypan', 'saleInvoiceDetails', 'gst_summary'
         )
@@ -2000,7 +2000,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
     gstorderservicesdetails = gstorderservicesdetailsSerializer(many=True)
     class Meta:
         model = gstorderservices
-        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','multiplier','expensesaftertax','gtotal','remarks','entityfinid', 'entity','owner','gstorderservicesdetails','isactive',)
+        fields = ('id','orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','multiplier','expensesaftertax','gtotal','remarks','entityfinid', 'entity','createdby','gstorderservicesdetails','isactive',)
 
 
     
@@ -2038,7 +2038,7 @@ class gstorderservicesSerializer(serializers.ModelSerializer):
             return order
 
     def update(self, instance, validated_data):
-        fields = ['orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','multiplier','expensesaftertax','gtotal','remarks','entityfinid', 'entity','owner',]
+        fields = ['orderdate','billno','account','taxtype','billcash','grno','vehicle','orderType','totalgst','subtotal','expensesbeforetax','cgst','sgst','igst','igstreverse','cgstreverse','sgstreverse','multiplier','expensesaftertax','gtotal','remarks','entityfinid', 'entity','createdby',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -2064,7 +2064,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
     
@@ -2114,7 +2114,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
             'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless',
             'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst','isigst','invoicetype','reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'isactive',
-            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'owner',
+            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby',
         ]
         for field in fields:
             try:
@@ -2150,7 +2150,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                   'billcash', 'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport',
                   'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1',
                   'tcs206C2', 'addless', 'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst', 'cess', 'totalgst',
-                  'expenses', 'gtotal', 'entityfinid', 'subentity', 'entity', 'owner', 'isactive', 'salesOrderDetail',)
+                  'expenses', 'gtotal', 'entityfinid', 'subentity', 'entity', 'createdby', 'isactive', 'salesOrderDetail',)
 
     def create(self, validated_data):
         with transaction.atomic():
@@ -2174,7 +2174,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                   'billcash', 'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport',
                   'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1',
                   'tcs206C2', 'addless', 'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst', 'cess', 'totalgst',
-                  'expenses', 'gtotal', 'isactive', 'entityfinid', 'subentity', 'entity', 'owner', ]
+                  'expenses', 'gtotal', 'isactive', 'entityfinid', 'subentity', 'entity', 'createdby', ]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -2311,7 +2311,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseReturn
        # fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','vehicle','taxtype','billcash','supply','shippedto','remarks','transport','broker','tds194q','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','subtotal','subtotal','cgst','sgst','igst','expenses','gtotal','entity','owner','purchasereturndetails',)
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive','purchasereturndetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails',)
 
 
     def create(self, validated_data):
@@ -2342,7 +2342,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','owner','isactive',]
+        fields = ['sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','isactive',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])

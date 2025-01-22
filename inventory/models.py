@@ -162,7 +162,7 @@ class Product(TrackingModel):
 class Album(models.Model):
     album_name = models.CharField(max_length=100)
     artist = models.CharField(max_length=100)
-    owner = models.ForeignKey(to= User, on_delete= models.CASCADE)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
 class Track(models.Model):
     album = models.ForeignKey(Album, related_name='tracks', on_delete=models.CASCADE)

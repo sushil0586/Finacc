@@ -6,13 +6,13 @@ from financial.models import accountHead,account,accounttype
 
 
 class accountheadAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['name','code','accountheadsr','entity','owner']
+    list_display = ['name','code','accountheadsr','entity','createdby']
     list_filter = (
         ('entity', admin.RelatedOnlyFieldListFilter),
     )
     
 class accountAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['accountname','accounthead','accountcode','gstno','entity','owner']
+    list_display = ['accountname','accounthead','accountcode','gstno','entity','createdby']
     list_filter = (
         ('entity', admin.RelatedOnlyFieldListFilter),
     )

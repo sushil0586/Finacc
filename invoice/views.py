@@ -540,7 +540,7 @@ class SalesOderHeaderApiView(ListCreateAPIView):
     filterset_fields = ['billno','sorderdate','entityfinid']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -560,7 +560,7 @@ class SalesOderApiView(ListCreateAPIView):
     filterset_fields = ['billno','sorderdate','entityfinid']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -581,7 +581,7 @@ class gstorderservicesApiView(ListCreateAPIView):
     filterset_fields = ['billno','orderdate','entityfinid','orderType']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -622,7 +622,7 @@ class salesOrderdetailsApiView(ListCreateAPIView):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
         return salesOrderdetails.objects.filter()
@@ -931,7 +931,7 @@ class PurchaseReturnApiView(ListCreateAPIView):
     filterset_fields = ['billno','sorderdate','entityfinid']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')

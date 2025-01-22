@@ -32,7 +32,7 @@ class AccountHeadApiView(ListCreateAPIView):
         """
         Customizes the creation process to associate the newly created account head with the authenticated user.
         """
-        serializer.save(owner=self.request.user)
+        serializer.save(createdby=self.request.user)
 
     def get_queryset(self):
         """
@@ -57,7 +57,7 @@ class AccountHeadUpdateDeleteApiView(RetrieveUpdateDestroyAPIView):
         """
         Restricts the queryset to accountHead objects owned by the authenticated user.
         """
-        return accountHead.objects.filter(owner=self.request.user)
+        return accountHead.objects.filter(createdby=self.request.user)
     
 
 
@@ -222,7 +222,7 @@ class accountApiView(ListCreateAPIView):
     #filterset_fields = ['gstno']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -258,7 +258,7 @@ class accountupdatedelApiView(RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        return account.objects.filter(owner = self.request.user)
+        return account.objects.filter(createdby = self.request.user)
 
 
 

@@ -63,7 +63,7 @@ class gstorderservices(TrackingModel):
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
-    owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     class Meta:
         unique_together = ('billno', 'entity','orderType','entityfinid',)
@@ -149,7 +149,8 @@ class SalesOderHeader(TrackingModel):
     eway =   models.BooleanField(default=False)
     einvoice =   models.BooleanField(default=False)
     einvoicepluseway =   models.BooleanField(default=False)
-    owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+   
 
     class Meta:
         unique_together = ('billno', 'entity','entityfinid',)
@@ -232,7 +233,7 @@ class SalesOder(TrackingModel):
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
-    owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     class Meta:
         unique_together = ('billno', 'entity','entityfinid',)
@@ -329,7 +330,7 @@ class PurchaseReturn(TrackingModel):
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
-    owner = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
+    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
     # class Meta:
     #     #unique_together = ('billno', 'entity',)
