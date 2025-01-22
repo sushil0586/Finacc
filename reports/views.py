@@ -3012,34 +3012,37 @@ class DayDetails(APIView):
         except entityfinancialyear.DoesNotExist:
             return Response({"error": "Financial year not found."}, status=404)
 
-        # Filter stock transactions
+        # Combine filters to reduce redundant queries
+        filter_conditions = Q(entry__entrydate1__range=(currentdates.finstartyear, enddate)) & Q(isactive=1) & Q(entity=entity)
+
+        # First Query: Stock transactions (filtered)
         stk = StockTransactions.objects.filter(
-            entry__entrydate1__range=(currentdates.finstartyear, enddate),
-            isactive=1,
-            entity=entity,
-            accounttype__in=['M', 'CIH'],
-            iscashtransaction=1
+            filter_conditions & Q(accounttype__in=['M', 'CIH']) & Q(iscashtransaction=1)
         ).values(
-            'account__id', 'account__accountname', 'transactiontype',
-            'transactionid', 'desc', 'entry__entrydate1',
-            'debitamount', 'creditamount', 'drcr', 'accounttype', 'entry'
+            'account__id', 'account__accountname', 'transactiontype', 'transactionid', 'desc', 
+            'entry__entrydate1', 'drcr', 'accounttype', 'entry'
+        ).annotate(
+            debitamount=Sum('debitamount'),
+            creditamount=Sum('creditamount')
         ).order_by('entry__entrydate1')
 
         # Load transactions to dataframe
         df = read_frame(stk)
 
-        # Filter more detailed stock transactions
+        # Second Query: Stock transactions details (more detailed filtering)
         stkdetails = StockTransactions.objects.filter(
-            entry__entrydate1__range=(currentdates.finstartyear, enddate),
-            isactive=1,
-            entity=entity
-        ).exclude(accounttype__in=['MD']).values(
-            'account__id', 'account__accountname', 'transactiontype',
-            'transactionid', 'desc', 'entry__entrydate1',
-            'debitamount', 'creditamount', 'drcr', 'accounttype', 'entry'
+            filter_conditions
+        ).exclude(
+            accounttype__in=['MD']
+        ).values(
+            'account__id', 'account__accountname', 'transactiontype', 'transactionid', 'desc', 
+            'entry__entrydate1', 'drcr', 'accounttype', 'entry'
+        ).annotate(
+            debitamount=Sum('debitamount'),
+            creditamount=Sum('creditamount')
         ).order_by('entry__entrydate1')
 
-        # Apply transaction type filter if provided
+                # Apply transaction type filter if provided
         transactiontype = request.data.get('transactiontype')
         if transactiontype:
             transactiontype_list = [str(x) for x in transactiontype.split(',')]
@@ -3100,6 +3103,9 @@ class DayDetails(APIView):
         bsdfnew = accdetails.merge(bsdf, on='entrydate')
         bsdfnew = bsdfnew[(bsdfnew['entrydate'] >= startdate.date()) &
                           (bsdfnew['entrydate'] <= enddate.date())]
+        
+
+        print(bsdfnew.columns.tolist())
 
         # Prepare final JSON response
         if not bsdfnew.empty:
@@ -3110,6 +3116,15 @@ class DayDetails(APIView):
                                             'debitamount', 'creditamount',
                                             'drcr']].to_dict('records'))
                  .reset_index().rename(columns={0: 'accounts'}).to_dict('records'))
+            
+            #    j = (grouped.apply(
+            #         lambda x: x.groupby(['accountid', 'accountname'])
+            #                 .apply(lambda y: y[['desc', 'debitamount', 'creditamount', 'drcr']].to_dict('records'))
+            #                 .reset_index(name='transactions')
+            #                 .to_dict('records')
+            #     )
+            #     .reset_index(name='accounts')
+            #     .to_dict('records'))
         else:
             j = []
 
