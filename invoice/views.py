@@ -27,17 +27,17 @@ from invoice.serializers import (
     entitySerializer1, cbserializer, ledgerserializer, ledgersummaryserializer,
     stockledgersummaryserializer, stockledgerbookserializer, balancesheetserializer,
     gstr1b2bserializer, gstr1hsnserializer, purchasetaxtypeserializer, tdsmainSerializer,
-    tdsVSerializer, tdstypeSerializer, tdsmaincancelSerializer, saleinvoicecancelSerializer,
-    purchaseinvoicecancelSerializer, purchasereturncancelSerializer, salesreturncancelSerializer,
-    journalcancelSerializer, stockcancelSerializer, SalesOrderHeaderPDFSerializer,
-    productionmainSerializer, productionVSerializer, productioncancelSerializer,
-    tdsreturnSerializer, gstorderservicesSerializer, SSSerializer, gstorderservicecancelSerializer,
-    jobworkchallancancelSerializer, JwvoucherSerializer, jobworkchallanSerializer,
+    tdsVSerializer, tdstypeSerializer, TdsmaincancelSerializer, SaleinvoicecancelSerializer,
+    PurchaseinvoicecancelSerializer, PurchasereturncancelSerializer, SalesreturncancelSerializer,
+    JournalcancelSerializer, StockcancelSerializer, SalesOrderHeaderPDFSerializer,
+    productionmainSerializer, productionVSerializer, ProductioncancelSerializer,
+    tdsreturnSerializer, gstorderservicesSerializer, SSSerializer, GstorderservicecancelSerializer,
+    JobworkchallancancelSerializer, JwvoucherSerializer, jobworkchallanSerializer,
     debitcreditnoteSerializer, dcnoSerializer, debitcreditcancelSerializer,
     closingstockSerializer, balancesheetclosingserializer, purchaseorderimportSerializer,
-    PISerializer, purchaseimportcancelSerializer, newpurchaseorderSerializer,
+    PISerializer, PurchaseimportcancelSerializer, newpurchaseorderSerializer,
     newPurchaseOrderDetailsSerializer, newPOSerializer, SalesOrderSerializer,
-    SOnewSerializer, salesordercancelSerializer, purchaseordercancelSerializer,
+    SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
     SalesOrderGSTSummarySerializer,InvoiceTypeSerializer
 )
 from rest_framework import permissions,status
@@ -358,7 +358,7 @@ class tdsmainupdatedel(RetrieveUpdateDestroyAPIView):
 
 class tdsmaincancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = tdsmaincancelSerializer
+    serializer_class = TdsmaincancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -368,7 +368,7 @@ class tdsmaincancel(RetrieveUpdateDestroyAPIView):
 
 class salesordercancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = saleinvoicecancelSerializer
+    serializer_class = SaleinvoicecancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -378,7 +378,7 @@ class salesordercancel(RetrieveUpdateDestroyAPIView):
     
 class saleordercancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = salesordercancelSerializer
+    serializer_class = SalesordercancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -390,7 +390,7 @@ class saleordercancel(RetrieveUpdateDestroyAPIView):
 
 class gstservicescancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = gstorderservicecancelSerializer
+    serializer_class = GstorderservicecancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -401,7 +401,7 @@ class gstservicescancel(RetrieveUpdateDestroyAPIView):
 
 class newpurchaseordercancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = purchaseordercancelSerializer
+    serializer_class = PurchaseordercancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -412,7 +412,7 @@ class newpurchaseordercancel(RetrieveUpdateDestroyAPIView):
 
 class purchaseordercancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = purchaseinvoicecancelSerializer
+    serializer_class = PurchaseinvoicecancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -423,7 +423,7 @@ class purchaseordercancel(RetrieveUpdateDestroyAPIView):
     
 class purchaseimportcancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = purchaseimportcancelSerializer
+    serializer_class = PurchaseimportcancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -434,7 +434,7 @@ class purchaseimportcancel(RetrieveUpdateDestroyAPIView):
 
 class jobworkchalancancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = jobworkchallancancelSerializer
+    serializer_class = JobworkchallancancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -445,7 +445,7 @@ class jobworkchalancancel(RetrieveUpdateDestroyAPIView):
 
 class purchasereturncancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = purchasereturncancelSerializer
+    serializer_class = PurchasereturncancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -455,7 +455,7 @@ class purchasereturncancel(RetrieveUpdateDestroyAPIView):
 
 class journalmaincancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = journalcancelSerializer
+    serializer_class = JournalcancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -467,7 +467,7 @@ class journalmaincancel(RetrieveUpdateDestroyAPIView):
 
 class productionmaincancel(UpdateAPIView):
 
-    serializer_class = productioncancelSerializer
+    serializer_class = ProductioncancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -481,7 +481,7 @@ class productionmaincancel(UpdateAPIView):
 
 class stockmaincancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = stockcancelSerializer
+    serializer_class = StockcancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
@@ -492,7 +492,7 @@ class stockmaincancel(RetrieveUpdateDestroyAPIView):
 
 class salesreturncancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = salesreturncancelSerializer
+    serializer_class = SalesreturncancelSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 

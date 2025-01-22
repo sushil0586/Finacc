@@ -2,7 +2,7 @@ from django.db import models
 from django.db.models.fields import NullBooleanField
 from helpers.models import TrackingModel
 from Authentication.models import User,MainMenu,Submenu
-from geography.models import country,state,district,city
+from geography.models import Country,State,District,City
 #from Authentication.models import User 
 
 # Create your models here.
@@ -43,10 +43,10 @@ class Entity(TrackingModel):
     addressfloorno =     models.CharField(max_length= 255,null= True,blank = True)
     addressstreet =     models.CharField(max_length= 255,null= True,blank = True)
     ownername =   models.CharField(max_length= 255)
-    country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
-    state =       models.ForeignKey(state, on_delete=models.CASCADE,null= True)
-    district =    models.ForeignKey(district, on_delete=models.CASCADE,null= True)
-    city =        models.ForeignKey(city, on_delete=models.CASCADE,null= True)
+    country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
+    state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
+    district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
+    city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
     pincode =    models.CharField(max_length= 255,null= True)
     phoneoffice = models.CharField(max_length= 255)
     phoneresidence = models.CharField(max_length= 255)
@@ -80,8 +80,8 @@ class GstAccountsdetails(TrackingModel):
     addrBno = models.CharField(max_length= 255,null= True)
     addrFlno = models.CharField(max_length= 255,null= True)
     addrSt = models.CharField(max_length= 255,null= True)
-    addrLoc =  models.ForeignKey(city, on_delete=models.CASCADE,null= True)
-    stateCode = models.ForeignKey(state, on_delete=models.CASCADE,null= True)
+    addrLoc =  models.ForeignKey(City, on_delete=models.CASCADE,null= True)
+    stateCode = models.ForeignKey(State, on_delete=models.CASCADE,null= True)
     addrPncd = models.CharField(max_length= 10,null= True)
     txpType = models.CharField(max_length= 25,null= True)
     status = models.CharField(max_length= 25,null= True)
@@ -94,10 +94,10 @@ class GstAccountsdetails(TrackingModel):
 class subentity(TrackingModel):
     subentityname =  models.CharField(max_length= 255)
     address =     models.CharField(max_length= 255)
-    country =     models.ForeignKey(country, on_delete=models.CASCADE,null= True)
-    state =       models.ForeignKey(state, on_delete=models.CASCADE,null= True)
-    district =    models.ForeignKey(district, on_delete=models.CASCADE,null= True)
-    city =        models.ForeignKey(city, on_delete=models.CASCADE,null= True)
+    country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
+    state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
+    district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
+    city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
     pincode =    models.CharField(max_length= 255,null= True)
     phoneoffice = models.CharField(max_length= 255,null= True)
     phoneresidence = models.CharField(max_length= 255,null= True)

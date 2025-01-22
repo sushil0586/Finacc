@@ -42,44 +42,35 @@ class Registerserializers(serializers.ModelSerializer):
 
 
     
-class Registerserializer(serializers.ModelSerializer):
-
-    password = serializers.CharField(max_length = 128, min_length = 6, write_only = True)
-
-   
-
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(
+        max_length=128,
+        min_length=6,
+        write_only=True
+    )
 
     class Meta:
         model = User
-        queryset = User.objects.filter(is_active = 1)
-        fields = ('username','first_name','last_name','email','password',)
-
-        
+        fields = ('username', 'first_name', 'last_name', 'email', 'password')
+        # Removed `queryset` as it's not valid in `Meta` for serializers
 
     def create(self, validated_data):
-        user = User.objects.create(**validated_data)
-        print(user)
-        # groups_data = validated_data.pop('groups')
-        # user = User.objects.create_user(**validated_data)
-        # for group_data in groups_data:
-        #      # Group.objects.create(user=user, **group_data)
-        #      user.groups.add(group_data)
+        # Create a new user instance and hash the password
+        user = User.objects.create_user(**validated_data)
+        print(user)  # Consider logging instead of printing in production
         return user
 
-class Userserializer(serializers.ModelSerializer):
-
-    password = serializers.CharField(max_length = 128, min_length = 6, write_only = True)
-
-   # userentity = entityUserSerializer(many=True)
-
-    #userentity = entityUserSerializer(many=True)
-
-   # roleid = serializers.SerializerMethodField()
-
+class UserSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(
+        max_length=128,
+        min_length=6,
+        write_only=True
+    )
+  
 
     class Meta:
         model = User
-        fields = ('first_name','last_name','email','password','uentity',)
+        fields = ('first_name', 'last_name', 'email', 'password', 'uentity')
         depth = 1
 
     
@@ -93,15 +84,16 @@ class Userserializer(serializers.ModelSerializer):
        
 
 class LoginSerializer(serializers.ModelSerializer):
-
-    password = serializers.CharField(max_length = 128, min_length = 6, write_only = True)
-
+    password = serializers.CharField(
+        max_length=128,
+        min_length=6,
+        write_only=True
+    )
 
     class Meta:
         model = User
-        fields = ('email','password','token','id',)
-
-        read_only_fields = ['token']
+        fields = ('email', 'password', 'token', 'id')
+        read_only_fields = ('token',)
 
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -121,33 +113,27 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 
-class submenuSerializer(serializers.ModelSerializer):
-    mainmenu= serializers.SerializerMethodField()
-    def get_mainmenu(self, obj):
-
-            return obj.mainmenu.mainmenu    
+class SubmenuSerializer(serializers.ModelSerializer):
+    mainmenu = serializers.ReadOnlyField(source='mainmenu.mainmenu')
 
     class Meta:
         model = Submenu
-        fields =  ( 'id','submenu','submenucode','subMenuurl','mainmenu',)
-        order_by = ('order')
+        fields = ('id', 'submenu', 'submenucode', 'subMenuurl', 'mainmenu')
+        ordering = ['order']  # Corrected `order_by` to `ordering` for proper usage
 
         
 
 
 
-class mainmenuserializer(serializers.ModelSerializer):
-    submenu = submenuSerializer(many=True)
+class MainMenuSerializer(serializers.ModelSerializer):
+    submenu = SubmenuSerializer(many=True)
     #accountname= serializers.SerializerMethodField()
     class Meta:
         model = MainMenu
         fields = ('mainmenu','menuurl','menucode','submenu',)
 
 
-        def get_accountname(self, obj):
-         print(obj)
-
-         return obj.account.accountname
+       
 
 
 

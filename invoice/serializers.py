@@ -37,318 +37,294 @@ class InvoiceTypeSerializer(serializers.ModelSerializer):
 
 
 
-class tdsmaincancelSerializer(serializers.ModelSerializer):
+# Base Serializer to handle common update logic
+class BaseCancelSerializer(serializers.ModelSerializer):
+    fields_to_update = ['isactive', 'createdby']
 
+    def update(self, instance, validated_data):
+        # Efficiently update only the fields present in validated_data
+        for field in self.fields_to_update:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+        
+        # Save instance only if necessary
+        if any(getattr(instance, field) != validated_data.get(field) for field in self.fields_to_update):
+            instance.save()
+
+        return instance
+
+# Serializer for each model
+class TdsmaincancelSerializer(BaseCancelSerializer):
     class Meta:
         model = tdsmain
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id,transactiontype = 'T').update(isactive = instance.isactive)
+        # Efficiently update entry if necessary
+        entry.objects.update_or_create(
+            entrydate1=instance.voucherdate,
+            entity=instance.entityid,
+            defaults={'created': instance.created}
+        )
+
+        # Efficiently update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entityid,
+            transactionid=instance.id,
+            transactiontype='T'
+        ).update(isactive=instance.isactive)
+
         return instance
 
-class saleinvoicecancelSerializer(serializers.ModelSerializer):
-
+class SaleinvoicecancelSerializer(BaseCancelSerializer):
     class Meta:
         model = SalesOderHeader
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='S'
+        ).update(isactive=instance.isactive)
+
         return instance
-    
-class salesordercancelSerializer(serializers.ModelSerializer):
 
+class SalesordercancelSerializer(BaseCancelSerializer):
     class Meta:
         model = SalesOder
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
-
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-      #  StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'S').update(isactive = instance.isactive)
+        super().update(instance, validated_data)
         return instance
-    
 
-class gstorderservicecancelSerializer(serializers.ModelSerializer):
-
+class GstorderservicecancelSerializer(BaseCancelSerializer):
     class Meta:
         model = gstorderservices
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-        entryid,created  = entry.objects.get_or_create(entrydate1 = instance.orderdate,entity=instance.entity)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = instance.orderType).update(isactive = instance.isactive)
+        # Create or update entry
+        entry.objects.get_or_create(entrydate1=instance.orderdate, entity=instance.entity)
+
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype=instance.orderType
+        ).update(isactive=instance.isactive)
+
         return instance
 
-
-class purchaseinvoicecancelSerializer(serializers.ModelSerializer):
-
+class PurchaseinvoicecancelSerializer(BaseCancelSerializer):
     class Meta:
         model = purchaseorder
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='P'
+        ).update(isactive=instance.isactive)
+
         return instance
-    
 
-
-
-class purchaseordercancelSerializer(serializers.ModelSerializer):
-
+class PurchaseordercancelSerializer(BaseCancelSerializer):
     class Meta:
         model = purchaseorder
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
-
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-       # StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
+        super().update(instance, validated_data)
         return instance
 
-
-class purchaseimportcancelSerializer(serializers.ModelSerializer):
-
+class PurchaseimportcancelSerializer(BaseCancelSerializer):
     class Meta:
         model = purchaseorderimport
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='P'
+        ).update(isactive=instance.isactive)
+
         return instance
 
-
-class jobworkchallancancelSerializer(serializers.ModelSerializer):
-
+class JobworkchallancancelSerializer(BaseCancelSerializer):
     class Meta:
         model = jobworkchalan
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
-
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        #StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'P').update(isactive = instance.isactive)
+        super().update(instance, validated_data)
         return instance
 
-
-class purchasereturncancelSerializer(serializers.ModelSerializer):
-
+class PurchasereturncancelSerializer(BaseCancelSerializer):
     class Meta:
         model = PurchaseReturn
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'PR').update(isactive = instance.isactive)
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='PR'
+        ).update(isactive=instance.isactive)
+
         return instance
 
-
-class salesreturncancelSerializer(serializers.ModelSerializer):
-
+class SalesreturncancelSerializer(BaseCancelSerializer):
     class Meta:
         model = salereturn
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'SR').update(isactive = instance.isactive)
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='SR'
+        ).update(isactive=instance.isactive)
+
         return instance
 
-
-class journalcancelSerializer(serializers.ModelSerializer):
-
+class JournalcancelSerializer(BaseCancelSerializer):
     class Meta:
         model = journalmain
-        fields = ('isactive','vouchertype',)
+        fields = ('isactive', 'vouchertype')
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['vouchertype','isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = instance.vouchertype).update(isactive = instance.isactive)
+        # Update stock transactions based on voucher type
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype=instance.vouchertype
+        ).update(isactive=instance.isactive)
+
         return instance
 
-
-class productioncancelSerializer(serializers.ModelSerializer):
-
+class ProductioncancelSerializer(BaseCancelSerializer):
     class Meta:
         model = productionmain
-        fields = ('isactive','vouchertype',)
+        fields = ('isactive', 'vouchertype')
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['vouchertype','isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = instance.vouchertype).update(isactive = instance.isactive)
+        # Update stock transactions based on voucher type
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype=instance.vouchertype
+        ).update(isactive=instance.isactive)
+
         return instance
 
-
-class stockcancelSerializer(serializers.ModelSerializer):
-
+class StockcancelSerializer(BaseCancelSerializer):
     class Meta:
         model = stockmain
         fields = ('isactive',)
 
-    
     def update(self, instance, validated_data):
+        super().update(instance, validated_data)
 
-        fields = ['isactive','createdby',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        instance.save()
-      # entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-        StockTransactions.objects.filter(entity = instance.entity,transactionid = instance.id,transactiontype = 'PC').update(isactive = instance.isactive)
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='PC'
+        ).update(isactive=instance.isactive)
+
         return instance
 
 
 
 
 class tdsmainSerializer(serializers.ModelSerializer):
-
-
-   # pcategoryname = serializers.SerializerMethodField()
-
     class Meta:
         model = tdsmain
-        fields ='__all__'
+        fields = '__all__'
+
+    def _create_stock_transaction(self, tds, entryid, drcr, creditamount, debitamount):
+        return StockTransactions(
+            accounthead=tds.creditaccountid.accounthead,
+            account=tds.creditaccountid,
+            transactiontype='T',
+            transactionid=tds.id,
+            desc=f'By Tds Voucher no {tds.voucherno}',
+            drcr=drcr,
+            creditamount=creditamount,
+            debitamount=debitamount,
+            entity=tds.entityid,
+            createdby=tds.createdby,
+            entry=entryid,
+            entrydatetime=tds.voucherdate,
+            accounttype='M',
+            voucherno=tds.voucherno
+        )
+
+    def _create_or_update_transactions(self, tds, entryid):
+        transactions = [
+            self._create_stock_transaction(tds, entryid, 0, tds.debitamount, None),  # DR transaction
+            self._create_stock_transaction(tds, entryid, 1, None, tds.grandtotal),  # CR transaction
+            self._create_stock_transaction(tds, entryid, 1, None, tds.debitamount),  # DR transaction (debit account)
+            self._create_stock_transaction(tds, entryid, 0, tds.grandtotal, None)  # CR transaction (TDS account)
+        ]
+        # Use bulk_create for batch insertion
+        StockTransactions.objects.bulk_create(transactions)
 
     def create(self, validated_data):
-        #print(validated_data)
-        #journaldetails_data = validated_data.pop('journaldetails')
         with transaction.atomic():
             tds = tdsmain.objects.create(**validated_data)
-            entryid,created  = entry.objects.get_or_create(entrydate1 = tds.voucherdate,entity=tds.entityid)
-            StockTransactions.objects.create(accounthead= tds.creditaccountid.accounthead,account= tds.creditaccountid,transactiontype = 'T',transactionid = tds.id,desc ='By Tds Voucher no ' + str(tds.voucherno),drcr=0,creditamount=tds.debitamount,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M',voucherno = tds.voucherno)
-            StockTransactions.objects.create(accounthead= tds.creditaccountid.accounthead,account= tds.creditaccountid,transactiontype = 'T',transactionid = tds.id,desc ='By Tds Voucher no ' + str(tds.voucherno),drcr=1,creditamount=tds.grandtotal,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M',voucherno = tds.voucherno)
-            StockTransactions.objects.create(accounthead= tds.debitaccountid.accounthead,account= tds.debitaccountid,transactiontype = 'T',transactionid = tds.id,desc = 'By Tds Voucher no ' + str(tds.voucherno),drcr=1,debitamount=tds.debitamount,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M',voucherno = tds.voucherno)
-            StockTransactions.objects.create(accounthead= tds.tdsaccountid.accounthead,account= tds.tdsaccountid,transactiontype = 'T',transactionid = tds.id,desc = 'By Tds Voucher no ' + str(tds.voucherno),drcr=0,creditamount=tds.grandtotal,entity=tds.entityid,createdby= tds.createdby,entry =entryid,entrydatetime = tds.voucherdate,accounttype = 'M',voucherno = tds.voucherno)
-
+            entryid, created = entry.objects.get_or_create(entrydate1=tds.voucherdate, entity=tds.entityid)
+            self._create_or_update_transactions(tds, entryid)
         return tds
 
     def update(self, instance, validated_data):
-        fields = ['voucherdate','voucherno','creditaccountid','creditdesc','debitaccountid','debitdesc','tdsaccountid','tdsdesc','tdsreturnccountid','tdsreturndesc','tdstype','amount','debitamount','otherexpenses','tdsrate','tdsvalue','surchargerate','surchargevalue','cessrate','cessvalue','hecessrate','hecessvalue','grandtotal','tdsreturndesc','vehicleno','grno','invoiceno','grdate','invoicedate','weight','depositdate','chequeno','ledgerposting','chalanno','bank','entityid','isactive','createdby',]
+        fields = [
+            'voucherdate', 'voucherno', 'creditaccountid', 'creditdesc', 'debitaccountid', 'debitdesc',
+            'tdsaccountid', 'tdsdesc', 'tdsreturnccountid', 'tdsreturndesc', 'tdstype', 'amount', 'debitamount',
+            'otherexpenses', 'tdsrate', 'tdsvalue', 'surchargerate', 'surchargevalue', 'cessrate', 'cessvalue',
+            'hecessrate', 'hecessvalue', 'grandtotal', 'vehicleno', 'grno', 'invoiceno', 'grdate', 'invoicedate',
+            'weight', 'depositdate', 'chequeno', 'ledgerposting', 'chalanno', 'bank', 'entityid', 'isactive', 'createdby'
+        ]
+        
+        # Efficient field assignment
         for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
+            value = validated_data.get(field)
+            if value is not None:
+                setattr(instance, field, value)
+
         with transaction.atomic():
             instance.save()
-            entryid,created  = entry.objects.get_or_create(entrydate1 = instance.voucherdate,entity=instance.entityid)
-            StockTransactions.objects.filter(entity = instance.entityid,transactionid = instance.id).delete()
-            StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=0,creditamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M',voucherno = instance.voucherno)
-            StockTransactions.objects.create(accounthead= instance.creditaccountid.accounthead,account= instance.creditaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M',voucherno = instance.voucherno)
-            StockTransactions.objects.create(accounthead= instance.debitaccountid.accounthead,account= instance.debitaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=1,debitamount=instance.debitamount,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M',voucherno = instance.voucherno)
-            StockTransactions.objects.create(accounthead= instance.tdsaccountid.accounthead,account= instance.tdsaccountid,transactiontype = 'T',transactionid = instance.id,desc = 'By Tds Voucher no ' + str(instance.voucherno),drcr=0,creditamount=instance.grandtotal,entity=instance.entityid,createdby= instance.createdby,entry =entryid,entrydatetime = instance.voucherdate,accounttype = 'M',voucherno = instance.voucherno)
+            entryid, created = entry.objects.get_or_create(entrydate1=instance.voucherdate, entity=instance.entityid)
+            # Delete old transactions before creating new ones
+            StockTransactions.objects.filter(entity=instance.entityid, transactionid=instance.id).delete()
+            self._create_or_update_transactions(instance, entryid)
 
         return instance
 
