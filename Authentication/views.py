@@ -2,10 +2,11 @@
 from django.shortcuts import render
 from rest_framework import response,status,permissions
 from rest_framework.generics import GenericAPIView,ListAPIView,UpdateAPIView,ListCreateAPIView
-from Authentication.serializers import Registerserializer,LoginSerializer,Userserializer,ChangePasswordSerializer,mainmenuserializer,submenuSerializer
-from django.contrib.auth import authenticate
+from Authentication.serializers import RegisterSerializer,LoginSerializer,UserSerializer,ChangePasswordSerializer,MainMenuSerializer,SubmenuSerializer
+from django.contrib.auth import authenticate,get_user_model
 from Authentication.models import User,MainMenu,Submenu
 from rest_framework.response import Response
+
 
 
 
@@ -15,7 +16,7 @@ class AuthApiView(ListAPIView):
 
     permission_classes = (permissions.IsAuthenticated,)
 
-    serializer_class = Userserializer
+    serializer_class = UserSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     def get_queryset(self):
@@ -35,7 +36,7 @@ class RegisterApiView(ListCreateAPIView):
 
     permission_classes = (permissions.AllowAny,)
     authentication_classes = []
-    serializer_class = Registerserializer
+    serializer_class = RegisterSerializer
 
 
     def perform_create(self, serializer):
@@ -52,24 +53,36 @@ class RegisterApiView(ListCreateAPIView):
 class LoginApiView(GenericAPIView):
     permission_classes = (permissions.AllowAny,)
     authentication_classes = []
-
     serializer_class = LoginSerializer
 
+    def post(self, request):
+        email = request.data.get('email')
+        password = request.data.get('password')
 
-    def post(self,request):
-        email = request.data.get('email',None)
-        password = request.data.get('password',None)
+        # Validate presence of email and password
+        if not email or not password:
+            return response.Response(
+                {'message': 'Email and password are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        user = authenticate(username = email,password = password)
+        # Try to authenticate user
+        user = authenticate(username=email, password=password)
 
         if user:
             serializer = self.serializer_class(user)
-            return response.Response(serializer.data,status = status.HTTP_200_OK)
-        return response.Response({'message': "Invalid credentials"},status = status.HTTP_401_UNAUTHORIZED)
+            return response.Response(serializer.data, status=status.HTTP_200_OK)
+
+        return response.Response(
+            {'message': 'Invalid credentials'},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
 
 
 
+
+User = get_user_model()
 
 class ChangePasswordView(UpdateAPIView):
     serializer_class = ChangePasswordSerializer
@@ -77,20 +90,33 @@ class ChangePasswordView(UpdateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get_object(self, queryset=None):
-        obj = self.request.user
-        return obj
+        # Return the currently authenticated user
+        return self.request.user
 
     def update(self, request, *args, **kwargs):
         self.object = self.get_object()
         serializer = self.get_serializer(data=request.data)
 
         if serializer.is_valid():
-            # Check old password
-            if not self.object.check_password(serializer.data.get("old_password")):
-                return Response({"old_password": ["Wrong password."]}, status=status.HTTP_400_BAD_REQUEST)
-            # set_password also hashes the password that the user will get
-            self.object.set_password(serializer.data.get("new_password"))
+            # Check if the old password is correct
+            old_password = serializer.data.get("old_password")
+            if not self.object.check_password(old_password):
+                return Response(
+                    {"old_password": ["Wrong password."]}, status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Check if the new password is different from the old password
+            new_password = serializer.data.get("new_password")
+            if old_password == new_password:
+                return Response(
+                    {"new_password": ["New password cannot be the same as the old password."]},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Set the new password (it will be hashed automatically)
+            self.object.set_password(new_password)
             self.object.save()
+
             response = {
                 'status': 'success',
                 'code': status.HTTP_200_OK,
@@ -98,52 +124,31 @@ class ChangePasswordView(UpdateAPIView):
                 'data': []
             }
 
-            return Response(response)
+            return Response(response, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 
 class MenusApiView(ListCreateAPIView):
-
-    serializer_class = mainmenuserializer
+    serializer_class = MainMenuSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
-  #  filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
-
-    #def perform_create(self, serializer):
-     #   return serializer.save(owner = self.request.user)
-    
     def get_queryset(self):
-
-        # menus = rolepriv.objects.filter().select_related('roles')
-
-        # print(menus)
-
-        return MainMenu.objects.filter().order_by('order')
-
-       # entity = self.request.query_params.get('entity')
+        # Use `only` to fetch specific fields and avoid loading unnecessary data
+        return MainMenu.objects.only(
+            'id', 'mainmenu', 'menuurl', 'menucode', 'order'
+        ).order_by('order')
     
 
-class subMenusApiView(ListCreateAPIView):
-
-    serializer_class = submenuSerializer
+class SubMenusApiView(ListCreateAPIView):
+    serializer_class = SubmenuSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
-  #  filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
-
-    #def perform_create(self, serializer):
-     #   return serializer.save(owner = self.request.user)
-    
     def get_queryset(self):
+        # Use `only` to fetch specific fields and avoid fetching unnecessary data
+        return Submenu.objects.only('id', 'submenu', 'submenucode', 'subMenuurl', 'mainmenu', 'order').order_by('order')
 
-        # menus = rolepriv.objects.filter().select_related('roles')
-
-        # print(menus)
-
-        return Submenu.objects.filter().order_by('order')
        
 
 

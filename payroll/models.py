@@ -11,7 +11,7 @@ from entity.models import Entity
 from inventory.models import Product
 from django.db.models import Sum 
 import datetime
-from geography.models import country,state,district,city
+from geography.models import Country,State,District,City
 
 
 
@@ -77,10 +77,10 @@ class employee(TrackingModel):
     pan = models.CharField(max_length= 20,verbose_name= 'Pan Card details',blank = True,null=True)
     address1       = models.CharField(max_length=50, null=True,verbose_name='Address Line 1',blank = True)
     address2       = models.CharField(max_length=50, null=True,verbose_name='Address Line 2',blank = True)
-    country       = models.ForeignKey(country,on_delete=models.CASCADE,null=True)
-    state       = models.ForeignKey(to=state,on_delete=models.CASCADE,null=True)
-    district    = models.ForeignKey(to=district,on_delete=models.CASCADE,null=True)
-    city       = models.ForeignKey(to=city,on_delete=models.CASCADE,null=True)
+    country       = models.ForeignKey(Country,on_delete=models.CASCADE,null=True)
+    state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
+    district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
+    city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,related_name='employeeuser')
 

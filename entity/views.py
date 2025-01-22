@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
 from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails
-from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,entityfinancialyearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,rolemainSerializer,userbyentitySerializer,useroleentitySerializer
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -14,7 +14,7 @@ from rest_framework.response import Response
 from django.db import transaction
 import requests,json
 from django.db.models import Count
-from geography.models import country,state,district,city
+from geography.models import Country,State,District,City
 from rest_framework import response,status,permissions
 
 
@@ -293,7 +293,7 @@ class ConstitutionApiView(ListAPIView):
 
 class entityfinancialyearApiView(ListCreateAPIView):
 
-    serializer_class = entityfinancialyearSerializer
+    serializer_class = EntityFinancialYearSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
@@ -322,7 +322,7 @@ class subentityApiView(ListCreateAPIView):
     
 class rolenewApiView(ListCreateAPIView):
 
-    serializer_class = rolemainSerializer
+    serializer_class = RoleMainSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
@@ -364,7 +364,7 @@ class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
 
 class rolenewupdatedelview(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = rolemainSerializer
+    serializer_class = RoleMainSerializer
     
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
@@ -583,12 +583,12 @@ class getgstindetails(ListAPIView):
             #     return json.loads(res["status_desc"])
             data = res["data"]
             try:
-                stateid = state.objects.get(statecode = data['StateCode'])
-            except state.DoesNotExist:
+                stateid = State.objects.get(statecode = data['StateCode'])
+            except State.DoesNotExist:
                 stateid = None
             try:
-                cityid = city.objects.get(pincode = data['AddrPncd'])
-            except city.DoesNotExist:
+                cityid = City.objects.get(pincode = data['AddrPncd'])
+            except City.DoesNotExist:
                 cityid = None
             
             GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = cityid,stateCode = stateid,addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])

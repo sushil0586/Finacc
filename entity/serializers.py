@@ -5,13 +5,14 @@ from entity.models import Entity,entity_details,unitType,entityfinancialyear,ent
 from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
-from financial.serializers import accountHeadSerializer,accountSerializer,accountHeadSerializer2,accounttypeserializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountHeadSerializer2,accounttypeserializer
 from inventory.serializers import RateCalculateSerializer,UOMSerializer,TOGSerializer,TOGSerializer,ProductCategoryMainSerializer
 from invoice.serializers import purchasetaxtypeserializer,InvoiceTypeSerializer
 import os
 import json
 import collections
 from django.contrib.auth.hashers import make_password
+from django.db import transaction
 
 
 #from Authentication.serializers import userserializer
@@ -31,7 +32,7 @@ class rolemainSerializer1(serializers.ModelSerializer):
 
 
 
-class roleprivdetailSerializer(serializers.ModelSerializer):
+class RolePrivDetailSerializer(serializers.ModelSerializer):
     
 
     class Meta:
@@ -41,40 +42,45 @@ class roleprivdetailSerializer(serializers.ModelSerializer):
 
 
 
-class rolemainSerializer(serializers.ModelSerializer):
-    submenudetails = roleprivdetailSerializer(many=True)
+class RoleMainSerializer(serializers.ModelSerializer):
+    submenudetails = RolePrivDetailSerializer(many=True)
+
     class Meta:
         model = Role
-        fields = ('id','rolename','roledesc','rolelevel','entity','submenudetails',)
+        fields = ('id', 'rolename', 'roledesc', 'rolelevel', 'entity', 'submenudetails')
+
     def create(self, validated_data):
-        roledetails_data = validated_data.pop('submenudetails')
+        roledetails_data = validated_data.pop('submenudetails', [])
+        # Create the role instance
+        role = Role.objects.create(**validated_data)
+        
+        # Bulk create RolePriv instances
+        Rolepriv.objects.bulk_create([
+            Rolepriv(role=role, **roledetail_data) for roledetail_data in roledetails_data
+        ])
+        
+        return role
 
-        roleid = Role.objects.create(**validated_data)
-        for roledetail_data in roledetails_data:
-            detail = Rolepriv.objects.create(role = roleid, **roledetail_data)
-               
-          
-        return roleid
-    
     def update(self, instance, validated_data):
-        fields = ['rolename','roledesc','rolelevel','entity',]
-        for field in fields:
-            try:
+        fields_to_update = ['rolename', 'roledesc', 'rolelevel', 'entity']
+        
+        # Update specified fields
+        for field in fields_to_update:
+            if field in validated_data:
                 setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        
         instance.save()
-       
-        Rolepriv.objects.filter(role=instance,entity = instance.entity).delete()
-        roledetails_data = validated_data.get('submenudetails')
 
-        for roledetail_data in roledetails_data:
-            detail = Rolepriv.objects.create(role = instance, **roledetail_data)
-                
+        # Clear old RolePriv entries and add new ones
+        Rolepriv.objects.filter(role=instance, entity=instance.entity).delete()
+        roledetails_data = validated_data.get('submenudetails', [])
 
-        
+        # Bulk create RolePriv instances
+        Rolepriv.objects.bulk_create([
+            Rolepriv(role=instance, **roledetail_data) for roledetail_data in roledetails_data
+        ])
+
         return instance
+
 
  
 
@@ -111,42 +117,35 @@ class entityconstitutionSerializer(serializers.ModelSerializer):
 
 
 
-class entityfinancialyearSerializer(serializers.ModelSerializer):
-
-
-    entityname = serializers.SerializerMethodField()
-    gst = serializers.SerializerMethodField()
+class EntityFinancialYearSerializer(serializers.ModelSerializer):
+    # Derived fields from related 'entity' model
+    entityname = serializers.CharField(source='entity.entityname', read_only=True)
+    gst = serializers.CharField(source='entity.gstno', read_only=True)
 
     class Meta:
         model = entityfinancialyear
-        fields = ('id','entity','entityname','gst','desc','finstartyear','finendyear','createdby','isactive',)
-
-
-    
-    def get_entityname(self,obj):
-         
-        return obj.entity.entityname
-    
-
-    def get_gst(self,obj):
-         
-        return obj.entity.gstno
-
-
+        fields = (
+            'id', 'entity', 'entityname', 'gst', 'desc',
+            'finstartyear', 'finendyear', 'createdby', 'isactive',
+        )
 
     def create(self, validated_data):
+        # Use a transaction to ensure atomicity
+        with transaction.atomic():
+            entity_id = validated_data['entity'].id
+            # Update all previous records for the entity to inactive
+            entityfinancialyear.objects.filter(entity=entity_id).update(isactive=False)
 
-
-        r1 = entityfinancialyear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
-
-
-
-        #entity= validated_data['entity'].id
-
-        fy = entityfinancialyear.objects.create(**validated_data)
-
-
-        return fy
+            # Create a new financial year record for the entity
+            return entityfinancialyear.objects.create(**validated_data)
+    
+    def validate_finstartyear(self, value):
+        """
+        Custom validation to ensure the start year is less than or equal to the end year.
+        """
+        if value > self.initial_data.get('finendyear', value):
+            raise serializers.ValidationError("Start year cannot be greater than end year.")
+        return value
     
 
 
@@ -192,7 +191,7 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
 
 class entityAddSerializer(serializers.ModelSerializer):
 
-    fy = entityfinancialyearSerializer(many=True)
+    fy = EntityFinancialYearSerializer(many=True)
     constitution = entityconstitutionSerializer(many=True)
 
     class Meta:
@@ -202,7 +201,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
-    serializer = accountHeadSerializer
+    serializer = AccountHeadSerializer
     accounthead = accountHeadSerializer2
     roleserializer = rolemainSerializer1
 

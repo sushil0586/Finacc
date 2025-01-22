@@ -5,7 +5,7 @@ from django.db import models
 from helpers.models import TrackingModel
 from django.utils.translation import gettext as _
 from Authentication.models import User 
-from geography.models import country,state,district,city
+from geography.models import Country,State,District,City
 from entity.models import Entity
 
 # Create your models here.
@@ -83,10 +83,10 @@ class account(TrackingModel):
     blockstatus = models.CharField(max_length= 10,null= True,verbose_name='Block Status')
     dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
-    country       = models.ForeignKey(country,null=True,on_delete=models.CASCADE)
-    state       = models.ForeignKey(to=state,on_delete=models.CASCADE,null=True)
-    district    = models.ForeignKey(to=district,on_delete=models.CASCADE,null=True)
-    city       = models.ForeignKey(to=city,on_delete=models.CASCADE,null=True)
+    country       = models.ForeignKey(Country,null=True,on_delete=models.CASCADE)
+    state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
+    district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
+    city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
     openingbcr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Cr'))
     openingbdr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Dr'))
     contactno       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no'))
