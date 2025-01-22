@@ -193,10 +193,10 @@ class entityDetailsApiView(ListCreateAPIView):
     filterset_fields = ['style']
 
     def perform_create(self, serializer):
-        return serializer.save(owner = self.request.user)
+        return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
-        return entity_details.objects.filter(owner = self.request.user)
+        return entity_details.objects.filter(createdby = self.request.user)
 
 
 class unitTypeApiView(ListCreateAPIView):
