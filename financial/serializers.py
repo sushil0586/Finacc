@@ -79,7 +79,8 @@ class AccountSerializer(serializers.ModelSerializer):
         """
         Handle the creation of stock transactions for opening balances (both debit and credit).
         """
-        if detail.openingbcr > 0 or detail.openingbdr > 0:
+        if (detail.openingbcr is not None and detail.openingbcr > 0) or  (detail.openingbdr is not None and detail.openingbdr > 0):
+            
             drcr = 0 if detail.openingbcr > 0 else 1
 
             # Create debit/credit stock transactions based on opening balances

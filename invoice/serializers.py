@@ -1687,13 +1687,28 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     entityname = serializers.CharField(source='entity.entityname', read_only=True)
     entitypan = serializers.CharField(source='entity.panno', read_only=True)
     entitydesc = serializers.CharField(source='entity.entitydesc', read_only=True)
-    entityaddress = serializers.SerializerMethodField()
+   # entityaddress = serializers.SerializerMethodField()
+    entityaddress = serializers.CharField(source='entity.address', read_only=True)
+    entitycityname = serializers.CharField(source='entity.city.cityname', read_only=True)
+    entitystate = serializers.CharField(source='entity.state.statename', read_only=True)
+    entitypincode = serializers.CharField(source='entity.pincode', read_only=True)
     entitygst = serializers.CharField(source='entity.gstno', read_only=True)
     billtoname = serializers.CharField(source='accountid.accountname', read_only=True)
-    billtoaddress = serializers.SerializerMethodField()
+    billtoaddress1 = serializers.CharField(source='accountid.address1', read_only=True)
+    billtoaddress2 = serializers.CharField(source='accountid.address2', read_only=True)
+    billtostate = serializers.CharField(source='accountid.state.statename', read_only=True)
+    billtocity = serializers.CharField(source='accountid.city.cityname', read_only=True)
+    billtopan = serializers.CharField(source='accountid.pan', read_only=True)
+    #billtoaddress = serializers.SerializerMethodField()
     billtogst = serializers.CharField(source='accountid.gstno', read_only=True)
     shiptoname = serializers.CharField(source='shippedto.accountname', read_only=True)
-    shiptoaddress = serializers.SerializerMethodField()
+    shiptoaddress1 = serializers.CharField(source='shippedto.address1', read_only=True)
+    shiptoaddress2 = serializers.CharField(source='shippedto.address2', read_only=True)
+    shiptostate = serializers.CharField(source='shippedto.state.statename', read_only=True)
+    shiptocity = serializers.CharField(source='shippedto.city.cityname', read_only=True)
+    shiptopan = serializers.CharField(source='shippedto.pan', read_only=True)
+    shiptogst = serializers.CharField(source='shippedto.gstno', read_only=True)
+    #shiptoaddress = serializers.SerializerMethodField()
     amountinwords = serializers.SerializerMethodField()
     phoneno = serializers.CharField(source='accountid.contactno', read_only=True)
     phoneno2 = serializers.CharField(source='accountid.contactno2', read_only=True)
@@ -1702,28 +1717,21 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOderHeader
         fields = (
-            'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress', 'billtogst',
+            'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress1',
+             'billtoaddress2','billtocity','billtostate','billtogst','billtopan',
             'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
-            'totalquanity', 'totalpieces', 'advance', 'shippedto', 'shiptoname', 'shiptoaddress',
+            'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst',
             'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
-            'subentity', 'entity', 'entityname', 'entityaddress', 'entitygst', 'createdby', 'eway',
+            'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
             'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc',
             'entitypan', 'saleInvoiceDetails', 'gst_summary'
         )
 
-    def get_entityaddress(self, obj):
-        entity = obj.entity
-        return f"{entity.address} {entity.city.cityname} {entity.state.statename} {entity.pincode}"
+   
 
-    def get_billtoaddress(self, obj):
-        account = obj.accountid
-        return f"{account.address1} {account.address2}"
-
-    def get_shiptoaddress(self, obj):
-        shippedto = obj.shippedto
-        return f"{shippedto.address1} {shippedto.address2}"
+    
 
     def get_amountinwords(self, obj):
         return f"{string.capwords(num2words(obj.gtotal))} only"

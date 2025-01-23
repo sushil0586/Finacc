@@ -69,8 +69,8 @@ class stkcalculateby(TrackingModel):
         return f'{self.unitname} '
 
 class typeofgoods(TrackingModel):
-    goodstype = models.CharField(max_length= 255,verbose_name=_('Goods Type'))
-    goodscode = models.CharField(max_length= 255,verbose_name=_('Goods Code'))
+    goodstype = models.CharField(max_length= 255,null=True,verbose_name=_('Goods Type'))
+    goodscode = models.CharField(max_length= 255,null=True,verbose_name=_('Goods Code'))
     entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE)
 
