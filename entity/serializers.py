@@ -139,13 +139,13 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
             # Create a new financial year record for the entity
             return entityfinancialyear.objects.create(**validated_data)
     
-    def validate_finstartyear(self, value):
-        """
-        Custom validation to ensure the start year is less than or equal to the end year.
-        """
-        if value > self.initial_data.get('finendyear', value):
-            raise serializers.ValidationError("Start year cannot be greater than end year.")
-        return value
+    # def validate_finstartyear(self, value):
+    #     """
+    #     Custom validation to ensure the start year is less than or equal to the end year.
+    #     """
+    #     if value > self.initial_data.get('finendyear', value):
+    #         raise serializers.ValidationError("Start year cannot be greater than end year.")
+    #     return value
     
 
 
