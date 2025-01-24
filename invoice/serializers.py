@@ -1917,7 +1917,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = salesOrderdetails
         fields = (
-            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces', 
+            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces', 'ratebefdiscount','discount',
             'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','isigst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
             'subentity', 'entity', 'otherchargesdetail',
         )
@@ -2072,7 +2072,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','stbefdiscount', 'subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
     
@@ -2121,7 +2121,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
             'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
             'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless',
-            'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst','isigst','invoicetype','reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'isactive',
+            'duedate','stbefdiscount', 'subtotal', 'discount', 'cgst', 'sgst', 'igst','isigst','invoicetype','reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'isactive',
             'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby',
         ]
         for field in fields:

@@ -639,6 +639,7 @@ class salesOrderpdfview(RetrieveAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
+        
         return SalesOderHeader.objects.filter(entity = entity).prefetch_related('saleInvoiceDetails')
     
 
