@@ -2157,7 +2157,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
         fields = ('id', 'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype',
                   'billcash', 'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport',
                   'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1',
-                  'tcs206C2', 'addless', 'duedate', 'subtotal', 'discount', 'cgst', 'sgst', 'igst', 'cess', 'totalgst',
+                  'tcs206C2', 'addless', 'duedate', 'subtotal', 'cgst', 'sgst', 'igst', 'cess', 'totalgst',
                   'expenses', 'gtotal', 'entityfinid', 'subentity', 'entity', 'createdby', 'isactive', 'salesOrderDetail',)
 
     def create(self, validated_data):
