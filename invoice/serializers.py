@@ -1917,7 +1917,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = salesOrderdetails
         fields = (
-            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces', 'ratebefdiscount','discount',
+            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces','befDiscountProductAmount','ratebefdiscount','discount',
             'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','isigst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
             'subentity', 'entity', 'otherchargesdetail',
         )
@@ -5167,9 +5167,117 @@ class SalesOrderGSTSummarySerializer(serializers.Serializer):
             )
         )
         return aggregated_data
+
+
+
+# Serializers
+class SalesOrderDetailsSerializer(serializers.ModelSerializer):
+    gstrate = serializers.SerializerMethodField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+    class Meta:
+        model = salesOrderdetails
+        fields = ['gstrate', 'amount', 'linetotal']
+
+    def get_gstrate(self, obj):
+        if obj.isigst:
+            return obj.igstpercent or 0
+        return (obj.cgstpercent or 0) + (obj.sgstpercent or 0)
+
+class SalesOrderHeaderSerializer(serializers.ModelSerializer):
+    gstno = serializers.CharField(source='accountid.gstno', required=False)
+    accountname = serializers.CharField(source='accountid.accountname', required=False)
+    billno = serializers.IntegerField()
+    sorderdate = serializers.DateTimeField(format='%d-%m-%Y')
+    statecode = serializers.CharField(source='accountid.state.statecode', required=False)
+    reversecharge = serializers.BooleanField()
+    invoicetype = serializers.CharField(source='invoicetype.invoicetype', required=False)
+    
+    sales_details = SalesOrderDetailsSerializer(source='saleInvoiceDetails', many=True)
+
+    class Meta:
+        model = SalesOderHeader
+        fields = ['gstno', 'accountname', 'billno', 'sorderdate', 'statecode', 'reversecharge', 'invoicetype', 'sales_details']
+
        
 
   
+class SalesOrderDetailSerializerB2C(serializers.Serializer):
+    billno = serializers.IntegerField(source="salesorderheader__billno")
+    apptaxrate = serializers.DecimalField(max_digits=14, decimal_places=4,source="salesorderheader__apptaxrate")
+    sorderdate = serializers.SerializerMethodField()  # Custom method for date conversion
+    statecode = serializers.CharField(source="salesorderheader__accountid__state__statecode", allow_blank=True)
+    ecomgstin = serializers.CharField(source="salesorderheader__ecom__gstno", allow_blank=True)
+    gstrate = serializers.SerializerMethodField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+    def get_sorderdate(self, obj):
+        """Convert datetime to date format `DD-MM-YYYY`."""
+        return obj["salesorderheader__sorderdate"].date().strftime("%d-%m-%Y") if obj["salesorderheader__sorderdate"] else None
+
+    def get_gstrate(self, obj):
+        """Calculate GST rate based on `isigst`."""
+        if obj["isigst"]:
+            return obj["igstpercent"]
+        return (obj.get("cgstpercent", 0) or 0) + (obj.get("sgstpercent", 0) or 0)
+
+
+class SalesOrderDetailsSerializerHSN(serializers.ModelSerializer):
+    hsn_code = serializers.CharField(source="product.hsn.hsnCode", read_only=True)
+    product_desc = serializers.CharField(source="productdesc", read_only=True)
+    unit_code = serializers.CharField(source="product.unitofmeasurement.unitcode", read_only=True)
+    
+    class Meta:
+        model = salesOrderdetails
+        fields = [
+            'hsn_code',
+            'product_desc',
+            'unit_code'
+        ]
+
+class SalesOrderAggregateSerializer(serializers.Serializer):
+    hsn_code = serializers.CharField()
+    product_desc = serializers.CharField()
+    unit_code = serializers.CharField()
+    total_order_qty = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_pieces = serializers.IntegerField()
+    total_line_total = serializers.DecimalField(max_digits=14, decimal_places=4)
+    gst_rate = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_igst = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_sgst = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_cgst = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_cess = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+
+
+class SalesOrderSummarySerializer(serializers.Serializer):
+    hsnCode = serializers.CharField()
+    productdesc = serializers.CharField()
+    unitcode = serializers.CharField()
+    total_orderqty = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    gstrate = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_igst = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_sgst = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_cgst = serializers.DecimalField(max_digits=14, decimal_places=4)
+    total_cess = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+
+
+class SalesOrderDetailsSerializerbyhsn(serializers.ModelSerializer):
+    class Meta:
+        model = salesOrderdetails
+        fields = '__all__'
+
+
+
+
+
 
 
 

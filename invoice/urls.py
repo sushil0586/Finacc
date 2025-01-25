@@ -126,6 +126,16 @@ urlpatterns  = [
     path('balancesheetclosing',views.balancesheetclosingapiView.as_view(), name = 'Trialbalance'),
     path('getgstindetails',views.getgstindetails.as_view(), name = 'Trialbalance'),
     path('InvoiceTypes',views.InvoiceTypeViewSet.as_view(), name = 'InvoiceTypeViewSet'),
+    path('gstb2b',views.viewb2b.as_view(), name = 'gstb2b'),
+    path('b2cLarge',views.Viewb2cLarge.as_view(), name = 'b2cLarge'),
+    path('gstb2cs',views.viewb2cs.as_view(), name = 'gstb2cs'),
+    path('gstbyhsn',views.gstbyhsn.as_view(), name = 'gstbyhsn'),
+
+    
+
+    
+
+    
     #path('closingstock', views.closingstockView.as_view(), name='closingstockView'),
     #path('closingstockview', views.closingstocknew.as_view(), name='closingstockView--1'),
     path('sales-order-gst-summary/', views.SalesOrderGSTSummaryView.as_view(), name='sales-order-gst-summary'),
