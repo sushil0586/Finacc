@@ -1917,7 +1917,7 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = salesOrderdetails
         fields = (
-            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces','befDiscountProductAmount','ratebefdiscount','discount',
+            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces','befDiscountProductAmount','ratebefdiscount','orderDiscount','orderDiscountValue',
             'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','isigst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
             'subentity', 'entity', 'otherchargesdetail',
         )
@@ -5273,6 +5273,21 @@ class SalesOrderDetailsSerializerbyhsn(serializers.ModelSerializer):
     class Meta:
         model = salesOrderdetails
         fields = '__all__'
+
+
+class SalesOrderAggregateSerializersummary(serializers.Serializer):
+    salesorderheader__billno = serializers.CharField()
+    salesorderheader__sorderdate = serializers.DateField()
+    salesorderheader__accountid__state__statecode = serializers.CharField()
+    salesorderheader__apptaxrate = serializers.FloatField()
+    salesorderheader__ecom__gstno = serializers.CharField(allow_null=True, required=False)
+    cgstpercent = serializers.FloatField()
+    sgstpercent = serializers.FloatField()
+    igstpercent = serializers.FloatField()
+    isigst = serializers.BooleanField()
+    amount = serializers.FloatField()
+    linetotal = serializers.FloatField()
+    cess = serializers.FloatField()
 
 
 
