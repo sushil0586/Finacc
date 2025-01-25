@@ -1,6 +1,7 @@
 from itertools import product
 from django.http import request,JsonResponse
 from django.shortcuts import render
+from collections import defaultdict
 
 import json
 
@@ -38,8 +39,12 @@ from invoice.serializers import (
     PISerializer, PurchaseimportcancelSerializer, newpurchaseorderSerializer,
     newPurchaseOrderDetailsSerializer, newPOSerializer, SalesOrderSerializer,
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
-    SalesOrderGSTSummarySerializer,InvoiceTypeSerializer
+    SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
+    SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,SalesOrderSummarySerializer,
+    SalesOrderDetailsSerializerbyhsn
 )
+
+
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -56,7 +61,7 @@ from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from entity.models import Entity,GstAccountsdetails,Mastergstdetails
 from django_pandas.io import read_frame
-from django.db.models import Q
+from django.db.models import Q,Sum, F, Case, When, DecimalField
 import numpy as np
 import pandas as pd
 from decimal import Decimal
@@ -4315,6 +4320,203 @@ class SalesOrderGSTSummaryView(APIView):
         # Serialize the aggregated data
         serializer = SalesOrderGSTSummarySerializer(aggregated_data, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class viewb2b(APIView):
+
+    def get(self, request):
+        # Fetch sales order headers
+        entity_id = self.request.query_params.get('entity_id')
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        sales_order_headers = SalesOderHeader.objects.prefetch_related(
+            'saleInvoiceDetails', 'accountid__state', 'invoicetype'
+        ).filter(entity_id=entity_id, sorderdate__range=[start_date, end_date]
+         ,accountid__gstno__isnull=False).exclude(accountid__gstno="")
+
+        # Serialize data
+        serializer = SalesOrderHeaderSerializer(sales_order_headers, many=True)
+
+        # Flatten and aggregate the sales_details into the main response
+        aggregated_data = defaultdict(lambda: defaultdict(Decimal))
+        unique_gstno = set()
+        unique_billno = set()
+        total_amount = Decimal(0)
+        total_linetotal = Decimal(0)
+
+        for header in serializer.data:
+            common_key = (
+                header['gstno'],
+                header['accountname'],
+                header['billno'],
+                header['sorderdate'],
+                header.get('statecode', 'Unknown'),
+                header.get('invoicetype', 'Unknown'),  # Default to 'Unknown' if invoicetype is missing
+                header['reversecharge']
+            )
+            unique_gstno.add(header['gstno'])
+            unique_billno.add(header['billno'])
+
+            for detail in header.pop('sales_details'):
+                gstrate = Decimal(detail['gstrate'])  # Convert gstrate to Decimal
+                aggregated_data[(common_key, gstrate)]['amount'] += Decimal(detail['amount'])
+                aggregated_data[(common_key, gstrate)]['linetotal'] += Decimal(detail['linetotal'])
+                total_amount += Decimal(detail['amount'])
+                total_linetotal += Decimal(detail['linetotal'])
+
+        # Convert aggregated data to final output format
+        flattened_data = []
+        for (common_key, gstrate), values in aggregated_data.items():
+            gstno, accountname, billno, sorderdate, statecode, invoicetype, reversecharge = common_key
+            flattened_data.append({
+                'gstno': gstno,
+                'accountname': accountname,
+                'billno': billno,
+                'sorderdate': sorderdate,
+                'statecode': statecode,
+                'invoicetype': invoicetype,
+                'reversecharge': reversecharge,
+                'gstrate': float(gstrate),  # Convert back to float for output
+                'amount': float(values['amount']),  # Convert to float for response
+                'linetotal': float(values['linetotal'])  # Convert to float for response
+            })
+
+        # Prepare summary
+        summary = {
+            "count_gstno": len(unique_gstno),
+            "count_billno": len(unique_billno),
+            "sum_amount": float(total_amount),  # Convert to float for response
+            "sum_linetotal": float(total_linetotal)  # Convert to float for response
+        }
+
+        return Response({
+            "sales_orders": flattened_data,
+            "summary": summary
+        }, status=status.HTTP_200_OK)
+    
+
+
+class Viewb2cLarge(ListAPIView):
+    serializer_class = SalesOrderDetailSerializerB2C
+
+    def get_queryset(self):
+
+        entity_id = self.request.query_params.get('entity_id')
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        """Filter sales order details where the user's GST number is NULL or empty, keeping other conditions the same.
+           Also, aggregate amount and linetotal when gstrate is the same within a bill number."""
+        
+        return (
+            salesOrderdetails.objects.filter(
+                Q(salesorderheader__accountid__gstno__isnull=True) | Q(salesorderheader__accountid__gstno=""),
+                salesorderheader__gtotal__gt=250000,entity_id=entity_id,
+                salesorderheader__sorderdate__range=[start_date, end_date] 
+            )
+            .values(
+                "salesorderheader__billno",
+                "salesorderheader__sorderdate",
+                "salesorderheader__accountid__state__statecode",
+                "salesorderheader__apptaxrate",
+                "salesorderheader__ecom__gstno",
+                "cgstpercent",
+                "sgstpercent",
+                "igstpercent",
+                "isigst"
+            )
+            .annotate(
+                amount=Sum("amount"),
+                linetotal=Sum("linetotal"),
+                cess=Sum("cess")
+                
+            )
+        )
+
+
+class viewb2cs(ListAPIView):
+    serializer_class = SalesOrderDetailSerializerB2C
+
+    def get_queryset(self):
+
+        entity_id = self.request.query_params.get('entity_id')
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        """Filter sales order details where the user's GST number is NULL or empty, keeping other conditions the same.
+           Also, aggregate amount and linetotal when gstrate is the same within a bill number."""
+        
+        return (
+            salesOrderdetails.objects.filter(
+                Q(salesorderheader__accountid__gstno__isnull=True) | Q(salesorderheader__accountid__gstno=""),
+                salesorderheader__gtotal__lt=250000,entity_id=entity_id,
+                salesorderheader__sorderdate__range=[start_date, end_date]
+            )
+            .values(
+                "salesorderheader__billno",
+                "salesorderheader__sorderdate",
+                "salesorderheader__accountid__state__statecode",
+                "salesorderheader__apptaxrate",
+                "salesorderheader__ecom__gstno",
+                "cgstpercent",
+                "sgstpercent",
+                "igstpercent",
+                "isigst"
+            )
+            .annotate(
+                amount=Sum("amount"),
+                linetotal=Sum("linetotal"),
+                cess=Sum("cess")
+                
+            )
+        )
+    
+
+
+        # Serialize and return data
+        serializer = SalesOrderAggregateSerializer(aggregates, many=True)
+        return Response(serializer.data)
+    
+
+
+  
+
+
+class gstbyhsn(APIView):
+    def get(self, request):
+        entity_id = request.query_params.get('entity_id')
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        sales_summary = (
+            salesOrderdetails.objects
+             .filter(entity_id=entity_id,salesorderheader__sorderdate__range=[start_date, end_date])  # Apply filter by entity
+            .values(
+                hsn_code=F('product__hsn__hsnCode'), 
+                product_name=F('productdesc'), 
+                uqc=F('product__unitofmeasurement__unitcode')
+            )
+            .annotate(
+                total_quantity=Sum('orderqty'),
+                total_pieces=Sum('pieces'),
+                total_line_total=Sum('linetotal'),
+                gst_rate=Sum(
+                    Case(
+                        When(isigst=True, then=F('igst')),
+                        default=F('cgst') + F('sgst'),
+                        output_field=DecimalField()
+                    )
+                ),
+                total_invoice_amount=Sum('amount'),
+                total_igst=Sum('igst'),
+                total_sgst=Sum('sgst'),
+                total_cgst=Sum('cgst'),
+                total_cess=Sum('cess')
+            )
+            .order_by('product_name')  # Ensuring consistent ordering
+        )
+
+        return Response(sales_summary)
+
+        return Response(sales_summary)
+
         
 
 
