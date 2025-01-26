@@ -4399,9 +4399,11 @@ class viewb2b(APIView):
                 'POS': statecode,
                 'reversecharge': reversecharge,
                 'invoicetype': invoicetype,
-                
+                'apptaxrate': 0.0,
+                'ecommerceGSTIN':0.0,
                 'rate': float(gstrate),
-                'taxableValue': float(values['amount'])
+                'taxableValue': float(values['amount']),
+                'cessamount':0.0
                 
             })
 
