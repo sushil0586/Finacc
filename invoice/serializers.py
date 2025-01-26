@@ -5171,6 +5171,36 @@ class SalesOrderGSTSummarySerializer(serializers.Serializer):
 
 
 # Serializers
+
+class PurchaseOrderDetailsSerializergst(serializers.ModelSerializer):
+    gstrate = serializers.SerializerMethodField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+    class Meta:
+        model = PurchaseOrderDetails
+        fields = ['gstrate', 'amount', 'linetotal']
+
+    def get_gstrate(self, obj):
+        if obj.isigst:
+            return obj.igstpercent or 0
+        return (obj.cgstpercent or 0) + (obj.sgstpercent or 0)
+    
+class PurchaseOrderHeaderSerializer(serializers.ModelSerializer):
+    gstno = serializers.CharField(source='account.gstno', required=False)
+    recivername = serializers.CharField(source='account.accountname', required=False)
+    billno = serializers.IntegerField()
+    billdate = serializers.DateTimeField(format='%d-%m-%Y')
+    statecode = serializers.CharField(source='account.state.statecode', required=False)
+    reversecharge = serializers.BooleanField()
+    invoicetype = serializers.CharField(source='invoicetype.invoicetype', required=False)
+    
+    purchase_details = PurchaseOrderDetailsSerializergst(source='purchaseInvoiceDetails', many=True)
+
+    class Meta:
+        model = purchaseorder
+        fields = ['gstno', 'recivername', 'billno', 'billdate', 'statecode', 'reversecharge', 'invoicetype', 'purchase_details']
+
 class SalesOrderDetailsSerializer(serializers.ModelSerializer):
     gstrate = serializers.SerializerMethodField()
     amount = serializers.DecimalField(max_digits=14, decimal_places=4)
@@ -5187,7 +5217,7 @@ class SalesOrderDetailsSerializer(serializers.ModelSerializer):
 
 class SalesOrderHeaderSerializer(serializers.ModelSerializer):
     gstno = serializers.CharField(source='accountid.gstno', required=False)
-    accountname = serializers.CharField(source='accountid.accountname', required=False)
+    recivername = serializers.CharField(source='accountid.accountname', required=False)
     billno = serializers.IntegerField()
     sorderdate = serializers.DateTimeField(format='%d-%m-%Y')
     statecode = serializers.CharField(source='accountid.state.statecode', required=False)
@@ -5198,7 +5228,7 @@ class SalesOrderHeaderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
-        fields = ['gstno', 'accountname', 'billno', 'sorderdate', 'statecode', 'reversecharge', 'invoicetype', 'sales_details']
+        fields = ['gstno', 'recivername', 'billno', 'sorderdate', 'statecode', 'reversecharge', 'invoicetype', 'sales_details']
 
        
 

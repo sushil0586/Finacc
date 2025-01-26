@@ -127,7 +127,7 @@ urlpatterns  = [
     path('getgstindetails',views.getgstindetails.as_view(), name = 'Trialbalance'),
     path('InvoiceTypes',views.InvoiceTypeViewSet.as_view(), name = 'InvoiceTypeViewSet'),
     path('gstb2b',views.viewb2b.as_view(), name = 'gstb2b'),
-    path('b2cLarge',views.Viewb2cLarge.as_view(), name = 'b2cLarge'),
+    path('gstb2cl',views.viewb2clarge.as_view(), name = 'b2cLarge'),
     path('gstb2cs',views.viewb2cs.as_view(), name = 'gstb2cs'),
     path('gstbyhsn',views.gstbyhsn.as_view(), name = 'gstbyhsn'),
 
