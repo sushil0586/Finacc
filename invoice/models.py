@@ -579,6 +579,8 @@ class purchaseorder(TrackingModel):
     sgst = models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'S.GST',default=0)
     igst = models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'I.GST',default=0)
     addless =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Add/Less')
+    ecom = models.ForeignKey(to='financial.account',on_delete=models.CASCADE,null=True,related_name='ecommerce1')
+    apptaxrate =  models.DecimalField(max_digits=4, decimal_places=2,default=0,verbose_name= 'app tax rate')
     # cgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)

@@ -4356,6 +4356,8 @@ class viewb2b(APIView):
             local_total_amount = Decimal(0)
             local_total_linetotal = Decimal(0)
 
+            print(data)
+
             for header in data:
                 common_key = (
                     header['gstno'],
@@ -4399,11 +4401,11 @@ class viewb2b(APIView):
                 'POS': statecode,
                 'reversecharge': reversecharge,
                 'invoicetype': invoicetype,
-                'apptaxrate': 0.0,
-                'ecommerceGSTIN':0.0,
+                'apptaxrate': float(values['apptaxrate']),
+                'ecommerceGSTIN':str(values['ecomgstno']),
                 'rate': float(gstrate),
                 'taxableValue': float(values['amount']),
-                'cessamount':0.0
+                'cessamount':float(values['cess'])
                 
             })
 
@@ -4552,8 +4554,8 @@ class viewb2cs(ListAPIView):
                 "isigst"
             )
             .annotate(
-                amount=Sum("amount"),
-                linetotal=Sum("linetotal"),
+                taxablevalue=Sum("amount"),
+                invoicevalue=Sum("linetotal"),
                 cess=Sum("cess")
             )
         )
@@ -4568,8 +4570,8 @@ class viewb2cs(ListAPIView):
         total_bills = len(unique_billnos)  # Count unique bill numbers
 
         # Calculate total amounts
-        total_amount = sum(item["amount"] for item in queryset)
-        total_linetotal = sum(item["linetotal"] for item in queryset)
+        total_amount = sum(item["taxablevalue"] for item in queryset)
+        total_linetotal = sum(item["invoicevalue"] for item in queryset)
 
         # Serialize data
         serializer = self.get_serializer(queryset, many=True)
@@ -4614,8 +4616,8 @@ class viewb2clarge(ListAPIView):
                 "isigst"
             )
             .annotate(
-                amount=Sum("amount"),
-                linetotal=Sum("linetotal"),
+                taxablevalue=Sum("amount"),
+                invoicevalue=Sum("linetotal"),
                 cess=Sum("cess")
             )
         )
@@ -4630,8 +4632,8 @@ class viewb2clarge(ListAPIView):
         total_bills = len(unique_billnos)  # Count unique bill numbers
 
         # Calculate total amounts
-        total_amount = sum(item["amount"] for item in queryset)
-        total_linetotal = sum(item["linetotal"] for item in queryset)
+        total_amount = sum(item["taxablevalue"] for item in queryset)
+        total_linetotal = sum(item["invoicevalue"] for item in queryset)
 
         # Serialize data
         serializer = self.get_serializer(queryset, many=True)
