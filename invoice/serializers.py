@@ -5176,10 +5176,11 @@ class PurchaseOrderDetailsSerializergst(serializers.ModelSerializer):
     gstrate = serializers.SerializerMethodField()
     amount = serializers.DecimalField(max_digits=14, decimal_places=4)
     linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=4)
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ['gstrate', 'amount', 'linetotal']
+        fields = ['gstrate', 'amount', 'linetotal','cess']
 
     def get_gstrate(self, obj):
         if obj.isigst:
@@ -5189,26 +5190,29 @@ class PurchaseOrderDetailsSerializergst(serializers.ModelSerializer):
 class PurchaseOrderHeaderSerializer(serializers.ModelSerializer):
     gstno = serializers.CharField(source='account.gstno', required=False)
     recivername = serializers.CharField(source='account.accountname', required=False)
+    ecomgstno = serializers.CharField(source='ecom.gstno', required=False)
     billno = serializers.IntegerField()
     billdate = serializers.DateTimeField(format='%d-%m-%Y')
     statecode = serializers.CharField(source='account.state.statecode', required=False)
     reversecharge = serializers.BooleanField()
     invoicetype = serializers.CharField(source='invoicetype.invoicetype', required=False)
+    apptaxrate = serializers.DecimalField(max_digits=4, decimal_places=2)
     
     purchase_details = PurchaseOrderDetailsSerializergst(source='purchaseInvoiceDetails', many=True)
 
     class Meta:
         model = purchaseorder
-        fields = ['gstno', 'recivername', 'billno', 'billdate', 'statecode', 'reversecharge', 'invoicetype', 'purchase_details']
+        fields = ['gstno', 'recivername', 'billno', 'billdate', 'statecode','ecomgstno','reversecharge', 'invoicetype', 'purchase_details','apptaxrate']
 
 class SalesOrderDetailsSerializer(serializers.ModelSerializer):
     gstrate = serializers.SerializerMethodField()
     amount = serializers.DecimalField(max_digits=14, decimal_places=4)
     linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=4)
 
     class Meta:
         model = salesOrderdetails
-        fields = ['gstrate', 'amount', 'linetotal']
+        fields = ['gstrate', 'amount', 'linetotal','cess']
 
     def get_gstrate(self, obj):
         if obj.isigst:
@@ -5217,34 +5221,35 @@ class SalesOrderDetailsSerializer(serializers.ModelSerializer):
 
 class SalesOrderHeaderSerializer(serializers.ModelSerializer):
     gstno = serializers.CharField(source='accountid.gstno', required=False)
+    ecomgstno = serializers.CharField(source='ecom.gstno', required=False)
     recivername = serializers.CharField(source='accountid.accountname', required=False)
     billno = serializers.IntegerField()
     sorderdate = serializers.DateTimeField(format='%d-%m-%Y')
     statecode = serializers.CharField(source='accountid.state.statecode', required=False)
     reversecharge = serializers.BooleanField()
     invoicetype = serializers.CharField(source='invoicetype.invoicetype', required=False)
-    
+    apptaxrate = serializers.DecimalField(max_digits=4, decimal_places=2)
     sales_details = SalesOrderDetailsSerializer(source='saleInvoiceDetails', many=True)
 
     class Meta:
         model = SalesOderHeader
-        fields = ['gstno', 'recivername', 'billno', 'sorderdate', 'statecode', 'reversecharge', 'invoicetype', 'sales_details']
+        fields = ['gstno', 'recivername', 'billno', 'sorderdate', 'statecode', 'reversecharge','ecomgstno','invoicetype', 'sales_details','apptaxrate']
 
        
 
   
 class SalesOrderDetailSerializerB2C(serializers.Serializer):
-    billno = serializers.IntegerField(source="salesorderheader__billno")
+    invoicenumber = serializers.IntegerField(source="salesorderheader__billno")
+    invoicedate = serializers.SerializerMethodField()  # Custom method for date conversion
+    invoicevalue = serializers.DecimalField(max_digits=14, decimal_places=4)
+    pos = serializers.CharField(source="salesorderheader__accountid__state__statecode", allow_blank=True)
     apptaxrate = serializers.DecimalField(max_digits=14, decimal_places=4,source="salesorderheader__apptaxrate")
-    sorderdate = serializers.SerializerMethodField()  # Custom method for date conversion
-    statecode = serializers.CharField(source="salesorderheader__accountid__state__statecode", allow_blank=True)
-    ecomgstin = serializers.CharField(source="salesorderheader__ecom__gstno", allow_blank=True)
     gstrate = serializers.SerializerMethodField()
-    amount = serializers.DecimalField(max_digits=14, decimal_places=4)
-    linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    taxablevalue = serializers.DecimalField(max_digits=14, decimal_places=4)
     cess = serializers.DecimalField(max_digits=14, decimal_places=4)
+    ecomgstin = serializers.CharField(source="salesorderheader__ecom__gstno", allow_blank=True)
 
-    def get_sorderdate(self, obj):
+    def get_invoicedate(self, obj):
         """Convert datetime to date format `DD-MM-YYYY`."""
         return obj["salesorderheader__sorderdate"].date().strftime("%d-%m-%Y") if obj["salesorderheader__sorderdate"] else None
 
