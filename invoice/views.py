@@ -120,7 +120,7 @@ class getgstindetails(ListAPIView):
         einv = generateeinvoice(mgst)
         r = einv.getauthentication()
         res = r.json()
-        print(res)
+       # print(res)
         gstdetails = einv.getgstdetails(gstaccount = accountgst,authtoken = res["data"]["AuthToken"],useremail = 'aditi.gupta1789@gmail.com' )
         res = gstdetails.json()
 
@@ -704,7 +704,7 @@ class salesorderpdf(RetrieveAPIView):
             )
 
 
-        print(connection.queries)
+        #print(connection.queries)
 
         # Check if details exist
         if not details.exists():
@@ -1710,23 +1710,23 @@ class TrialbalanceApiView(ListAPIView):
 
         df = read_frame(ob)
 
-        print(df)
+        #print(df)
 
         df.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead'}, inplace = True)
 
         dffinal1 = df.groupby(['accounthead','accountheadname'])[['balance1']].sum().reset_index()
 
-        print(dffinal1)
+        #print(dffinal1)
 
         stk =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('account__accounthead__name','account__accounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__gte = 0)
         stk2 =StockTransactions.objects.filter(entity = entity,isactive = 1,entrydatetime__range=(startdate, enddate)).exclude(accounttype__in = ['MD']).exclude(transactiontype__in = ['PC']).values('account__creditaccounthead__name','account__creditaccounthead','account__id').annotate(debit = Sum('debitamount',default = 0),credit = Sum('creditamount',default = 0) , balance = Sum('debitamount',default = 0) - Sum('creditamount',default = 0),quantity = Sum('quantity',default = 0)).filter(balance__lt = 0)
         stkunion = stk.union(stk2)
 
-        print(stkunion.query.__str__())
+       # print(stkunion.query.__str__())
 
         df = read_frame(stkunion)
 
-        print(df)
+        #print(df)
         
         df['drcr'] = 'CR'
 
@@ -1799,7 +1799,7 @@ class TrialbalanceApiView(ListAPIView):
         df = df.sort_values(by=['accountheadname'])
 
 
-        print(df)
+        #print(df)
 
 
       
@@ -1932,7 +1932,7 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
 
         df = df.drop(['accountname_y', 'accountname_x','_merge','balance1','accounthead__id','accounthead'],axis = 1)
 
-        print(df)
+        #print(df)
         
         return Response(df.sort_values(by=['accountname']).T.to_dict().values())
     
@@ -2086,7 +2086,7 @@ class TrialbalancebyaccountApiView(ListAPIView):
         #print(df1)
         df = read_frame(stk)    
 
-        print(df)
+       # print(df)
 
         union_dfs = pd.concat([df1, df], ignore_index=True)
         #print(union_dfs)
@@ -2158,7 +2158,7 @@ class Trialviewaccount(ListAPIView):
 
         queryset=account.objects.prefetch_related(Prefetch('accounttrans', queryset=queryset1,to_attr='account_transactions'))
 
-        print(queryset.query.__str__())
+        #print(queryset.query.__str__())
       #  print(connection.queries[])
 
 
@@ -2374,7 +2374,7 @@ class balancestatementxl(ListAPIView):
         bsdf['drcr'] = bsdf['balance'].apply(lambda x: 0 if x > 0 else 1)
         bsdf.rename(columns = {'account__accounthead__name':'accountheadname', 'account__accounthead':'accounthead','account__accountname':'accountname','account__id':'accountid'}, inplace = True)
         bsdf = bsdf.sort_values(by=['accounthead'],ascending=False)
-        print(bsdf)
+        #print(bsdf)
 
         df = bsdf
 
@@ -4676,22 +4676,22 @@ class gstbyhsn(APIView):
                 )
             )
             .values(
-                hsn_code=F('product__hsn__hsnCode'), 
-                product_name=F('productdesc'), 
+                hsncode=F('product__hsn__hsnCode'), 
+                productdescription=F('productdesc'), 
                 uqc=F('product__unitofmeasurement__unitcode'),
                 gst_rate=F('gst_rate')
             )
             .annotate(
-                total_quantity=Sum('orderqty'),
-                total_pieces=Sum('pieces'),
-                total_line_total=Sum('linetotal'),
-                total_invoice_amount=Sum('amount'),
-                total_igst=Sum('igst'),
-                total_sgst=Sum('sgst'),
-                total_cgst=Sum('cgst'),
-                total_cess=Sum('cess')
+                quantity=Sum('orderqty'),
+                pieces=Sum('pieces'),
+                invoicevalue=Sum('linetotal'),
+                taxablevalue=Sum('amount'),
+                igst=Sum('igst'),
+                sgst=Sum('sgst'),
+                cgst=Sum('cgst'),
+                cess=Sum('cess')
             )
-            .order_by('product_name')
+            .order_by('productdescription')
         )
 
         # Convert QuerySet to a list for Python-based summary calculation
@@ -4699,13 +4699,13 @@ class gstbyhsn(APIView):
 
         # Compute summary using Python instead of a second DB query
         summary = {
-            "hsn_count": len(set(item["hsn_code"] for item in hsn_sales_list)),  # Unique HSN count
-            "total_line_total": sum(item["total_line_total"] for item in hsn_sales_list),
-            "total_invoice_amount": sum(item["total_invoice_amount"] for item in hsn_sales_list),
-            "total_igst": sum(item["total_igst"] for item in hsn_sales_list),
-            "total_sgst": sum(item["total_sgst"] for item in hsn_sales_list),
-            "total_cgst": sum(item["total_cgst"] for item in hsn_sales_list),
-            "total_cess": sum(item["total_cess"] for item in hsn_sales_list),
+            "hsn_count": len(set(item["hsncode"] for item in hsn_sales_list)),  # Unique HSN count
+            "total_invoice_value": sum(item["invoicevalue"] for item in hsn_sales_list),
+            "total_invoice_amount": sum(item["taxablevalue"] for item in hsn_sales_list),
+            "total_igst": sum(item["igst"] for item in hsn_sales_list),
+            "total_sgst": sum(item["sgst"] for item in hsn_sales_list),
+            "total_cgst": sum(item["cgst"] for item in hsn_sales_list),
+            "total_cess": sum(item["cess"] for item in hsn_sales_list),
         }
 
         response_data = {
