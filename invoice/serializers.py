@@ -2581,7 +2581,7 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','subentity','entity','otherchargesdetail',)
+        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','cgstpercent','sgstpercent','igstpercent','isigst','linetotal','subentity','entity','otherchargesdetail',)
     
     def get_productname(self,obj):
         return obj.product.productname
@@ -2612,7 +2612,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = purchaseorder
-        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseInvoiceDetails',)
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','reversecharge','invoicetype','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseInvoiceDetails',)
 
 
     
@@ -2642,7 +2642,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['voucherdate','voucherno','account','billno','billdate','showledgeraccount','terms','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity', 'entity','isactive']
+        fields = ['voucherdate','voucherno','account','billno','billdate','showledgeraccount','terms','taxtype','reversecharge','invoicetype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity', 'entity','isactive']
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
