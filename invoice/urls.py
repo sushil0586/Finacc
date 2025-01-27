@@ -130,6 +130,7 @@ urlpatterns  = [
     path('gstb2cl',views.viewb2clarge.as_view(), name = 'b2cLarge'),
     path('gstb2cs',views.viewb2cs.as_view(), name = 'gstb2cs'),
     path('gstbyhsn',views.gstbyhsn.as_view(), name = 'gstbyhsn'),
+    path('gstbycdnr',views.viewcdnr.as_view(), name = 'gstbyhsn'),
 
     
 
