@@ -5188,7 +5188,7 @@ class PurchaseOrderDetailsSerializergst(serializers.ModelSerializer):
         return (obj.cgstpercent or 0) + (obj.sgstpercent or 0)
     
 class PurchaseOrderHeaderSerializer(serializers.ModelSerializer):
-    gstno = serializers.CharField(source='account.gstno', required=False)
+    gstno = serializers.CharField(source='entity.gstno', required=False)
     recivername = serializers.CharField(source='account.accountname', required=False)
     ecomgstno = serializers.CharField(source='ecom.gstno', required=False)
     billno = serializers.IntegerField()
