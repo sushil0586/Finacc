@@ -4345,7 +4345,7 @@ class viewb2b(APIView):
             purchase_order_headers = purchaseorder.objects.prefetch_related(
                 'purchaseInvoiceDetails', 'account__state', 'invoicetype'
             ).filter(
-                entity_id=entity_id, billdate__range=[start_date, end_date]
+                entity_id=entity_id, billdate__range=[start_date, end_date],reversecharge = True
             )
         except Exception as e:
             return Response({"error": f"Database query failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -4519,7 +4519,7 @@ class viewcdnr(APIView):
         for (common_key, gstrate, order_type), values in aggregated_data.items():
             gstno, recivername, voucherno, order_date, statecode, invoicetype, reversecharge = common_key
             flattened_data.append({
-                'source': 'C' if order_type == "Sales" else 'D',  # Sales or Purchase
+               
                 'gstno': gstno,
                 'recivername': recivername,
                 'noteNumber': voucherno,
@@ -4527,7 +4527,8 @@ class viewcdnr(APIView):
                 'noteValue': float(values['linetotal']),
                 'POS': statecode,
                 'reversecharge': reversecharge,
-                'notetype': invoicetype,
+                'notetype': 'C' if order_type == "Sales" else 'D',  # Sales or Purchase
+                'notesupplytype': invoicetype,
                 'apptaxrate': float(values.get('apptaxrate', 0)),
                 'ecommerceGSTIN': str(values.get('ecomgstno', '')),
                 'rate': float(gstrate),
