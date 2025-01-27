@@ -2301,7 +2301,7 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Purchasereturndetails
-        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
+        fields =  ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','isigst','cgstpercent','sgstpercent','igstpercent', 'linetotal','entity','otherchargesdetail',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -2319,7 +2319,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseReturn
        # fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','vehicle','taxtype','billcash','supply','shippedto','remarks','transport','broker','tds194q','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','subtotal','subtotal','cgst','sgst','igst','expenses','gtotal','entity','owner','purchasereturndetails',)
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' , 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails',)
 
 
     def create(self, validated_data):
@@ -4749,7 +4749,7 @@ class salesreturnDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturnDetails
-        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','linetotal','entity','otherchargesdetail',)
+        fields = ('id','product','productname','hsn','mrp','productdesc','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','isigst','cgstpercent','sgstpercent','igstpercent', 'cess','linetotal','entity','otherchargesdetail',)
 
     def get_productname(self,obj):
         return obj.product.productname
@@ -4768,7 +4768,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturn
-        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','salereturndetails',)
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','invoicetype','reversecharge' ,'addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','salereturndetails',)
 
     
     
@@ -5235,8 +5235,74 @@ class SalesOrderHeaderSerializer(serializers.ModelSerializer):
         model = SalesOderHeader
         fields = ['gstno', 'recivername', 'billno', 'sorderdate', 'statecode', 'reversecharge','ecomgstno','invoicetype', 'sales_details','apptaxrate']
 
-       
 
+
+
+
+
+class PurchaseReturnDetailsSerializergst(serializers.ModelSerializer):
+    gstrate = serializers.SerializerMethodField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+    class Meta:
+        model = Purchasereturndetails
+        fields = ['gstrate', 'amount', 'linetotal','cess']
+
+    def get_gstrate(self, obj):
+        if obj.isigst:
+            return obj.igstpercent or 0
+        return (obj.cgstpercent or 0) + (obj.sgstpercent or 0)
+    
+class PurchaseReturnSerializer(serializers.ModelSerializer):
+    gstno = serializers.CharField(source='accountid.gstno', required=False)
+    recivername = serializers.CharField(source='accountid.accountname', required=False)
+    ecomgstno = serializers.CharField(source='ecom.gstno', required=False)
+    voucherno = serializers.IntegerField(source='billno', required=False)
+    sorderdate = serializers.DateTimeField(format='%d-%m-%Y')
+    statecode = serializers.CharField(source='accountid.state.statecode', required=False)
+    reversecharge = serializers.BooleanField()
+    invoicetype = serializers.CharField(source='invoicetype.invoicetype', required=False)
+    apptaxrate = serializers.DecimalField(max_digits=4, decimal_places=2)
+    
+    purchase_details = PurchaseReturnDetailsSerializergst(source='purchasereturndetails', many=True)
+
+    class Meta:
+        model = PurchaseReturn
+        fields = ['gstno', 'recivername', 'voucherno', 'sorderdate', 'statecode','ecomgstno','reversecharge', 'invoicetype', 'purchase_details','apptaxrate']
+
+
+class SalesReturnDetailsSerializer(serializers.ModelSerializer):
+    gstrate = serializers.SerializerMethodField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=4)
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=4)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=4)
+
+    class Meta:
+        model =  salereturnDetails
+        fields = ['gstrate', 'amount', 'linetotal','cess']
+
+    def get_gstrate(self, obj):
+        if obj.isigst:
+            return obj.igstpercent or 0
+        return (obj.cgstpercent or 0) + (obj.sgstpercent or 0)
+
+class SalesReturnSerializer(serializers.ModelSerializer):
+    gstno = serializers.CharField(source='account.gstno', required=False)
+    ecomgstno = serializers.CharField(source='ecom.gstno', required=False)
+    recivername = serializers.CharField(source='account.accountname', required=False)
+    voucherno = serializers.IntegerField()
+    billdate = serializers.DateTimeField(format='%d-%m-%Y')
+    statecode = serializers.CharField(source='account.state.statecode', required=False)
+    reversecharge = serializers.BooleanField()
+    invoicetype = serializers.CharField(source='invoicetype.invoicetype', required=False)
+    apptaxrate = serializers.DecimalField(max_digits=4, decimal_places=2)
+    sales_details = SalesReturnDetailsSerializer(source='salereturndetails', many=True)
+
+    class Meta:
+        model = salereturn
+        fields = ['gstno', 'recivername', 'voucherno', 'billdate', 'statecode', 'reversecharge','ecomgstno','invoicetype', 'sales_details','apptaxrate']
   
 class SalesOrderDetailSerializerB2C(serializers.Serializer):
     invoicenumber = serializers.IntegerField(source="salesorderheader__billno")

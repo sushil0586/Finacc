@@ -40,7 +40,7 @@ from invoice.serializers import (
     newPurchaseOrderDetailsSerializer, newPOSerializer, SalesOrderSerializer,
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
     SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
-    SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer
+    SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer
 )
 
 
@@ -4325,38 +4325,46 @@ class viewb2b(APIView):
 
     def get(self, request):
         # Fetch common parameters
-        entity_id = self.request.query_params.get('entity_id')
-        start_date = self.request.query_params.get("start_date")
-        end_date = self.request.query_params.get("end_date")
+        entity_id = request.query_params.get('entity_id')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
 
-        # Fetch sales order headers
-        sales_order_headers = SalesOderHeader.objects.prefetch_related(
-            'saleInvoiceDetails', 'accountid__state', 'invoicetype'
-        ).filter(entity_id=entity_id, sorderdate__range=[start_date, end_date],
-                 accountid__gstno__isnull=False).exclude(accountid__gstno="")
+        # Validate required parameters
+        if not entity_id or not start_date or not end_date:
+            return Response({"error": "Missing required query parameters."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Fetch purchase order headers
-        purchase_order_headers = purchaseorder.objects.prefetch_related(
-            'purchaseInvoiceDetails', 'account__state', 'invoicetype'
-        ).filter(entity_id=entity_id, billdate__range=[start_date, end_date])
+        # Fetch sales and purchase order headers
+        try:
+            sales_order_headers = SalesOderHeader.objects.prefetch_related(
+                'saleInvoiceDetails', 'accountid__state', 'invoicetype'
+            ).filter(
+                entity_id=entity_id, sorderdate__range=[start_date, end_date],
+                accountid__gstno__isnull=False
+            ).exclude(accountid__gstno="")
 
-        # Serialize both sets of data
+            purchase_order_headers = purchaseorder.objects.prefetch_related(
+                'purchaseInvoiceDetails', 'account__state', 'invoicetype'
+            ).filter(
+                entity_id=entity_id, billdate__range=[start_date, end_date]
+            )
+        except Exception as e:
+            return Response({"error": f"Database query failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Serialize data
         sales_serializer = SalesOrderHeaderSerializer(sales_order_headers, many=True)
         purchase_serializer = PurchaseOrderHeaderSerializer(purchase_order_headers, many=True)
 
         # Aggregated data storage
         aggregated_data = defaultdict(lambda: defaultdict(Decimal))
-        unique_gstno = set()
+        unique_gstno_with_source = set()
         unique_billno = set()
         total_amount = Decimal(0)
         total_linetotal = Decimal(0)
 
-        # Helper function to process orders and return totals
+        # Helper function to process orders
         def process_orders(data, order_type):
             local_total_amount = Decimal(0)
             local_total_linetotal = Decimal(0)
-
-            print(data)
 
             for header in data:
                 common_key = (
@@ -4368,31 +4376,34 @@ class viewb2b(APIView):
                     header.get('invoicetype', 'Unknown'),
                     header['reversecharge']
                 )
-                unique_gstno.add(header['gstno'])
+                unique_gstno_with_source.add((header['gstno'], order_type))  # Add source to gstno
                 unique_billno.add(header['billno'])
 
                 order_details_key = 'sales_details' if order_type == "Sales" else 'purchase_details'
                 for detail in header.pop(order_details_key, []):
                     gstrate = Decimal(detail['gstrate'])
-                    aggregated_data[(common_key, gstrate)]['amount'] += Decimal(detail['amount'])
-                    aggregated_data[(common_key, gstrate)]['linetotal'] += Decimal(detail['linetotal'])
-                    local_total_amount += Decimal(detail['amount'])
-                    local_total_linetotal += Decimal(detail['linetotal'])
+                    amount = Decimal(detail['amount'])
+                    linetotal = Decimal(detail['linetotal'])
+                    aggregated_data[(common_key, gstrate, order_type)]['amount'] += amount
+                    aggregated_data[(common_key, gstrate, order_type)]['linetotal'] += linetotal
+                    local_total_amount += amount
+                    local_total_linetotal += linetotal
 
             return local_total_amount, local_total_linetotal
 
-        # Process both sales and purchase orders and update totals
+        # Process sales and purchase data
         sales_total_amount, sales_total_linetotal = process_orders(sales_serializer.data, "Sales")
         purchase_total_amount, purchase_total_linetotal = process_orders(purchase_serializer.data, "Purchase")
 
         total_amount += sales_total_amount + purchase_total_amount
         total_linetotal += sales_total_linetotal + purchase_total_linetotal
 
-        # Convert aggregated data to final output format
+        # Prepare flattened data
         flattened_data = []
-        for (common_key, gstrate), values in aggregated_data.items():
+        for (common_key, gstrate, order_type), values in aggregated_data.items():
             gstno, recivername, billno, order_date, statecode, invoicetype, reversecharge = common_key
             flattened_data.append({
+                'source': 'S' if order_type == "Sales" else 'P',  # Sales or Purchase
                 'gstno': gstno,
                 'recivername': recivername,
                 'invoicenumber': billno,
@@ -4401,22 +4412,138 @@ class viewb2b(APIView):
                 'POS': statecode,
                 'reversecharge': reversecharge,
                 'invoicetype': invoicetype,
-                'apptaxrate': float(values['apptaxrate']),
-                'ecommerceGSTIN':str(values['ecomgstno']),
+                'apptaxrate': float(values.get('apptaxrate', 0)),
+                'ecommerceGSTIN': str(values.get('ecomgstno', '')),
                 'rate': float(gstrate),
                 'taxableValue': float(values['amount']),
-                'cessamount':float(values['cess'])
-                
+                'cessamount': float(values.get('cess', 0))
             })
 
-        # Prepare summary
+        # Summary
         summary = {
-            "count_gstno": len(unique_gstno),
+            "count_gstno": len(unique_gstno_with_source),  # Unique GST with source
             "count_billno": len(unique_billno),
             "sum_amount": float(total_amount),
             "sum_linetotal": float(total_linetotal)
         }
 
+        # Return response
+        return Response({
+            "orders": flattened_data,
+            "summary": summary
+        }, status=status.HTTP_200_OK)
+    
+
+
+
+class viewcdnr(APIView):
+
+    def get(self, request):
+        # Fetch common parameters
+        entity_id = request.query_params.get('entity_id')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        # Validate required parameters
+        if not entity_id or not start_date or not end_date:
+            return Response({"error": "Missing required query parameters."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Fetch sales and purchase order headers
+        try:
+            purchase_return_headers = PurchaseReturn.objects.prefetch_related(
+                'purchasereturndetails', 'accountid__state', 'invoicetype'
+            ).filter(
+                entity_id=entity_id, sorderdate__range=[start_date, end_date],
+                accountid__gstno__isnull=False
+            ).exclude(accountid__gstno="")
+
+            sale_return_headers = salereturn.objects.prefetch_related(
+                'salereturndetails', 'account__state', 'invoicetype'
+            ).filter(
+                entity_id=entity_id, billdate__range=[start_date, end_date],
+                account__gstno__isnull=False
+            ).exclude(account__gstno="")
+        except Exception as e:
+            return Response({"error": f"Database query failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Serialize data
+        purchase_serializer = PurchaseReturnSerializer(purchase_return_headers, many=True)
+        sales_serializer = SalesReturnSerializer(sale_return_headers, many=True)
+
+        # Aggregated data storage
+        aggregated_data = defaultdict(lambda: defaultdict(Decimal))
+        unique_gstno_with_source = set()
+        unique_voucherno = set()
+        total_amount = Decimal(0)
+        total_linetotal = Decimal(0)
+
+        # Helper function to process orders
+        def process_orders(data, order_type):
+            local_total_amount = Decimal(0)
+            local_total_linetotal = Decimal(0)
+
+            for header in data:
+                common_key = (
+                    header['gstno'],
+                    header['recivername'],
+                    header['voucherno'],
+                    header['billdate'] if order_type == "Sales" else header['sorderdate'],
+                    header.get('statecode', 'Unknown'),
+                    header.get('invoicetype', 'Unknown'),
+                    header['reversecharge']
+                )
+                unique_gstno_with_source.add((header['gstno'], order_type))  # Add source to gstno
+                unique_voucherno.add(header['voucherno'])
+
+                order_details_key = 'sales_details' if order_type == "Sales" else 'purchase_details'
+                for detail in header.pop(order_details_key, []):
+                    gstrate = Decimal(detail['gstrate'])
+                    amount = Decimal(detail['amount'])
+                    linetotal = Decimal(detail['linetotal'])
+                    aggregated_data[(common_key, gstrate, order_type)]['amount'] += amount
+                    aggregated_data[(common_key, gstrate, order_type)]['linetotal'] += linetotal
+                    local_total_amount += amount
+                    local_total_linetotal += linetotal
+
+            return local_total_amount, local_total_linetotal
+
+        # Process sales and purchase data
+        sales_total_amount, sales_total_linetotal = process_orders(sales_serializer.data, "Sales")
+        purchase_total_amount, purchase_total_linetotal = process_orders(purchase_serializer.data, "Purchase")
+
+        total_amount += sales_total_amount + purchase_total_amount
+        total_linetotal += sales_total_linetotal + purchase_total_linetotal
+
+        # Prepare flattened data
+        flattened_data = []
+        for (common_key, gstrate, order_type), values in aggregated_data.items():
+            gstno, recivername, voucherno, order_date, statecode, invoicetype, reversecharge = common_key
+            flattened_data.append({
+                'source': 'C' if order_type == "Sales" else 'D',  # Sales or Purchase
+                'gstno': gstno,
+                'recivername': recivername,
+                'noteNumber': voucherno,
+                'noteDate': order_date,
+                'noteValue': float(values['linetotal']),
+                'POS': statecode,
+                'reversecharge': reversecharge,
+                'notetype': invoicetype,
+                'apptaxrate': float(values.get('apptaxrate', 0)),
+                'ecommerceGSTIN': str(values.get('ecomgstno', '')),
+                'rate': float(gstrate),
+                'taxableValue': float(values['amount']),
+                'cessamount': float(values.get('cess', 0))
+            })
+
+        # Summary
+        summary = {
+            "count_gstno": len(unique_gstno_with_source),  # Unique GST with source
+            "count_voucherno": len(unique_voucherno),
+            "sum_amount": float(total_amount),
+            "sum_linetotal": float(total_linetotal)
+        }
+
+        # Return response
         return Response({
             "orders": flattened_data,
             "summary": summary
