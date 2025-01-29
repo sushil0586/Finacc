@@ -165,3 +165,16 @@ class RateApiView(ListCreateAPIView, EntityFilterMixin):
 
     def get_queryset(self):
         return self.filter_by_entity(Ratecalculate.objects.all())
+    
+
+class ProductListView(ListAPIView,EntityFilterMixin):
+
+    serializer_class = ProductSerializer
+
+    def get_queryset(self):
+        entity = self.get_entity()
+        return self.filter_by_entity(Product.objects.only(
+            'id', 'productname', 'productdesc', 'is_pieces', 'mrp', 'mrpless', 'salesprice',
+            'cgst', 'sgst', 'igst', 'cesstype', 'cess', 'hsn'
+        ).select_related('hsn') )  # Limits fields to reduce query load
+   
