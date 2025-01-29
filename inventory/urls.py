@@ -36,4 +36,8 @@ urlpatterns = [
 
     # HSN Code
     path('hsn', views.HSNApiView.as_view(), name='hsn'),
-]
+    path('ProductList', views.ProductListView.as_view(), name='hsn'),
+
+
+    
+                                            ]

@@ -144,3 +144,14 @@ class AlbumSerializer(serializers.ModelSerializer):
                 instance.tracks.filter(id__in=track_ids_to_delete).delete()
 
             return instance
+        
+
+# Serializer for Product model
+class ProductSerializer(serializers.ModelSerializer):
+    hsn = serializers.CharField(source='hsn.hsnCode', read_only=True)
+    class Meta:
+        model = Product
+        fields = [
+            'id', 'productname', 'productdesc', 'mrp', 'salesprice',
+            'cesstype', 'cgst', 'sgst', 'igst', 'is_pieces', 'cess','hsn'
+        ]
