@@ -1710,8 +1710,8 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     shiptogst = serializers.CharField(source='shippedto.gstno', read_only=True)
     #shiptoaddress = serializers.SerializerMethodField()
     amountinwords = serializers.SerializerMethodField()
-    phoneno = serializers.CharField(source='accountid.contactno', read_only=True)
-    phoneno2 = serializers.CharField(source='accountid.contactno2', read_only=True)
+    phoneno = serializers.CharField(source='entity.phoneoffice', read_only=True)
+    phoneno2 = serializers.CharField(source='entity.phoneresidence', read_only=True)
     gst_summary = serializers.SerializerMethodField()
 
     class Meta:
@@ -1725,7 +1725,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
-            'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc',
+            'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge',
             'entitypan', 'saleInvoiceDetails', 'gst_summary'
         )
 
