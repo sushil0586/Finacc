@@ -1711,7 +1711,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     #shiptoaddress = serializers.SerializerMethodField()
     amountinwords = serializers.SerializerMethodField()
     phoneno = serializers.CharField(source='entity.phoneoffice', read_only=True)
-    phoneno2 = serializers.CharField(source='entity.phoneresidence', read_only=True)
+    phoneno2 = serializers.CharField(source= 'entity.phoneresidence', read_only=True)
     gst_summary = serializers.SerializerMethodField()
 
     class Meta:
