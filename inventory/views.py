@@ -1,10 +1,13 @@
 from django.shortcuts import render
+from rest_framework.views import APIView
 from rest_framework.generics import (
     CreateAPIView, ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
 )
 from rest_framework import permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
+from rest_framework.response import Response
+from rest_framework import status
 
 from inventory.models import (
     Album, Product, Track, ProductCategory, gsttype, typeofgoods, Ratecalculate,
@@ -12,8 +15,11 @@ from inventory.models import (
 )
 from inventory.serializers import (
     ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
-    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer
+    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer
 )
+
+from Authentication.models import User
+from entity.models import Entity
 
 
 class EntityFilterMixin:
@@ -169,7 +175,7 @@ class RateApiView(ListCreateAPIView, EntityFilterMixin):
 
 class ProductListView(ListAPIView,EntityFilterMixin):
 
-    serializer_class = ProductSerializer
+    serializer_class = ProductListSerializer
 
     def get_queryset(self):
         entity = self.get_entity()
@@ -177,4 +183,76 @@ class ProductListView(ListAPIView,EntityFilterMixin):
             'id', 'productname', 'productdesc', 'is_pieces', 'mrp', 'mrpless', 'salesprice',
             'cgst', 'sgst', 'igst', 'cesstype', 'cess', 'hsn'
         ).select_related('hsn') )  # Limits fields to reduce query load
+    
+
+class BulkProductCreateView(APIView):
+    def post(self, request, *args, **kwargs):
+        # Extract 'createdby' from headers
+        createdby_id = self.request.user
+        if not createdby_id:
+            return Response({"error": "CreatedBy header is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            createdby = User.objects.get(email=createdby_id)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid CreatedBy ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Extract 'entity' from query parameters
+        entity_id = request.GET.get("entity")
+        if not entity_id:
+            return Response({"error": "Entity query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            entity = Entity.objects.get(id=entity_id)
+        except Entity.DoesNotExist:
+            return Response({"error": "Invalid Entity ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Deserialize and validate data
+        serializer = ProductBulkSerializer(data=request.data, many=True)
+        if serializer.is_valid():
+            with transaction.atomic():
+                products = [
+                    Product(**data, createdby=createdby, entity=entity)
+                    for data in serializer.validated_data
+                ]
+                Product.objects.bulk_create(products)  # Bulk insert
+            return Response({"message": "Products created successfully", "count": len(products)}, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# class BulkProductCreateView(APIView,EntityFilterMixin):
+#      def post(self, request, *args, **kwargs):
+#         # Extract 'createdby' from headers
+        # createdby_id = self.request.user
+        # if not createdby_id:
+        #     return Response({"error": "CreatedBy header is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # try:
+        #     createdby = User.objects.get(email=createdby_id)
+        # except User.DoesNotExist:
+        #     return Response({"error": "Invalid CreatedBy ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+#         # # Extract 'entity' from query parameters
+#         # entity = self.get_entity()
+
+#         # print(entity)
+#         # if not entity:
+#         #     return Response({"error": "Entity query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+       
+
+
+       
+
+#         # Deserialize and validate data
+#         serializer = ProductBulkSerializer(data=request.data, many=True)
+#         if serializer.is_valid():
+#             with transaction.atomic():
+#                 products = Product.objects.bulk_create(
+#                     [Product(**data, createdby=createdby) for data in serializer.validated_data]
+#                 )
+#             return Response({"message": "Products created successfully", "count": len(products)}, status=status.HTTP_201_CREATED)
+
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
    

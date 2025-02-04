@@ -27,6 +27,16 @@ class Constitution(models.Model):
 
     def __str__(self):
         return f'{self.constitutionname}'
+    
+
+class Bankdetails(TrackingModel):
+    bankname =  models.CharField(max_length= 100)
+    bankcode =  models.CharField(max_length= 100,null=True)
+    ifsccode =  models.CharField(max_length= 100,null=True)
+
+    def __str__(self):
+        return f'{self.bankname}'
+
 
 
 
@@ -35,29 +45,32 @@ class Constitution(models.Model):
 
 
 class Entity(TrackingModel):
-    entityname =  models.CharField(max_length= 255)
+    entityname =  models.CharField(max_length= 100)
     entitydesc =  models.CharField(max_length= 255,null=True)
-    legalname =  models.CharField(max_length= 255,null=True)
-    address =     models.CharField(max_length= 255)
-    address2 =     models.CharField(max_length= 255,null= True,blank = True)
-    addressfloorno =     models.CharField(max_length= 255,null= True,blank = True)
-    addressstreet =     models.CharField(max_length= 255,null= True,blank = True)
-    ownername =   models.CharField(max_length= 255)
+    legalname =  models.CharField(max_length= 100,null=True)
+    address =     models.CharField(max_length= 100)
+    address2 =     models.CharField(max_length= 100,null= True,blank = True)
+    addressfloorno =     models.CharField(max_length= 50,null= True,blank = True)
+    addressstreet =     models.CharField(max_length= 100,null= True,blank = True)
+    ownername =   models.CharField(max_length= 100)
     country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
     state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
     district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
     city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
-    pincode =    models.CharField(max_length= 255,null= True)
-    phoneoffice = models.CharField(max_length= 255)
-    phoneresidence = models.CharField(max_length= 255)
-    panno =        models.CharField(max_length= 255,null= True)
-    tds =           models.CharField(max_length= 255,null= True)
-    tdscircle =        models.CharField(max_length= 255,null= True)
-    email =    models.CharField(max_length= 255,null= True)
+    bank =        models.ForeignKey(Bankdetails, on_delete=models.CASCADE,null= True)
+    bankacno =    models.CharField(max_length= 50,null= True)
+    ifsccode     =    models.CharField(max_length= 50,null= True)
+    pincode =    models.CharField(max_length= 50,null= True)
+    phoneoffice = models.CharField(max_length= 20)
+    phoneresidence = models.CharField(max_length= 20)
+    panno =        models.CharField(max_length= 20,null= True)
+    tds =           models.CharField(max_length= 20,null= True)
+    tdscircle =        models.CharField(max_length= 20,null= True)
+    email =    models.CharField(max_length= 50,null= True)
     tcs206c1honsale  = models.BooleanField(blank =True,null = True)
    # tds194qonsale  = models.BooleanField(blank =True,null = True)
-    gstno =        models.CharField(max_length= 255,null= True)
-    gstintype =        models.CharField(max_length= 255,null= True)
+    gstno =        models.CharField(max_length= 20,null= True)
+    gstintype =        models.CharField(max_length= 20,null= True)
     blockstatus = models.CharField(max_length= 10,null= True,verbose_name='Block Status')
     dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)

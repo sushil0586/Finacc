@@ -13,8 +13,8 @@ class ProductCategoryMainSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         # Limit to 8 categories where entity is null
-        if ProductCategory.objects.filter(entity__isnull=True).count() > 8:
-            raise serializers.ValidationError("Maximum category limit reached.")
+        # if ProductCategory.objects.filter(entity__isnull=True).count() > 8:
+        #     raise serializers.ValidationError("Maximum category limit reached.")
         
         return ProductCategory.objects.create(**validated_data)
 
@@ -147,7 +147,7 @@ class AlbumSerializer(serializers.ModelSerializer):
         
 
 # Serializer for Product model
-class ProductSerializer(serializers.ModelSerializer):
+class ProductListSerializer(serializers.ModelSerializer):
     hsn = serializers.CharField(source='hsn.hsnCode', read_only=True)
     class Meta:
         model = Product
@@ -155,3 +155,27 @@ class ProductSerializer(serializers.ModelSerializer):
             'id', 'productname', 'productdesc', 'mrp', 'salesprice',
             'cesstype', 'cgst', 'sgst', 'igst', 'is_pieces', 'cess','hsn'
         ]
+
+
+class ProductBulkSerializer(serializers.ModelSerializer):
+    productcategoryName = serializers.CharField(write_only=True)  # Accept productcategoryName instead of ID
+    entity = serializers.PrimaryKeyRelatedField(read_only=True)  # Exclude from required input
+    # purchaseaccountcode = serializers.IntegerField(write_only=True)
+    # saleaccountcode = serializers.IntegerField(write_only=True)
+
+    class Meta:
+        model = Product
+        fields = '__all__'  # Include all fields + productcategoryName
+
+    def validate_productcategoryName(self, value):
+        """ Validate and fetch the ProductCategory based on productcategoryName. """
+        try:
+            return ProductCategory.objects.get(pcategoryname=value)  # Adjust field if needed
+        except ProductCategory.DoesNotExist:
+            raise serializers.ValidationError(f"ProductCategory '{value}' does not exist.")
+
+    def create(self, validated_data):
+        """ Override create method to use productcategory fetched from name. """
+        product_category = validated_data.pop('productcategoryName', None)
+        validated_data['productcategory'] = product_category  # Assign category to field
+        return Product(**validated_data)  # Create object but don't save yet
