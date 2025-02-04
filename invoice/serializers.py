@@ -1674,7 +1674,7 @@ class SalesOrderDetailsPDFSerializer(serializers.ModelSerializer):
         model = salesOrderdetails
         fields = (
             'id', 'product', 'productname', 'hsn', 'units', 'mrp', 'productdesc', 'orderqty', 'pieces', 
-            'rate', 'amount', 'othercharges', 'cgstrate', 'cgst', 'sgstrate', 'sgst', 'igstrate', 
+            'ratebefdiscount','orderDiscount', 'rate', 'amount', 'othercharges', 'cgstrate', 'cgst', 'sgstrate', 'sgst', 'igstrate', 
             'igst', 'cess', 'linetotal', 'entity',
         )
 
@@ -1726,7 +1726,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
             'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst',
             'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
-            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
+            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate','stbefdiscount','discount', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
             'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
@@ -1752,6 +1752,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
                 product_cgst_percent=F("cgstpercent"),
                 product_sgst_percent=F("sgstpercent"),
                 product_igst_percent=F("igstpercent"),
+                taxable_amount=Sum("amount", filter=Q(sgstpercent__isnull=False)),
                 total_cgst_amount=Sum("cgst", filter=Q(sgstpercent__isnull=False)),
                 total_sgst_amount=Sum("sgst", filter=Q(sgstpercent__isnull=False)),
                 total_igst_amount=Sum("igst", filter=Q(igstpercent__isnull=False)),
