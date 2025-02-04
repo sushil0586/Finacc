@@ -2,7 +2,7 @@ from django.contrib import admin
 from entity.models import (
     unitType, Entity, entity_details, entityfinancialyear, Constitution,
     entityconstitution, subentity, Rolepriv, Role, Userrole,
-    GstAccountsdetails, Mastergstdetails
+    GstAccountsdetails, Mastergstdetails,Bankdetails
 )
 
 # Admin classes
@@ -64,3 +64,4 @@ admin.site.register(Role, RoleAdmin)
 admin.site.register(Userrole, UserRoleAdmin)
 admin.site.register(GstAccountsdetails, GstAccountAdmin)
 admin.site.register(Mastergstdetails)
+admin.site.register(Bankdetails)
