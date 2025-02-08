@@ -6,10 +6,10 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment
 from financial.models import account,accountHead
 from inventory.models import Product
-from django.db.models import Sum,Count,F,Q
+from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
 from entity.models import Entity,entityfinancialyear,Mastergstdetails
 from django.db.models.functions import Abs
@@ -1683,6 +1683,7 @@ class SalesOrderDetailsPDFSerializer(serializers.ModelSerializer):
 
 
 class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
+   # saleInvoiceDetails1 = serializers.SerializerMethodField()
     saleInvoiceDetails = SalesOrderDetailsPDFSerializer(many=True, read_only=True)
     entityname = serializers.CharField(source='entity.entityname', read_only=True)
     entitypan = serializers.CharField(source='entity.panno', read_only=True)
@@ -1730,7 +1731,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
             'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'saleInvoiceDetails', 'gst_summary'
+            'entitypan', 'saleInvoiceDetails','gst_summary'
         )
 
    
@@ -1749,9 +1750,11 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             salesOrderdetails.objects.filter(salesorderheader_id=salesorderheader_id)
             .values("salesorderheader")
             .annotate(
-                product_cgst_percent=F("cgstpercent"),
-                product_sgst_percent=F("sgstpercent"),
-                product_igst_percent=F("igstpercent"),
+                taxPercent=Case(
+                    When(igstpercent=0, then=F("cgstpercent") + F("sgstpercent")),
+                    default=F("igstpercent"),
+                    output_field=FloatField(),
+                ),
                 taxable_amount=Sum("amount", filter=Q(sgstpercent__isnull=False)),
                 total_cgst_amount=Sum("cgst", filter=Q(sgstpercent__isnull=False)),
                 total_sgst_amount=Sum("sgst", filter=Q(sgstpercent__isnull=False)),
@@ -1759,6 +1762,33 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             )
         )
         return list(aggregated_data)
+    
+    # def get_saleInvoiceDetails1(self, obj):
+    #     details = obj.saleInvoiceDetails.all()  
+    #     serialized_details = SalesOrderDetailsPDFSerializer(details, many=True).data  
+
+    #     paginated_details = []
+    #     page = []
+    #     page_linetotal = 0
+    #     cumulative_linetotal = 0  # Running total across all pages
+
+    #     for index, item in enumerate(serialized_details, start=1):
+    #         page.append(item)
+    #         page_linetotal += float(item["linetotal"])
+
+    #         if index % 2 == 0 or index == len(serialized_details):  
+    #             cumulative_linetotal += page_linetotal  
+                
+    #             paginated_details.append({
+    #                 'items': page,
+    #                 'page_linetotal': page_linetotal,  # Current page total
+    #                 'cumulative_linetotal': cumulative_linetotal  # Running total including previous pages
+    #             })
+                
+    #             page = []
+    #             page_linetotal = 0  
+
+    #     return paginated_details
     
 
 
@@ -2705,7 +2735,7 @@ class newpurchaseorderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = newpurchaseorder
-        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseorderdetails',)
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseorderdetails',)
 
 
     
@@ -2735,7 +2765,7 @@ class newpurchaseorderSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['voucherdate','voucherno','account','billno','billdate','showledgeraccount','terms','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity', 'entity','isactive']
+        fields = ['voucherdate','voucherno','account','billno','billdate','showledgeraccount','terms','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity', 'entity','isactive']
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -2764,6 +2794,12 @@ class newpurchaseorderSerializer(serializers.ModelSerializer):
                 #     stk.createothertransactiondetails(detail=detail1,stocktype='P')
 
         return instance
+    
+
+class PurchaseOrderAttachmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseOrderAttachment
+        fields = ['id', 'purchase_order', 'file', 'uploaded_at']
 
 
 class journalSerializer(serializers.ModelSerializer):
@@ -5394,6 +5430,8 @@ class SalesOrderAggregateSerializersummary(serializers.Serializer):
     amount = serializers.FloatField()
     linetotal = serializers.FloatField()
     cess = serializers.FloatField()
+
+
 
 
 

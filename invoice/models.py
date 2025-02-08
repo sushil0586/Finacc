@@ -10,6 +10,7 @@ from entity.models import Entity,entityfinancialyear,subentity
 from inventory.models import Product
 from django.db.models import Sum 
 import datetime
+from django.core.exceptions import ValidationError
 
 
 # Create your models here.
@@ -640,6 +641,19 @@ class purchaseothercharges(TrackingModel):
 
     def __str__(self):
         return f'{self.purchaseorderdetail}'
+    
+def validate_file_size(value):
+    limit = 100 * 1024  # 100 KB
+    if value.size > limit:
+        raise ValidationError('File size should not exceed 100 KB.')
+
+class PurchaseOrderAttachment(models.Model):
+    purchase_order = models.ForeignKey('purchaseorder', on_delete=models.CASCADE, related_name='attachments')
+    file = models.FileField(upload_to='purchase_order_attachments/', validators=[validate_file_size])
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Attachment for PO {self.purchase_order.voucherno}"
 
 
 class newpurchaseorder(TrackingModel):
