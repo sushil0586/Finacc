@@ -1,5 +1,6 @@
 from django.urls import path
 from invoice import views
+from .views import PurchaseOrderAttachmentAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,generate_invoice_pdf
 
 
 app_name = 'invoice'
@@ -131,7 +132,11 @@ urlpatterns  = [
     path('gstb2cs',views.viewb2cs.as_view(), name = 'gstb2cs'),
     path('gstbyhsn',views.gstbyhsn.as_view(), name = 'gstbyhsn'),
     path('gstbycdnr',views.viewcdnr.as_view(), name = 'gstbyhsn'),
-
+    path('attachments/', PurchaseOrderAttachmentAPIView.as_view(), name='upload-attachment'),
+    path('attachments/<int:purchase_order_id>/', PurchaseOrderAttachmentAPIView.as_view(), name='list-attachments'),
+    path('attachments/download/<int:attachment_id>/', PurchaseOrderAttachmentDownloadAPIView.as_view(), name='download-attachment'),
+    path('attachments/delete/<int:attachment_id>/', PurchaseOrderAttachmentDeleteAPIView.as_view(), name='delete-attachment'),
+    path('generate-invoice/', generate_invoice_pdf, name='generate-invoice'),
     
 
     

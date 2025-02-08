@@ -12,7 +12,7 @@ from invoice.models import (
     StockTransactions, journalmain, entry, stockdetails, stockmain, goodstransaction,
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
-    newpurchaseorder, InvoiceType
+    newpurchaseorder, InvoiceType,PurchaseOrderAttachment
 )
 
 from invoice.serializers import (
@@ -40,10 +40,10 @@ from invoice.serializers import (
     newPurchaseOrderDetailsSerializer, newPOSerializer, SalesOrderSerializer,
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
     SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
-    SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer
+    SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer
 )
-
-
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -71,6 +71,11 @@ from entity.views import generateeinvoice
 import inflect
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from weasyprint import HTML
+import tempfile
 
 
 
@@ -4842,6 +4847,74 @@ class gstbyhsn(APIView):
         }
 
         return Response(response_data)
+    
+
+
+class PurchaseOrderAttachmentAPIView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def get(self, request, purchase_order_id=None):
+        """Retrieve all attachments for a specific Purchase Order"""
+        if purchase_order_id:
+            attachments = PurchaseOrderAttachment.objects.filter(purchase_order_id=purchase_order_id)
+            serializer = PurchaseOrderAttachmentSerializer(attachments, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response({"error": "Purchase Order ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    def post(self, request):
+        """Upload an attachment to a Purchase Order"""
+        purchase_order_id = request.data.get('purchase_order')
+        purchase_order = get_object_or_404(purchaseorder, id=purchase_order_id)
+        
+        serializer = PurchaseOrderAttachmentSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(purchase_order=purchase_order)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class PurchaseOrderAttachmentDownloadAPIView(APIView):
+    def get(self, request, attachment_id):
+        """Download a specific attachment"""
+        attachment = get_object_or_404(PurchaseOrderAttachment, id=attachment_id)
+        return FileResponse(attachment.file, as_attachment=True)
+
+class PurchaseOrderAttachmentDeleteAPIView(APIView):
+    def delete(self, request, attachment_id):
+        """Delete a specific attachment"""
+        attachment = get_object_or_404(PurchaseOrderAttachment, id=attachment_id)
+        attachment.delete()
+        return Response({"message": "Attachment deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+    
+
+def generate_invoice_pdf(request):
+    """Generate a PDF invoice and return as a response."""
+    
+    # Sample invoice data (Replace with data from your database)
+    invoice_data = {
+        "invoice_number": "INV-2024001",
+        "date": "2025-02-05",
+        "customer_name": "John Doe",
+        "customer_email": "john@example.com",
+        "items": [
+            {"name": "Product A", "quantity": 2, "price": 50},
+            {"name": "Product B", "quantity": 1, "price": 30},
+            {"name": "Service C", "quantity": 3, "price": 20},
+        ],
+        "subtotal": 140,
+        "tax": 14,  # Assume 10% tax
+        "total": 154,
+    }
+
+    # Render the HTML template with invoice data
+    html_string = render_to_string('invoice_template.html', {'invoice': invoice_data})
+    
+    # Generate PDF
+    pdf_file = HTML(string=html_string).write_pdf()
+
+    # Return PDF as HTTP response
+    response = HttpResponse(pdf_file, content_type='application/pdf')
+    response['Content-Disposition'] = 'attachment; filename="invoice.pdf"'
+    return response
 
        
 
