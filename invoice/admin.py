@@ -6,7 +6,7 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment
 )
 from django.utils.translation import gettext_lazy as _
 
@@ -330,5 +330,6 @@ admin.site.register(tdsmain, TdsMainAdmin)
 admin.site.register(debitcreditnote, DebitCreditNoteAdmin)
 admin.site.register(closingstock, ClosingStockAdmin)
 admin.site.register(supplytype, SupplyTypeAdmin)
+admin.site.register(PurchaseOrderAttachment)
 
 
