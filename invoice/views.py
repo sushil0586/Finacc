@@ -2,6 +2,7 @@ from itertools import product
 from django.http import request,JsonResponse
 from django.shortcuts import render
 from collections import defaultdict
+from django.utils.encoding import smart_str
 
 import json
 
@@ -4876,7 +4877,10 @@ class PurchaseOrderAttachmentDownloadAPIView(APIView):
     def get(self, request, attachment_id):
         """Download a specific attachment"""
         attachment = get_object_or_404(PurchaseOrderAttachment, id=attachment_id)
-        return FileResponse(attachment.file, as_attachment=True)
+        file_handle = attachment.file.open('rb')
+        response = FileResponse(file_handle, as_attachment=True)
+        response['Content-Disposition'] = f'attachment; filename="{smart_str(attachment.file.name.split("/")[-1])}"'
+        return response
 
 class PurchaseOrderAttachmentDeleteAPIView(APIView):
     def delete(self, request, attachment_id):
