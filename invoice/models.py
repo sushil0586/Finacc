@@ -643,7 +643,7 @@ class purchaseothercharges(TrackingModel):
         return f'{self.purchaseorderdetail}'
     
 def validate_file_size(value):
-    limit = 100 * 1024  # 100 KB
+    limit = 1000 * 1024  # 100 KB
     if value.size > limit:
         raise ValidationError('File size should not exceed 100 KB.')
 
