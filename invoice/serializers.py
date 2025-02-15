@@ -2639,9 +2639,14 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
 
 class PurchaseOrderAttachmentSerializer(serializers.ModelSerializer):
+    file_name = serializers.SerializerMethodField()
+
     class Meta:
         model = PurchaseOrderAttachment
-        fields = ['id', 'purchase_order', 'file', 'uploaded_at']
+        fields = ['id', 'purchase_order','file', 'file_name', 'uploaded_at']
+
+    def get_file_name(self, obj):
+        return obj.file.name.split('/')[-1]  # Extract only the file name
 
 
 class purchaseorderSerializer(serializers.ModelSerializer):
