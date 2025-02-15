@@ -4880,7 +4880,7 @@ class PurchaseOrderAttachmentDownloadAPIView(APIView):
         file_handle = attachment.file.open('rb')
         response = FileResponse(file_handle, as_attachment=True)
         response['Content-Disposition'] = f'attachment; filename="{smart_str(attachment.file.name.split("/")[-1])}"'
-        response['Content-Type'] = 'application/octet-stream'
+        #response['Content-Type'] = 'application/octet-stream'
         return response
 
 class PurchaseOrderAttachmentDeleteAPIView(APIView):
