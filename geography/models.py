@@ -21,7 +21,7 @@ class Country(TrackingModel):
 class State(TrackingModel):
     statename = models.CharField(max_length=255)
     statecode = models.CharField(max_length=255)
-    country = models.ForeignKey(Country, related_name='state', on_delete=models.CASCADE)
+    country = models.ForeignKey(Country, related_name='state', on_delete=models.PROTECT)
 
     # Adding index on statecode for faster lookups
     class Meta:
@@ -38,7 +38,7 @@ class State(TrackingModel):
 class District(TrackingModel):
     districtname = models.CharField(max_length=255)
     districtcode = models.CharField(max_length=25)
-    state = models.ForeignKey(State, related_name='districts', on_delete=models.CASCADE, null=True)
+    state = models.ForeignKey(State, related_name='districts', on_delete=models.PROTECT, null=True)
 
     # Adding index on districtcode for faster lookups
     class Meta:
@@ -56,7 +56,7 @@ class City(TrackingModel):
     cityname = models.CharField(max_length=255)
     citycode = models.CharField(max_length=25)
     pincode = models.CharField(max_length=25)
-    distt = models.ForeignKey(District, related_name='cities', on_delete=models.CASCADE, null=True, db_index=True)
+    distt = models.ForeignKey(District, related_name='cities', on_delete=models.PROTECT, null=True, db_index=True)
 
     # Adding index on citycode and pincode for faster lookups
     class Meta:

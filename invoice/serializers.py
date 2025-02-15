@@ -2638,16 +2638,20 @@ class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
 
 
 
-
+class PurchaseOrderAttachmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseOrderAttachment
+        fields = ['id', 'purchase_order', 'file', 'uploaded_at']
 
 
 class purchaseorderSerializer(serializers.ModelSerializer):
     purchaseInvoiceDetails = PurchaseOrderDetailsSerializer(many=True)
+    attachments = PurchaseOrderAttachmentSerializer(many=True,required=False, allow_null=True)
    # productname = serializers.SerializerMethodField()
 
     class Meta:
         model = purchaseorder
-        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','reversecharge','invoicetype','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseInvoiceDetails',)
+        fields = ('id','voucherdate','voucherno','account','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','reversecharge','invoicetype','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseInvoiceDetails','attachments',)
 
 
     
@@ -2796,10 +2800,7 @@ class newpurchaseorderSerializer(serializers.ModelSerializer):
         return instance
     
 
-class PurchaseOrderAttachmentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PurchaseOrderAttachment
-        fields = ['id', 'purchase_order', 'file', 'uploaded_at']
+
 
 
 class journalSerializer(serializers.ModelSerializer):
