@@ -2145,6 +2145,17 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             # Finalize the stock transaction
             stk.createtransaction()
 
+            full_order_data = SalesOrderFullSerializer(order).data
+
+            sales_order_data = SalesOrdereinvoiceSerializer(order).data
+
+            json_data = json.dumps(full_order_data, indent=4, default=str)
+
+
+            print('---------------------------------------')
+
+            print(json_data)
+
             # Create the e-invoice
             einvoice = einvoicebody(order, invoicetype='INV')
             einvoice.createeinvoce()
@@ -5436,6 +5447,112 @@ class SalesOrderAggregateSerializersummary(serializers.Serializer):
     amount = serializers.FloatField()
     linetotal = serializers.FloatField()
     cess = serializers.FloatField()
+
+
+class EntitySerializer(serializers.ModelSerializer):
+    state_code = serializers.CharField(source="state.statecode", read_only=True)
+    city_name = serializers.CharField(source="city.cityname", read_only=True)
+    pincode = serializers.CharField(source="city.pincode", read_only=True)
+
+    class Meta:
+        model = Entity
+        fields = ["legalname", "entityname", "address", "address2", "state_code", "city_name", "pincode"]
+
+
+class AccountSerializer(serializers.ModelSerializer):
+    state_code = serializers.CharField(source="state.statecode", read_only=True)
+    city_name = serializers.CharField(source="city.cityname", read_only=True)
+    pincode = serializers.CharField(source="city.pincode", read_only=True)
+
+    class Meta:
+        model = account
+        fields = ["gstno", "legalname", "accountname", "address1", "address2", "state_code", "city_name", "pincode"]
+
+
+class SalesOrdereinvoiceSerializer(serializers.ModelSerializer):
+    seller = serializers.SerializerMethodField()
+    buyer = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesOderHeader
+        fields = ["billno", "seller", "buyer"]
+
+    def get_seller(self, obj):
+        """Format Seller Details"""
+        entity = obj.entity
+        return {
+            "Gstin": entity.legalname,  # Assuming Gstin = legalname
+            "LglNm": entity.legalname,
+            "TrdNm": entity.entityname,
+            "Addr1": entity.address,
+            "Addr2": entity.address2,
+            "Loc": entity.city.cityname if entity.city else "",
+            "Pin": entity.city.pincode if entity.city else "",
+            "Stcd": entity.state.statecode if entity.state else ""
+        }
+
+    def get_buyer(self, obj):
+        """Format Buyer Details"""
+        account = obj.accountid
+        return {
+            "Gstin": account.gstno,
+            "LglNm": account.legalname,
+            "TrdNm": account.accountname,
+            "Addr1": account.address1,
+            "Addr2": account.address2,
+            "Loc": account.city.cityname if account.city else "",
+            "Pin": account.city.pincode if account.city else "",
+            "Stcd": account.state.statecode if account.state else ""
+        }
+
+
+    # Sales Order Item Serializer
+class SalesOrderItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.productname', read_only=True)  # Assuming 'productname' is in Product model
+
+    class Meta:
+        model = salesOrderdetails
+        fields = [
+            'product_name', 'productdesc', 'orderqty', 'pieces',
+            'befDiscountProductAmount', 'ratebefdiscount',
+            'orderDiscount', 'orderDiscountValue', 'rate', 'amount'
+        ]
+
+# Sales Order Full Serializer (Including Seller, Buyer & Items)
+class SalesOrderFullSerializer(serializers.ModelSerializer):
+    seller_details = serializers.SerializerMethodField()
+    buyer_details = serializers.SerializerMethodField()
+    items = SalesOrderItemSerializer(many=True, source='saleInvoiceDetails')  # Using related_name
+
+    class Meta:
+        model = SalesOderHeader
+        fields = ['seller_details', 'buyer_details', 'items']
+
+    def get_seller_details(self, obj):
+        entity = obj.entity
+        return {
+            "Gstin": entity.gstno,
+            "LglNm": entity.legalname,
+            "TrdNm": entity.entityname,
+            "Addr1": entity.address,
+            "Addr2": entity.address2,
+            "Loc": entity.city.cityname if entity.city else None,
+            "Pin": entity.city.pincode if entity.city else None,
+            "Stcd": entity.state.statecode if entity.state else None,
+        }
+
+    def get_buyer_details(self, obj):
+        account = obj.accountid
+        return {
+            "Gstin": account.gstno,
+            "LglNm": account.legalname,
+            "TrdNm": account.accountname,
+            "Addr1": account.address1,
+            "Addr2": account.address2,
+            "Loc": account.city.cityname if account.city else None,
+            "Pin": account.city.pincode if account.city else None,
+            "Stcd": account.state.statecode if account.state else None,
+        }
 
 
 

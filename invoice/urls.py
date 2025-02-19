@@ -132,6 +132,9 @@ urlpatterns  = [
     path('gstb2cs',views.viewb2cs.as_view(), name = 'gstb2cs'),
     path('gstbyhsn',views.gstbyhsn.as_view(), name = 'gstbyhsn'),
     path('gstbycdnr',views.viewcdnr.as_view(), name = 'gstbyhsn'),
+    path('gstxls',views.CombinedB2B_B2CLarge.as_view(), name = 'gstbyhsn'),
+
+    
     path('attachments/', PurchaseOrderAttachmentAPIView.as_view(), name='upload-attachment'),
     path('attachments/<int:purchase_order_id>/', PurchaseOrderAttachmentAPIView.as_view(), name='list-attachments'),
     path('attachments/download/<int:attachment_id>/', PurchaseOrderAttachmentDownloadAPIView.as_view(), name='download-attachment'),
@@ -145,6 +148,7 @@ urlpatterns  = [
     #path('closingstock', views.closingstockView.as_view(), name='closingstockView'),
     #path('closingstockview', views.closingstocknew.as_view(), name='closingstockView--1'),
     path('sales-order-gst-summary/', views.SalesOrderGSTSummaryView.as_view(), name='sales-order-gst-summary'),
+    path("sales-order/<int:id>/", views.SalesOrderenvoiceDetailView.as_view(), name="sales-order-detail"),
 
     
 
