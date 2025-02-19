@@ -16,6 +16,7 @@ import requests,json
 from django.db.models import Count
 from geography.models import Country,State,District,City
 from rest_framework import response,status,permissions
+from helpers.utils.gst_api import get_gst_details
 
 
 
@@ -36,6 +37,42 @@ class generateeinvoice:
         
      
         self.headers = json.loads(self.headers)
+
+
+    def get_gst_auth_token(self):
+        """
+        Fetch credentials from the database and authenticate with the GST API.
+        """
+        # Fetch the first or only record in the database
+        gst_details = Mastergstdetails.objects.first()
+        
+        if not gst_details:
+            return {"error": "No GST details found in the database."}
+
+        url = "https://api.mastergst.com/einvoice/authenticate"
+
+        headers = {
+            "accept": "*/*",
+            "username": gst_details.username,
+            "password": gst_details.password,
+            "ip_address": "49.43.101.20",  # You may want to store this in DB as well
+            "client_id": gst_details.client_id,
+            "client_secret": gst_details.client_secret,
+            "gstin": gst_details.gstin,
+        }
+
+        params = {"email": "sushiljyotibansal@gmail.com"}
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            response_data = response.json()
+
+            if response_data.get("status_cd") == "Sucess":
+                return response_data["data"]["AuthToken"]
+            else:
+                return {"error": response_data.get("status_desc", "Authentication failed")}
+        except requests.RequestException as e:
+            return {"error": str(e)}
 
            
 
@@ -548,62 +585,78 @@ class getgstindetails(ListAPIView):
     }
     #filterset_fields = ['id']
     def get(self, request, format=None):
-
-        
-        
-        print('999999999999999999999999999999999999999')
-    
-       # acc = self.request.query_params.get('acc')
         entitygst = self.request.query_params.get('entitygst')
-        print('999999999999999999999999999999999999999')
-      #  accountgst = self.request.query_params.get('accountgst')
-
-        if GstAccountsdetails.objects.filter(gstin = entitygst).count() == 0:
-            print('999999999999999999999999999999999999999')
-           #mgst = Mastergstdetails.objects.get(gstin = entitygst)
-            
-            try:
-                mgst = Mastergstdetails.objects.get()
-                #mgst = Mastergstdetails.objects.get(gstin = entitygst)
-            except Mastergstdetails.DoesNotExist:
-                mgst = None
-                return 1
-          
-          #  mgst = Mastergstdetails.objects.get(gstin = entitygst)
-            einv = generateeinvoice(mgst)
-            r = einv.getauthentication()
-            res = r.json()
-            print(res)
-            gstdetails = einv.getgstdetails(gstaccount = entitygst,authtoken = res["data"]["AuthToken"],useremail = 'sushiljyotibansal@gmail.com' )
-            res = gstdetails.json()
-            err = json.loads(res["status_desc"])
-            if err[0]['ErrorCode'] == '3001':
-                return response.Response({'message': "Gst no is not available"},status = status.HTTP_401_UNAUTHORIZED)
-            # if json.loads(res["status_desc"])["ErrorCode"] == "3001":
-            #     return json.loads(res["status_desc"])
-            data = res["data"]
-            try:
-                stateid = State.objects.get(statecode = data['StateCode'])
-            except State.DoesNotExist:
-                stateid = None
-            try:
-                cityid = City.objects.get(pincode = data['AddrPncd'])
-            except City.DoesNotExist:
-                cityid = None
-            
-            GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = cityid,stateCode = stateid,addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
-        
-        print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-        gstdetails = GstAccountsdetails.objects.filter(gstin = entitygst).values('gstin','tradeName','legalName','addrFlno','addrBnm','addrBno','addrSt','addrLoc__id','stateCode__id','stateCode__country__id','addrLoc__distt__id','addrPncd','txpType','status','blkStatus','dtReg','dtDReg')
 
        
-        # if gstdetails.exists():
-        #     gstdetails = gstdetails.first()
-        # else:
-        #     None
+        if not entitygst:
+            return response.Response({"error": "Entity GST parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        gst_data = get_gst_details(entitygst)
 
-        df = read_frame(gstdetails)
-        df.rename(columns = {'Gstin':'gstno','tradeName':'entityname','LegalName':'legalname','addrBnm':'address','addrBno':'address2','addrFlno':'addressfloorno','addrSt':'addressstreet','stateCode__id':'stateid','addrPncd':'pincode','txpType':'gstintype','dtReg':'dateofreg','dtDReg':'dateofdreg','addrLoc__id':'cityid','stateCode__country__id':'countryid','addrLoc__distt__id':'disttid'}, inplace = True)
+        # state_instance = State.objects.get(statecode=gst_data.get('StateCode'))
+
+
+        print(gst_data['Gstin'])
+        try:
+            state_instance, _ = State.objects.get_or_create(statecode=gst_data['StateCode'])
+            city_instance, _ = City.objects.get_or_create(pincode=gst_data['AddrPncd'])
+        except Exception as e:
+            return {"error": str(e)}
+
+        # Check if GSTIN already exists
+        if GstAccountsdetails.objects.filter(gstin=gst_data['Gstin']).exists():
+            gstdetails = GstAccountsdetails.objects.filter(gstin=gst_data['Gstin']).values()
+        else:
+            new_gst = GstAccountsdetails.objects.create(
+                gstin=gst_data['Gstin'],
+                tradeName=gst_data['TradeName'],
+                legalName=gst_data['LegalName'],
+                addrFlno=gst_data['AddrFlno'],
+                addrBnm=gst_data['AddrBnm'],
+                addrBno=gst_data['AddrBno'],
+                addrSt=gst_data['AddrSt'],
+                addrLoc=city_instance,
+                stateCode=state_instance,
+                district=city_instance.distt,
+                country=state_instance.country,
+                addrPncd=gst_data['AddrPncd'],
+                txpType=gst_data['TxpType'],
+                status=gst_data['Status'],
+                blkStatus=gst_data['BlkStatus'],
+                dtReg=gst_data['DtReg'],
+                dtDReg=gst_data['DtDReg']
+            )
+            gstdetails = [new_gst]
+
+        # Transform data into the required format
+        result = [
+        {
+            'gstno': detail['gstin'],
+            'entityname': detail['tradeName'],
+            'legalname': detail['legalName'],
+            'address': detail['addrBnm'],
+            'address2': detail['addrBno'],
+            'addressfloorno': detail['addrFlno'],
+            'addressstreet': detail['addrSt'],
+            'stateid': detail['stateCode_id'],
+            'pincode': detail['addrPncd'],
+            'gstintype': detail['txpType'],
+            'dateofreg': detail['dtReg'],
+            'dateofdreg': detail['dtDReg'],
+            'cityid': detail['addrLoc_id'],
+            'countryid': detail['country_id'],
+            'disttid': detail['district_id'],
+        }
+        for detail in gstdetails
+    ]
+    
+
+        #return result
+
+    
+
+
+       
+        return response.Response(result)
 
 
 

@@ -95,6 +95,8 @@ class GstAccountsdetails(TrackingModel):
     addrSt = models.CharField(max_length= 255,null= True)
     addrLoc =  models.ForeignKey(City, on_delete=models.PROTECT,null= True)
     stateCode = models.ForeignKey(State, on_delete=models.PROTECT,null= True)
+    district =    models.ForeignKey(District, on_delete=models.PROTECT,null= True)
+    country =     models.ForeignKey(Country, on_delete=models.PROTECT,null= True)
     addrPncd = models.CharField(max_length= 10,null= True)
     txpType = models.CharField(max_length= 25,null= True)
     status = models.CharField(max_length= 25,null= True)
@@ -224,6 +226,7 @@ class Userrole(TrackingModel):
 
 
 class Mastergstdetails(TrackingModel):
+    email = models.CharField(max_length=100, null=True,verbose_name='email')
     username = models.CharField(max_length=100, null=True,verbose_name='username')
     password = models.CharField(max_length=100, null=True,verbose_name='password')
     client_id = models.CharField(max_length=200, null=True,verbose_name='clientid')
