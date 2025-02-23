@@ -25,7 +25,6 @@ class purchasetaxtype(TrackingModel):
     taxtypename = models.CharField(max_length= 255,verbose_name= 'Purchase tax type')
     taxtypecode = models.CharField(max_length= 255,verbose_name= 'Purchase tax Code')
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
-    isactive =   models.BooleanField(default=True)
     createdby = models.ForeignKey(to= User, on_delete=models.PROTECT)
 
 
