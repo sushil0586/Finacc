@@ -118,34 +118,53 @@ class entityconstitutionSerializer(serializers.ModelSerializer):
 
 
 class EntityFinancialYearSerializer(serializers.ModelSerializer):
-    # Derived fields from related 'entity' model
     entityname = serializers.CharField(source='entity.entityname', read_only=True)
     gst = serializers.CharField(source='entity.gstno', read_only=True)
+
+    entityfinancialyearid = serializers.IntegerField(source='id', read_only=True)
+
+    # New fields for the formatted dates and active year ID
+    activestartdate = serializers.SerializerMethodField()
+    activeenddate = serializers.SerializerMethodField()
+   
 
     class Meta:
         model = entityfinancialyear
         fields = (
-            'id', 'entity', 'entityname', 'gst', 'desc',
+            'id', 'entityfinancialyearid', 'entity', 'entityname', 'gst', 'desc',
             'finstartyear', 'finendyear', 'createdby', 'isactive',
+            'activestartdate', 'activeenddate'
         )
 
+    def get_activestartdate(self, obj):
+        """Fetch activestartdate and format it as DD-MM-YYYY"""
+        financialyearid = self.context.get('financialyearid')
+        if financialyearid:
+            try:
+                financialyear = entityfinancialyear.objects.get(id=financialyearid)
+                return financialyear.finstartyear.strftime("%d-%m-%Y")
+            except entityfinancialyear.DoesNotExist:
+                return obj.finstartyear.strftime("%d-%m-%Y")
+        return obj.finstartyear.strftime("%d-%m-%Y")
+
+    def get_activeenddate(self, obj):
+        """Fetch activeenddate and format it as DD-MM-YYYY"""
+        financialyearid = self.context.get('financialyearid')
+        if financialyearid:
+            try:
+                financialyear = entityfinancialyear.objects.get(id=financialyearid)
+                return financialyear.finendyear.strftime("%d-%m-%Y")
+            except entityfinancialyear.DoesNotExist:
+                return obj.finendyear.strftime("%d-%m-%Y")
+        return obj.finendyear.strftime("%d-%m-%Y")
+
+    
+
     def create(self, validated_data):
-        # Use a transaction to ensure atomicity
         with transaction.atomic():
             entity_id = validated_data['entity'].id
-            # Update all previous records for the entity to inactive
             entityfinancialyear.objects.filter(entity=entity_id).update(isactive=False)
-
-            # Create a new financial year record for the entity
             return entityfinancialyear.objects.create(**validated_data)
-    
-    # def validate_finstartyear(self, value):
-    #     """
-    #     Custom validation to ensure the start year is less than or equal to the end year.
-    #     """
-    #     if value > self.initial_data.get('finendyear', value):
-    #         raise serializers.ValidationError("Start year cannot be greater than end year.")
-    #     return value
     
 
 
@@ -360,6 +379,19 @@ class entityAddSerializer(serializers.ModelSerializer):
             )
 
         return newentity
+    
+class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
+    id = serializers.IntegerField()
+    financial_year = serializers.SerializerMethodField()
+
+    class Meta:
+        model = entityfinancialyear
+        fields = ['id', 'financial_year','isactive']
+
+    def get_financial_year(self, obj):
+        start_year = obj.finstartyear.year if obj.finstartyear else None
+        end_year = obj.finendyear.year if obj.finendyear else None
+        return f"{start_year}-{end_year}" if start_year and end_year else None
 
 
 
