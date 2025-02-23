@@ -18,7 +18,7 @@ urlpatterns  = [
     path('role', views.roleApiView.as_view() ,name = 'unittype'),
     path('unittype/<int:id>',views.unitTypeApiView.as_view(), name = 'unittypeid'),
   #  path('user',views.AuthApiView.as_view(), name = 'user'),
-    path('entityfy',views.entityfinancialyearApiView.as_view(), name = 'user'),
+    path('entityfy',views.EntityFinancialYearApiView.as_view(), name = 'user'),
     path('entityfylist',views.entityfinancialyeaListView.as_view(), name = 'user'),
     path('subentity',views.subentityApiView.as_view(),name = 'entityadd'),
     path('subentity/<int:id>',views.subentityupdatedelview.as_view(), name = 'unittypeid'),
@@ -31,6 +31,9 @@ urlpatterns  = [
     path('userdetailsbyentity',views.userdetailsbyentity.as_view(), name = 'unittypeid'),
     path('userAddApiView',views.userAddApiView.as_view(), name = 'unittypeid'),
     path('getentitybygst',views.getgstindetails.as_view(), name = 'unittypeid'),
+    path('getyearsbyentity',views.EntityFinancialYearView.as_view(), name = 'unittypeid'),
+
+    
 
     
 

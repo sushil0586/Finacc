@@ -3,7 +3,7 @@ from django.shortcuts import render
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
 from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails
-from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -328,19 +328,32 @@ class ConstitutionApiView(ListAPIView):
 #         return User.objects.filter(email = self.request.user)
     
 
-class entityfinancialyearApiView(ListCreateAPIView):
-
+class EntityFinancialYearApiView(ListCreateAPIView):
     serializer_class = EntityFinancialYearSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['entity']
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-        return entityfinancialyear.objects.filter(isactive = 1).order_by('-isactive')
+        queryset = entityfinancialyear.objects.filter(isactive=True)
+
+        entity = self.request.query_params.get('entity')
+        financialyearid = self.request.query_params.get('financialyearid')
+
+        if entity:
+            queryset = queryset.filter(entity=entity)
+
+        return queryset.order_by('-isactive')
+
+    def get_serializer_context(self):
+        """Pass financialyearid to the serializer for additional data lookup"""
+        return {
+            **super().get_serializer_context(),
+            'financialyearid': self.request.query_params.get('financialyearid')
+        }
     
 
 class subentityApiView(ListCreateAPIView):
@@ -677,6 +690,17 @@ class getgstindetails(ListAPIView):
         
      
         return  Response(df.T.to_dict().values())
+    
+
+class EntityFinancialYearView(ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EntityFinancialYearSerializerlist
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get('entity')  # Get entity from query params
+        if entity_id:
+            return entityfinancialyear.objects.filter(entity_id=entity_id)
+        return entityfinancialyear.objects.none()  # Return empty if no entity provided
         
             
     

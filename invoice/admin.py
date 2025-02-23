@@ -6,7 +6,7 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails
 )
 from django.utils.translation import gettext_lazy as _
 
@@ -60,6 +60,7 @@ admin.site.register(SalesOderHeader, SalesOrderHeaderAdmin)
 
 
 # Admin for salesOrderdetails
+@admin.register(salesOrderdetails)
 class SalesOrderDetailsAdmin(admin.ModelAdmin):
     list_display = ('salesorderheader', 'product', 'orderqty', 'pieces', 'rate', 'amount', 'cgst', 'sgst', 'igst', 'linetotal', 'entity', 'subentity')
     search_fields = ('product__name', 'productdesc')

@@ -15,6 +15,12 @@ from django.core.exceptions import ValidationError
 
 # Create your models here.
 
+
+def validate_file_size(value):
+    limit = 1000 * 1024  # 100 KB
+    if value.size > limit:
+        raise ValidationError('File size should not exceed 100 KB.')
+
 class purchasetaxtype(TrackingModel):
     taxtypename = models.CharField(max_length= 255,verbose_name= 'Purchase tax type')
     taxtypecode = models.CharField(max_length= 255,verbose_name= 'Purchase tax Code')
@@ -98,6 +104,15 @@ class gstorderservicesdetails(TrackingModel):
 
     def __str__(self):
         return f'{self.account}'
+
+
+class gstorderservicesAttachment(models.Model):
+    gst_order = models.ForeignKey('gstorderservices', on_delete=models.PROTECT, related_name='gstosattachments')
+    file = models.FileField(upload_to='gst_order_attachments/', validators=[validate_file_size])
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Attachment for  {self.gst_order.gst_order}"
 
 
     
@@ -545,6 +560,17 @@ class purchaseotherimportcharges(TrackingModel):
 
     def __str__(self):
         return f'{self.purchaseorderdetail}'
+    
+
+class purchaseotherimporAttachment(models.Model):
+    purchase_order_import = models.ForeignKey('purchaseorderimport', on_delete=models.PROTECT, related_name='piattachments')
+    file = models.FileField(upload_to='purchase_order_import_attachments/', validators=[validate_file_size])
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Attachment for PO {self.purchase_order_import.voucherno}"
+    
+
 
 
 
@@ -643,10 +669,7 @@ class purchaseothercharges(TrackingModel):
     def __str__(self):
         return f'{self.purchaseorderdetail}'
     
-def validate_file_size(value):
-    limit = 1000 * 1024  # 100 KB
-    if value.size > limit:
-        raise ValidationError('File size should not exceed 100 KB.')
+
 
 class PurchaseOrderAttachment(models.Model):
     purchase_order = models.ForeignKey('purchaseorder', on_delete=models.PROTECT, related_name='attachments')
