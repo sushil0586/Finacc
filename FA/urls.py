@@ -17,7 +17,7 @@ from django.urls import path,include
 from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 from rest_framework import permissions
-from django.http import JsonResponse
+
 schema_view = get_schema_view(
    openapi.Info(
       title="Snippets API",
@@ -32,19 +32,9 @@ schema_view = get_schema_view(
    authentication_classes = [],
 )
 
-def api_home(request):
-    return JsonResponse({"message": "API Home", "endpoints": [
-        "/api/auth/",
-        "/api/inventory/",
-        "/api/financial/",
-        "/api/entity/",
-        "/api/geography/",
-        "/api/invoice/",
-        "/api/reports/",
-        "/api/payroll/"
-    ]})
+
 urlpatterns = [
-    path('api/', api_home, name="api-home"),  # Add this line
+   
     path('admin/', admin.site.urls),
     path('api/auth/',include('Authentication.urls',namespace = 'Authentication_api')),
     path('api/inventory/',include('inventory.urls',namespace = 'inventory_api')),
