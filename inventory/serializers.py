@@ -43,7 +43,7 @@ class ProductSerializer(serializers.ModelSerializer):
             os = account.objects.get(entity=product.entity, accountcode=9000)
             accountdate1 = entityfinancialyear.objects.get(entity=product.entity,isactive = True).finstartyear
 
-            print(accountdate1)
+            
             entryid, _ = entry.objects.get_or_create(entrydate1=accountdate1, entity=product.entity)
 
             if product.openingstockvalue and (product.openingstockqty or product.openingstockboxqty):
