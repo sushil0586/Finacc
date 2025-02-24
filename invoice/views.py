@@ -4864,15 +4864,29 @@ class PurchaseOrderAttachmentAPIView(APIView):
         return Response({"error": "Purchase Order ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     def post(self, request):
-        """Upload an attachment to a Purchase Order"""
+        """Upload multiple attachments to a Purchase Order"""
         purchase_order_id = request.data.get('purchase_order')
         purchase_order = get_object_or_404(purchaseorder, id=purchase_order_id)
+
+        files = request.FILES.getlist('attachments')  # Get multiple files
+        if not files:
+            return Response({"error": "No files uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+
+        attachment_objects = []
+        errors = []
         
-        serializer = PurchaseOrderAttachmentSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(purchase_order=purchase_order)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        for file in files:
+            serializer = PurchaseOrderAttachmentSerializer(data={'file': file})
+            if serializer.is_valid():
+                attachment = serializer.save(purchase_order=purchase_order)
+                attachment_objects.append(serializer.data)
+            else:
+                errors.append(serializer.errors)
+
+        if errors:
+            return Response({"errors": errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(attachment_objects, status=status.HTTP_201_CREATED)
 
 class PurchaseOrderAttachmentDownloadAPIView(APIView):
      def get(self, request, attachment_id):

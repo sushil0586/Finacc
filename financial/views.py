@@ -212,8 +212,8 @@ class accounttypeApiView(ListCreateAPIView):
 
     
     def get_queryset(self):
-       # entity = self.request.query_params.get('entity')
-        return accounttype.objects.filter()
+        entity = self.request.query_params.get('entity')
+        return accounttype.objects.filter(entity = entity)
 
 
 
