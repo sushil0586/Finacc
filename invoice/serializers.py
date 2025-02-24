@@ -2666,10 +2666,14 @@ class PurchaseOrderAttachmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderAttachment
-        fields = ['id', 'purchase_order','file', 'file_name', 'uploaded_at']
+        fields = ['id', 'purchase_order', 'file', 'file_name', 'uploaded_at']
 
     def get_file_name(self, obj):
         return obj.file.name.split('/')[-1]  # Extract only the file name
+
+    def create(self, validated_data):
+        """Handles single file creation"""
+        return PurchaseOrderAttachment.objects.create(**validated_data)
 
 
 class purchaseorderSerializer(serializers.ModelSerializer):

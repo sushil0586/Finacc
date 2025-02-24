@@ -129,50 +129,39 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
     finstartyear = serializers.SerializerMethodField()
     finendyear = serializers.SerializerMethodField()
     id = serializers.SerializerMethodField()
-   
 
     class Meta:
         model = entityfinancialyear
         fields = (
             'id', 'entity', 'entityname', 'gst', 'desc',
             'finstartyear', 'finendyear', 'createdby', 'isactive',
-            'activestartdate', 'activeenddate','activeyearid'
+            'activestartdate', 'activeenddate', 'activeyearid'
         )
+
+    def _get_financialyear(self):
+        """Fetch financial year based on financialyearid or active year"""
+        financialyearid = self.context.get('financialyearid')
+        if financialyearid == 0:
+            return entityfinancialyear.objects.filter(isactive=True).first()
+        try:
+            return entityfinancialyear.objects.get(id=financialyearid)
+        except entityfinancialyear.DoesNotExist:
+            return None
 
     def get_finstartyear(self, obj):
         """Fetch activestartdate and format it as DD-MM-YYYY"""
-        financialyearid = self.context.get('financialyearid')
-        if financialyearid:
-            try:
-                financialyear = entityfinancialyear.objects.get(id=financialyearid)
-                return financialyear.finstartyear.strftime("%d-%m-%Y")
-            except entityfinancialyear.DoesNotExist:
-                return obj.finstartyear.strftime("%d-%m-%Y")
-        return obj.finstartyear.strftime("%d-%m-%Y")
+        financialyear = self._get_financialyear() or obj
+        return financialyear.finstartyear.strftime("%d-%m-%Y")
 
     def get_finendyear(self, obj):
         """Fetch activeenddate and format it as DD-MM-YYYY"""
-        financialyearid = self.context.get('financialyearid')
-        if financialyearid:
-            try:
-                financialyear = entityfinancialyear.objects.get(id=financialyearid)
-                return financialyear.finendyear.strftime("%d-%m-%Y")
-            except entityfinancialyear.DoesNotExist:
-                return obj.finendyear.strftime("%d-%m-%Y")
-        return obj.finendyear.strftime("%d-%m-%Y")
-    
-    def get_id(self, obj):
-        """Return the ID of the active financial year"""
-        financialyearid = self.context.get('financialyearid')
-        if financialyearid:
-            try:
-                financialyear = entityfinancialyear.objects.get(id=financialyearid)
-                return financialyear.id
-            except entityfinancialyear.DoesNotExist:
-                return None
-        return None
+        financialyear = self._get_financialyear() or obj
+        return financialyear.finendyear.strftime("%d-%m-%Y")
 
-    
+    def get_id(self, obj):
+        """Return the ID of the active financial year if financialyearid=0"""
+        financialyear = self._get_financialyear() or obj
+        return financialyear.id
 
     def create(self, validated_data):
         with transaction.atomic():
@@ -224,13 +213,13 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
 
 class entityAddSerializer(serializers.ModelSerializer):
 
-    fy = EntityFinancialYearSerializer(many=True)
+   # fy = EntityFinancialYearSerializer(many=True)
     constitution = entityconstitutionSerializer(many=True)
 
     class Meta:
         model = Entity
         #fields = ('id','entityName','fy',)
-        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','const','user','fy','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg',)
+        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','const','user','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
@@ -283,18 +272,22 @@ class entityAddSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         # Extract related data
         users = validated_data.pop("user")
-        fydata = validated_data.pop("fy")
+        fydata = validated_data.pop("fy", [])
         constitutiondata = validated_data.pop("constitution")
 
         # Create the main entity
         newentity = Entity.objects.create(**validated_data)
 
         # Bulk create financial year details
+        # Prepare financial year objects
         fy_details = [
             entityfinancialyear(entity=newentity, **data, createdby=users[0])
             for data in fydata
         ]
-        entityfinancialyear.objects.bulk_create(fy_details)
+
+        # Bulk create financial years
+        if fy_details:
+            entityfinancialyear.objects.bulk_create(fy_details)
 
         # Retrieve account start date
         accountdate1 = fy_details[0].finstartyear if fy_details else None
