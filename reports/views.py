@@ -1,6 +1,8 @@
 from django.shortcuts import render
 
 # Create your views here.
+from collections import defaultdict
+from django.db.models import Min, Max
 
 from itertools import product
 from django.http import request,JsonResponse
@@ -9,6 +11,8 @@ import json
 from pandas.tseries.offsets import MonthEnd,QuarterEnd
 from decimal import Decimal
 from django.db.models import Sum, Q
+from django.utils.timezone import make_aware, is_aware
+from django.utils.dateparse import parse_date
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain
@@ -17,12 +21,12 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
-from django.db.models import Sum,OuterRef,Subquery,F
+from django.db.models import Sum,OuterRef,Subquery,F,Sum, F, Value, DecimalField,CharField
 from django.db.models import Prefetch
 from financial.models import account,accountHead
 from inventory.models import Product
@@ -1444,17 +1448,17 @@ class netprofitbalance(ListAPIView):
 
         pldf = pldf[((pldf.accountid == -2))]
 
-        constitution = entityconstitution.objects.get(entity = entity1)
+        constitution = Entity.objects.get(id = entity1)
 
-        print(constitution.constitution.id)
+        print(constitution.const.constcode)
 
-        if constitution.constitution.id == 1:
+        if constitution.const.constcode == 1001:
             aqs = account.objects.filter(entity = entity1,accounthead__code = 6200).values('id','accountname','accounthead__id', 'accounthead__name','sharepercentage')
             
             
 
 
-        if constitution.constitution.id == 2:
+        if constitution.const.constcode == 1000:
             aqs = account.objects.filter(entity = entity1,accounthead__code = 6300).values('id','accountname','accounthead__id','sharepercentage')
 
         adf = read_frame(aqs)
@@ -2120,8 +2124,8 @@ class accountbalance(ListAPIView):
    # serializer_class = TrialbalanceSerializerbyaccounthead
     permission_classes = (permissions.IsAuthenticated,)
 
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['account__accounthead']
+    # filter_backends = [DjangoFilterBackend]
+    # filterset_fields = ['account__accounthead']
 
 
     
@@ -2193,7 +2197,11 @@ class ledgerdetails(ListAPIView):
         startdate = request.data.get('startdate', None)
         enddate = request.data.get('enddate')
         print(account)
-        currentdates = entityfinancialyear.objects.get(entity=entity, finendyear__gte=startdate, finstartyear__lte=startdate)
+        currentdates = entityfinancialyear.objects.filter(
+                entity=entity,
+                finstartyear__lte=enddate,  
+                finendyear__gte=startdate   
+            ).first()
         utc = pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
@@ -3250,15 +3258,36 @@ class cashbookdetails(ListAPIView):
         start_date = datetime.strptime(start_date, '%Y-%m-%d')
         end_date = datetime.strptime(end_date, '%Y-%m-%d')
 
+        print(start_date)
+
         # Fetch the current financial year for the entity
+        # current_fin_year = entityfinancialyear.objects.filter(
+        #     entity=entity,
+        #     finendyear__gte=start_date,
+        #     finstartyear__lte=start_date,
+        # ).first()
+
         current_fin_year = entityfinancialyear.objects.filter(
             entity=entity,
-            finendyear__gte=start_date,
-            finstartyear__lte=start_date,
+            finstartyear__lte=start_date,  
+            finendyear__gte=end_date   
         ).first()
 
+        # If no exact match is found, extend to the earliest and latest available financial years
         if not current_fin_year:
-            return Response({"error": "No financial year data found"}, status=404)
+            min_finstartyear = entityfinancialyear.objects.filter(entity=entity).aggregate(Min('finstartyear'))['finstartyear__min']
+            max_finendyear = entityfinancialyear.objects.filter(entity=entity).aggregate(Max('finendyear'))['finendyear__max']
+
+            if min_finstartyear and max_finendyear:
+                current_fin_year = entityfinancialyear.objects.filter(
+                    entity=entity,
+                    finstartyear=min_finstartyear,
+                    finendyear=max_finendyear
+                )
+        
+        #print(min_finstartyear)
+
+        print(current_fin_year.finstartyear)
 
         # Fetch stock transactions
         transactions = StockTransactions.objects.filter(
@@ -3934,13 +3963,47 @@ class TrialbalanceApiView(ListAPIView):
         enddate = self.request.query_params.get('enddate')
         utc = pytz.UTC
 
+        print("startdate (before conversion):", type(startdate), startdate)
+        print("enddate (before conversion):", type(enddate), enddate)
+
+        if isinstance(startdate, str):
+            startdate = datetime.strptime(startdate, "%Y-%m-%d")
+
+        if isinstance(enddate, str):
+            enddate = datetime.strptime(enddate, "%Y-%m-%d")
+
+        if not is_aware(startdate):
+            startdate = make_aware(startdate)
+
+        if not is_aware(enddate):
+            enddate = make_aware(enddate)
+
+        print(startdate)
+        print(enddate)
+        
+
         # Fetch the financial year details for the given entity and startdate
         try:
-            currentdates = entityfinancialyear.objects.get(
+            currentdates = entityfinancialyear.objects.filter(
                 entity=entity,
-                finendyear__gte=startdate,
-                finstartyear__lte=startdate
-            )
+                finstartyear__lte=enddate,  
+                finendyear__gte=startdate   
+            ).first()
+
+            if currentdates:
+                finstartyear = currentdates.finstartyear
+                finendyear = currentdates.finendyear
+
+                # Ensure finstartyear and finendyear are timezone-aware
+                if not is_aware(finstartyear):
+                    finstartyear = make_aware(finstartyear)
+
+                if not is_aware(finendyear):
+                    finendyear = make_aware(finendyear)
+
+                # Now, max() and min() will work without errors
+                startdate = max(startdate, finstartyear)
+                enddate = min(enddate, finendyear)
         except entityfinancialyear.DoesNotExist:
             currentdates = None  # Or handle the exception as needed
 
@@ -3961,7 +4024,7 @@ class TrialbalanceApiView(ListAPIView):
         }
 
         # Determine the entrydatetime filter based on conditions
-        if currentdates.finstartyear == utc.localize(datetime.strptime(startdate, '%Y-%m-%d')):
+        if currentdates.finstartyear == startdate:
             obp_filters = {**base_filters, 'entrydatetime__gt': currentdates.finstartyear}
         elif currentdates.isactive == 1:
             obp_filters = {**base_filters, 'entrydatetime__gte': currentdates.finstartyear}
@@ -4001,7 +4064,7 @@ class TrialbalanceApiView(ListAPIView):
         print(dffinal1)
 
         
-        if currentdates.finstartyear < utc.localize(datetime.strptime(startdate, '%Y-%m-%d')):
+        if currentdates.finstartyear < startdate:
             base_queryset = StockTransactions.objects.filter(
             entity=entity,
             isactive=1,
@@ -4153,11 +4216,11 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         exclude_transaction_types = ['PC']
 
         # Get financial year details
-        currentdates = entityfinancialyear.objects.get(
-            entity=entity,
-            finendyear__gte=startdate,
-            finstartyear__lte=startdate
-        )
+        currentdates = entityfinancialyear.objects.filter(
+                entity=entity,
+                finstartyear__lte=enddate,  
+                finendyear__gte=startdate   
+            ).first()
 
         # Helper: Base Query Filters
         base_filters = {
@@ -4501,6 +4564,291 @@ class accountbindapiview(ListAPIView):
         df.rename(columns = {'account__accountname':'accountname','account__id':'id','account__accountcode':'accountcode','account__gstno':'gstno','account__pan':'pan','account__city':'city','account__saccode':'saccode'}, inplace = True)
 
         return Response(df.T.to_dict().values())
+    
+
+class TrialBalanceViewFinal(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_opening_balance(self, entity_id, start_date):
+        """Fetches opening balances before the start date."""
+        opening_transactions = StockTransactions.objects.filter(
+            entity_id=entity_id,
+            entrydatetime__date__lt=start_date
+        ).exclude(accounttype='MD').exclude(transactiontype='PC')
+
+        opening_balance_data = opening_transactions.values('account__accounthead__id', 'account__creditaccounthead__id', 'account__accountname').annotate(
+            opening_debit=Coalesce(Sum('debitamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4)),
+            opening_credit=Coalesce(Sum('creditamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4))
+        ).annotate(
+            opening_balance=F('opening_debit') - F('opening_credit'),
+            accounthead_id=Case(
+                When(opening_balance__lt=0, then=F('account__creditaccounthead__id')),
+                default=F('account__accounthead__id'),
+                output_field=CharField()
+            ),
+            accounthead=Case(
+                When(opening_balance__lt=0, then=F('account__creditaccounthead__name')),
+                default=F('account__accounthead__name'),
+                output_field=CharField()
+            )
+        ).values(
+            accounthead_id=F('accounthead_id'),
+            accounthead=F('accounthead'),
+            opening_balance=F('opening_balance')
+        )
+
+        return {entry["accounthead"]: {"id": entry["accounthead_id"], "opening_balance": entry["opening_balance"]} for entry in opening_balance_data}
+
+    def get_transactions(self, entity_id, start_date, end_date):
+        """Fetches transactions within the given date range."""
+        transactions = StockTransactions.objects.filter(
+            entity_id=entity_id,
+            entrydatetime__date__range=(start_date, end_date)
+        ).exclude(accounttype='MD').exclude(transactiontype='PC')
+
+        transaction_data = transactions.values(
+            'account__accounthead__id', 
+            'account__creditaccounthead__id', 
+            'account__accountname'
+        ).annotate(
+            total_debit=Coalesce(Sum('debitamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4)),
+            total_credit=Coalesce(Sum('creditamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4))
+        ).annotate(
+            balance=F('total_debit') - F('total_credit'),
+            accounthead_id=Case(
+                When(balance__lt=0, then=F('account__creditaccounthead__id')),
+                default=F('account__accounthead__id'),
+                output_field=CharField()
+            ),
+            accounthead=Case(
+                When(balance__lt=0, then=F('account__creditaccounthead__name')),
+                default=F('account__accounthead__name'),
+                output_field=CharField()
+            )
+        ).values(
+            accounthead_id=F('accounthead_id'),
+            accounthead=F('accounthead'),
+            balance=F('balance'),
+            total_debit=F('total_debit'),
+            total_credit=F('total_credit')
+        )
+
+        return {
+            entry["accounthead"]: {
+                "id": entry["accounthead_id"],
+                "balance": entry["balance"],
+                "debit": entry["balance"] if entry["balance"] > 0 else 0,
+                "credit": -entry["balance"] if entry["balance"] < 0 else 0
+            } for entry in transaction_data
+        }
+
+    def aggregate_data(self, opening_balance_dict, transaction_dict):
+        """Aggregates opening balances and transactions into a final result."""
+        final_aggregation = {}
+
+        # Add Opening Balances First
+        for accounthead, data in opening_balance_dict.items():
+            final_aggregation[accounthead] = {
+                'accounthead_id': data["id"],  # ✅ Correcting to accounthead_id
+                'accounthead': accounthead,
+                'debit': 0,
+                'credit': 0,
+                'balance': data["opening_balance"],
+                'opening_balance': data["opening_balance"]
+            }
+
+        # Add Transactions to the Final Data
+        for accounthead, trans_data in transaction_dict.items():
+            if accounthead in final_aggregation:
+                final_aggregation[accounthead]['debit'] += trans_data["debit"]
+                final_aggregation[accounthead]['credit'] += trans_data["credit"]
+                final_aggregation[accounthead]['balance'] += trans_data["balance"]
+            else:
+                final_aggregation[accounthead] = {
+                    'accounthead_id': trans_data["id"],  # ✅ Correcting to accounthead_id
+                    'accounthead': accounthead,
+                    'debit': trans_data["debit"],
+                    'credit': trans_data["credit"],
+                    'opening_balance': 0,
+                    'balance': trans_data["balance"]
+                }
+
+        # Add DR/CR Indicators
+        final_result = []
+        for accounthead, data in final_aggregation.items():
+            data["drcr"] = "DR" if data["balance"] > 0 else "CR"
+            data["obdrcr"] = "DR" if data["opening_balance"] > 0 else "CR"
+
+            final_result.append(data)
+
+        return final_result
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get('entity')
+        start_date = request.query_params.get('startdate')
+        end_date = request.query_params.get('enddate')
+
+        if not entity_id or not start_date or not end_date:
+            return Response({'error': 'Missing required parameters'}, status=400)
+
+        start_date = parse_date(start_date)
+        end_date = parse_date(end_date)
+
+        # Get Data
+        opening_balance_dict = self.get_opening_balance(entity_id, start_date)
+        transaction_dict = self.get_transactions(entity_id, start_date, end_date)
+
+        # Aggregate & Return
+        final_result = self.aggregate_data(opening_balance_dict, transaction_dict)
+        return Response(final_result)
+
+
+class TrialBalanceViewaccountFinal(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_opening_balance(self, entity_id, start_date, accounthead=None, drcr=None):
+        """Fetches opening balances before the start date with filters."""
+        opening_transactions = StockTransactions.objects.filter(
+            entity_id=entity_id,
+            entrydatetime__date__lt=start_date
+        ).exclude(accounttype='MD').exclude(transactiontype='PC')
+
+        if accounthead:
+            if drcr == 'dr':
+                opening_transactions = opening_transactions.filter(account__accounthead=accounthead)
+            else:
+                opening_transactions = opening_transactions.filter(account__creditaccounthead=accounthead)
+
+        opening_balance_data = opening_transactions.values('account__id', 'account__accountname', 'account__accounthead').annotate(
+            opening_debit=Coalesce(Sum('debitamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4)),
+            opening_credit=Coalesce(Sum('creditamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4))
+        ).annotate(
+            opening_balance=F('opening_debit') - F('opening_credit')
+        ).values(
+            account_id=F('account__id'),
+            accountname=F('account__accountname'),
+            accounthead=F('account__accounthead'),
+            opening_balance=F('opening_balance')
+        )
+
+        return {
+            entry["account_id"]: {
+                "accountname": entry["accountname"],
+                "accounthead": entry["accounthead"],
+                "opening_balance": entry["opening_balance"]
+            } for entry in opening_balance_data
+        }
+
+    def get_transactions(self, entity_id, start_date, end_date, accounthead=None, drcr=None):
+        """Fetches transactions within the given date range with filters."""
+        transactions = StockTransactions.objects.filter(
+            entity_id=entity_id,
+            entrydatetime__date__range=(start_date, end_date)
+        ).exclude(accounttype='MD').exclude(transactiontype='PC')
+
+        if accounthead:
+            if drcr == 'dr':
+                transactions = transactions.filter(account__accounthead=accounthead)
+            else:
+                transactions = transactions.filter(account__creditaccounthead=accounthead)
+
+        transaction_data = transactions.values(
+            'account__id', 'account__accountname', 'account__accounthead'
+        ).annotate(
+            total_debit=Coalesce(Sum('debitamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4)),
+            total_credit=Coalesce(Sum('creditamount'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4)),
+            total_quantity=Coalesce(Sum('quantity'), Value(0), output_field=DecimalField(max_digits=14, decimal_places=4))
+        ).annotate(
+            balance=F('total_debit') - F('total_credit')
+        ).values(
+            account_id=F('account__id'),
+            accountname=F('account__accountname'),
+            accounthead=F('account__accounthead'),
+            balance=F('balance'),
+            total_debit=F('total_debit'),
+            total_credit=F('total_credit'),
+            total_quantity=F('total_quantity')
+        )
+
+        # Apply final filtering based on drcr parameter
+        if drcr == 'dr':
+            transaction_data = [entry for entry in transaction_data if entry["balance"] > 0]
+        elif drcr == 'cr':
+            transaction_data = [entry for entry in transaction_data if entry["balance"] < 0]
+
+        return {
+            entry["account_id"]: {
+                "accountname": entry["accountname"],
+                "accounthead": entry["accounthead"],
+                "balance": entry["balance"],
+                "debit": entry["balance"] if entry["balance"] > 0 else 0,
+                "credit": -entry["balance"] if entry["balance"] < 0 else 0,
+                "total_quantity": entry["total_quantity"]
+            } for entry in transaction_data
+        }
+
+    def aggregate_data(self, opening_balance_dict, transaction_dict):
+        """Aggregates opening balances and transactions into a final result."""
+        final_aggregation = {}
+
+        for account_id, data in opening_balance_dict.items():
+            final_aggregation[account_id] = {
+                'account_id': account_id,
+                'accountname': data["accountname"],
+                'accounthead': data["accounthead"],
+                'debit': 0,
+                'credit': 0,
+                'balance': data["opening_balance"],
+                'opening_balance': data["opening_balance"],
+                'total_quantity': 0
+            }
+
+        for account_id, trans_data in transaction_dict.items():
+            if account_id in final_aggregation:
+                final_aggregation[account_id]['debit'] += trans_data["debit"]
+                final_aggregation[account_id]['credit'] += trans_data["credit"]
+                final_aggregation[account_id]['balance'] += trans_data["balance"]
+                final_aggregation[account_id]['total_quantity'] += trans_data["total_quantity"]
+            else:
+                final_aggregation[account_id] = {
+                    'account_id': account_id,
+                    'accountname': trans_data["accountname"],
+                    'accounthead': trans_data["accounthead"],
+                    'debit': trans_data["debit"],
+                    'credit': trans_data["credit"],
+                    'opening_balance': 0,
+                    'balance': trans_data["balance"],
+                    'total_quantity': trans_data["total_quantity"]
+                }
+
+        final_result = []
+        for account_id, data in final_aggregation.items():
+            data["drcr"] = "DR" if data["balance"] > 0 else "CR"
+            data["obdrcr"] = "DR" if data["opening_balance"] > 0 else "CR"
+            final_result.append(data)
+
+        return final_result
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get('entity')
+        start_date = request.query_params.get('startdate')
+        end_date = request.query_params.get('enddate')
+        accounthead = request.query_params.get('accounthead')
+        drcr = request.query_params.get('drcr')
+
+        if not entity_id or not start_date or not end_date:
+            return Response({'error': 'Missing required parameters'}, status=400)
+
+        start_date = parse_date(start_date)
+        end_date = parse_date(end_date)
+
+        opening_balance_dict = self.get_opening_balance(entity_id, start_date, accounthead, drcr)
+        transaction_dict = self.get_transactions(entity_id, start_date, end_date, accounthead, drcr)
+
+        final_result = self.aggregate_data(opening_balance_dict, transaction_dict)
+        return Response(final_result)
+
+
 
 
     

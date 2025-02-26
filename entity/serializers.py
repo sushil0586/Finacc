@@ -129,6 +129,7 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
     finstartyear = serializers.SerializerMethodField()
     finendyear = serializers.SerializerMethodField()
     id = serializers.SerializerMethodField()
+    isactive = serializers.SerializerMethodField()
 
     class Meta:
         model = entityfinancialyear
@@ -157,7 +158,12 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
         """Fetch activeenddate and format it as DD-MM-YYYY"""
         financialyear = self._get_financialyear() or obj
         return financialyear.finendyear.strftime("%d-%m-%Y")
-
+    
+    def get_isactive(self, obj):
+        """Fetch activeenddate and format it as DD-MM-YYYY"""
+        financialyear = self._get_financialyear() or obj
+        return financialyear.isactive
+    
     def get_id(self, obj):
         """Return the ID of the active financial year if financialyearid=0"""
         financialyear = self._get_financialyear() or obj

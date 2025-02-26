@@ -44,7 +44,10 @@ urlpatterns  = [
     path('purchasebook',views.purchasebyaccountapi.as_view(), name = 'purchasebook'),
     path('daybook',views.daybookviewapi.as_view(), name = 'Trialbalance'),
     path('trialbalance',views.TrialbalanceApiView.as_view(), name = 'Trialbalance'),
+    path('trialbalancenew',views.TrialBalanceViewFinal.as_view(), name = 'Trialbalance'),
     path('trialbalancebyaccounthead',views.TrialbalancebyaccountheadApiView.as_view(), name = 'Trialbalance'),
+    path('trialbalancebyaccountheadnew',views.TrialBalanceViewaccountFinal.as_view(), name = 'Trialbalance'),
+    
     path('trialbalancebyaccount',views.TrialbalancebyaccountApiView.as_view(), name = 'Trialbalance'),
     path('accountbalance',views.accountbalance.as_view(), name = 'Trialbalance'),
     path('netprofitbalance',views.netprofitbalance.as_view(), name = 'Trialbalance'),
