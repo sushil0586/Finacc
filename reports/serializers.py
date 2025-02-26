@@ -1051,3 +1051,25 @@ class stockledgersummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = StockTransactions
         fields = ('entity','startdate','enddate','stockcategory','stocktype','stock')
+
+
+class AccountBalanceSerializer(serializers.Serializer):
+    account = serializers.IntegerField()
+    accountname = serializers.CharField()
+    accounthead = serializers.CharField()
+    accountheadname = serializers.CharField()
+    accounttype = serializers.CharField()
+    debitamount = serializers.FloatField()
+    creditamount = serializers.FloatField()
+    balance = serializers.FloatField()
+    drcr = serializers.IntegerField()
+    quantity = serializers.FloatField()
+
+class TrialBalanceSerializer(serializers.Serializer):
+    accounthead = serializers.CharField()
+    debit = serializers.DecimalField(max_digits=14, decimal_places=4)
+    opening_balance = serializers.DecimalField(max_digits=14, decimal_places=4)
+    credit = serializers.DecimalField(max_digits=14, decimal_places=4)
+    balance = serializers.DecimalField(max_digits=14, decimal_places=4)
+    drcr = serializers.CharField()
+    

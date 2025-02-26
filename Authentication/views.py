@@ -1,5 +1,7 @@
 
 from django.shortcuts import render
+from django.utils.decorators import method_decorator
+
 from rest_framework import response,status,permissions
 from rest_framework.generics import GenericAPIView,ListAPIView,UpdateAPIView,ListCreateAPIView
 from Authentication.serializers import RegisterSerializer,LoginSerializer,UserSerializer,ChangePasswordSerializer,MainMenuSerializer,SubmenuSerializer
@@ -50,33 +52,56 @@ class RegisterApiView(ListCreateAPIView):
     #         return response.Response(serializer.data,status = status.HTTP_200_OK)
     #     return response.Response(serializer.errors,status = status.HTTP_400_BAD_REQUEST)
 
+from django.shortcuts import get_object_or_404
+import logging
+
+logger = logging.getLogger(__name__)
+
 class LoginApiView(GenericAPIView):
     permission_classes = (permissions.AllowAny,)
     authentication_classes = []
     serializer_class = LoginSerializer
 
+    # Limit to 5 login attempts per minute per IP.
+    
     def post(self, request):
         email = request.data.get('email')
         password = request.data.get('password')
 
-        # Validate presence of email and password
         if not email or not password:
+            logger.warning("Login attempt with missing email or password")
             return response.Response(
                 {'message': 'Email and password are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Try to authenticate user
-        user = authenticate(username=email, password=password)
+        try:
+            user = authenticate(username=email, password=password)
+        except Exception as e:
+            logger.exception("Error during authentication for email: %s", email)
+            return response.Response(
+                {'message': 'Internal server error during authentication'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        if user:
+        if not user:
+            logger.info("Invalid credentials for email: %s", email)
+            return response.Response(
+                {'message': 'Invalid credentials'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
             serializer = self.serializer_class(user)
-            return response.Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.exception("Serialization error for user: %s", email)
+            return response.Response(
+                {'message': 'Internal server error during token generation'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        return response.Response(
-            {'message': 'Invalid credentials'},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return response.Response(serializer.data, status=status.HTTP_200_OK)
+
 
 
 

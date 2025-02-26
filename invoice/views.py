@@ -76,7 +76,7 @@ from rest_framework.viewsets import ModelViewSet
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.http import HttpResponse
 from django.template.loader import render_to_string
-from weasyprint import HTML
+
 import tempfile
 
 
@@ -4906,35 +4906,7 @@ class PurchaseOrderAttachmentDeleteAPIView(APIView):
         return Response({"message": "Attachment deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
     
 
-def generate_invoice_pdf(request):
-    """Generate a PDF invoice and return as a response."""
-    
-    # Sample invoice data (Replace with data from your database)
-    invoice_data = {
-        "invoice_number": "INV-2024001",
-        "date": "2025-02-05",
-        "customer_name": "John Doe",
-        "customer_email": "john@example.com",
-        "items": [
-            {"name": "Product A", "quantity": 2, "price": 50},
-            {"name": "Product B", "quantity": 1, "price": 30},
-            {"name": "Service C", "quantity": 3, "price": 20},
-        ],
-        "subtotal": 140,
-        "tax": 14,  # Assume 10% tax
-        "total": 154,
-    }
 
-    # Render the HTML template with invoice data
-    html_string = render_to_string('invoice_template.html', {'invoice': invoice_data})
-    
-    # Generate PDF
-    pdf_file = HTML(string=html_string).write_pdf()
-
-    # Return PDF as HTTP response
-    response = HttpResponse(pdf_file, content_type='application/pdf')
-    response['Content-Disposition'] = 'attachment; filename="invoice.pdf"'
-    return response
 
 
 class SalesOrderenvoiceDetailView(APIView):

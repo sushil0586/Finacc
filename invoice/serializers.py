@@ -1838,7 +1838,7 @@ class PurchaseOrderImportAttachmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = purchaseotherimporAttachment
-        fields = ['id', 'purchase_order','file', 'file_name', 'uploaded_at']
+        fields = ['id', 'purchase_order_import','file', 'file_name', 'uploaded_at']
 
     def get_file_name(self, obj):
         return obj.file.name.split('/')[-1]  # Extract only the file name
@@ -2629,26 +2629,26 @@ class jobworkchallanSerializer(serializers.ModelSerializer):
 
 
 class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
-    otherchargesdetail = purchaseotherdetailsSerializer(many=True,required=False)
+    otherchargesdetail = purchaseotherdetailsSerializer(many=True, required=False)
     id = serializers.IntegerField(required=False)
-    productname = serializers.SerializerMethodField()
-    hsn = serializers.SerializerMethodField()
-    mrp = serializers.SerializerMethodField()
-   # productdesc1 = serializers.SerializerMethodField()
-    #entityUser = entityUserSerializer(many=True)
+    productname = serializers.CharField(source='product.productname', read_only=True)
+    hsn = serializers.CharField(source='product.hsn.hsnCode', read_only=True)
+    mrp = serializers.DecimalField(source='product.mrp', max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = PurchaseOrderDetails
-        fields = ('id','product','productname','productdesc','hsn','mrp','orderqty','pieces','rate','amount','othercharges','cgst','sgst','igst','cess','cgstpercent','sgstpercent','igstpercent','isigst','linetotal','subentity','entity','otherchargesdetail',)
-    
-    def get_productname(self,obj):
-        return obj.product.productname
-    
-    def get_hsn(self,obj):
-        return obj.product.hsn.hsnCode
+        fields = (
+            'id', 'product', 'productname', 'productdesc', 'hsn', 'mrp', 'orderqty', 
+            'pieces', 'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst', 'cess', 
+            'cgstpercent', 'sgstpercent', 'igstpercent', 'isigst', 'linetotal', 'subentity', 
+            'entity', 'otherchargesdetail',
+        )
 
-    def get_mrp(self,obj):
-        return obj.product.mrp
+    @staticmethod
+    def setup_eager_loading(queryset):
+        """Optimize queryset to reduce database hits."""
+        return queryset.select_related('product__hsn').prefetch_related('otherchargesdetail')
+
     
 
 

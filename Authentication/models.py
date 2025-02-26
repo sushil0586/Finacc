@@ -88,7 +88,7 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
     )
     first_name = models.CharField(_('first name'), max_length=100, blank=True)
     last_name = models.CharField(_('last name'), max_length=100, blank=True)
-    email = models.EmailField(_('email address'), blank=False,unique = True)
+    email = models.EmailField(_('email address'), blank=False, unique=True, db_index=True)
     is_staff = models.BooleanField(
         _('staff status'),
         default=False,
@@ -122,9 +122,22 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
 
     @property
     def token(self):
-        token = jwt.encode({'username':self.username,'email':self.email,'exp': datetime.utcnow() + timedelta(hours= 360)},settings.SECRET_KEY,
-        algorithm='HS256'
-         )
+        from django.core.cache import cache  # import cache
+        cache_key = f"user_token_{self.pk}"
+        token = cache.get(cache_key)
+        if token:
+            return token
+        token = jwt.encode(
+            {
+                'username': self.username,
+                'email': self.email,
+                'exp': datetime.utcnow() + timedelta(hours=360)
+            },
+            settings.SECRET_KEY,
+            algorithm='HS256'
+        )
+        # Cache the token for 60 seconds to reduce computation overhead.
+        cache.set(cache_key, token, timeout=60)
         return token
 
 class MainMenu(TrackingModel):
