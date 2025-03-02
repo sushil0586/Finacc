@@ -11,6 +11,8 @@ from inventory.models import Product
 from django.db.models import Sum 
 import datetime
 from django.core.exceptions import ValidationError
+from django.db.models import Index, Func, DateField, F
+from django.db.models.functions import Cast
 
 
 # Create your models here.
@@ -628,7 +630,7 @@ class purchaseorder(TrackingModel):
 
 
     class Meta:
-        unique_together = ('voucherno', 'entity',)
+        unique_together = ('voucherno', 'entity','entityfinid',)
         unique_together = ('billno', 'account','entity','entityfinid',)
         
 
@@ -1001,7 +1003,9 @@ class accountentry(TrackingModel):
     closingbalance =  models.DecimalField(max_digits=14,null = True,decimal_places=4,verbose_name= 'closing Amount')
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT,verbose_name= 'entity')
 
-
+class ExtractDate(Func):
+    function = 'DATE'
+    output_field = DateField()
 
 class StockTransactions(TrackingModel):
     accounthead = models.ForeignKey(to = accountHead, on_delete=models.PROTECT,null=True,blank=True,verbose_name='Account Head',related_name='headtrans')
@@ -1029,6 +1033,22 @@ class StockTransactions(TrackingModel):
     istrial =   models.BooleanField(default=True)
     entity = models.ForeignKey(Entity,on_delete=models.PROTECT,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete=models.PROTECT,null=True)
+
+    # class Meta:
+    #     indexes = [
+    #         # Composite index on entity and entrydatetime
+    #         Index(fields=['entity', 'entrydatetime'], name='entity_entry_dt_idx'),
+            
+    #         # Indexes on accounttype and transactiontype to speed up filters
+    #         Index(fields=['accounttype'], name='accounttype_idx'),
+    #         Index(fields=['transactiontype'], name='transactiontype_idx'),
+
+    #         # Functional index using your custom immutable_date function
+    #         Index(
+    #             Func(F('entrydatetime'), function='immutable_date', output_field=DateField()),
+    #             name='entrydate_idx'
+    #         ),
+    #     ]
 
 
 

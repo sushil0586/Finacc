@@ -5,12 +5,16 @@ from import_export.admin import ImportExportMixin
 class HSNAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['hsnCode','Hsndescription']
     search_fields = ['hsnCode','Hsndescription']
+
+
+class prductAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ('productname',)
    
 
 admin.site.register(Album)
 admin.site.register(Track)
 admin.site.register(ProductCategory)
-admin.site.register(Product)
+admin.site.register(Product,prductAdmin)
 admin.site.register(UnitofMeasurement)
 admin.site.register(typeofgoods)
 admin.site.register(stkvaluationby)
