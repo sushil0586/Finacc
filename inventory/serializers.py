@@ -181,3 +181,53 @@ class ProductBulkSerializer(serializers.ModelSerializer):
         product_category = validated_data.pop('productcategoryName', None)
         validated_data['productcategory'] = product_category  # Assign category to field
         return Product(**validated_data)  # Create object but don't save yet
+    
+
+
+
+class ProductBulkSerializerlatest(serializers.ModelSerializer):
+    productcategory = serializers.CharField(write_only=True)
+    purchaseaccount = serializers.CharField(write_only=True)
+    saleaccount = serializers.CharField(write_only=True)
+    hsn = serializers.CharField(write_only=True, required=False, allow_null=True)
+    ratecalculate = serializers.CharField(write_only=True)
+    unitofmeasurement = serializers.CharField(write_only=True)
+   
+
+    class Meta:
+        model = Product
+        fields = [
+            "entity", "productname", "productdesc", "openingstockqty",
+            "productcategory", "openingstockvalue", "purchaserate", "prlesspercentage",
+            "mrp", "mrpless", "salesprice", "totalgst", "cgst", "igst", "sgst",
+            "cesstype", "cess", "purchaseaccount", "saleaccount", "ratecalculate",
+            "unitofmeasurement",  "hsn", "is_pieces", "is_product"
+        ]
+
+    def get_object_or_error(self, model, field, value, field_name):
+        """ Fetch the related object based on field (name/code) or raise an error. """
+        if not value:
+            raise serializers.ValidationError({field_name: f"{field_name} is required."})
+        obj = model.objects.filter(**{field: value}).first()
+        if not obj:
+            raise serializers.ValidationError({field_name: f"Invalid {field_name}: '{value}' not found."})
+        return obj
+
+    def create(self, validated_data):
+        productcategory = self.get_object_or_error(ProductCategory, "pcategoryname", validated_data.pop("productcategory", None), "productcategory")
+        purchaseaccount = self.get_object_or_error(account, "accountname", validated_data.pop("purchaseaccount", None), "purchaseaccount")
+        saleaccount = self.get_object_or_error(account, "accountname", validated_data.pop("saleaccount", None), "saleaccount")
+        hsn = self.get_object_or_error(HsnCode, "hsnCode", validated_data.pop("hsn", None), "hsn")
+        ratecalculate = self.get_object_or_error(Ratecalculate, "rname", validated_data.pop("ratecalculate", None), "ratecalculate")
+        unitofmeasurement = self.get_object_or_error(UnitofMeasurement, "unitcode", validated_data.pop("unitofmeasurement", None), "unitofmeasurement")
+      
+        product = Product.objects.create(
+            productcategory=productcategory,
+            purchaseaccount=purchaseaccount,
+            saleaccount=saleaccount,
+            hsn=hsn,
+            ratecalculate=ratecalculate,
+            unitofmeasurement=unitofmeasurement,
+            **validated_data
+        )
+        return product

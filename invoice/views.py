@@ -3,6 +3,7 @@ from django.http import request,JsonResponse
 from django.shortcuts import render
 from collections import defaultdict
 from django.utils.encoding import smart_str
+from math import radians, sin, cos, sqrt, atan2
 
 import json
 
@@ -76,6 +77,8 @@ from rest_framework.viewsets import ModelViewSet
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.http import HttpResponse
 from django.template.loader import render_to_string
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
 
 import tempfile
 
@@ -5287,6 +5290,68 @@ class CombinedB2B_B2CLarge(APIView):
         }
 
         return {"orders": flattened_data, "summary": summary}
+
+class PincodeDistanceAPIView(APIView):
+
+    def haversine(self,lat1, lon1, lat2, lon2):
+        # Radius of Earth in kilometers
+        R = 6371.0  
+
+        # Convert latitude and longitude from degrees to radians
+        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+
+        # Differences
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+
+        # Haversine formula
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+        # Distance in kilometers
+        distance = R * c
+
+        return distance
+
+    # Example Usage
+    # lat1, lon1 = 28.7041, 77.1025  # Delhi
+    # lat2, lon2 = 19.0760, 72.8777  # Mumbai
+   # print(f"Distance: {haversine(lat1, lon1, lat2, lon2):.2f} km")
+    def get(self, request):
+        pincode1 = request.query_params.get('pincode1')
+        pincode2 = request.query_params.get('pincode2')
+
+        if not pincode1 or not pincode2:
+            return Response({'error': 'Please provide both pincodes'}, status=status.HTTP_400_BAD_REQUEST)
+
+        geolocator = Nominatim(user_agent="pincode_distance_calculator", timeout=5)
+
+        try:
+            
+
+            location1 = geolocator.geocode({'postalcode': pincode1, 'country': 'India'}, timeout=10)
+            location2 = geolocator.geocode({'postalcode': pincode2, 'country': 'India'}, timeout=10)
+
+            if not location1 or not location2:
+                return Response({'error': 'Invalid pincode(s) provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+            coords_1 = (location1.latitude, location1.longitude)
+            coords_2 = (location2.latitude, location2.longitude)
+
+            distance = self.haversine(location1.latitude, location1.longitude,location2.latitude, location2.longitude)
+
+            return Response({
+                'latitude1': location1.latitude,
+                'longitude1': location1.longitude,
+                'latitude2': location2.latitude,
+                'longitude2': location2.longitude,
+                'pincode1': pincode1,
+                'pincode2': pincode2,
+                'distance_km': round(distance, 2)
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 

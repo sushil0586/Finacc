@@ -38,6 +38,10 @@ urlpatterns = [
     path('hsn', views.HSNApiView.as_view(), name='hsn'),
     path('ProductList', views.ProductListView.as_view(), name='hsn'),
     path('bulk-insert-products', views.BulkProductCreateView.as_view(), name='bulk-insert-products'),
+    path('bulk_create', views.ProductBulkCreateAPIView.as_view(), name='bulk-insert-products'),
+
+
+   
 
 
     

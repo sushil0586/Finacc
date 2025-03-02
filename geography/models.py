@@ -56,6 +56,8 @@ class City(TrackingModel):
     cityname = models.CharField(max_length=255)
     citycode = models.CharField(max_length=25)
     pincode = models.CharField(max_length=25)
+    latitude = models.FloatField(default=0.0) 
+    longitude = models.FloatField(default=0.0)
     distt = models.ForeignKey(District, related_name='cities', on_delete=models.PROTECT, null=True, db_index=True)
 
     # Adding index on citycode and pincode for faster lookups

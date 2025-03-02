@@ -149,6 +149,7 @@ urlpatterns  = [
     #path('closingstockview', views.closingstocknew.as_view(), name='closingstockView--1'),
     path('sales-order-gst-summary/', views.SalesOrderGSTSummaryView.as_view(), name='sales-order-gst-summary'),
     path("sales-order/<int:id>/", views.SalesOrderenvoiceDetailView.as_view(), name="sales-order-detail"),
+    path("distance", views.PincodeDistanceAPIView.as_view(), name="sales-order-detail"),
 
     
 

@@ -15,7 +15,7 @@ from inventory.models import (
 )
 from inventory.serializers import (
     ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
-    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer
+    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest
 )
 
 from Authentication.models import User
@@ -218,6 +218,16 @@ class BulkProductCreateView(APIView):
                 Product.objects.bulk_create(products)  # Bulk insert
             return Response({"message": "Products created successfully", "count": len(products)}, status=status.HTTP_201_CREATED)
 
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    
+class ProductBulkCreateAPIView(APIView):
+    def post(self, request, *args, **kwargs):
+        serializer = ProductBulkSerializerlatest(data=request.data, many=True)
+        if serializer.is_valid():
+            with transaction.atomic():
+                serializer.save()
+            return Response({"message": "Products created successfully!"}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
