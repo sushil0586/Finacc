@@ -50,4 +50,4 @@ class CityApiView(ListAPIView):
 
     def get_queryset(self):
         # Just return all cities
-        return City.objects.all().order_by('-id')[:10]
+        return City.objects.all()
