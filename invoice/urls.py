@@ -21,6 +21,7 @@ urlpatterns  = [
     path('saleinvoice/<int:id>',views.salesOrderupdatedelview.as_view(), name = 'salesorder'),
     path('salesorder/<int:id>',views.saleOrderupdatedelview.as_view(), name = 'salesorder'),
     path('saleinvoicepdf/<int:id>',views.salesOrderpdfview.as_view(), name = 'salesorder'),
+    path('sales-order-pdf/',views.SalesOrderPDFViewprint.as_view(), name = 'salesorder'),
     path('salepdf',views.salesorderpdf.as_view(), name = 'salesorder'),
     path('salesorderdetails',views.salesOrderdetailsApiView.as_view(),name = 'salesorder'),
     # path('salesorderdetails/<int:id>',views.salesOrderdetailsApiView.as_view(), name = 'salesorder'),
