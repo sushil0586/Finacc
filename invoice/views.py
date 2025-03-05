@@ -521,6 +521,9 @@ class tdsmainpreviousapiview(RetrieveUpdateDestroyAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
 
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
+
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         #vouchertype = self.request.query_params.get('vouchertype')
@@ -619,6 +622,8 @@ class gstserviceprevnextview(RetrieveAPIView):
     serializer_class = gstorderservicesSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "billno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -866,6 +871,9 @@ class saleOrderpreviousview(RetrieveAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "billno"
 
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
+
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         #billno = self.request.query_params.get('billno')
@@ -986,6 +994,8 @@ class PurchaseReturnpreviousview(RetrieveAPIView):
     serializer_class = PurchasereturnSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "billno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1071,7 +1081,7 @@ class jobworkchalanApiView(ListCreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id','unitType','entityName']
+    filterset_fields = ['id','unitType','entityName']
     @transaction.atomic
     def perform_create(self, serializer):
         return serializer.save(createdby = self.request.user)
@@ -1144,6 +1154,8 @@ class purchaseorderpreviousview(RetrieveUpdateDestroyAPIView):
     serializer_class = purchaseorderSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1154,6 +1166,8 @@ class purchaseordernewpreviousview(RetrieveUpdateDestroyAPIView):
     serializer_class = newpurchaseorderSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1164,6 +1178,8 @@ class purchaseorderimportpreviousview(RetrieveUpdateDestroyAPIView):
     serializer_class = purchaseorderimportSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1175,6 +1191,8 @@ class jobworkchalanpreviousview(RetrieveAPIView):
     serializer_class = jobworkchallanSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1538,6 +1556,8 @@ class journalmainpreviousapiview(RetrieveUpdateDestroyAPIView):
     serializer_class = journalmainSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1562,6 +1582,9 @@ class productionpreviousapiview(RetrieveAPIView):
     serializer_class = productionmainSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -1606,6 +1629,9 @@ class salesreturnupdatedelview(RetrieveUpdateDestroyAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
+
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return salereturn.objects.filter()
@@ -1616,6 +1642,8 @@ class salesreturnpreviousview(RetrieveUpdateDestroyAPIView):
     serializer_class = salesreturnSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
@@ -4167,6 +4195,9 @@ class debitcreditnotebyvoucherno(RetrieveUpdateDestroyAPIView):
     serializer_class = debitcreditnoteSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
