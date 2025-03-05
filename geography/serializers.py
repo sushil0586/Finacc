@@ -5,7 +5,7 @@ from geography.models import Country, State, District, City
 class CityListSerializer(serializers.ModelSerializer):
     class Meta:
         model = City
-        fields = ['id', 'cityname', 'citycode', 'distt']
+        fields = ['id', 'cityname', 'citycode','pincode','distt']
 
 
 # Optimized District Serializer (with minimal nested data)
