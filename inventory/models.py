@@ -14,10 +14,20 @@ import os
 
 
 
+class HsnChaper(TrackingModel):
+    Chapter = models.CharField(max_length= 255,verbose_name=_('Chapter'))
+    Description = models.CharField(max_length= 2000,verbose_name=_('Chapter Description'))
+
+    def __str__(self):
+        return f'{self.Chapter}'
+
+
+
 class HsnCode(TrackingModel):
+    Chapter = models.ForeignKey(HsnChaper,null=True,on_delete=models.PROTECT)
     hsnCode = models.CharField(max_length= 255,verbose_name=_('Hsn code'))
     Hsndescription = models.CharField(max_length= 2000,verbose_name=_('Hsn Description'))
-    
+    GSTRate = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True)
 
 
     def __str__(self):
