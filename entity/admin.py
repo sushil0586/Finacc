@@ -17,6 +17,11 @@ class EntityAdmin(admin.ModelAdmin):
     search_fields = ['entityname', 'address']
     list_per_page = 50
 
+class SubEntityAdmin(admin.ModelAdmin):
+    list_display = ['subentityname', 'address','entity']
+    search_fields = ['subentityname', 'address']
+    list_per_page = 50
+
 
 class MenuAdmin(admin.ModelAdmin):
     list_display = ['role', 'submenu', 'entity']
@@ -58,7 +63,7 @@ admin.site.register(entity_details)
 admin.site.register(entityfinancialyear)
 admin.site.register(entityconstitution)
 admin.site.register(Constitution)
-admin.site.register(subentity)
+admin.site.register(subentity,SubEntityAdmin)
 admin.site.register(Rolepriv, MenuAdmin)
 admin.site.register(Role, RoleAdmin)
 admin.site.register(Userrole, UserRoleAdmin)
