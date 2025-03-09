@@ -115,6 +115,31 @@ class entityconstitutionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class EntityFinancialYearSerializecreate(serializers.ModelSerializer):
+    # Derived fields from related 'entity' model
+    entityname = serializers.CharField(source='entity.entityname', read_only=True)
+    gst = serializers.CharField(source='entity.gstno', read_only=True)
+
+    class Meta:
+        model = entityfinancialyear
+        fields = (
+            'id', 'entity', 'entityname', 'gst', 'desc',
+            'finstartyear', 'finendyear', 'createdby', 'isactive',
+        )
+
+    def create(self, validated_data):
+        # Use a transaction to ensure atomicity
+        with transaction.atomic():
+            entity_id = validated_data['entity'].id
+            # Update all previous records for the entity to inactive
+            entityfinancialyear.objects.filter(entity=entity_id).update(isactive=False)
+
+            # Create a new financial year record for the entity
+            return entityfinancialyear.objects.create(**validated_data)
+
+
+
+
 
 
 class EntityFinancialYearSerializer(serializers.ModelSerializer):
@@ -190,7 +215,7 @@ class subentitySerializer(serializers.ModelSerializer):
     class Meta:
 
         model = subentity
-        fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','entity')
+        fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','ismainentity' 'entity')
 
 
 class subentitySerializerbyentity(serializers.ModelSerializer):
@@ -198,7 +223,7 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
     class Meta:
 
         model = subentity
-        fields = ('id','subentityname')
+        fields = ('id','subentityname','ismainentity',)
 
 
     
@@ -219,13 +244,13 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
 
 class entityAddSerializer(serializers.ModelSerializer):
 
-   # fy = EntityFinancialYearSerializer(many=True)
+    fy = EntityFinancialYearSerializecreate(many=True)
     constitution = entityconstitutionSerializer(many=True)
 
     class Meta:
         model = Entity
         #fields = ('id','entityName','fy',)
-        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','const','user','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg',)
+        fields = ('entityname','address','ownername','country','state','district','city','pincode','phoneoffice','phoneresidence','panno','tds','tdscircle','email','tcs206c1honsale','gstno','gstintype','const','user','constitution','legalname','address2','addressfloorno','addressstreet','blockstatus','dateofreg','dateofdreg','fy',)
 
    # entity_accountheads = accountHeadSerializer(many=True)
 

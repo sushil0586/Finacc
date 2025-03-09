@@ -117,6 +117,7 @@ class subentity(TrackingModel):
     phoneoffice = models.CharField(max_length= 255,null= True)
     phoneresidence = models.CharField(max_length= 255,null= True)
     email =    models.CharField(max_length= 255,null= True)
+    ismainentity  = models.BooleanField(blank =True,null = True)
     entity =    models.ForeignKey(to= Entity, on_delete= models.PROTECT,null=True,related_name='subentity',)
 
     
