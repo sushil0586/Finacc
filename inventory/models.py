@@ -186,6 +186,87 @@ class Track(models.Model):
 
     def __str__(self):
         return '%d: %s' % (self.order, self.title)
+    
+
+# ---------------------- BOM WITH VERSIONING ----------------------
+class BillOfMaterial(models.Model):
+    finished_good = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bom_versions')
+    version = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('finished_good', 'version')
+
+    def __str__(self):
+        return f"BOM v{self.version} for {self.finished_good.productname}"
+
+
+class BOMItem(models.Model):
+    bom = models.ForeignKey(BillOfMaterial, on_delete=models.CASCADE, related_name='items')
+    raw_material = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bom_raw_materials')
+    wastage_material = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bom_wastage_materials', null=True, blank=True)
+    is_percentage = models.BooleanField(default=True)
+    quantity_required_per_unit = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity_produced_per_unit = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.quantity_required_per_unit} of {self.raw_material.productname}"
+    
+
+
+# ---------------------- PRODUCTION MODULE ----------------------
+class ProductionOrder(models.Model):
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+    )
+
+    finished_good = models.ForeignKey(Product, on_delete=models.CASCADE)
+    bom = models.ForeignKey(BillOfMaterial, on_delete=models.SET_NULL, null=True, blank=True)
+    quantity_to_produce = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    production_date = models.DateField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_production_orders')
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_production_orders')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Order #{self.id} - {self.finished_good.productname}"
+
+
+class ProductionConsumption(models.Model):
+    production_order = models.ForeignKey(ProductionOrder, on_delete=models.CASCADE, related_name='consumptions')
+    raw_material = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity_consumed = models.DecimalField(max_digits=10, decimal_places=2)
+    scrap_or_wastage = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    wastage_sku = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True, related_name='wastage_skus')
+    batch_number = models.CharField(max_length=50, blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.quantity_consumed} {self.raw_material.unitofmeasurement.unitcode} of {self.raw_material.productname}"
+
+
+class ProductionOutput(models.Model):
+    production_order = models.ForeignKey(ProductionOrder, on_delete=models.CASCADE, related_name='outputs')
+    quantity_produced = models.DecimalField(max_digits=10, decimal_places=2)
+    batch_number = models.CharField(max_length=50, blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.quantity_produced} units of {self.production_order.finished_good.productname}"
+
+
+class QualityCheck(models.Model):
+    production_output = models.ForeignKey(ProductionOutput, on_delete=models.CASCADE)
+    test_result = models.CharField(max_length=100)
+    passed = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"QC for {self.production_output}"
+
             
 
 

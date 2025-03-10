@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import (
     CreateAPIView, ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
 )
-from rest_framework import permissions, filters
+from rest_framework import permissions, filters,generics, status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
 from rest_framework.response import Response
@@ -11,11 +11,11 @@ from rest_framework import status
 
 from inventory.models import (
     Album, Product, Track, ProductCategory, gsttype, typeofgoods, Ratecalculate,
-    UnitofMeasurement, HsnCode
+    UnitofMeasurement, HsnCode,BillOfMaterial,ProductionOrder
 )
 from inventory.serializers import (
     ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
-    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest
+    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer
 )
 
 from Authentication.models import User
@@ -222,8 +222,13 @@ class BulkProductCreateView(APIView):
     
     
 class ProductBulkCreateAPIView(APIView):
-    def post(self, request, *args, **kwargs):
-        serializer = ProductBulkSerializerlatest(data=request.data, many=True)
+    def post(self, request, entity_id, *args, **kwargs):
+        try:
+            entity = Entity.objects.get(id=entity_id)
+        except Entity.DoesNotExist:
+            return Response({"error": "Invalid entity ID"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = ProductBulkSerializerlatest(data=request.data, many=True, context={"entity": entity})
         if serializer.is_valid():
             with transaction.atomic():
                 serializer.save()
@@ -265,4 +270,95 @@ class ProductBulkCreateAPIView(APIView):
 #             return Response({"message": "Products created successfully", "count": len(products)}, status=status.HTTP_201_CREATED)
 
 #         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class BillOfMaterialAPIView(generics.GenericAPIView):
+    queryset = BillOfMaterial.objects.all().order_by('-created_at')
+    serializer_class = BillOfMaterialSerializer
+
+    def get(self, request, pk=None):
+        if pk:
+            try:
+                instance = self.get_queryset().get(pk=pk)
+                serializer = self.get_serializer(instance)
+                return Response(serializer.data)
+            except BillOfMaterial.DoesNotExist:
+                return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            queryset = self.get_queryset()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk=None):
+        try:
+            instance = self.get_queryset().get(pk=pk)
+        except BillOfMaterial.DoesNotExist:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk=None):
+        try:
+            instance = self.get_queryset().get(pk=pk)
+            instance.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except BillOfMaterial.DoesNotExist:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+
+class ProductionOrderAPIView(generics.GenericAPIView):
+    queryset = ProductionOrder.objects.all().order_by('-updated_at')
+    serializer_class = ProductionOrderSerializer
+
+    def get(self, request, pk=None):
+        if pk:
+            try:
+                instance = self.get_queryset().get(pk=pk)
+                serializer = self.get_serializer(instance)
+                return Response(serializer.data)
+            except ProductionOrder.DoesNotExist:
+                return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            queryset = self.get_queryset()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk=None):
+        try:
+            instance = self.get_queryset().get(pk=pk)
+        except ProductionOrder.DoesNotExist:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk=None):
+        try:
+            instance = self.get_queryset().get(pk=pk)
+            instance.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ProductionOrder.DoesNotExist:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
    
