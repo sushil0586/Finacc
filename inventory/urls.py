@@ -38,7 +38,13 @@ urlpatterns = [
     path('hsn', views.HSNApiView.as_view(), name='hsn'),
     path('ProductList', views.ProductListView.as_view(), name='hsn'),
     path('bulk-insert-products', views.BulkProductCreateView.as_view(), name='bulk-insert-products'),
-    path('bulk_create', views.ProductBulkCreateAPIView.as_view(), name='bulk-insert-products'),
+    path('bulk-create/<int:entity_id>/', views.ProductBulkCreateAPIView.as_view(), name='bulk-insert-products'),
+    path('InvoiceBulkCreate/<int:entity_id>/', views.ProductBulkCreateAPIView.as_view(), name='invoice-bulk-create'),
+    path('boms/', views.BillOfMaterialAPIView.as_view(), name='bom-list-create'),
+    path('boms/<int:pk>/', views.BillOfMaterialAPIView.as_view(), name='bom-detail-update-delete'),
+    path('production-orders/', views.ProductionOrderAPIView.as_view(), name='production-order-list-create'),
+    path('production-orders/<int:pk>/', views.ProductionOrderAPIView.as_view(), name='production-order-detail'),
+   # path("api/products/", ProductBulkCreateAPIView.as_view(), name="product-bulk-create"),
 
 
    

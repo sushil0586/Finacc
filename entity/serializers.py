@@ -215,7 +215,7 @@ class subentitySerializer(serializers.ModelSerializer):
     class Meta:
 
         model = subentity
-        fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','ismainentity' 'entity')
+        fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','ismainentity', 'entity')
 
 
 class subentitySerializerbyentity(serializers.ModelSerializer):

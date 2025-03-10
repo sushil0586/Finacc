@@ -1,6 +1,6 @@
 from django.db import transaction
 from rest_framework import serializers
-from inventory.models import Product, Album, Track, ProductCategory, Ratecalculate, UnitofMeasurement, typeofgoods, gsttype, HsnCode
+from inventory.models import Product, Album, Track, ProductCategory, Ratecalculate, UnitofMeasurement, typeofgoods, gsttype, HsnCode,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption
 from invoice.models import entry, StockTransactions
 from financial.models import account
 from entity.models import entityfinancialyear
@@ -193,15 +193,14 @@ class ProductBulkSerializerlatest(serializers.ModelSerializer):
     ratecalculate = serializers.CharField(write_only=True)
     unitofmeasurement = serializers.CharField(write_only=True)
    
-
     class Meta:
         model = Product
         fields = [
-            "entity", "productname", "productdesc", "openingstockqty",
+            "productname", "productdesc", "openingstockqty",
             "productcategory", "openingstockvalue", "purchaserate", "prlesspercentage",
             "mrp", "mrpless", "salesprice", "totalgst", "cgst", "igst", "sgst",
             "cesstype", "cess", "purchaseaccount", "saleaccount", "ratecalculate",
-            "unitofmeasurement",  "hsn", "is_pieces", "is_product"
+            "unitofmeasurement", "hsn", "is_pieces", "is_product"
         ]
 
     def get_object_or_error(self, model, field, value, field_name):
@@ -214,6 +213,7 @@ class ProductBulkSerializerlatest(serializers.ModelSerializer):
         return obj
 
     def create(self, validated_data):
+        entity = self.context["entity"]  # Extract entity from context
         productcategory = self.get_object_or_error(ProductCategory, "pcategoryname", validated_data.pop("productcategory", None), "productcategory")
         purchaseaccount = self.get_object_or_error(account, "accountname", validated_data.pop("purchaseaccount", None), "purchaseaccount")
         saleaccount = self.get_object_or_error(account, "accountname", validated_data.pop("saleaccount", None), "saleaccount")
@@ -222,6 +222,7 @@ class ProductBulkSerializerlatest(serializers.ModelSerializer):
         unitofmeasurement = self.get_object_or_error(UnitofMeasurement, "unitcode", validated_data.pop("unitofmeasurement", None), "unitofmeasurement")
       
         product = Product.objects.create(
+            entity=entity,  # Assign entity from context
             productcategory=productcategory,
             purchaseaccount=purchaseaccount,
             saleaccount=saleaccount,
@@ -231,3 +232,78 @@ class ProductBulkSerializerlatest(serializers.ModelSerializer):
             **validated_data
         )
         return product
+    
+class BOMItemSerializer(serializers.ModelSerializer):
+    raw_material_name = serializers.CharField(source='raw_material.name', read_only=True)
+
+    class Meta:
+        model = BOMItem
+        fields = ['id', 'raw_material', 'raw_material_name', 'is_percentage',
+                  'quantity_required_per_unit','wastage_material','quantity_produced_per_unit']
+
+
+class BillOfMaterialSerializer(serializers.ModelSerializer):
+    finished_good_name = serializers.CharField(source='finished_good.name', read_only=True)
+    items = BOMItemSerializer(many=True)
+
+    class Meta:
+        model = BillOfMaterial
+        fields = ['id', 'finished_good', 'finished_good_name', 'version', 'is_active', 'created_at', 'items']
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items', [])
+        bom = BillOfMaterial.objects.create(**validated_data)
+        for item_data in items_data:
+            BOMItem.objects.create(bom=bom, **item_data)
+        return bom
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', [])
+        instance.finished_good = validated_data.get('finished_good', instance.finished_good)
+        instance.version = validated_data.get('version', instance.version)
+        instance.is_active = validated_data.get('is_active', instance.is_active)
+        instance.save()
+
+        # Optional: Clear old items and recreate new ones
+        instance.items.all().delete()
+        for item_data in items_data:
+            BOMItem.objects.create(bom=instance, **item_data)
+
+        return instance
+    
+
+class ProductionConsumptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductionConsumption
+        fields = ['raw_material', 'quantity_consumed', 'scrap_or_wastage', 'batch_number', 'expiry_date']
+
+class ProductionOrderSerializer(serializers.ModelSerializer):
+    consumptions = ProductionConsumptionSerializer(many=True)
+
+    class Meta:
+        model = ProductionOrder
+        fields = ['id', 'finished_good', 'bom', 'quantity_to_produce', 'status', 'production_date', 'created_by', 'updated_by', 'updated_at', 'consumptions']
+
+    def create(self, validated_data):
+        consumptions_data = validated_data.pop('consumptions')
+        production_order = ProductionOrder.objects.create(**validated_data)
+
+        for consumption_data in consumptions_data:
+            ProductionConsumption.objects.create(production_order=production_order, **consumption_data)
+
+        return production_order
+
+    def update(self, instance, validated_data):
+        consumptions_data = validated_data.pop('consumptions', None)
+
+        # Update fields of production order
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if consumptions_data:
+            instance.consumptions.all().delete()
+            for consumption_data in consumptions_data:
+                ProductionConsumption.objects.create(production_order=instance, **consumption_data)
+
+        return instance
