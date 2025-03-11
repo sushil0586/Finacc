@@ -9,7 +9,7 @@ from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrde
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment
 from financial.models import account,accountHead
 from inventory.models import Product
-from django.db.models import Sum,Count,F, Case, When, FloatField, Q
+from django.db.models import Sum,Count,F, Case, When, FloatField, Q,Value,DecimalField,DecimalField,CharField
 from datetime import timedelta,date,datetime
 from entity.models import Entity,entityfinancialyear,Mastergstdetails
 from django.db.models.functions import Abs
@@ -24,6 +24,8 @@ from django_pandas.io import read_frame
 import numpy as np
 import entity.views as entityview
 from django.db.models import Prefetch
+from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast
 #from entity.views import generateeinvoice
 #from entity.serializers import entityfinancialyearSerializer
 
@@ -1744,23 +1746,37 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     def get_gst_summary(self, obj):
         """
         Fetch and serialize GST summary data for the sales order header.
+        NULL taxPercent will be replaced with 'NIL', others remain as string numbers.
         """
         salesorderheader_id = obj.id
+
         aggregated_data = (
             salesOrderdetails.objects.filter(salesorderheader_id=salesorderheader_id)
-            .values("salesorderheader")
+            .annotate(
+                taxPercentRaw=Case(
+                    When(
+                        igstpercent=0,
+                        then=F("cgstpercent") + F("sgstpercent")
+                    ),
+                    default=F("igstpercent"),
+                    output_field=DecimalField(),
+                )
+            )
             .annotate(
                 taxPercent=Case(
-                    When(igstpercent=0, then=F("cgstpercent") + F("sgstpercent")),
-                    default=F("igstpercent"),
-                    output_field=FloatField(),
-                ),
-                taxable_amount=Sum("amount", filter=Q(sgstpercent__isnull=False)),
-                total_cgst_amount=Sum("cgst", filter=Q(sgstpercent__isnull=False)),
-                total_sgst_amount=Sum("sgst", filter=Q(sgstpercent__isnull=False)),
-                total_igst_amount=Sum("igst", filter=Q(igstpercent__isnull=False)),
+                    When(taxPercentRaw__isnull=True, then=Value("NIL")),
+                    default=Cast(F("taxPercentRaw"), output_field=CharField())
+                )
+            )
+            .values("salesorderheader", "taxPercent")
+            .annotate(
+                taxable_amount=Sum(F("amount")),
+                total_cgst_amount=Sum(F("cgst")),
+                total_sgst_amount=Sum(F("sgst")),
+                total_igst_amount=Sum(F("igst")),
             )
         )
+
         return list(aggregated_data)
     
     # def get_saleInvoiceDetails1(self, obj):
@@ -5539,10 +5555,13 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     seller_details = serializers.SerializerMethodField()
     buyer_details = serializers.SerializerMethodField()
     items = SalesOrderItemSerializer(many=True, source='saleInvoiceDetails')  # Using related_name
+    val_dtls = serializers.SerializerMethodField()
+    tran_dtls = serializers.SerializerMethodField()
+
 
     class Meta:
         model = SalesOderHeader
-        fields = ['seller_details', 'buyer_details', 'items']
+        fields = ['seller_details', 'buyer_details', 'items', 'val_dtls','tran_dtls']
 
     def get_seller_details(self, obj):
         entity = obj.entity
@@ -5568,6 +5587,31 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "Loc": account.city.cityname if account.city else None,
             "Pin": account.city.pincode if account.city else None,
             "Stcd": account.state.statecode if account.state else None,
+        }
+    
+    def get_val_dtls(self, obj):
+        return {
+            "AssVal": obj.stbefdiscount,
+            "CgstVal": obj.cgst,
+            "SgstVal": obj.sgst,
+            "IgstVal": obj.igst,
+            "CesVal": obj.cess,
+            "StCesVal": 0,
+            "Discount": obj.discount,
+            "OthChrg": obj.expenses,
+            "RndOffAmt": 0.3,  # Assuming this is a fixed value, change if dynamic
+            "TotInvVal": obj.gtotal,
+            "TotInvValFc": obj.gtotal,
+        }
+
+    def get_tran_dtls(self, obj):
+        return {
+            "TaxSch": "GST",
+            "SupTyp": obj.invoicetype.invoicetypecode if obj.invoicetype else None,
+            "RegRev": "Y" if obj.reversecharge else "N",
+            "EcmGstin": obj.ecom.gstno if obj.ecom and obj.ecom.gstno else None,
+            "IgstOnIntra": "Y" if obj.isigst else "N"
+           
         }
 
 
