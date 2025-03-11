@@ -273,7 +273,7 @@ class ProductBulkCreateAPIView(APIView):
 
 
 
-class BillOfMaterialAPIView(generics.GenericAPIView):
+class BillOfMaterialAPIView(generics.GenericAPIView,EntityFilterMixin):
     queryset = BillOfMaterial.objects.all().order_by('-created_at')
     serializer_class = BillOfMaterialSerializer
 
@@ -286,7 +286,7 @@ class BillOfMaterialAPIView(generics.GenericAPIView):
             except BillOfMaterial.DoesNotExist:
                 return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
         else:
-            queryset = self.get_queryset()
+            queryset = self.filter_by_entity(BillOfMaterial.objects.all())
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data)
 
@@ -318,7 +318,7 @@ class BillOfMaterialAPIView(generics.GenericAPIView):
             return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
         
 
-class ProductionOrderAPIView(generics.GenericAPIView):
+class ProductionOrderAPIView(generics.GenericAPIView,EntityFilterMixin):
     queryset = ProductionOrder.objects.all().order_by('-updated_at')
     serializer_class = ProductionOrderSerializer
 
@@ -331,7 +331,7 @@ class ProductionOrderAPIView(generics.GenericAPIView):
             except ProductionOrder.DoesNotExist:
                 return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
         else:
-            queryset = self.get_queryset()
+            queryset = self.filter_by_entity(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data)
 
