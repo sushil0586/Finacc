@@ -194,6 +194,8 @@ class BillOfMaterial(models.Model):
     version = models.PositiveIntegerField(default=1)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    entity = models.ForeignKey(Entity,on_delete=models.PROTECT,null=True)
+    createdby = models.ForeignKey(to= User,null=True, on_delete=models.PROTECT)
 
     class Meta:
         unique_together = ('finished_good', 'version')
@@ -231,6 +233,7 @@ class ProductionOrder(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_production_orders')
     updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_production_orders')
     updated_at = models.DateTimeField(auto_now=True)
+    entity = models.ForeignKey(Entity,on_delete=models.PROTECT,null=True)
 
     def __str__(self):
         return f"Order #{self.id} - {self.finished_good.productname}"

@@ -248,7 +248,7 @@ class BillOfMaterialSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BillOfMaterial
-        fields = ['id', 'finished_good', 'finished_good_name', 'version', 'is_active', 'created_at', 'items']
+        fields = ['id', 'finished_good', 'finished_good_name', 'version', 'is_active', 'created_at','entity','createdby', 'items']
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
@@ -282,7 +282,7 @@ class ProductionOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ProductionOrder
-        fields = ['id', 'finished_good', 'bom', 'quantity_to_produce', 'status', 'production_date', 'created_by', 'updated_by', 'updated_at', 'consumptions']
+        fields = ['id', 'finished_good', 'bom', 'quantity_to_produce', 'status', 'production_date', 'created_by', 'updated_by', 'updated_at','entity','consumptions']
 
     def create(self, validated_data):
         consumptions_data = validated_data.pop('consumptions')
