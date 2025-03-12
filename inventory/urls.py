@@ -44,6 +44,8 @@ urlpatterns = [
     path('boms/<int:pk>/', views.BillOfMaterialAPIView.as_view(), name='bom-detail-update-delete'),
     path('production-orders/', views.ProductionOrderAPIView.as_view(), name='production-order-list-create'),
     path('production-orders/<int:pk>/', views.ProductionOrderAPIView.as_view(), name='production-order-detail'),
+    path('bomlist/', views.BillOfMaterialListAPIView.as_view(), name='bom-list'),
+    path('bom-items-calculated/', views.BOMItemCalculatedAPIView.as_view(), name='bom-items-calculated'),
    # path("api/products/", ProductBulkCreateAPIView.as_view(), name="product-bulk-create"),
 
 

@@ -11,11 +11,11 @@ from rest_framework import status
 
 from inventory.models import (
     Album, Product, Track, ProductCategory, gsttype, typeofgoods, Ratecalculate,
-    UnitofMeasurement, HsnCode,BillOfMaterial,ProductionOrder
+    UnitofMeasurement, HsnCode,BillOfMaterial,ProductionOrder,BOMItem
 )
 from inventory.serializers import (
     ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
-    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer
+    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer,BillOfMaterialListSerializer,BOMItemCalculatedSerializer
 )
 
 from Authentication.models import User
@@ -361,4 +361,40 @@ class ProductionOrderAPIView(generics.GenericAPIView,EntityFilterMixin):
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ProductionOrder.DoesNotExist:
             return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+
+class BillOfMaterialListAPIView(APIView):
+    def get(self, request):
+        entity_id = request.query_params.get('entity')
+        finished_good_id = request.query_params.get('finished_good')
+
+        if not entity_id or not finished_good_id:
+            return Response({"detail": "entity and finished_good are required parameters."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        boms = BillOfMaterial.objects.filter(entity_id=entity_id, finished_good_id=finished_good_id)
+
+        serializer = BillOfMaterialListSerializer(boms, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+class BOMItemCalculatedAPIView(APIView):
+    def get(self, request):
+        bom_id = request.query_params.get('bom')
+        quantity = request.query_params.get('quantity')
+        entity = request.query_params.get('entity')
+
+        if not bom_id or not quantity:
+            return Response({"detail": "Both 'bom' and 'quantity' parameters are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            quantity = float(quantity)
+        except ValueError:
+            return Response({"detail": "Quantity must be a number."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        items = BOMItem.objects.filter(bom_id=bom_id)
+        serializer = BOMItemCalculatedSerializer(items, many=True, context={'quantity': quantity})
+        return Response(serializer.data, status=status.HTTP_200_OK)
    

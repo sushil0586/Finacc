@@ -307,3 +307,44 @@ class ProductionOrderSerializer(serializers.ModelSerializer):
                 ProductionConsumption.objects.create(production_order=instance, **consumption_data)
 
         return instance
+    
+
+class BillOfMaterialListSerializer(serializers.ModelSerializer):
+    bom_id = serializers.IntegerField(source='id')
+
+    class Meta:
+        model = BillOfMaterial
+        fields = ['bom_id', 'finished_good', 'version']
+
+
+class BOMItemCalculatedSerializer(serializers.ModelSerializer):
+    bom_id = serializers.IntegerField(source='bom.id')
+    raw_material_name = serializers.CharField(source='raw_material.name', read_only=True)
+    wastage_material_name = serializers.CharField(source='wastage_material.name', read_only=True)
+
+    calculated_quantity_required_per_unit = serializers.SerializerMethodField()
+    calculated_quantity_produced_per_unit = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BOMItem
+        fields = [
+            'bom_id',
+            'raw_material',
+            'raw_material_name',
+            'wastage_material',
+            'wastage_material_name',
+            'is_percentage',
+            'calculated_quantity_required_per_unit',
+            'calculated_quantity_produced_per_unit'
+        ]
+
+    def get_calculated_quantity_required_per_unit(self, obj):
+        quantity = self.context.get('quantity', 1)
+        return float(obj.quantity_required_per_unit) * quantity
+
+    def get_calculated_quantity_produced_per_unit(self, obj):
+        quantity = self.context.get('quantity', 1)
+        if obj.is_percentage:
+            return float(obj.quantity_produced_per_unit) * quantity / 100
+        else:
+            return float(obj.quantity_produced_per_unit) * quantity
