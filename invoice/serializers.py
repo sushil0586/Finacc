@@ -9,7 +9,7 @@ from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrde
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment
 from financial.models import account,accountHead
 from inventory.models import Product
-from django.db.models import Sum,Count,F, Case, When, FloatField, Q,Value,DecimalField,DecimalField,CharField
+from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
 from entity.models import Entity,entityfinancialyear,Mastergstdetails
 from django.db.models.functions import Abs
@@ -24,8 +24,6 @@ from django_pandas.io import read_frame
 import numpy as np
 import entity.views as entityview
 from django.db.models import Prefetch
-from django.db.models.functions import Coalesce
-from django.db.models.functions import Cast
 #from entity.views import generateeinvoice
 #from entity.serializers import entityfinancialyearSerializer
 
@@ -1746,37 +1744,23 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     def get_gst_summary(self, obj):
         """
         Fetch and serialize GST summary data for the sales order header.
-        NULL taxPercent will be replaced with 'NIL', others remain as string numbers.
         """
         salesorderheader_id = obj.id
-
         aggregated_data = (
             salesOrderdetails.objects.filter(salesorderheader_id=salesorderheader_id)
-            .annotate(
-                taxPercentRaw=Case(
-                    When(
-                        igstpercent=0,
-                        then=F("cgstpercent") + F("sgstpercent")
-                    ),
-                    default=F("igstpercent"),
-                    output_field=DecimalField(),
-                )
-            )
+            .values("salesorderheader")
             .annotate(
                 taxPercent=Case(
-                    When(taxPercentRaw__isnull=True, then=Value("NIL")),
-                    default=Cast(F("taxPercentRaw"), output_field=CharField())
-                )
-            )
-            .values("salesorderheader", "taxPercent")
-            .annotate(
-                taxable_amount=Sum(F("amount")),
-                total_cgst_amount=Sum(F("cgst")),
-                total_sgst_amount=Sum(F("sgst")),
-                total_igst_amount=Sum(F("igst")),
+                    When(igstpercent=0, then=F("cgstpercent") + F("sgstpercent")),
+                    default=F("igstpercent"),
+                    output_field=FloatField(),
+                ),
+                taxable_amount=Sum("amount"),  # <- Removed filter
+                total_cgst_amount=Sum("cgst", filter=Q(cgst__isnull=False)),
+                total_sgst_amount=Sum("sgst", filter=Q(sgst__isnull=False)),
+                total_igst_amount=Sum("igst", filter=Q(igst__isnull=False)),
             )
         )
-
         return list(aggregated_data)
     
     # def get_saleInvoiceDetails1(self, obj):
