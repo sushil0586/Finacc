@@ -219,16 +219,11 @@ class BOMItem(models.Model):
 
 # ---------------------- PRODUCTION MODULE ----------------------
 class ProductionOrder(models.Model):
-    STATUS_CHOICES = (
-        ('pending', 'Pending'),
-        ('in_progress', 'In Progress'),
-        ('completed', 'Completed'),
-    )
 
     finished_good = models.ForeignKey(Product, on_delete=models.CASCADE)
     bom = models.ForeignKey(BillOfMaterial, on_delete=models.SET_NULL, null=True, blank=True)
     quantity_to_produce = models.DecimalField(max_digits=10, decimal_places=2)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    status = models.PositiveIntegerField(default=1)
     production_date = models.DateField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_production_orders')
     updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_production_orders')
