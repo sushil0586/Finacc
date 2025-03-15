@@ -319,8 +319,8 @@ class BillOfMaterialListSerializer(serializers.ModelSerializer):
 
 class BOMItemCalculatedSerializer(serializers.ModelSerializer):
     bom_id = serializers.IntegerField(source='bom.id')
-    raw_material_name = serializers.CharField(source='raw_material.name', read_only=True)
-    wastage_material_name = serializers.CharField(source='wastage_material.name', read_only=True)
+    raw_material_name = serializers.CharField(source='raw_material.productname', read_only=True)
+    wastage_material_name = serializers.CharField(source='wastage_material.productname', read_only=True)
 
     calculated_quantity_required_per_unit = serializers.SerializerMethodField()
     calculated_quantity_produced_per_unit = serializers.SerializerMethodField()
