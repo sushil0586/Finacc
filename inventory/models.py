@@ -4,7 +4,7 @@ from django.db.models.deletion import CASCADE
 from helpers.models import TrackingModel
 from Authentication.models import User
 from django.utils.translation import gettext as _
-from entity.models import Entity
+from entity.models import Entity,entityfinancialyear
 from financial.models import account
 import barcode                      # additional imports
 from barcode.writer import ImageWriter
@@ -220,6 +220,9 @@ class BOMItem(models.Model):
 # ---------------------- PRODUCTION MODULE ----------------------
 class ProductionOrder(models.Model):
 
+
+    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True,null=True, blank=True)
+    voucherno = models.IntegerField(verbose_name='Voucher No',default=1)
     finished_good = models.ForeignKey(Product, on_delete=models.CASCADE)
     bom = models.ForeignKey(BillOfMaterial, on_delete=models.SET_NULL, null=True, blank=True)
     quantity_to_produce = models.DecimalField(max_digits=10, decimal_places=2)
@@ -228,6 +231,7 @@ class ProductionOrder(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_production_orders')
     updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_production_orders')
     updated_at = models.DateTimeField(auto_now=True)
+    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.PROTECT,null=True)
 
     def __str__(self):

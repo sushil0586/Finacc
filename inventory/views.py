@@ -16,7 +16,7 @@ from inventory.models import (
 from inventory.serializers import (
     ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
     GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer,BillOfMaterialListSerializer,BOMItemCalculatedSerializer,BillOfMaterialSerializerList,
-    ProductionOrderListSerializer
+    ProductionOrderListSerializer,productionorderVSerializer
 )
 
 from Authentication.models import User
@@ -328,6 +328,20 @@ class BillOfMaterialListView(generics.ListAPIView):
         if entity_id:
             queryset = queryset.filter(entity_id=entity_id)
         return queryset
+    
+
+class ProductionOrderlatestview(ListCreateAPIView):
+
+    serializer_class = productionorderVSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    def get(self,request):
+        entity = self.request.query_params.get('entity')
+        entityfy = self.request.query_params.get('entityfinid')
+        id = ProductionOrder.objects.filter(entity= entity,entityfinid = entityfy).last()
+        serializer = productionorderVSerializer(id)
+        return Response(serializer.data)
         
 
 class ProductionOrderAPIView(generics.GenericAPIView,EntityFilterMixin):
