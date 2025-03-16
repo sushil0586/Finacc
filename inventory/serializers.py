@@ -403,3 +403,11 @@ class ProductionOrderListSerializer(serializers.ModelSerializer):
             3: 'Complete'
         }
         return status_dict.get(obj.status, 'Unknown')
+    
+
+class BillOfMaterialListbyentitySerializer(serializers.ModelSerializer):
+    finished_good_name = serializers.CharField(source='finished_good.productname', read_only=True)
+
+    class Meta:
+        model = BillOfMaterial
+        fields = ['id','finished_good_name', 'version', 'is_active']
