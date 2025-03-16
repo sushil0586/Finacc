@@ -47,6 +47,7 @@ urlpatterns = [
     path('bom-items-calculated/', views.BOMItemCalculatedAPIView.as_view(), name='bom-items-calculated'),
     path('bomlistbyentity/', views.BillOfMaterialListbyentityView.as_view(), name='bom-list'),
     path('production-orders-List/', views.ProductionOrderListView.as_view(), name='production-order-list'),
+    path('PoVoucherNo',views.ProductionOrderlatestview.as_view(), name = 'purchaseorder'),
    # path("api/products/", ProductBulkCreateAPIView.as_view(), name="product-bulk-create"),
 
 

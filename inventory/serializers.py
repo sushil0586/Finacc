@@ -279,17 +279,39 @@ class BillOfMaterialSerializer(serializers.ModelSerializer):
         return instance
     
 
-class ProductionConsumptionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProductionConsumption
-        fields = ['raw_material', 'quantity_consumed', 'scrap_or_wastage', 'batch_number', 'expiry_date']
+class productionorderVSerializer(serializers.ModelSerializer):
+    #entityUser = entityUserSerializer(many=True)
+  #  id = serializers.IntegerField(required=False)
 
-class ProductionOrderSerializer(serializers.ModelSerializer):
-    consumptions = ProductionConsumptionSerializer(many=True)
+    newvoucher = serializers.SerializerMethodField()
+
+    def get_newvoucher(self, obj):
+        if not obj.voucherno:
+            return 1
+        else:
+            return obj.voucherno + 1
 
     class Meta:
         model = ProductionOrder
-        fields = ['id', 'finished_good', 'bom', 'quantity_to_produce', 'status', 'production_date', 'created_by', 'updated_by', 'updated_at','entity','consumptions']
+        fields =  ['newvoucher']
+
+    
+
+class ProductionConsumptionSerializer(serializers.ModelSerializer):
+
+    raw_material_name = serializers.CharField(source='raw_material.productname', read_only=True)
+    quantity_consumed_name = serializers.CharField(source='quantity_consumed.productname', read_only=True)
+    class Meta:
+        model = ProductionConsumption
+        fields = ['raw_material','raw_material_name', 'quantity_consumed','quantity_consumed_name', 'scrap_or_wastage', 'batch_number', 'expiry_date']
+
+class ProductionOrderSerializer(serializers.ModelSerializer):
+    consumptions = ProductionConsumptionSerializer(many=True)
+    
+
+    class Meta:
+        model = ProductionOrder
+        fields = ['id','voucherno','finished_good', 'bom', 'quantity_to_produce', 'status', 'production_date', 'created_by', 'updated_by', 'updated_at','entity','consumptions']
 
     def create(self, validated_data):
         consumptions_data = validated_data.pop('consumptions')
