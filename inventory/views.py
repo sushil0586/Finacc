@@ -15,7 +15,8 @@ from inventory.models import (
 )
 from inventory.serializers import (
     ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
-    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer,BillOfMaterialListSerializer,BOMItemCalculatedSerializer
+    GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer,BillOfMaterialListSerializer,BOMItemCalculatedSerializer,BillOfMaterialSerializerList,
+    ProductionOrderListSerializer
 )
 
 from Authentication.models import User
@@ -318,6 +319,17 @@ class BillOfMaterialAPIView(generics.GenericAPIView,EntityFilterMixin):
             return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
         
 
+class BillOfMaterialListView(generics.ListAPIView):
+    serializer_class = BillOfMaterialSerializer
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get('entity')
+        queryset = BillOfMaterial.objects.all()
+        if entity_id:
+            queryset = queryset.filter(entity_id=entity_id)
+        return queryset
+        
+
 class ProductionOrderAPIView(generics.GenericAPIView,EntityFilterMixin):
     queryset = ProductionOrder.objects.all().order_by('-updated_at')
     serializer_class = ProductionOrderSerializer
@@ -397,4 +409,37 @@ class BOMItemCalculatedAPIView(APIView):
         items = BOMItem.objects.filter(bom_id=bom_id)
         serializer = BOMItemCalculatedSerializer(items, many=True, context={'quantity': quantity})
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+class BillOfMaterialListbyentityView(generics.ListAPIView):
+    serializer_class = BillOfMaterialSerializerList
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get('entity')
+        queryset = BillOfMaterial.objects.all()
+        if entity_id:
+            queryset = queryset.filter(entity_id=entity_id)
+        return queryset
+    
+
+class ProductionOrderListView(generics.ListAPIView):
+    serializer_class = ProductionOrderListSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get_queryset(self):
+        queryset = ProductionOrder.objects.select_related('finished_good', 'bom')
+
+        # Filter by entity (required)
+        entity_id = self.request.query_params.get('entity')
+        if entity_id:
+            queryset = queryset.filter(entity_id=entity_id)
+        else:
+            queryset = queryset.none()  # Return empty if no entity provided
+
+        # Optional filter by status
+        status = self.request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(status=status)
+
+        return queryset
    

@@ -233,6 +233,13 @@ class ProductBulkSerializerlatest(serializers.ModelSerializer):
         )
         return product
     
+class BillOfMaterialSerializerList(serializers.ModelSerializer):
+
+    product_name = serializers.CharField(source='finished_good.productname', read_only=True)
+    class Meta:
+        model = BillOfMaterial
+        fields = ['id', 'finished_good', 'product_name', 'version', 'is_active', 'created_at', 'entity', 'createdby']
+    
 class BOMItemSerializer(serializers.ModelSerializer):
     raw_material_name = serializers.CharField(source='raw_material.name', read_only=True)
 
@@ -348,3 +355,28 @@ class BOMItemCalculatedSerializer(serializers.ModelSerializer):
             return float(obj.quantity_produced_per_unit) * quantity / 100
         else:
             return float(obj.quantity_produced_per_unit) * quantity
+        
+
+class ProductionOrderListSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='finished_good.productname', read_only=True)
+    bom_version = serializers.IntegerField(source='bom.version', read_only=True)
+    status_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductionOrder
+        fields = [
+            'id',  # Production Order ID
+            'product_name',
+            'bom_version',
+            'status',
+            'status_label',
+            'production_date',
+        ]
+
+    def get_status_label(self, obj):
+        status_dict = {
+            1: 'Pending',
+            2: 'In Progress',
+            3: 'Complete'
+        }
+        return status_dict.get(obj.status, 'Unknown')

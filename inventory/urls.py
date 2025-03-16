@@ -33,7 +33,6 @@ urlpatterns = [
 
     # Unit of Measurement (UOM)
     path('uom', views.UOMApiView.as_view(), name='uom'),
-
     # HSN Code
     path('hsn', views.HSNApiView.as_view(), name='hsn'),
     path('ProductList', views.ProductListView.as_view(), name='hsn'),
@@ -46,6 +45,8 @@ urlpatterns = [
     path('production-orders/<int:pk>/', views.ProductionOrderAPIView.as_view(), name='production-order-detail'),
     path('bomlist/', views.BillOfMaterialListAPIView.as_view(), name='bom-list'),
     path('bom-items-calculated/', views.BOMItemCalculatedAPIView.as_view(), name='bom-items-calculated'),
+    path('bomlistbyentity/', views.BillOfMaterialListbyentityView.as_view(), name='bom-list'),
+    path('production-orders-List/', views.ProductionOrderListView.as_view(), name='production-order-list'),
    # path("api/products/", ProductBulkCreateAPIView.as_view(), name="product-bulk-create"),
 
 
