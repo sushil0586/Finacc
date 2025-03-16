@@ -300,10 +300,10 @@ class productionorderVSerializer(serializers.ModelSerializer):
 class ProductionConsumptionSerializer(serializers.ModelSerializer):
 
     raw_material_name = serializers.CharField(source='raw_material.productname', read_only=True)
-    quantity_consumed_name = serializers.CharField(source='quantity_consumed.productname', read_only=True)
+    wastage_sku_name = serializers.CharField(source='wastage_sku.productname', read_only=True)
     class Meta:
         model = ProductionConsumption
-        fields = ['raw_material','raw_material_name', 'quantity_consumed','quantity_consumed_name', 'scrap_or_wastage', 'batch_number', 'expiry_date']
+        fields = ['raw_material','raw_material_name', 'quantity_consumed','wastage_sku','scrap_or_wastage','wastage_sku_name', 'batch_number', 'expiry_date']
 
 class ProductionOrderSerializer(serializers.ModelSerializer):
     consumptions = ProductionConsumptionSerializer(many=True)
@@ -388,6 +388,7 @@ class ProductionOrderListSerializer(serializers.ModelSerializer):
         model = ProductionOrder
         fields = [
             'id',  # Production Order ID
+            'voucherno',
             'product_name',
             'bom_version',
             'status',
