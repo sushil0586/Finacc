@@ -10,11 +10,11 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from inventory.models import (
-    Album, Product, Track, ProductCategory, gsttype, typeofgoods, Ratecalculate,
+     Product,  ProductCategory, gsttype, typeofgoods, Ratecalculate,
     UnitofMeasurement, HsnCode,BillOfMaterial,ProductionOrder,BOMItem
 )
 from inventory.serializers import (
-    ProductSerializer, AlbumSerializer, TrackSerializer, ProductCategorySerializer,
+    ProductSerializer, ProductCategorySerializer,
     GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer,BillOfMaterialListSerializer,BOMItemCalculatedSerializer,BillOfMaterialSerializerList,
     ProductionOrderListSerializer,productionorderVSerializer,BillOfMaterialListbyentitySerializer
 )
@@ -82,39 +82,39 @@ class ProductUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin
         return Product.objects.all()
 
 
-class AlbumApiView(ListCreateAPIView):
-    serializer_class = AlbumSerializer
-    permission_classes = (permissions.IsAuthenticated,)
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['id', 'album_name', 'artist', 'tracks']
+# class AlbumApiView(ListCreateAPIView):
+#     serializer_class = AlbumSerializer
+#     permission_classes = (permissions.IsAuthenticated,)
+#     filter_backends = [DjangoFilterBackend]
+#     filterset_fields = ['id', 'album_name', 'artist', 'tracks']
 
-    def perform_create(self, serializer):
-        return serializer.save(createdby=self.request.user)
+#     def perform_create(self, serializer):
+#         return serializer.save(createdby=self.request.user)
 
-    def get_queryset(self):
-        return Album.objects.filter(createdby=self.request.user)
-
-
-class AlbumUpdateDeleteApiView(RetrieveUpdateDestroyAPIView):
-    serializer_class = AlbumSerializer
-    permission_classes = (permissions.IsAuthenticated,)
-    lookup_field = "id"
-
-    def get_queryset(self):
-        return Album.objects.filter(createdby=self.request.user)
+#     def get_queryset(self):
+#         return Album.objects.filter(createdby=self.request.user)
 
 
-class TrackApiView(ListCreateAPIView):
-    serializer_class = TrackSerializer
-    permission_classes = (permissions.IsAuthenticated,)
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['id', 'album', 'order', 'title', 'duration']
+# class AlbumUpdateDeleteApiView(RetrieveUpdateDestroyAPIView):
+#     serializer_class = AlbumSerializer
+#     permission_classes = (permissions.IsAuthenticated,)
+#     lookup_field = "id"
 
-    def perform_create(self, serializer):
-        return serializer.save(createdby=self.request.user)
+#     def get_queryset(self):
+#         return Album.objects.filter(createdby=self.request.user)
 
-    def get_queryset(self):
-        return Track.objects.filter(createdby=self.request.user)
+
+# class TrackApiView(ListCreateAPIView):
+#     serializer_class = TrackSerializer
+#     permission_classes = (permissions.IsAuthenticated,)
+#     filter_backends = [DjangoFilterBackend]
+#     filterset_fields = ['id', 'album', 'order', 'title', 'duration']
+
+#     def perform_create(self, serializer):
+#         return serializer.save(createdby=self.request.user)
+
+#     def get_queryset(self):
+#         return Track.objects.filter(createdby=self.request.user)
 
 
 class UOMApiView(ListCreateAPIView, EntityFilterMixin):

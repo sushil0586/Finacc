@@ -169,23 +169,23 @@ class Product(TrackingModel):
         self.barcode.save(f'{self.productname}.png', File(rv), save=False)
         return super().save(*args, **kwargs)
 
-class Album(models.Model):
-    album_name = models.CharField(max_length=100)
-    artist = models.CharField(max_length=100)
-    createdby = models.ForeignKey(to= User, on_delete=models.PROTECT)
+# class Album(models.Model):
+#     album_name = models.CharField(max_length=100)
+#     artist = models.CharField(max_length=100)
+#     createdby = models.ForeignKey(to= User, on_delete=models.PROTECT)
 
-class Track(models.Model):
-    album = models.ForeignKey(Album, related_name='tracks', on_delete=models.PROTECT)
-    order = models.IntegerField()
-    title = models.CharField(max_length=100)
-    duration = models.IntegerField()
+# class Track(models.Model):
+#     album = models.ForeignKey(Album, related_name='tracks', on_delete=models.PROTECT)
+#     order = models.IntegerField()
+#     title = models.CharField(max_length=100)
+#     duration = models.IntegerField()
    
 
-    class Meta:
-       ordering = ['order']
+#     class Meta:
+#        ordering = ['order']
 
-    def __str__(self):
-        return '%d: %s' % (self.order, self.title)
+#     def __str__(self):
+#         return '%d: %s' % (self.order, self.title)
     
 
 # ---------------------- BOM WITH VERSIONING ----------------------

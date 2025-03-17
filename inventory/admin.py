@@ -1,5 +1,5 @@
 from django.contrib import admin
-from inventory.models import Album,Track,Product,ProductCategory,UnitofMeasurement,typeofgoods,stkvaluationby,stkcalculateby,Ratecalculate,gsttype,HsnCode,HsnChaper,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption
+from inventory.models import Product,ProductCategory,UnitofMeasurement,typeofgoods,stkvaluationby,stkcalculateby,Ratecalculate,gsttype,HsnCode,HsnChaper,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption
 from import_export.admin import ImportExportMixin
 
 
@@ -16,8 +16,8 @@ class prductAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('productname',)
    
 
-admin.site.register(Album)
-admin.site.register(Track)
+# admin.site.register(Album)
+# admin.site.register(Track)
 admin.site.register(ProductCategory)
 admin.site.register(Product,prductAdmin)
 admin.site.register(UnitofMeasurement)

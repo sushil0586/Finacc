@@ -1570,6 +1570,8 @@ class stockmainpreviousapiview(RetrieveUpdateDestroyAPIView):
     serializer_class = stockmainSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "voucherno"
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['id','entityfinid']
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
