@@ -1,6 +1,6 @@
 from django.db import transaction
 from rest_framework import serializers
-from inventory.models import Product, Album, Track, ProductCategory, Ratecalculate, UnitofMeasurement, typeofgoods, gsttype, HsnCode,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption
+from inventory.models import Product,ProductCategory, Ratecalculate, UnitofMeasurement, typeofgoods, gsttype, HsnCode,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption
 from invoice.models import entry, StockTransactions
 from financial.models import account
 from entity.models import entityfinancialyear
@@ -59,10 +59,10 @@ class ProductSerializer(serializers.ModelSerializer):
             return product
 
 
-class TrackSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Track
-        fields = ('id', 'order', 'title', 'duration',)
+# class TrackSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Track
+#         fields = ('id', 'order', 'title', 'duration',)
 
 
 class RateCalculateSerializer(serializers.ModelSerializer):
@@ -95,57 +95,57 @@ class HSNSerializer(serializers.ModelSerializer):
         fields = ('id', 'hsnCode', 'Hsndescription',)
 
 
-class AlbumSerializer(serializers.ModelSerializer):
-    tracks = TrackSerializer(many=True)
+# class AlbumSerializer(serializers.ModelSerializer):
+#     tracks = TrackSerializer(many=True)
 
-    class Meta:
-        model = Album
-        fields = ['id', 'album_name', 'artist', 'tracks']
+#     class Meta:
+#         model = Album
+#         fields = ['id', 'album_name', 'artist', 'tracks']
 
-    def create(self, validated_data):
-        with transaction.atomic():  # Start transaction block
-            tracks_data = validated_data.pop('tracks')
-            album = Album.objects.create(**validated_data)
+#     def create(self, validated_data):
+#         with transaction.atomic():  # Start transaction block
+#             tracks_data = validated_data.pop('tracks')
+#             album = Album.objects.create(**validated_data)
 
-            # Bulk create tracks associated with this album
-            Track.objects.bulk_create([Track(album=album, **track_data) for track_data in tracks_data])
+#             # Bulk create tracks associated with this album
+#             Track.objects.bulk_create([Track(album=album, **track_data) for track_data in tracks_data])
 
-            return album
+#             return album
 
-    def update(self, instance, validated_data):
-        with transaction.atomic():  # Start transaction block
-            instance.album_name = validated_data.get('album_name', instance.album_name)
-            instance.artist = validated_data.get('artist', instance.artist)
-            instance.save()
+#     def update(self, instance, validated_data):
+#         with transaction.atomic():  # Start transaction block
+#             instance.album_name = validated_data.get('album_name', instance.album_name)
+#             instance.artist = validated_data.get('artist', instance.artist)
+#             instance.save()
 
-            # Handle updating or creating tracks
-            tracks = validated_data.get('tracks', [])
-            track_ids = {track['id'] for track in tracks if 'id' in track}
+#             # Handle updating or creating tracks
+#             tracks = validated_data.get('tracks', [])
+#             track_ids = {track['id'] for track in tracks if 'id' in track}
 
-            existing_tracks = {track.id: track for track in instance.tracks.all()}
-            new_tracks = []
+#             existing_tracks = {track.id: track for track in instance.tracks.all()}
+#             new_tracks = []
 
-            for track_data in tracks:
-                track_id = track_data.get('id')
-                if track_id and track_id in existing_tracks:
-                    track = existing_tracks[track_id]
-                    track.order = track_data.get('order', track.order)
-                    track.title = track_data.get('title', track.title)
-                    track.duration = track_data.get('duration', track.duration)
-                    track.save()
-                else:
-                    new_tracks.append(Track(album=instance, **track_data))
+#             for track_data in tracks:
+#                 track_id = track_data.get('id')
+#                 if track_id and track_id in existing_tracks:
+#                     track = existing_tracks[track_id]
+#                     track.order = track_data.get('order', track.order)
+#                     track.title = track_data.get('title', track.title)
+#                     track.duration = track_data.get('duration', track.duration)
+#                     track.save()
+#                 else:
+#                     new_tracks.append(Track(album=instance, **track_data))
 
-            # Bulk create new tracks
-            if new_tracks:
-                Track.objects.bulk_create(new_tracks)
+#             # Bulk create new tracks
+#             if new_tracks:
+#                 Track.objects.bulk_create(new_tracks)
 
-            # Delete tracks that no longer exist in the incoming data
-            track_ids_to_delete = set(existing_tracks.keys()) - track_ids
-            if track_ids_to_delete:
-                instance.tracks.filter(id__in=track_ids_to_delete).delete()
+#             # Delete tracks that no longer exist in the incoming data
+#             track_ids_to_delete = set(existing_tracks.keys()) - track_ids
+#             if track_ids_to_delete:
+#                 instance.tracks.filter(id__in=track_ids_to_delete).delete()
 
-            return instance
+#             return instance
         
 
 # Serializer for Product model
@@ -317,8 +317,14 @@ class ProductionOrderSerializer(serializers.ModelSerializer):
         consumptions_data = validated_data.pop('consumptions')
         production_order = ProductionOrder.objects.create(**validated_data)
 
+        entryid, _ = entry.objects.get_or_create(entrydate1=production_order.updated_at, entity=production_order.entity)
+
+        StockTransactions.objects.create(account= production_order.finished_good.purchaseaccount,stock=production_order.finished_good,transactiontype = 'R',transactionid = production_order.id,drcr = True,quantity = production_order.quantity_to_produce,entrydate = production_order.updated_at,entrydatetime = production_order.updated_at,entity = production_order.entity,createdby = production_order.created_by,entry = entryid,stockttype= 'R',accounttype = 'DD',voucherno = production_order.voucherno,desc = 'Production Order V.No ' + str(production_order.voucherno))
+
         for consumption_data in consumptions_data:
-            ProductionConsumption.objects.create(production_order=production_order, **consumption_data)
+            details = ProductionConsumption.objects.create(production_order=production_order, **consumption_data)
+
+            StockTransactions.objects.create(account= details.raw_material.purchaseaccount,stock=details.raw_material,transactiontype = 'I',transactionid = production_order.id,drcr = False,quantity = details.quantity_consumed,entrydate = production_order.updated_at,entrydatetime = production_order.updated_at,entity = production_order.entity,createdby = production_order.created_by,entry = entryid,stockttype= 'I',accounttype = 'DD',voucherno = production_order.voucherno,desc = 'Production Order V.No ' + str(production_order.voucherno))
 
         return production_order
 

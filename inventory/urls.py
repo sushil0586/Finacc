@@ -14,13 +14,13 @@ urlpatterns = [
     path('product', views.ProductApiView.as_view(), name='product'),
     path('product/<int:id>', views.ProductUpdateDeleteApiView.as_view(), name='productupdate'),
 
-    # Album
-    path('album', views.AlbumApiView.as_view(), name='album'),
-    path('album/<int:id>', views.AlbumUpdateDeleteApiView.as_view(), name='albumupdate'),
+    # # Album
+    # path('album', views.AlbumApiView.as_view(), name='album'),
+    # path('album/<int:id>', views.AlbumUpdateDeleteApiView.as_view(), name='albumupdate'),
 
-    # Track
-    path('track', views.TrackApiView.as_view(), name='track'),
-    path('track/<int:id>', views.TrackApiView.as_view(), name='trackupdate'),  # You had a duplicate path here, renamed to 'trackupdate'
+    # # Track
+    # path('track', views.TrackApiView.as_view(), name='track'),
+    # path('track/<int:id>', views.TrackApiView.as_view(), name='trackupdate'),  # You had a duplicate path here, renamed to 'trackupdate'
 
     # Type of Goods (TOG)
     path('tog', views.TOGApiView.as_view(), name='tog'),
