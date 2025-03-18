@@ -13,6 +13,7 @@ from decimal import Decimal
 from django.db.models import Sum, Q
 from django.utils.timezone import make_aware, is_aware
 from django.utils.dateparse import parse_date
+from collections import deque
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain
@@ -21,7 +22,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -4847,6 +4848,91 @@ class TrialBalanceViewaccountFinal(APIView):
 
         final_result = self.aggregate_data(opening_balance_dict, transaction_dict)
         return Response(final_result)
+
+
+class StockSummaryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get('entity_id')
+        if not entity_id:
+            return Response({"error": "entity_id is required"}, status=400)
+
+        transactions = StockTransactions.objects.filter(entity_id=entity_id).order_by('entrydate', 'id')
+        products = Product.objects.select_related('productcategory').filter(stocktrans__entity_id=entity_id).distinct()
+
+        summary = []
+
+        for product in products:
+            fifo_stack = deque()
+            sale_rate = 0
+            total_inward_qty = 0
+            total_outward_qty = 0
+            total_inward_value = 0
+            last_movement = None
+
+            product_trans = transactions.filter(stock=product)
+
+            for tx in product_trans:
+                qty = tx.quantity or 0
+                last_movement = tx.entrydate if tx.entrydate else last_movement
+
+                if tx.stockttype in ['P', 'R']:
+                    rate = tx.rate or sale_rate
+                    fifo_stack.append((qty, rate))
+                    total_inward_qty += qty
+                    total_inward_value += qty * rate
+
+                    if tx.stockttype == 'S':
+                        sale_rate = tx.rate or sale_rate
+
+                elif tx.stockttype in ['S', 'I']:
+                    qty_out = qty
+                    cost_out = 0
+
+                    while qty_out > 0 and fifo_stack:
+                        available_qty, rate = fifo_stack[0]
+                        if available_qty <= qty_out:
+                            cost_out += available_qty * rate
+                            qty_out -= available_qty
+                            fifo_stack.popleft()
+                        else:
+                            cost_out += qty_out * rate
+                            fifo_stack[0] = (available_qty - qty_out, rate)
+                            qty_out = 0
+
+                    total_outward_qty += qty
+
+            qty_available = total_inward_qty - total_outward_qty
+            unit_rate = (total_inward_value / total_inward_qty) if total_inward_qty else 0
+            total_value = qty_available * unit_rate
+
+            summary.append({
+                'Category': product.productcategory.pcategoryname if product.productcategory else '',
+                'Code': product.productcode,
+                'Description': product.productname,
+              #  'UOM': product.uom,
+                'Quantity_Available': round(qty_available, 4),
+                'Unit_Rate_FIFO': round(unit_rate, 4),
+                'Total_Value': round(total_value, 2),
+                'Last_Movement_Date': last_movement,
+            })
+
+        return Response(summary)
+
+class StockDayBookReportView(ListAPIView):
+    serializer_class = StockDayBookSerializer
+
+    def get_queryset(self):
+        queryset = StockTransactions.objects.select_related(
+            'stock', 'stock__unitofmeasurement', 'account'
+        ).order_by('entrydatetime')
+
+        entity_id = self.request.query_params.get('entity')
+        if entity_id:
+            queryset = queryset.filter(entity_id=entity_id,accounttype='DD',isactive =1)
+
+        return queryset
 
 
 

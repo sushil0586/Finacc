@@ -1072,4 +1072,66 @@ class TrialBalanceSerializer(serializers.Serializer):
     credit = serializers.DecimalField(max_digits=14, decimal_places=4)
     balance = serializers.DecimalField(max_digits=14, decimal_places=4)
     drcr = serializers.CharField()
+
+
+class StockSummarySerializer(serializers.Serializer):
+    Category = serializers.CharField()
+    Code = serializers.CharField()
+    Description = serializers.CharField()
+    UOM = serializers.CharField()
+    Quantity_Available = serializers.DecimalField(max_digits=14, decimal_places=4)
+    Unit_Rate_FIFO = serializers.DecimalField(max_digits=14, decimal_places=4)
+    Total_Value = serializers.DecimalField(max_digits=14, decimal_places=2)
+    Last_Movement_Date = serializers.DateField(allow_null=True)
+
+
+class StockDayBookSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source='stock.productname', read_only=True)
+    item_desc = serializers.CharField(source='stock.productdesc', read_only=True)
+    uom = serializers.CharField(source='stock.unitofmeasurement.unitcode', read_only=True)
+    value = serializers.SerializerMethodField()
+    type_label = serializers.SerializerMethodField()
+    from_field = serializers.SerializerMethodField()
+    to_field = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockTransactions
+        fields = [
+            'entrydatetime',         # Date
+            'voucherno',             # Trans_No
+            'type_label',            # Type
+            'item_name',             # Item Name
+            'item_desc',             # Item Description
+            'uom',                   # UOM
+            'quantity',              # Qty
+            'rate',                  # Rate
+            'value',                 # Qty * Rate
+            'from_field',            # From
+            'to_field',              # To
+            'desc'                   # Remarks
+        ]
+
+    def get_value(self, obj):
+        qty = obj.quantity or 0
+        rate = obj.rate or 0
+        return round(qty * rate, 4)
+
+    def get_type_label(self, obj):
+        type_map = {
+            'P': 'Purchase',
+            'S': 'Sale',
+            'PRO': 'Production Order',
+            'SCR': 'Scrap/Wastage'
+        }
+        return type_map.get(obj.transactiontype, obj.transactiontype)
+
+    def get_from_field(self, obj):
+        if obj.stockttype == 'P':
+            return obj.account.accountname if obj.account else ''
+        return 'Store'
+
+    def get_to_field(self, obj):
+        if obj.stockttype == 'S':
+            return obj.account.accountname if obj.account else ''
+        return 'Store'
     
