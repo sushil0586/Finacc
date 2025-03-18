@@ -57,6 +57,8 @@ urlpatterns  = [
     path('productcategoryList',views.productcategoryListapiview.as_view(), name = 'Trialbalance'),
     path('stocktypeList',views.stocktypeListapiview.as_view(), name = 'Trialbalance'),
     path('accountbind',views.accountbindapiview.as_view(), name = 'Trialbalance'),
+    path('stock-summary/', views.StockSummaryAPIView.as_view(), name='stock-summary'),
+    path('stock-day-book/', views.StockDayBookReportView.as_view(), name='stock-day-book'),
 
 
     
