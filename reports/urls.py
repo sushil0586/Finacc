@@ -59,8 +59,8 @@ urlpatterns  = [
     path('accountbind',views.accountbindapiview.as_view(), name = 'Trialbalance'),
     path('stock-summary/', views.StockSummaryAPIView.as_view(), name='stock-summary'),
     path('stock-day-book/', views.StockDayBookReportView.as_view(), name='stock-day-book'),
-    path('stocksummary/', views.StockSummaryView.as_view(), name='stock-day-book'),
-    path('stockledgerbook/', views.StockLedgerBookView.as_view(), name='stock-day-book'),
+    path('stockbooksummary/', views.StockSummaryView.as_view(), name='stock-day-book'),
+    path('stockbookreport/', views.StockLedgerBookView.as_view(), name='stock-day-book'),
 
     
 
