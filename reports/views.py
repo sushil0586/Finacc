@@ -14,7 +14,7 @@ from django.db.models import Sum, Q
 from django.utils.timezone import make_aware, is_aware
 from django.utils.dateparse import parse_date
 from collections import deque
-
+from django.utils import timezone  
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain
 # from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
@@ -22,7 +22,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -4933,6 +4933,386 @@ class StockDayBookReportView(ListAPIView):
             queryset = queryset.filter(entity_id=entity_id,accounttype='DD',isactive =1)
 
         return queryset
+        
+def calculate_fifo_rate(product, entity_id, end_date, total_qty):
+    try:
+        if total_qty <= 0:
+            return Decimal('0.00'), Decimal('0.00')
+
+        qty_remaining = total_qty
+        total_value = Decimal('0.00')
+
+        inflow_txns = StockTransactions.objects.filter(
+            stock=product,
+            entity_id=entity_id,
+            accounttype='DD',
+            isactive=1,
+            stockttype__in=['P'],
+            entrydatetime__lte=end_date
+        ).order_by('entrydatetime')
+
+        for txn in inflow_txns:
+            txn_qty = txn.quantity or 0
+            txn_rate = txn.rate or 0
+
+            if txn_qty <= 0:
+                continue
+
+            if qty_remaining >= txn_qty:
+                total_value += txn_qty * txn_rate
+                qty_remaining -= txn_qty
+            else:
+                total_value += qty_remaining * txn_rate
+                break
+
+        fifo_rate = total_value / total_qty if total_qty > 0 else Decimal('0.00')
+        return round(fifo_rate, 2), round(total_value, 2)
+
+    except Exception:
+        return Decimal('0.00'), Decimal('0.00')
+
+def calculate_lifo_rate(product, entity_id, end_date, total_qty):
+    try:
+        if total_qty <= 0:
+            return Decimal('0.00'), Decimal('0.00')
+
+        qty_remaining = total_qty
+        total_value = Decimal('0.00')
+
+        inflow_txns = StockTransactions.objects.filter(
+            stock=product,
+            entity_id=entity_id,
+            accounttype='DD',
+            isactive=1,
+            stockttype__in=['P'],
+            entrydatetime__lte=end_date
+        ).order_by('-entrydatetime')
+
+        for txn in inflow_txns:
+            txn_qty = txn.quantity or 0
+            txn_rate = txn.rate or 0
+
+            if txn_qty <= 0:
+                continue
+
+            if qty_remaining >= txn_qty:
+                total_value += txn_qty * txn_rate
+                qty_remaining -= txn_qty
+            else:
+                total_value += qty_remaining * txn_rate
+                break
+
+        lifo_rate = total_value / total_qty if total_qty > 0 else Decimal('0.00')
+        return round(lifo_rate, 2), round(total_value, 2)
+
+    except Exception:
+        return Decimal('0.00'), Decimal('0.00')
+
+def calculate_average_rate(product, entity_id, end_date):
+    try:
+        inflow_txns = StockTransactions.objects.filter(
+            stock=product,
+            entity_id=entity_id,
+            accounttype='DD',
+            isactive=1,
+            stockttype__in=['P'],
+            entrydatetime__lte=end_date
+        )
+
+        total_qty = inflow_txns.aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+        total_value = sum((txn.quantity or 0) * (txn.rate or 0) for txn in inflow_txns)
+
+        avg_rate = total_value / total_qty if total_qty > 0 else Decimal('0.00')
+        return round(avg_rate, 2), round(total_value, 2)
+
+    except Exception:
+        return Decimal('0.00'), Decimal('0.00')
+
+def get_last_sale_rate(product, entity_id, end_date):
+    last_sale_txn = StockTransactions.objects.filter(
+        stock=product,
+        entity_id=entity_id,
+        accounttype='DD',
+        isactive=1,
+        stockttype='S',
+        entrydatetime__lte=end_date
+    ).order_by('-entrydatetime').first()
+
+    return round(last_sale_txn.rate or Decimal('0.00'), 2) if last_sale_txn else Decimal('0.00')
+
+# Stock summary view
+class StockSummaryView(APIView):
+    def get(self, request, *args, **kwargs):
+        try:
+            entity_id = request.query_params.get('entity_id')
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            ratemethod = request.query_params.get('ratemethod', 'fifo')
+
+            if not (entity_id and start_date and end_date):
+                return Response({'error': 'Missing parameters'}, status=status.HTTP_400_BAD_REQUEST)
+
+            start_date = timezone.make_aware(datetime.strptime(start_date, "%Y-%m-%d"))
+            end_date = timezone.make_aware(datetime.strptime(end_date, "%Y-%m-%d"))
+
+            summary = []
+            products = Product.objects.filter(entity_id=entity_id)
+
+            for product in products:
+                opening_in = StockTransactions.objects.filter(
+                    stock=product,
+                    entity_id=entity_id,
+                    accounttype='DD',
+                    isactive=1,
+                    stockttype__in=['R', 'P'],
+                    entry__entrydate1__lt=start_date
+                ).aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+
+                opening_out = StockTransactions.objects.filter(
+                    stock=product,
+                    entity_id=entity_id,
+                    accounttype='DD',
+                    isactive=1,
+                    stockttype__in=['I', 'S'],
+                    entry__entrydate1__lt=start_date
+                ).aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+
+                opening_qty = opening_in - opening_out
+
+                inward_qty = StockTransactions.objects.filter(
+                    stock=product,
+                    entity_id=entity_id,
+                    accounttype='DD',
+                    isactive=1,
+                    stockttype__in=['R', 'P'],
+                    entry__entrydate1__range=[start_date, end_date]
+                ).aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+
+                outward_qty = StockTransactions.objects.filter(
+                    stock=product,
+                    entity_id=entity_id,
+                    accounttype='DD',
+                    isactive=1,
+                    stockttype__in=['I', 'S'],
+                    entry__entrydate1__range=[start_date, end_date]
+                ).aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+
+                if opening_qty == 0 and inward_qty == 0 and outward_qty == 0:
+                    continue
+
+                closing_qty = opening_qty + inward_qty - outward_qty
+
+                if ratemethod == 'fifo':
+                    rate, value = calculate_lifo_rate(product, entity_id, end_date, closing_qty)
+                elif ratemethod == 'lifo':
+                    rate, value = calculate_fifo_rate(product, entity_id, end_date, closing_qty)
+                elif ratemethod == 'avg':
+                    rate, value = calculate_average_rate(product, entity_id, end_date)
+                    value = closing_qty * rate
+                elif ratemethod == 'lastsale':
+                    rate = get_last_sale_rate(product, entity_id, end_date)
+                    value = closing_qty * rate
+                else:
+                    rate, value = Decimal('0.00'), Decimal('0.00')
+
+                last_movement = StockTransactions.objects.filter(
+                    stock=product,
+                    entity_id=entity_id,
+                    accounttype='DD',
+                    isactive=1
+                ).aggregate(last=Max('entrydatetime'))['last']
+
+                summary.append({
+                    'productdesc': product.productdesc or '',
+                    'productname': product.productname,
+                    'category': product.productcategory.pcategoryname if hasattr(product, 'productcategory') and product.productcategory else '',
+                    'uom': product.unitofmeasurement.unitcode if product.unitofmeasurement else '',
+                    'opening_qty': float(opening_qty),
+                    'inward_qty': float(inward_qty),
+                    'outward_qty': float(outward_qty),
+                    'closing_qty': float(closing_qty),
+                    'rate': float(rate),
+                    'value': float(value),
+                    'last_movement_date': last_movement.strftime('%d-%m-%Y') if last_movement else None
+                })
+
+            serializer = StockSummarySerializerList(summary, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class StockLedgerBookView(APIView):
+    def get(self, request):
+        entity_id = request.GET.get("entity")
+        product_id = request.GET.get("product")
+        method = request.GET.get("method", "fifo").lower()
+        date_from = request.GET.get("date_from")
+        date_to = request.GET.get("date_to")
+
+        if not (entity_id and product_id):
+            return Response({"error": "Entity and Product are required."}, status=400)
+
+        all_transactions = StockTransactions.objects.filter(entity_id=entity_id, stock_id=product_id,accounttype='DD',isactive=1).order_by("entrydatetime")
+
+        # Opening Balance Calculation (before date_from)
+        opening_qty = Decimal(0)
+        opening_value = Decimal(0)
+        rate_stack = deque()
+        total_qty = Decimal(0)
+        total_value = Decimal(0)
+
+        if date_from:
+            try:
+                date_from_obj = datetime.strptime(date_from, "%Y-%m-%d").date()
+                opening_txns = all_transactions.filter(entrydatetime__date__lt=date_from_obj)
+
+                for tx in opening_txns:
+                    qty = tx.quantity or Decimal(0)
+                    rate = tx.rate or Decimal(0)
+
+                    if tx.stockttype in ['P', 'R']:  # Inward
+                        if method in ['fifo', 'lifo']:
+                            rate_stack.append({'qty': qty, 'rate': rate})
+                        elif method == 'avg':
+                            total_qty += qty
+                            total_value += qty * rate
+                        opening_qty += qty
+                        opening_value += qty * rate
+
+                    elif tx.stockttype in ['S', 'I']:  # Outward
+                        if method == 'fifo':
+                            rate_used = self.calculate_fifo_rate(rate_stack, qty)
+                        elif method == 'lifo':
+                            rate_used = self.calculate_lifo_rate(rate_stack, qty)
+                        elif method == 'avg':
+                            rate_used = (total_value / total_qty) if total_qty else Decimal(0)
+                            total_qty -= qty
+                            total_value -= qty * rate_used
+                            rate_used = rate_used
+                        opening_qty -= qty
+                        opening_value -= qty * rate_used
+
+            except ValueError:
+                return Response({"error": "Invalid date_from format. Use YYYY-MM-DD"}, status=400)
+
+        # Filter main transactions
+        txns = all_transactions
+        if date_from:
+            txns = txns.filter(entrydatetime__date__gte=date_from_obj)
+        if date_to:
+            try:
+                date_to_obj = datetime.strptime(date_to, "%Y-%m-%d").date()
+                txns = txns.filter(entrydatetime__date__lte=date_to_obj)
+            except ValueError:
+                return Response({"error": "Invalid date_to format. Use YYYY-MM-DD"}, status=400)
+
+        ledger = []
+        balance_qty = opening_qty
+        last_known_rate = (opening_value / opening_qty) if opening_qty > 0 else Decimal(0)
+        value_balance = balance_qty * last_known_rate
+
+        # Add Opening Row
+        ledger.append({
+            "Date": date_from_obj if date_from else None,
+            "Trans No": "OPENING",
+            "Type": "Opening Balance",
+            "In Qty": None,
+            "Out Qty": None,
+            "Rate": float(last_known_rate),
+            "Value": float(opening_value),
+            "Balance Qty": float(balance_qty),
+            "Value Balance": float(value_balance),
+            "From": "",
+            "To": "",
+            "Remarks": ""
+        })
+
+        # Process Each Transaction
+        for tx in txns:
+            row = {}
+            row['Date'] = tx.entrydatetime.date() if tx.entrydatetime else None
+            row['Trans No'] = tx.voucherno or ''
+            row['Type'] = self.get_transaction_type(tx)
+
+            in_qty = out_qty = None
+            if tx.stockttype in ['P', 'R']:
+                in_qty = tx.quantity or Decimal(0)
+                rate = tx.rate or Decimal(0)
+                last_known_rate = rate
+
+                if method in ['fifo', 'lifo']:
+                    rate_stack.append({'qty': in_qty, 'rate': rate})
+                elif method == 'avg':
+                    total_qty += in_qty
+                    total_value += in_qty * rate
+                    last_known_rate = (total_value / total_qty) if total_qty else Decimal(0)
+
+            elif tx.stockttype in ['S', 'I']:
+                out_qty = tx.quantity or Decimal(0)
+                if method == 'fifo':
+                    last_known_rate = self.calculate_fifo_rate(rate_stack, out_qty)
+                elif method == 'lifo':
+                    last_known_rate = self.calculate_lifo_rate(rate_stack, out_qty)
+                elif method == 'avg':
+                    last_known_rate = (total_value / total_qty) if total_qty else Decimal(0)
+                    total_qty -= out_qty
+                    total_value -= out_qty * last_known_rate
+
+            row['In Qty'] = float(in_qty) if in_qty else None
+            row['Out Qty'] = float(out_qty) if out_qty else None
+            row['Rate'] = float(last_known_rate)
+            row['Value'] = float((in_qty or out_qty or Decimal(0)) * last_known_rate)
+
+            # Update balance
+            balance_qty += (in_qty or Decimal(0)) - (out_qty or Decimal(0))
+            value_balance = balance_qty * last_known_rate
+            row['Balance Qty'] = float(balance_qty)
+            row['Value Balance'] = float(value_balance)
+
+            row['From'] = tx.account.accountname if tx.drcr else ''
+            row['To'] = tx.account.accountname if not tx.drcr else ''
+            row['Remarks'] = tx.desc
+
+            ledger.append(row)
+
+        return Response(ledger)
+
+    def calculate_fifo_rate(self, rate_stack, out_qty):
+        value = Decimal(0)
+        remaining = out_qty
+        while remaining > 0 and rate_stack:
+            layer = rate_stack[0]
+            used = min(remaining, layer['qty'])
+            value += used * layer['rate']
+            layer['qty'] -= used
+            remaining -= used
+            if layer['qty'] == 0:
+                rate_stack.popleft()
+        return (value / out_qty) if out_qty else Decimal(0)
+
+    def calculate_lifo_rate(self, rate_stack, out_qty):
+        value = Decimal(0)
+        remaining = out_qty
+        while remaining > 0 and rate_stack:
+            layer = rate_stack[-1]
+            used = min(remaining, layer['qty'])
+            value += used * layer['rate']
+            layer['qty'] -= used
+            remaining -= used
+            if layer['qty'] == 0:
+                rate_stack.pop()
+        return (value / out_qty) if out_qty else Decimal(0)
+
+    def get_transaction_type(self, tx):
+        if tx.transactiontype == 'PRO':
+            return 'Issued to Production' if tx.stockttype == 'I' else 'Received from Production'
+        elif tx.stockttype == 'P':
+            return 'Purchase'
+        elif tx.stockttype == 'S':
+            return 'Sale'
+        return tx.transactiontype or ''
 
 
 
