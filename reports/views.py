@@ -5047,7 +5047,7 @@ class StockSummaryView(APIView):
             entity_id = request.query_params.get('entity_id')
             start_date = request.query_params.get('start_date')
             end_date = request.query_params.get('end_date')
-            ratemethod = request.query_params.get('ratemethod', 'fifo')
+            ratemethod = request.query_params.get('method', 'fifo')
 
             if not (entity_id and start_date and end_date):
                 return Response({'error': 'Missing parameters'}, status=status.HTTP_400_BAD_REQUEST)
@@ -5145,11 +5145,11 @@ class StockSummaryView(APIView):
 
 class StockLedgerBookView(APIView):
     def get(self, request):
-        entity_id = request.GET.get("entity")
+        entity_id = request.GET.get("entity_id")
         product_id = request.GET.get("product")
         method = request.GET.get("method", "fifo").lower()
-        date_from = request.GET.get("date_from")
-        date_to = request.GET.get("date_to")
+        date_from = request.GET.get("start_date")
+        date_to = request.GET.get("end_date")
 
         if not (entity_id and product_id):
             return Response({"error": "Entity and Product are required."}, status=400)
@@ -5216,14 +5216,14 @@ class StockLedgerBookView(APIView):
         # Add Opening Row
         ledger.append({
             "Date": date_from_obj if date_from else None,
-            "Trans No": "OPENING",
+            "Trans_No": "OPENING",
             "Type": "Opening Balance",
-            "In Qty": None,
-            "Out Qty": None,
+            "In_Qty": None,
+            "Out_Qty": None,
             "Rate": float(last_known_rate),
             "Value": float(opening_value),
-            "Balance Qty": float(balance_qty),
-            "Value Balance": float(value_balance),
+            "Balance_Qty": float(balance_qty),
+            "Value_Balance": float(value_balance),
             "From": "",
             "To": "",
             "Remarks": ""
