@@ -1126,12 +1126,41 @@ class StockDayBookSerializer(serializers.ModelSerializer):
         return type_map.get(obj.transactiontype, obj.transactiontype)
 
     def get_from_field(self, obj):
+        # Handle Production Order with stockttype 'I' (Input Material)
+        if obj.transactiontype == 'PRO' and obj.stockttype == 'I':
+            return obj.account.accountname if obj.account else 'Store'
+        # Handle Production Order with stockttype 'R' (Output Material)
+        if obj.transactiontype == 'PRO' and obj.stockttype == 'R':
+            return 'Work Shop'
+        # Default behavior
         if obj.stockttype == 'P':
             return obj.account.accountname if obj.account else ''
         return 'Store'
 
     def get_to_field(self, obj):
+        # Handle Production Order with stockttype 'I' (Input Material)
+        if obj.transactiontype == 'PRO' and obj.stockttype == 'I':
+            return 'Work Shop'
+        # Handle Production Order with stockttype 'R' (Output Material)
+        if obj.transactiontype == 'PRO' and obj.stockttype == 'R':
+            return 'Store'
+        # Default behavior
         if obj.stockttype == 'S':
             return obj.account.accountname if obj.account else ''
         return 'Store'
+    
+
+
+class StockSummarySerializerList(serializers.Serializer):
+    productdesc = serializers.CharField()
+    productname = serializers.CharField()
+    category = serializers.CharField()
+    uom = serializers.CharField()
+    opening_qty = serializers.FloatField()
+    inward_qty = serializers.FloatField()
+    outward_qty = serializers.FloatField()
+    closing_qty = serializers.FloatField()
+    rate = serializers.FloatField()
+    value = serializers.FloatField()
+    last_movement_date = serializers.DateTimeField(allow_null=True)
     
