@@ -47,7 +47,7 @@ def get_gst_details(entitygst):
     if isinstance(auth_token, dict) and "error" in auth_token:
         return auth_token  # Return error if authentication fails
 
-    url = "https://api.mastergst.com/einvoice/type/SYNC_GSTIN_FROMCP/version/V1_03"
+    url = "https://api.mastergst.com//einvoice/type/GSTNDETAILS/version/V1_03"
 
     headers = {
         "accept": "*/*",
@@ -65,6 +65,12 @@ def get_gst_details(entitygst):
     }
 
     try:
+
+
+        print(headers)
+        print(params)
+
+
         response = requests.get(url, headers=headers, params=params)
         response_data = response.json()
 
