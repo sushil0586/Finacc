@@ -43,7 +43,7 @@ from invoice.serializers import (
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
     SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
-    SalesOrdereinvoiceSerializer
+    SalesOrdereinvoiceSerializer,subentitySerializerbyentity
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -79,6 +79,7 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
+from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
 
 import tempfile
 
@@ -99,6 +100,35 @@ class InvoiceTypeViewSet(ListAPIView):
 
         entity = self.request.query_params.get('entity')
         return InvoiceType.objects.filter(entity = entity)
+
+
+
+class CombinedTypeApiView(ListCreateAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+    filter_backends = [DjangoFilterBackend]
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        purchase_queryset = purchasetaxtype.objects.filter(entity=entity)
+        invoice_queryset = InvoiceType.objects.filter(entity=entity)
+        subentity_queryset = subentity.objects.filter(entity=entity)
+        return purchase_queryset, invoice_queryset, subentity_queryset
+    
+    def list(self, request, *args, **kwargs):
+        purchase_queryset, invoice_queryset, subentity_queryset = self.get_queryset()
+        purchase_serializer = purchasetaxtypeserializer(purchase_queryset, many=True)
+        invoice_serializer = InvoiceTypeSerializer(invoice_queryset, many=True)
+        subentity_serializer = subentitySerializerbyentity(subentity_queryset, many=True)
+        
+        return Response([
+            {"Purchasetype": purchase_serializer.data},
+            {"InvoiceType": invoice_serializer.data},
+            {"Subentity": subentity_serializer.data}
+        ])
+    
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
 
 
 
