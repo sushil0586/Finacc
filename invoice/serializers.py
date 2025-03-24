@@ -11,7 +11,7 @@ from financial.models import account,accountHead
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
-from entity.models import Entity,entityfinancialyear,Mastergstdetails
+from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
 from django.db.models.functions import Abs
 from num2words import num2words
 import string
@@ -1086,6 +1086,15 @@ class stocktransactionsale:
             voucherno=self.order.billno
         )
         return details1
+
+
+
+class subentitySerializerbyentity(serializers.ModelSerializer):
+
+    class Meta:
+
+        model = subentity
+        fields = ('id','subentityname','ismainentity',)
 
 
 
