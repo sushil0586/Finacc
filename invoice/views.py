@@ -14,7 +14,7 @@ from invoice.models import (
     StockTransactions, journalmain, entry, stockdetails, stockmain, goodstransaction,
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
-    newpurchaseorder, InvoiceType,PurchaseOrderAttachment
+    newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity
 )
 
 from invoice.serializers import (
@@ -43,7 +43,7 @@ from invoice.serializers import (
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
     SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
-    SalesOrdereinvoiceSerializer,subentitySerializerbyentity
+    SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -84,6 +84,26 @@ from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
 import tempfile
 
 
+# ✅ Get all records and Create a new one
+class DefaultValuesByEntityListCreateAPIView(ListCreateAPIView):
+    serializer_class = DefaultValuesByEntitySerializer
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get('entity')
+        queryset = defaultvaluesbyentity.objects.all()
+
+        if entity_id:
+            queryset = queryset.filter(entity=entity_id)
+        
+       
+        return queryset.order_by('-created_at')[:1]  # Assuming `created_at` is inherited from `TrackingModel`
+
+# ✅ Get, Update, and Delete a record by ID
+class DefaultValuesByEntityRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
+    queryset = defaultvaluesbyentity.objects.all()
+    serializer_class = DefaultValuesByEntitySerializer
+
+
 
 
 class InvoiceTypeViewSet(ListAPIView):
@@ -112,18 +132,21 @@ class CombinedTypeApiView(ListCreateAPIView):
         purchase_queryset = purchasetaxtype.objects.filter(entity=entity)
         invoice_queryset = InvoiceType.objects.filter(entity=entity)
         subentity_queryset = subentity.objects.filter(entity=entity)
-        return purchase_queryset, invoice_queryset, subentity_queryset
+        default_queryset = defaultvaluesbyentity.objects.filter(entity=entity).order_by('-created_at')[:1]
+        return purchase_queryset, invoice_queryset, subentity_queryset, default_queryset
     
     def list(self, request, *args, **kwargs):
-        purchase_queryset, invoice_queryset, subentity_queryset = self.get_queryset()
+        purchase_queryset, invoice_queryset, subentity_queryset, default_queryset = self.get_queryset()
         purchase_serializer = purchasetaxtypeserializer(purchase_queryset, many=True)
         invoice_serializer = InvoiceTypeSerializer(invoice_queryset, many=True)
         subentity_serializer = subentitySerializerbyentity(subentity_queryset, many=True)
+        default_serializer = DefaultValuesByEntitySerializerlist(default_queryset, many=True)
         
         return Response([
             {"Purchasetype": purchase_serializer.data},
             {"InvoiceType": invoice_serializer.data},
-            {"Subentity": subentity_serializer.data}
+            {"Subentity": subentity_serializer.data},
+            {"DefaultValues": default_serializer.data}
         ])
     
     def perform_create(self, serializer):

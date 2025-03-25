@@ -46,15 +46,16 @@ class InvoiceType(TrackingModel):
     
 
 
-class defauultvaluesbyentity(TrackingModel):
+class defaultvaluesbyentity(TrackingModel):
     purchasetaxtype = models.ForeignKey(to=purchasetaxtype, on_delete=models.PROTECT)
     InvoiceType = models.ForeignKey(to=InvoiceType, on_delete=models.PROTECT)
+    subentity = models.ForeignKey(to=subentity, on_delete=models.PROTECT)
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
     createdby = models.ForeignKey(to= User, on_delete=models.PROTECT)
 
 
     def __str__(self):
-        return f'{self.purchasetaxtype}'
+        return f'{self.purchasetaxtype} - {self.entity}'
 
         
 
