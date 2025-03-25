@@ -88,6 +88,8 @@ import tempfile
 class DefaultValuesByEntityListCreateAPIView(ListCreateAPIView):
     serializer_class = DefaultValuesByEntitySerializer
 
+
+   
     def get_queryset(self):
         entity_id = self.request.query_params.get('entity')
         queryset = defaultvaluesbyentity.objects.all()
