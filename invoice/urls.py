@@ -154,6 +154,8 @@ urlpatterns  = [
     path('sales-order-gst-summary/', views.SalesOrderGSTSummaryView.as_view(), name='sales-order-gst-summary'),
     path("sales-order/<int:id>/", views.SalesOrderenvoiceDetailView.as_view(), name="sales-order-detail"),
     path("distance", views.PincodeDistanceAPIView.as_view(), name="sales-order-detail"),
+    path('default-values/', views.DefaultValuesByEntityListCreateAPIView.as_view(), name='default-values-list-create'),
+    path('default-values/<int:pk>/', views.DefaultValuesByEntityRetrieveUpdateDestroyAPIView.as_view(), name='default-values-detail'),
 
     
 
