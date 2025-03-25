@@ -1106,7 +1106,7 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
     class Meta:
 
         model = subentity
-        fields = ('id','subentityname','ismainentity',)
+        fields = ('id','subentityname',)
 
 
 
