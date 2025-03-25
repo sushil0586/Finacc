@@ -45,7 +45,7 @@ class DefaultValuesByEntitySerializer(serializers.ModelSerializer):
 class DefaultValuesByEntitySerializerlist(serializers.ModelSerializer):
     class Meta:
         model = defaultvaluesbyentity
-        fields = ('id', 'purchasetaxtype', 'InvoiceType', 'subentity') # Include all fields
+        fields = ('taxtype', 'invoicetype', 'subentity') # Include all fields
 
 
 

@@ -88,6 +88,8 @@ import tempfile
 class DefaultValuesByEntityListCreateAPIView(ListCreateAPIView):
     serializer_class = DefaultValuesByEntitySerializer
 
+
+   
     def get_queryset(self):
         entity_id = self.request.query_params.get('entity')
         queryset = defaultvaluesbyentity.objects.all()
@@ -144,9 +146,9 @@ class CombinedTypeApiView(ListCreateAPIView):
         
         return Response([
             {"taxtypes": purchase_serializer.data},
-            {"Invoicetypes": invoice_serializer.data},
+            {"invoicetypes": invoice_serializer.data},
             {"branches": subentity_serializer.data},
-            {"DefaultValues": default_serializer.data}
+            {"defaultvalues": default_serializer.data}
         ])
     
     def perform_create(self, serializer):
