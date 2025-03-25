@@ -144,9 +144,9 @@ class CombinedTypeApiView(ListCreateAPIView):
         
         return Response([
             {"taxtypes": purchase_serializer.data},
-            {"Invoicetypes": invoice_serializer.data},
+            {"invoicetypes": invoice_serializer.data},
             {"branches": subentity_serializer.data},
-            {"DefaultValues": default_serializer.data}
+            {"defaultvalues": default_serializer.data}
         ])
     
     def perform_create(self, serializer):
