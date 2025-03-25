@@ -143,9 +143,9 @@ class CombinedTypeApiView(ListCreateAPIView):
         default_serializer = DefaultValuesByEntitySerializerlist(default_queryset, many=True)
         
         return Response([
-            {"Purchasetype": purchase_serializer.data},
-            {"InvoiceType": invoice_serializer.data},
-            {"Subentity": subentity_serializer.data},
+            {"taxtypes": purchase_serializer.data},
+            {"Invoicetypes": invoice_serializer.data},
+            {"branches": subentity_serializer.data},
             {"DefaultValues": default_serializer.data}
         ])
     
