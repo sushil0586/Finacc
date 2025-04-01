@@ -3,8 +3,8 @@ from django.shortcuts import render
 from rest_framework import response,status,permissions
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
-from financial.models import account, accountHead,accounttype
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer
+from financial.models import account, accountHead,accounttype,ShippingDetails
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -384,6 +384,10 @@ class AccountListNewApiView(ListAPIView):
             'account__id', 'account__accountname', 'account__gstno', 'account__pan',
             'account__city__cityname', 'account__accounthead__name', 'account__creditaccounthead__name',
             'account__canbedeleted'
+        ).exclude(
+                accounttype='MD'
+        ).exclude(
+                transactiontype__in=['PC']
         ).annotate(
             balance=Sum('debitamount', default=0) - Sum('creditamount', default=0)
         )
@@ -618,5 +622,34 @@ class GetGstinDetails(ListAPIView):
 
        
         return response.Response(result)
+    
+
+class AccountListView(ListAPIView):
+    serializer_class = AccountListtopSerializer
+
+    def get_queryset(self):
+        entity_ids = self.request.GET.get('entity', '')
+        accounthead_codes = self.request.GET.get('accounthead', '')
+        
+        entity_ids = [int(e) for e in entity_ids.split(',') if e.isdigit()] if entity_ids else []
+        accounthead_codes = [int(a) for a in accounthead_codes.split(',') if a.isdigit()] if accounthead_codes else []
+        
+        filters = Q()
+        if entity_ids:
+            filters &= Q(entity_id__in=entity_ids)
+        if accounthead_codes:
+            filters &= Q(accounthead__code__in=accounthead_codes)
+        
+        return account.objects.filter(filters)
+
+
+class ShippingDetailsListCreateView(ListCreateAPIView):
+    queryset = ShippingDetails.objects.all()
+    serializer_class = ShippingDetailsSerializer
+
+class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+    queryset = ShippingDetails.objects.all()
+    serializer_class = ShippingDetailsSerializer
+
     
 
