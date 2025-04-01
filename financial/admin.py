@@ -1,7 +1,7 @@
 from django.contrib import admin
 from import_export.admin import ImportExportMixin
 
-from financial.models import accountHead,account,accounttype
+from financial.models import accountHead,account,accounttype,ShippingDetails
 # Register your models here.
 
 
@@ -26,3 +26,4 @@ admin.site.register(account,accountAdmin)
 # admin.site.register(account_detials2)
 
 admin.site.register(accounttype)
+admin.site.register(ShippingDetails)
