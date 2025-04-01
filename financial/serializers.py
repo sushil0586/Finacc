@@ -14,7 +14,7 @@ from django.db import transaction
 class ShippingDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
-        fields = '__all__'
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name',)
 
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -32,15 +32,9 @@ class AccountSerializer(serializers.ModelSerializer):
         )
 
     def create(self, validated_data):
-        # Use a transaction to ensure atomicity of the entire operation
-
+        # Extract and clean shipping data
         shipping_data = validated_data.pop('shipping_details', [])
-        # with transaction.atomic():
-        #     account_instance = Account.objects.create(**validated_data)
-        #     for shipping in shipping_data:
-        #         ShippingDetails.objects.create(account=account_instance, **shipping)
-        # return account_instance
-    
+        shipping_data = [shipping for shipping in shipping_data if shipping.get('id', None) != 0]
 
         with transaction.atomic():
             entity = validated_data['entity']
@@ -48,30 +42,36 @@ class AccountSerializer(serializers.ModelSerializer):
 
             # Create account instance
             detail = account.objects.create(**validated_data, accountcode=accountcode)
+
+            # Create shipping details
             for shipping in shipping_data:
-                 ShippingDetails.objects.create(account=detail, **shipping)
+                ShippingDetails.objects.create(account=detail, **shipping)
 
             # Get the financial year start date
-            accountdate1 = entityfinancialyear.objects.get(entity=detail.entity).finstartyear
+            accountdate1 = (
+                entityfinancialyear.objects.filter(entity=detail.entity)
+                .order_by("finstartyear")  # Sort by earliest date
+                .first()  # Get the first record
+            )
 
-            # Create entry if not exists
-            entryid, created = entry.objects.get_or_create(entrydate1=accountdate1, entity=detail.entity)
+            # # Create entry if not exists
+            # entryid, created = entry.objects.get_or_create(entrydate1=accountdate1, entity=detail.entity)
 
-            # Handle opening balances
-            self._handle_opening_balances(detail, entryid, accountdate1)
+            # # Handle opening balances
+            # self._handle_opening_balances(detail, entryid, accountdate1)
 
         return detail
 
     def update(self, instance, validated_data):
         fields = [
             'accountdate', 'accounthead', 'gstno', 'creditaccounthead', 'accountname',  'address1',
-            'address2','gstintype', 'dateofreg', 'dateofdreg','isaddsameasbillinf',
+            'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf',
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
             'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'Adhaarno', 'saccode',
             'contactperson', 'deprate', 'tdsrate', 'gstshare', 'BanKAcno', 'accounttype',
             'composition', 'createdby'
         ]
-        
+
         # Update instance fields
         for field in fields:
             setattr(instance, field, validated_data.get(field, getattr(instance, field)))
@@ -79,13 +79,26 @@ class AccountSerializer(serializers.ModelSerializer):
         # Save updated instance
         instance.save()
 
+        # Update or create shipping details
+        shipping_data = validated_data.pop('shipping_details', [])
+        for shipping in shipping_data:
+            shipping_id = shipping.get('id', None)
+            if shipping_id:  
+                # If ID exists, update the existing record
+                ShippingDetails.objects.filter(id=shipping_id, account=instance).update(**shipping)
+            else:
+                # If no ID, create a new shipping record
+                ShippingDetails.objects.create(account=instance, **shipping)
+
         # Handle stock transactions for opening balances
         StockTransactions.objects.filter(entity=instance.entity, transactionid=instance.id, transactiontype='OA').delete()
 
         # Handle opening balances after update
-        self._handle_opening_balances(instance, entry.objects.get_or_create(entrydate1=instance.accountdate, entity=instance.entity)[0], instance.accountdate)
+        entry_instance, _ = entry.objects.get_or_create(entrydate1=instance.accountdate, entity=instance.entity)
+        self._handle_opening_balances(instance, entry_instance, instance.accountdate)
 
         return instance
+
 
     def _generate_account_code(self, entity):
         """
