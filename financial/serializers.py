@@ -1,16 +1,25 @@
 from sys import implementation
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField
-from financial.models import accountHead,account,accounttype
+from financial.models import accountHead,account,accounttype,ShippingDetails
 from invoice.models import entry,StockTransactions
 from entity.models import Entity,entityfinancialyear
+from django.db.models import Q, Sum
 
 from geography.serializers import CityListSerializer
 import os
 from django.db import transaction
 
 
+class ShippingDetailsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShippingDetails
+        fields = '__all__'
+
+
 class AccountSerializer(serializers.ModelSerializer):
+
+    shipping_details = ShippingDetailsSerializer(many=True, required=False)
 
     class Meta:
         model = account
@@ -20,17 +29,28 @@ class AccountSerializer(serializers.ModelSerializer):
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
             'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare', 'quanity1',
-            'quanity2', 'BanKAcno', 'composition', 'accounttype', 'createdby',
+            'quanity2', 'BanKAcno', 'composition', 'accounttype', 'createdby','shipping_details',
         )
 
     def create(self, validated_data):
         # Use a transaction to ensure atomicity of the entire operation
+
+        shipping_data = validated_data.pop('shipping_details', [])
+        # with transaction.atomic():
+        #     account_instance = Account.objects.create(**validated_data)
+        #     for shipping in shipping_data:
+        #         ShippingDetails.objects.create(account=account_instance, **shipping)
+        # return account_instance
+    
+
         with transaction.atomic():
             entity = validated_data['entity']
             accountcode = self._generate_account_code(entity)
 
             # Create account instance
             detail = account.objects.create(**validated_data, accountcode=accountcode)
+            for shipping in shipping_data:
+                 ShippingDetails.objects.create(account=detail, **shipping)
 
             # Get the financial year start date
             accountdate1 = entityfinancialyear.objects.get(entity=detail.entity).finstartyear
@@ -201,6 +221,50 @@ class accountservicesSerializeraccounts(serializers.ModelSerializer):
         model = accountHead
         fields = ('code','accounthead_accounts')
         #depth = 1
+
+# Serializer for the account model
+class AccountListtopSerializer(serializers.ModelSerializer):
+    accounthead = serializers.PrimaryKeyRelatedField(queryset=accountHead.objects.all())
+    state = serializers.PrimaryKeyRelatedField(read_only=True)
+    district = serializers.PrimaryKeyRelatedField(read_only=True)
+    city = serializers.PrimaryKeyRelatedField(read_only=True)
+    balance = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = account
+        fields = [
+            'id', 'accounthead', 'accountname', 'accountcode', 'state', 'district', 
+            'city', 'pincode', 'gstno', 'pan', 'saccode', 'balance'
+        ]
+    
+    def get_balance(self, obj):
+        request = self.context.get('request')
+        entity = request.GET.get('entity')
+        
+        if entity:
+            current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
+            transaction = StockTransactions.objects.filter(
+                entity=entity,
+                isactive=1,
+                entrydatetime__range=(current_dates.finstartyear,current_dates.finendyear)
+            ).exclude(
+                accounttype='MD'
+            ).exclude(
+                transactiontype__in=['PC']
+            ).filter(
+                account=obj
+            ).aggregate(
+                balance=Sum('debitamount', default=0) - Sum('creditamount', default=0)
+            )
+            
+            return transaction['balance'] or 0  # Ensure None is replaced with 0
+        
+        return 0
+    
+
+
+
+
 
 
 

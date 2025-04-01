@@ -152,6 +152,22 @@ class account(TrackingModel):
         verbose_name_plural = _('Accounts')
 
 
+class ShippingDetails(models.Model):
+    account = models.ForeignKey(account, on_delete=models.CASCADE, related_name='shipping_details')
+    address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 1'))
+    address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 2'))
+    country = models.ForeignKey(Country, null=True, on_delete=models.PROTECT)
+    state = models.ForeignKey(State, null=True, on_delete=models.PROTECT)
+    district = models.ForeignKey(District, null=True, on_delete=models.PROTECT)
+    city = models.ForeignKey(City, null=True, on_delete=models.PROTECT)
+    pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Pincode'))
+    phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Phone No'))
+    full_name = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Full Name'))
+    
+    def __str__(self):
+        return f"{self.full_name} - {self.account.accountname}"
+
+
 # class account_detials1(TrackingModel):
 #     account = models.OneToOneField(account,on_delete=models.PROTECT,primary_key=True)
 #     accountno       = models.CharField(max_length=50, null=True,verbose_name=_('Account no'))
