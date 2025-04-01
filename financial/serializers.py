@@ -25,11 +25,10 @@ class AccountSerializer(serializers.ModelSerializer):
         model = account
         fields = (
             'id', 'accountcode', 'accountdate', 'accounthead', 'gstno', 'creditaccounthead', 'accountname',
-            'legalname', 'address1', 'address2', 'addressfloorno', 'addressstreet', 'gstintype', 'blockstatus',
+            'address1', 'address2', 'gstintype','isaddsameasbillinf',
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
-            'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare', 'quanity1',
-            'quanity2', 'BanKAcno', 'composition', 'accounttype', 'createdby','shipping_details',
+            'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'BanKAcno', 'composition', 'accounttype', 'createdby','shipping_details',
         )
 
     def create(self, validated_data):
@@ -65,11 +64,11 @@ class AccountSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         fields = [
-            'accountdate', 'accounthead', 'gstno', 'creditaccounthead', 'accountname', 'legalname', 'address1',
-            'address2', 'addressfloorno', 'addressstreet', 'gstintype', 'blockstatus', 'dateofreg', 'dateofdreg',
+            'accountdate', 'accounthead', 'gstno', 'creditaccounthead', 'accountname',  'address1',
+            'address2','gstintype', 'dateofreg', 'dateofdreg','isaddsameasbillinf',
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
             'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'Adhaarno', 'saccode',
-            'contactperson', 'deprate', 'tdsrate', 'gstshare', 'quanity1', 'quanity2', 'BanKAcno', 'accounttype',
+            'contactperson', 'deprate', 'tdsrate', 'gstshare', 'BanKAcno', 'accounttype',
             'composition', 'createdby'
         ]
         

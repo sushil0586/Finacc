@@ -111,6 +111,7 @@ class account(TrackingModel):
     agent       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Agent/Group'))
     pan       = models.CharField(max_length=50, null=True,verbose_name=_('PAN'),blank = True)
     tobel10cr       = models.BooleanField(verbose_name=_('Turnover below 10 lac'),null=True)
+    isaddsameasbillinf       = models.BooleanField(verbose_name=_('isaddsameasbillinf'),null=True)
     approved       = models.BooleanField(verbose_name=_('Wheather aproved'),null=True)
     tdsno       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Tds A/c No'))
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT,)
