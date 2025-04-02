@@ -30,7 +30,7 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
         fields = [
-            'id', 'address1', 'address2', 'pincode', 'phoneno', 'full_name',
+            'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
             'city', 'cityName'
         ]
