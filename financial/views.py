@@ -4,7 +4,7 @@ from rest_framework import response,status,permissions
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -649,7 +649,7 @@ class ShippingDetailsListCreateView(ListCreateAPIView):
 
 class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
     queryset = ShippingDetails.objects.all()
-    serializer_class = ShippingDetailsSerializer
+    serializer_class = ShippingDetailsgetSerializer
 
 # API View to Get Shipping Details by Account
 class ShippingDetailsByAccountView(ListAPIView):

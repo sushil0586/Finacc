@@ -11,6 +11,11 @@ import os
 from django.db import transaction
 
 
+class ShippingDetailsgetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShippingDetails
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+
 class ShippingDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
