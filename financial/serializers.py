@@ -17,6 +17,24 @@ class ShippingDetailsSerializer(serializers.ModelSerializer):
         fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name',)
 
 
+class ShippingDetailsListSerializer(serializers.ModelSerializer):
+    country = serializers.IntegerField(source='country.id')
+    countryName = serializers.CharField(source='country.countryname')
+    state = serializers.IntegerField(source='state.id')
+    stateName = serializers.CharField(source='state.statename')
+    district = serializers.IntegerField(source='district.id')
+    districtName = serializers.CharField(source='district.districtname')
+    city = serializers.IntegerField(source='city.id')
+    cityName = serializers.CharField(source='city.cityname')
+
+    class Meta:
+        model = ShippingDetails
+        fields = [
+            'id', 'address1', 'address2', 'pincode', 'phoneno', 'full_name',
+            'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
+            'city', 'cityName'
+        ]
+
 class AccountSerializer(serializers.ModelSerializer):
 
     shipping_details = ShippingDetailsSerializer(many=True, required=False)
