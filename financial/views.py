@@ -651,5 +651,15 @@ class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
     queryset = ShippingDetails.objects.all()
     serializer_class = ShippingDetailsSerializer
 
+# API View to Get Shipping Details by Account
+class ShippingDetailsByAccountView(ListAPIView):
+    serializer_class = ShippingDetailsSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        account_id = self.kwargs.get('account_id')
+        return ShippingDetails.objects.filter(account_id=account_id)
+
+
     
 
