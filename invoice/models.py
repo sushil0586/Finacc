@@ -4,7 +4,7 @@ from django.db import models
 from django.forms import DateField
 from helpers.models import TrackingModel
 from Authentication.models import User
-from financial.models import account,accountHead
+from financial.models import account,accountHead,ShippingDetails
 from inventory.models import Product
 from entity.models import Entity,entityfinancialyear,subentity
 from inventory.models import Product
@@ -157,7 +157,7 @@ class SalesOderHeader(TrackingModel):
     totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
     totalquanity =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
     advance =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'advance')
-    shippedto =  models.ForeignKey(to = account, on_delete=models.PROTECT,null=True,related_name='shippedto')
+    shippedto =  models.ForeignKey(to = ShippingDetails, on_delete=models.PROTECT,null=True,related_name='shippedto')
     ecom =  models.ForeignKey(to = 'financial.account', on_delete=models.PROTECT,null=True,related_name='ecommerce4')
     remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
     transport =  models.ForeignKey(account, on_delete=models.PROTECT,null=True,related_name='sotransport')
@@ -256,7 +256,7 @@ class SalesOder(TrackingModel):
     totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
     totalquanity =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
     advance =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'advance')
-    shippedto =  models.ForeignKey(to = account, on_delete=models.PROTECT,null=True,related_name='soshippedto')
+    shippedto =  models.ForeignKey(to = ShippingDetails, on_delete=models.PROTECT,null=True,related_name='soshippedto')
     remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
     transport =  models.ForeignKey(account, on_delete=models.PROTECT,null=True,related_name='stransport')
     broker =  models.ForeignKey(account, on_delete=models.PROTECT,null=True,related_name='sbroker')
@@ -357,7 +357,7 @@ class PurchaseReturn(TrackingModel):
     totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
     totalquanity =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
     advance =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'advance')
-    shippedto =  models.ForeignKey(to = account, on_delete=models.PROTECT,null=True,related_name='shippedto1')
+    shippedto =  models.ForeignKey(to = ShippingDetails, on_delete=models.PROTECT,null=True,related_name='shippedto1')
     remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
     transport =  models.ForeignKey(to = account, on_delete=models.PROTECT,null=True,related_name='transport1')
     broker =  models.ForeignKey(to = account, on_delete=models.PROTECT,null=True,related_name='broker1')
