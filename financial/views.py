@@ -645,7 +645,7 @@ class AccountListView(ListAPIView):
 
 class ShippingDetailsListCreateView(ListCreateAPIView):
     queryset = ShippingDetails.objects.all()
-    serializer_class = ShippingDetailsSerializer
+    serializer_class = ShippingDetailsgetSerializer
 
 class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
     queryset = ShippingDetails.objects.all()
