@@ -5460,6 +5460,27 @@ class PincodeDistanceAPIView(APIView):
 
 
 
+
+class BillNoListView(APIView):
+    def get(self, request, format=None):
+        entity_id = request.GET.get('entity')
+        entityfinid_id = request.GET.get('entityfinid')
+
+        if not entity_id or not entityfinid_id:
+            return Response({'error': 'Both entity and entityfinid are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        billnos = SalesOderHeader.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id
+        ).values_list('billno', flat=True).order_by('billno')
+
+        comma_separated = ','.join(str(billno) for billno in billnos)
+
+        return Response({'billnos': [comma_separated]}, status=status.HTTP_200_OK)
+
+
+
+
        
 
         
