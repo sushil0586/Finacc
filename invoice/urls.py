@@ -156,6 +156,7 @@ urlpatterns  = [
     path("distance", views.PincodeDistanceAPIView.as_view(), name="sales-order-detail"),
     path('default-values/', views.DefaultValuesByEntityListCreateAPIView.as_view(), name='default-values-list-create'),
     path('default-values/<int:pk>/', views.DefaultValuesByEntityRetrieveUpdateDestroyAPIView.as_view(), name='default-values-detail'),
+    path('billnos/', views.BillNoListView.as_view(), name='billno-list'),
 
     
 
