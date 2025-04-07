@@ -58,6 +58,8 @@ from financial.models import account
 from inventory.models import Product
 import pandas as pd
 from datetime import datetime
+from reports.models import TransactionType
+from .serializers import TransactionTypeSerializer
 
 
 
@@ -5313,6 +5315,13 @@ class StockLedgerBookView(APIView):
         elif tx.stockttype == 'S':
             return 'Sale'
         return tx.transactiontype or ''
+
+
+class TransactionTypeListView(APIView):
+    def get(self, request):
+        transaction_types = TransactionType.objects.all()
+        serializer = TransactionTypeSerializer(transaction_types, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 

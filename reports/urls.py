@@ -61,6 +61,7 @@ urlpatterns  = [
     path('stock-day-book/', views.StockDayBookReportView.as_view(), name='stock-day-book'),
     path('stockbooksummary/', views.StockSummaryView.as_view(), name='stock-day-book'),
     path('stockbookreport/', views.StockLedgerBookView.as_view(), name='stock-day-book'),
+    path('transaction-types/', views.TransactionTypeListView.as_view(), name='transaction-type-list'),
 
     
 

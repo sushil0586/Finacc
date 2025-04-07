@@ -4,6 +4,7 @@ from django.shortcuts import render
 from collections import defaultdict
 from django.utils.encoding import smart_str
 from math import radians, sin, cos, sqrt, atan2
+import calendar
 
 import json
 
@@ -5461,22 +5462,59 @@ class PincodeDistanceAPIView(APIView):
 
 
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from datetime import datetime
+from .models import SalesOderHeader  # Adjust import as needed
+
 class BillNoListView(APIView):
     def get(self, request, format=None):
         entity_id = request.GET.get('entity')
         entityfinid_id = request.GET.get('entityfinid')
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
 
         if not entity_id or not entityfinid_id:
             return Response({'error': 'Both entity and entityfinid are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        billnos = SalesOderHeader.objects.filter(
+        # Base queryset
+        queryset = SalesOderHeader.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id
-        ).values_list('billno', flat=True).order_by('billno')
+        )
 
+        # Optional date filtering
+        try:
+            if start_date_str:
+                start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+                queryset = queryset.filter(sorderdate__gte=start_date)
+            if end_date_str:
+                end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+                queryset = queryset.filter(sorderdate__lte=end_date)
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Extract bill numbers
+        billnos = queryset.values_list('billno', flat=True).order_by('billno')
         comma_separated = ','.join(str(billno) for billno in billnos)
 
         return Response({'billnos': [comma_separated]}, status=status.HTTP_200_OK)
+
+
+
+
+
+class MonthListAPIView(APIView):
+    def get(self, request):
+        months = [
+            {
+                "month": datetime(2000, i, 1).strftime('%b'),  # 'Jan', 'Feb', etc.
+                "month_number": i
+            }
+            for i in range(1, 13)
+        ]
+        return Response(months)
 
 
 

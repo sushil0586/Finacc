@@ -427,9 +427,11 @@ class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
         fields = ['id', 'financial_year','isactive']
 
     def get_financial_year(self, obj):
-        start_year = obj.finstartyear.year if obj.finstartyear else None
-        end_year = obj.finendyear.year if obj.finendyear else None
-        return f"{start_year}-{end_year}" if start_year and end_year else None
+        if obj.finstartyear and obj.finendyear:
+            start = obj.finstartyear.strftime('%m-%Y')
+            end = obj.finendyear.strftime('%m-%Y')
+            return f"{start} - {end}"
+        return None
 
 
 

@@ -157,6 +157,7 @@ urlpatterns  = [
     path('default-values/', views.DefaultValuesByEntityListCreateAPIView.as_view(), name='default-values-list-create'),
     path('default-values/<int:pk>/', views.DefaultValuesByEntityRetrieveUpdateDestroyAPIView.as_view(), name='default-values-detail'),
     path('billnos/', views.BillNoListView.as_view(), name='billno-list'),
+    path('months/', views.MonthListAPIView.as_view(), name='month-list'),
 
     
 
