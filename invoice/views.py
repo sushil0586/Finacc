@@ -723,15 +723,23 @@ class SalesOrderPDFViewprint(ListAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        billnos_param = self.request.query_params.get('billnos')  # Fetch 'ids' as a string
-        
-        queryset = SalesOderHeader.objects.filter(entity=entity)
+        billnos_param = self.request.query_params.get('billnos')
+        entityfinid = self.request.query_params.get('entityfinid')  # Get entity financial year ID
+
+        queryset = SalesOderHeader.objects.all()
+
+        if entity:
+            queryset = queryset.filter(entity=entity)
+
+        if entityfinid:
+            queryset = queryset.filter(entityfinid=entityfinid)
 
         if billnos_param:
-            billnos = [int(i) for i in billnos_param.split(',') if i.isdigit()]  # Convert to list of integers
-            queryset = queryset.filter(billno__in=billnos)  # Apply filtering
+            billnos = [int(i) for i in billnos_param.split(',') if i.isdigit()]
+            queryset = queryset.filter(billno__in=billnos)
 
         return queryset.prefetch_related('saleInvoiceDetails')
+
 
     
 

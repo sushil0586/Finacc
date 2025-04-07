@@ -421,17 +421,30 @@ class entityAddSerializer(serializers.ModelSerializer):
 class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
     id = serializers.IntegerField()
     financial_year = serializers.SerializerMethodField()
+    start_date = serializers.SerializerMethodField()
+    end_date = serializers.SerializerMethodField()
 
     class Meta:
         model = entityfinancialyear
-        fields = ['id', 'financial_year','isactive']
+        fields = ['id', 'financial_year', 'start_date', 'end_date', 'isactive']
 
     def get_financial_year(self, obj):
         if obj.finstartyear and obj.finendyear:
-            start = obj.finstartyear.strftime('%m-%Y')
-            end = obj.finendyear.strftime('%m-%Y')
+            start = obj.finstartyear.strftime('%b-%Y')  # e.g., Jan-2024
+            end = obj.finendyear.strftime('%b-%Y')      # e.g., Dec-2024
             return f"{start} - {end}"
         return None
+
+    def get_start_date(self, obj):
+        if obj.finstartyear:
+            return obj.finstartyear.strftime('%Y-%m-%d')  # e.g., 2024-01-01
+        return None
+
+    def get_end_date(self, obj):
+        if obj.finendyear:
+            return obj.finendyear.strftime('%Y-%m-%d')  # e.g., 2024-12-31
+        return None
+
 
 
 
