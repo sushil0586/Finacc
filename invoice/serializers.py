@@ -7,7 +7,7 @@ from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity
-from financial.models import account,accountHead
+from financial.models import account,accountHead,ShippingDetails
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
@@ -1720,14 +1720,16 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     billtoaddress2 = serializers.CharField(source='accountid.address2', read_only=True)
     billtostate = serializers.CharField(source='accountid.state.statename', read_only=True)
     billtocity = serializers.CharField(source='accountid.city.cityname', read_only=True)
+    billtopin = serializers.CharField(source='accountid.city.pincode', read_only=True)
     billtopan = serializers.CharField(source='accountid.pan', read_only=True)
     #billtoaddress = serializers.SerializerMethodField()
     billtogst = serializers.CharField(source='accountid.gstno', read_only=True)
-    shiptoname = serializers.CharField(source='shippedto.accountname', read_only=True)
+    shiptoname = serializers.CharField(source='shippedto.full_name', read_only=True)
     shiptoaddress1 = serializers.CharField(source='shippedto.address1', read_only=True)
     shiptoaddress2 = serializers.CharField(source='shippedto.address2', read_only=True)
     shiptostate = serializers.CharField(source='shippedto.state.statename', read_only=True)
     shiptocity = serializers.CharField(source='shippedto.city.cityname', read_only=True)
+    shiptopin = serializers.CharField(source='shippedto.city.pincode', read_only=True)
     shiptopan = serializers.CharField(source='shippedto.pan', read_only=True)
     shiptogst = serializers.CharField(source='shippedto.gstno', read_only=True)
     transportname = serializers.CharField(source='transport.accountname', read_only=True)
@@ -1744,9 +1746,9 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
         model = SalesOderHeader
         fields = (
             'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress1',
-             'billtoaddress2','billtocity','billtostate','billtogst','billtopan',
+             'billtoaddress2','billtocity','billtostate','billtogst','billtopan','billtopin',
             'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
-            'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst',
+            'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst','shiptopin',
             'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate','stbefdiscount','discount', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',

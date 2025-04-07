@@ -723,14 +723,13 @@ class salesOrderpdfview(RetrieveAPIView):
         
         return queryset.prefetch_related('saleInvoiceDetails')
     
-class SalesOrderPDFViewprint(ListAPIView):
-    serializer_class = SalesOrderHeaderPDFSerializer
+class SalesOrderPDFViewprint(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        billnos_param = self.request.query_params.get('billnos')
-        entityfinid = self.request.query_params.get('entityfinid')  # Get entity financial year ID
+    def post(self, request, format=None):
+        entity = request.data.get('entity')
+        billnos_param = request.data.get('billnos')  # Expected as comma-separated string or list
+        entityfinid = request.data.get('entityfinid')
 
         queryset = SalesOderHeader.objects.all()
 
@@ -741,10 +740,19 @@ class SalesOrderPDFViewprint(ListAPIView):
             queryset = queryset.filter(entityfinid=entityfinid)
 
         if billnos_param:
-            billnos = [int(i) for i in billnos_param.split(',') if i.isdigit()]
+            if isinstance(billnos_param, str):
+                billnos = [int(i) for i in billnos_param.split(',') if i.isdigit()]
+            elif isinstance(billnos_param, list):
+                billnos = [int(i) for i in billnos_param if isinstance(i, int) or str(i).isdigit()]
+            else:
+                return Response({'error': 'Invalid billnos format. Must be comma-separated string or list.'}, status=status.HTTP_400_BAD_REQUEST)
+
             queryset = queryset.filter(billno__in=billnos)
 
-        return queryset.prefetch_related('saleInvoiceDetails')
+        queryset = queryset.prefetch_related('saleInvoiceDetails')
+
+        serializer = SalesOrderHeaderPDFSerializer(queryset, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
     
@@ -5476,18 +5484,14 @@ class PincodeDistanceAPIView(APIView):
 
 
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from datetime import datetime
-from .models import SalesOderHeader  # Adjust import as needed
+
 
 class BillNoListView(APIView):
-    def get(self, request, format=None):
-        entity_id = request.GET.get('entity')
-        entityfinid_id = request.GET.get('entityfinid')
-        start_date_str = request.GET.get('start_date')
-        end_date_str = request.GET.get('end_date')
+    def post(self, request, format=None):
+        entity_id = request.data.get('entity')
+        entityfinid_id = request.data.get('entityfinid')
+        start_date_str = request.data.get('start_date')
+        end_date_str = request.data.get('end_date')
 
         if not entity_id or not entityfinid_id:
             return Response({'error': 'Both entity and entityfinid are required.'}, status=status.HTTP_400_BAD_REQUEST)
