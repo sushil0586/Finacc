@@ -17,6 +17,7 @@ from num2words import num2words
 import string
 from django.db import  transaction
 from django_filters.rest_framework import DjangoFilterBackend
+from reports.models import TransactionType
 
 
 
@@ -1163,4 +1164,11 @@ class StockSummarySerializerList(serializers.Serializer):
     rate = serializers.FloatField()
     value = serializers.FloatField()
     last_movement_date = serializers.DateTimeField(allow_null=True)
+
+
+
+class TransactionTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TransactionType
+        fields = ['transactiontype', 'transactioncode']
     
