@@ -714,8 +714,14 @@ class salesOrderpdfview(RetrieveAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
+        entityfinid = self.request.query_params.get('entityfinid')  # Get entity financial year ID
+
+        queryset = SalesOderHeader.objects.filter(entity = entity)
+
+        if entityfinid:
+            queryset = queryset.filter(entityfinid=entityfinid)
         
-        return SalesOderHeader.objects.filter(entity = entity).prefetch_related('saleInvoiceDetails')
+        return queryset.prefetch_related('saleInvoiceDetails')
     
 class SalesOrderPDFViewprint(ListAPIView):
     serializer_class = SalesOrderHeaderPDFSerializer
