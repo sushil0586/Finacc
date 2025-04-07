@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'drf_excel',
     'import_export',
     'payroll',
+    'reports',
 ]
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
