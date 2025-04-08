@@ -5496,13 +5496,8 @@ class PincodeDistanceAPIView(APIView):
 
 
 
-from datetime import datetime
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 
-# Import your models here
-# from .models import SalesOderHeader, PassOrderHeader
+# from your_app.models import SalesOderHeader, purchaseorder
 
 class BillNoListView(APIView):
     def post(self, request, format=None):
@@ -5516,7 +5511,7 @@ class BillNoListView(APIView):
             return Response({'error': 'entity, entityfinid, and transactiontype are required.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # Choose model and field names based on transaction type
+        # Choose model and fields based on transaction type
         if transaction_type == 'S':
             model = SalesOderHeader
             number_field = 'billno'
@@ -5524,9 +5519,9 @@ class BillNoListView(APIView):
         else:
             model = purchaseorder  # Replace with actual model
             number_field = 'voucherno'
-            date_field = 'voucherdate'  # Replace if other model uses different date field
+            date_field = 'voucherdate'
 
-        # Base queryset
+        # Filter by entity and entityfinid
         queryset = model.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id
@@ -5541,13 +5536,14 @@ class BillNoListView(APIView):
                 end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
                 queryset = queryset.filter(**{f"{date_field}__lte": end_date})
         except ValueError:
-            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        # Extract the relevant numbers
-        numbers = queryset.values_list(number_field, flat=True).order_by(number_field)
-        comma_separated = ','.join(str(num) for num in numbers)
+        # Extract and return as list of integers
+        numbers = list(queryset.values_list(number_field, flat=True).order_by(number_field))
 
-        return Response({'billnos': [comma_separated]}, status=status.HTTP_200_OK)
+        return Response({'billnos': numbers}, status=status.HTTP_200_OK)
+
 
 
 
