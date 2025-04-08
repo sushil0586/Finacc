@@ -728,31 +728,41 @@ class SalesOrderPDFViewprint(APIView):
 
     def post(self, request, format=None):
         entity = request.data.get('entity')
-        billnos_param = request.data.get('billnos')  # Expected as comma-separated string or list
         entityfinid = request.data.get('entityfinid')
+        billnos_param = request.data.get('billnos')  # Can be string or list
+        transaction_type = request.data.get('transactiontype')
 
-        queryset = SalesOderHeader.objects.all()
+        if not transaction_type:
+            return Response({'error': 'transactiontype is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if entity:
-            queryset = queryset.filter(entity=entity)
+        if transaction_type == 'S':
+            queryset = SalesOderHeader.objects.all()
 
-        if entityfinid:
-            queryset = queryset.filter(entityfinid=entityfinid)
+            if entity:
+                queryset = queryset.filter(entity=entity)
 
-        if billnos_param:
-            if isinstance(billnos_param, str):
-                billnos = [int(i) for i in billnos_param.split(',') if i.isdigit()]
-            elif isinstance(billnos_param, list):
-                billnos = [int(i) for i in billnos_param if isinstance(i, int) or str(i).isdigit()]
-            else:
-                return Response({'error': 'Invalid billnos format. Must be comma-separated string or list.'}, status=status.HTTP_400_BAD_REQUEST)
+            if entityfinid:
+                queryset = queryset.filter(entityfinid=entityfinid)
 
-            queryset = queryset.filter(billno__in=billnos)
+            if billnos_param:
+                if isinstance(billnos_param, str):
+                    billnos = [int(i) for i in billnos_param.split(',') if i.isdigit()]
+                elif isinstance(billnos_param, list):
+                    billnos = [int(i) for i in billnos_param if isinstance(i, int) or str(i).isdigit()]
+                else:
+                    return Response({'error': 'Invalid billnos format. Must be comma-separated string or list.'},
+                                    status=status.HTTP_400_BAD_REQUEST)
 
-        queryset = queryset.prefetch_related('saleInvoiceDetails')
+                queryset = queryset.filter(billno__in=billnos)
 
-        serializer = SalesOrderHeaderPDFSerializer(queryset, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+            queryset = queryset.prefetch_related('saleInvoiceDetails')
+            serializer = SalesOrderHeaderPDFSerializer(queryset, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        else:
+            # Placeholder for other transaction type logic
+            return Response({'message': f'Handling for transactiontype "{transaction_type}" is not yet implemented.'},
+                            status=status.HTTP_200_OK)
 
 
     
@@ -5486,18 +5496,38 @@ class PincodeDistanceAPIView(APIView):
 
 
 
+from datetime import datetime
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+# Import your models here
+# from .models import SalesOderHeader, PassOrderHeader
+
 class BillNoListView(APIView):
     def post(self, request, format=None):
         entity_id = request.data.get('entity')
         entityfinid_id = request.data.get('entityfinid')
+        transaction_type = request.data.get('transactiontype')
         start_date_str = request.data.get('start_date')
         end_date_str = request.data.get('end_date')
 
-        if not entity_id or not entityfinid_id:
-            return Response({'error': 'Both entity and entityfinid are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not entity_id or not entityfinid_id or not transaction_type:
+            return Response({'error': 'entity, entityfinid, and transactiontype are required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Choose model and field names based on transaction type
+        if transaction_type == 'S':
+            model = SalesOderHeader
+            number_field = 'billno'
+            date_field = 'sorderdate'
+        else:
+            model = purchaseorder  # Replace with actual model
+            number_field = 'voucherno'
+            date_field = 'voucherdate'  # Replace if other model uses different date field
 
         # Base queryset
-        queryset = SalesOderHeader.objects.filter(
+        queryset = model.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id
         )
@@ -5506,18 +5536,19 @@ class BillNoListView(APIView):
         try:
             if start_date_str:
                 start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-                queryset = queryset.filter(sorderdate__gte=start_date)
+                queryset = queryset.filter(**{f"{date_field}__gte": start_date})
             if end_date_str:
                 end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
-                queryset = queryset.filter(sorderdate__lte=end_date)
+                queryset = queryset.filter(**{f"{date_field}__lte": end_date})
         except ValueError:
             return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Extract bill numbers
-        billnos = queryset.values_list('billno', flat=True).order_by('billno')
-        comma_separated = ','.join(str(billno) for billno in billnos)
+        # Extract the relevant numbers
+        numbers = queryset.values_list(number_field, flat=True).order_by(number_field)
+        comma_separated = ','.join(str(num) for num in numbers)
 
         return Response({'billnos': [comma_separated]}, status=status.HTTP_200_OK)
+
 
 
 
