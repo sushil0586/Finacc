@@ -5322,6 +5322,261 @@ class TransactionTypeListView(APIView):
         transaction_types = TransactionType.objects.all()
         serializer = TransactionTypeSerializer(transaction_types, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+def get_aging_bucket(days_overdue):
+    if days_overdue <= 0:
+        return 'current'
+    elif days_overdue <= 30:
+        return 'bucket_1_30'
+    elif days_overdue <= 60:
+        return 'bucket_31_60'
+    elif days_overdue <= 90:
+        return 'bucket_61_90'
+    else:
+        return 'bucket_90_plus'
+
+
+class AccountsReceivableAgingReport(APIView):
+    def post(self, request):
+        try:
+            entity = request.data.get("entity")
+            startdate_str = request.data.get("startdate")
+            enddate_str = request.data.get("enddate")
+
+            if not all([entity,startdate_str, enddate_str]):
+                return Response({"error": "Missing required parameters"}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                startdate = datetime.strptime(startdate_str, "%Y-%m-%d").date()
+                enddate = datetime.strptime(enddate_str, "%Y-%m-%d").date()
+            except ValueError:
+                return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+            today = date.today()
+
+            transactions = StockTransactions.objects.select_related('account', 'entry').filter(
+                entity=entity,
+                accounttype='M',
+                isactive=True,
+                account__isnull=False,
+                entry__isnull=False,
+                entry__entrydate1__range=(startdate, enddate)
+            ).order_by('entry__entrydate1')
+
+            customer_data = defaultdict(lambda: {
+                "customer_name": "",
+                "total_amount": 0.0,
+                "amount_received": 0.0,
+                "total_balance": 0.0,
+                "current": 0.0,
+                "bucket_1_30": 0.0,
+                "bucket_31_60": 0.0,
+                "bucket_61_90": 0.0,
+                "bucket_90_plus": 0.0,
+                "last_invoice_date": None,
+                "last_due_date": None,
+                "last_payment_received_date": None
+            })
+
+            account_transactions = defaultdict(list)
+            customer_payments = defaultdict(list)
+
+            for txn in transactions:
+                account_name = txn.account.accountname if txn.account else "Unknown"
+                entry_date = txn.entry.entrydate1
+                due_date = entry_date + timedelta(days=15) if entry_date else None
+
+                if not account_name or not entry_date:
+                    continue
+
+                customer_data[account_name]["customer_name"] = account_name
+
+                if txn.debitamount and txn.debitamount > 0:
+                    account_transactions[account_name].append({
+                        "amount": float(txn.debitamount),
+                        "entry_date": entry_date,
+                        "due_date": due_date,
+                    })
+                    customer_data[account_name]["total_amount"] += float(txn.debitamount)
+
+                    if not customer_data[account_name]["last_invoice_date"] or entry_date > customer_data[account_name]["last_invoice_date"]:
+                        customer_data[account_name]["last_invoice_date"] = entry_date
+                        customer_data[account_name]["last_due_date"] = due_date
+
+                elif txn.creditamount and txn.creditamount > 0:
+                    customer_data[account_name]["amount_received"] += float(txn.creditamount)
+                    customer_payments[account_name].append({
+                        "amount": float(txn.creditamount),
+                        "payment_date": entry_date
+                    })
+
+                    if (not customer_data[account_name]["last_payment_received_date"]
+                            or entry_date > customer_data[account_name]["last_payment_received_date"]):
+                        customer_data[account_name]["last_payment_received_date"] = entry_date
+
+            final_output = []
+            for account_name, invoices in account_transactions.items():
+                payments = customer_payments.get(account_name, [])
+                invoice_queue = list(invoices)
+                payment_queue = list(payments)
+
+                for payment in payment_queue:
+                    amount = payment["amount"]
+                    while amount > 0 and invoice_queue:
+                        invoice = invoice_queue[0]
+                        if invoice["amount"] <= amount:
+                            amount -= invoice["amount"]
+                            invoice_queue.pop(0)
+                        else:
+                            invoice["amount"] -= amount
+                            amount = 0
+
+                total_balance = 0.0
+                for invoice in invoice_queue:
+                    balance = invoice["amount"]
+                    days_due = (today - invoice["due_date"]).days
+                    total_balance += balance
+                    if days_due <= 0:
+                        customer_data[account_name]["current"] += balance
+                    elif days_due <= 30:
+                        customer_data[account_name]["bucket_1_30"] += balance
+                    elif days_due <= 60:
+                        customer_data[account_name]["bucket_31_60"] += balance
+                    elif days_due <= 90:
+                        customer_data[account_name]["bucket_61_90"] += balance
+                    else:
+                        customer_data[account_name]["bucket_90_plus"] += balance
+
+                customer_data[account_name]["total_balance"] = total_balance
+
+            for data in customer_data.values():
+                final_output.append({
+                    "customer_name": data["customer_name"],
+                    "total_amount": round(data["total_amount"], 2),
+                    "amount_received": round(data["amount_received"], 2),
+                    "total_balance": round(data["total_balance"], 2),
+                    "current": round(data["current"], 2),
+                    "bucket_1_30": round(data["bucket_1_30"], 2),
+                    "bucket_31_60": round(data["bucket_31_60"], 2),
+                    "bucket_61_90": round(data["bucket_61_90"], 2),
+                    "bucket_90_plus": round(data["bucket_90_plus"], 2),
+                    "last_invoice_date": data["last_invoice_date"],
+                    "last_due_date": data["last_due_date"],
+                    "last_payment_received_date": data["last_payment_received_date"]
+                })
+
+            return Response(final_output)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+class AccountsPayableAgingReportView(APIView):
+    def post(self, request):
+        try:
+            entity = request.data.get('entity')
+            startdate = request.data.get('startdate')
+            enddate = request.data.get('enddate')
+
+            if not (entity and  startdate and enddate):
+                return Response({"error": "Missing required parameters"}, status=status.HTTP_400_BAD_REQUEST)
+
+            start_date = datetime.strptime(startdate, "%Y-%m-%d").date()
+            end_date = datetime.strptime(enddate, "%Y-%m-%d").date()
+            today = date.today()
+
+            transactions = StockTransactions.objects.select_related('account', 'entry').filter(
+                accounttype='M',
+                isactive=True,
+                account__isnull=False,
+                entry__entrydate1__range=(start_date, end_date),
+                entity=entity
+            )
+
+            vendor_data = defaultdict(lambda: {
+                "vendor_name": "",
+                "total_amount": 0.0,
+                "amount_paid": 0.0,
+                "total_balance": 0.0,
+                "current": 0.0,
+                "bucket_1_30": 0.0,
+                "bucket_31_60": 0.0,
+                "bucket_61_90": 0.0,
+                "bucket_90_plus": 0.0,
+                "last_invoice_date": None,
+                "last_due_date": None,
+                "last_payment_date": None
+            })
+
+            transactions_by_vendor = defaultdict(list)
+            for txn in transactions:
+                if txn.account and txn.entry:
+                    transactions_by_vendor[txn.account.accountname].append(txn)
+
+            for vendor_name, txns in transactions_by_vendor.items():
+                bills = []
+                payments = []
+
+                for txn in sorted(txns, key=lambda x: x.entry.entrydate1):
+                    if txn.debitamount and txn.debitamount > 0:
+                        bills.append({
+                            "amount": float(txn.debitamount),
+                            "entry_date": txn.entry.entrydate1,
+                            "due_date": txn.entry.entrydate1 + timedelta(days=15),
+                        })
+                        if (not vendor_data[vendor_name]["last_invoice_date"]) or txn.entry.entrydate1 > vendor_data[vendor_name]["last_invoice_date"]:
+                            vendor_data[vendor_name]["last_invoice_date"] = txn.entry.entrydate1
+                            vendor_data[vendor_name]["last_due_date"] = txn.entry.entrydate1 + timedelta(days=15)
+
+                        vendor_data[vendor_name]["total_amount"] += float(txn.debitamount)
+
+                    elif txn.creditamount and txn.creditamount > 0:
+                        payments.append({
+                            "amount": float(txn.creditamount),
+                            "entry_date": txn.entry.entrydate1
+                        })
+                        vendor_data[vendor_name]["amount_paid"] += float(txn.creditamount)
+
+                        if (not vendor_data[vendor_name]["last_payment_date"]) or txn.entry.entrydate1 > vendor_data[vendor_name]["last_payment_date"]:
+                            vendor_data[vendor_name]["last_payment_date"] = txn.entry.entrydate1
+
+                for payment in payments:
+                    amt = payment["amount"]
+                    for bill in bills:
+                        if bill["amount"] == 0:
+                            continue
+                        if amt <= 0:
+                            break
+                        applied = min(amt, bill["amount"])
+                        bill["amount"] -= applied
+                        amt -= applied
+
+                for bill in bills:
+                    if bill["amount"] > 0:
+                        days_due = (today - bill["due_date"]).days
+                        vendor_data[vendor_name]["total_balance"] += bill["amount"]
+
+                        if days_due <= 0:
+                            vendor_data[vendor_name]["current"] += bill["amount"]
+                        elif days_due <= 30:
+                            vendor_data[vendor_name]["bucket_1_30"] += bill["amount"]
+                        elif days_due <= 60:
+                            vendor_data[vendor_name]["bucket_31_60"] += bill["amount"]
+                        elif days_due <= 90:
+                            vendor_data[vendor_name]["bucket_61_90"] += bill["amount"]
+                        else:
+                            vendor_data[vendor_name]["bucket_90_plus"] += bill["amount"]
+
+                vendor_data[vendor_name]["vendor_name"] = vendor_name
+
+            return Response(list(vendor_data.values()))
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 
