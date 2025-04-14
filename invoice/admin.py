@@ -9,6 +9,7 @@ from .models import (
     debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity
 )
 from django.utils.translation import gettext_lazy as _
+from import_export.admin import ImportExportMixin
 
 
 
@@ -267,7 +268,7 @@ class accountentryAdmin(admin.ModelAdmin):
     search_fields = ['account__name', 'entity__name']
 
 
-class StockTransactionsAdmin(admin.ModelAdmin):
+class StockTransactionsAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['accounthead', 'account', 'stock', 'transactiontype', 'transactionid', 'voucherno', 'desc', 'stockttype', 'quantity', 'rate', 'drcr', 'debitamount', 'creditamount', 'entry', 'entrydate', 'entrydatetime', 'accounttype', 'pieces', 'weightqty', 'iscashtransaction', 'isbalancesheet', 'istrial', 'entity', 'createdby']
     search_fields = ['transactionid', 'account__name', 'stock__name', 'entity__name']
    
