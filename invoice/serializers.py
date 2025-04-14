@@ -2142,7 +2142,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     class Meta:
         model = SalesOderHeader
-        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','state','district','city','pincode', 'terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','stbefdiscount', 'subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','rawgtotal','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
+        fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','state','district','city','pincode', 'terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','stbefdiscount', 'subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','roundoff','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
     
@@ -2202,7 +2202,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
             'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
             'tds194q', 'tds194q1', 'tcs206c1ch1', 'state','district','city','pincode', 'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless',
-            'duedate','stbefdiscount', 'subtotal', 'discount', 'cgst', 'sgst', 'igst','isigst','invoicetype','reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal','rawgtotal',  'isactive',
+            'duedate','stbefdiscount', 'subtotal', 'discount', 'cgst', 'sgst', 'igst','isigst','invoicetype','reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal','roundoff',  'isactive',
             'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby',
         ]
         for field in fields:
@@ -2706,7 +2706,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = purchaseorder
-        fields = ('id','voucherdate','voucherno','account', 'state','district','city','pincode','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','reversecharge','invoicetype','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','purchaseInvoiceDetails','attachments',)
+        fields = ('id','voucherdate','voucherno','account', 'state','district','city','pincode','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','reversecharge','invoicetype','cess','expenses','gtotal','roundoff', 'entityfinid','subentity','entity','isactive','purchaseInvoiceDetails','attachments',)
 
 
     
@@ -2736,7 +2736,7 @@ class purchaseorderSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','showledgeraccount','terms','taxtype','reversecharge','invoicetype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity', 'entity','isactive']
+        fields = ['voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','showledgeraccount','terms','taxtype','reversecharge','invoicetype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundoff', 'entityfinid','subentity', 'entity','isactive']
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
