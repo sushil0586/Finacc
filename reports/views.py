@@ -60,6 +60,8 @@ import pandas as pd
 from datetime import datetime
 from reports.models import TransactionType
 from .serializers import TransactionTypeSerializer
+from .serializers import EMICalculatorSerializer
+from helpers.utils.emi import calculate_emi
 
 
 
@@ -5576,6 +5578,25 @@ class AccountsPayableAgingReportView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class EMICalculatorAPIView(APIView):
+    def post(self, request):
+        serializer = EMICalculatorSerializer(data=request.data)
+        if serializer.is_valid():
+            data = serializer.validated_data
+            emi, schedule = calculate_emi(
+                data['principal'],
+                data['annual_rate'],
+                data['tenure_months'],
+                data['start_date'],
+                data['interest_type']
+            )
+            return Response({
+                'monthly_emi': emi,
+                'amortization_schedule': schedule
+            }, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 
