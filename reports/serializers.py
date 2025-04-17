@@ -1171,4 +1171,11 @@ class TransactionTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = TransactionType
         fields = ['transactiontype', 'transactioncode']
+
+class EMICalculatorSerializer(serializers.Serializer):
+    principal = serializers.FloatField()
+    annual_rate = serializers.FloatField()
+    tenure_months = serializers.IntegerField()
+    start_date = serializers.DateField()
+    interest_type = serializers.ChoiceField(choices=['flat', 'reducing'])  # New field
     
