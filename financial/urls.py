@@ -21,6 +21,7 @@ urlpatterns  = [
     path('accountcode',views.AccountCodeLatestView.as_view(), name = 'purchaseorder'),
     path('accountbind',views.AccountBindApiView.as_view(), name = 'Trialbalance'),
     path('accountList',views.AccountListNewApiView.as_view(), name = 'Trialbalance'),
+    path('accountListPost',views.AccountListPostApiView.as_view(), name = 'Trialbalance'),
     path('accounttype',views.accounttypeApiView.as_view(), name = 'Trialbalance'),
     path('getaccountdetailsbygst',views.GetGstinDetails.as_view(), name = 'unittypeid'),
     path('accountslist/', views.AccountListView.as_view(), name='account-list'),
