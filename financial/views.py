@@ -440,6 +440,116 @@ class AccountListNewApiView(ListAPIView):
         return Response(final_data)
     
 
+class AccountListPostApiView(ListAPIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, format=None):
+        # Extract parameters from request
+        entity = request.data.get('entity')
+        account_ids = request.data.get('account_ids')
+        accounthead_ids = request.data.get('accounthead_ids')
+        sort_by = request.data.get('sort_by', 'account')
+        sort_order = request.data.get('sort_order', 'asc')
+        top_n = request.data.get('top_n')
+
+        if not entity:
+            return Response({"error": "Entity is required"}, status=400)
+
+        # Get financial year for the entity
+        try:
+            current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
+        except entityfinancialyear.DoesNotExist:
+            return Response({"error": "Financial year not found for the entity"}, status=404)
+
+        # Build dynamic filters for StockTransactions
+        stock_filter = {
+            "entity": entity,
+            "isactive": 1,
+            "entrydatetime__range": (current_dates.finstartyear, current_dates.finendyear)
+        }
+        if account_ids:
+            stock_filter["account__id__in"] = account_ids
+        if accounthead_ids:
+            stock_filter["account__accounthead__id__in"] = accounthead_ids
+
+        stock_queryset = StockTransactions.objects.filter(
+            **stock_filter
+        ).exclude(
+            accounttype='MD'
+        ).exclude(
+            transactiontype__in=['PC']
+        ).values(
+            'account__id', 'account__accountname', 'account__gstno', 'account__pan',
+            'account__city__cityname', 'account__accounthead__name', 'account__creditaccounthead__name',
+            'account__canbedeleted'
+        ).annotate(
+            balance=Sum('debitamount') - Sum('creditamount')
+        )
+
+        # Build dynamic filters for account
+        account_filter = {
+            "entity": entity,
+            "isactive": 1
+        }
+        if account_ids:
+            account_filter["id__in"] = account_ids
+        if accounthead_ids:
+            account_filter["accounthead__id__in"] = accounthead_ids
+
+        account_queryset = account.objects.filter(
+            **account_filter
+        ).values(
+            'id', 'accountname', 'gstno', 'pan', 'city__cityname',
+            'accounthead__name', 'creditaccounthead__name', 'canbedeleted'
+        )
+
+        stock_data = list(stock_queryset)
+        account_data = list(account_queryset)
+
+        # Merge account and stock data
+        final_data = []
+        for acc in account_data:
+            balance = next((item.get('balance') for item in stock_data if item['account__id'] == acc['id']), 0)
+            balance = balance if balance is not None else 0
+            drcr = 'CR' if balance < 0 else 'DR'
+            debit = max(balance, 0)
+            credit = abs(min(balance, 0))
+
+            final_data.append({
+                'accountname': acc['accountname'],
+                'debit': debit,
+                'credit': credit,
+                'accgst': acc['gstno'],
+                'accpan': acc['pan'],
+                'cityname': acc['city__cityname'],
+                'accountid': acc['id'],
+                'daccountheadname': acc['accounthead__name'],
+                'caccountheadname': acc['creditaccounthead__name'],
+                'accanbedeleted': acc['canbedeleted'],
+                'balance': balance,
+                'drcr': drcr
+            })
+
+        # Sorting
+        sort_field_map = {
+            'account': 'accountname',
+            'accounthead': 'daccountheadname'
+        }
+        sort_key = sort_field_map.get(sort_by, 'accountname')
+        reverse_sort = sort_order.lower() == 'desc'
+        final_data.sort(key=lambda x: x.get(sort_key, '').lower(), reverse=reverse_sort)
+
+        # Top N limit
+        if top_n:
+            try:
+                top_n = int(top_n)
+                final_data = final_data[:top_n]
+            except ValueError:
+                pass  # Ignore invalid top_n values
+
+        return Response(final_data)
+    
+
 
 class GetGstinDetails(ListAPIView):
     """
