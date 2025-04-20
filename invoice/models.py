@@ -19,6 +19,49 @@ from geography.models import Country,State,District,City
 # Create your models here.
 
 
+class DocumentNumberSettings(models.Model):
+    doctype = models.IntegerField(default=1)
+    prefix = models.CharField(max_length=20, default='DOC')
+    suffix = models.CharField(max_length=20, blank=True, null=True)
+    starting_number = models.IntegerField(default=1)
+    current_number = models.IntegerField(default=1)
+    number_padding = models.IntegerField(default=0)
+    include_year = models.BooleanField(default=False)
+    include_month = models.BooleanField(default=False)
+    separator = models.CharField(max_length=5, default='-')
+
+    RESET_CHOICES = [
+        ('none', 'Do not reset'),
+        ('monthly', 'Reset every month'),
+        ('yearly', 'Reset every year'),
+    ]
+    reset_frequency = models.CharField(max_length=10, choices=RESET_CHOICES, default='none')
+    last_reset_date = models.DateField(null=True, blank=True)
+
+    custom_format = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Use placeholders: {prefix}, {year}, {month}, {number}, {suffix}"
+    )
+
+    class Meta:
+        abstract = True  # base model, not a table
+
+
+class SalesInvoiceSettings(DocumentNumberSettings):
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+    entityfinid = models.OneToOneField(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
+
+class PurchaseSettings(DocumentNumberSettings):
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+    entityfinid = models.OneToOneField(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
+
+class ReceiptSettings(DocumentNumberSettings):
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+    entityfinid = models.OneToOneField(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
+    
+
+
 def validate_file_size(value):
     limit = 1000 * 1024  # 100 KB
     if value.size > limit:
@@ -43,6 +86,17 @@ class InvoiceType(TrackingModel):
 
     def __str__(self):
         return f'{self.invoicetype} '
+    
+
+class Paymentmodes(TrackingModel):
+    paymentmode = models.CharField(max_length=200, verbose_name='Payment Mode')
+    paymentmodecode = models.CharField(max_length=20, verbose_name='Payment Mode Code')
+    createdby = models.ForeignKey(to=User, on_delete=models.PROTECT)
+
+    def __str__(self):
+        return f'{self.paymentmode}'
+    
+
     
 
 
@@ -142,6 +196,7 @@ class SalesOderHeader(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
     sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)
     billno = models.IntegerField(verbose_name='Bill No')
+    invoicenumber = models.CharField(max_length=50, null=True,verbose_name='Invoice Number')
     accountid = models.ForeignKey(to = account, on_delete=models.PROTECT,blank=True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
     grno = models.CharField(max_length=50,verbose_name='GR No',null=True)
@@ -937,6 +992,44 @@ class journaldetails(TrackingModel):
     chqbank = models.CharField(max_length=500, null=True,verbose_name='Chq.no + Bank')
     entity = models.ForeignKey(Entity,on_delete=models.PROTECT,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete=models.PROTECT,null=True)
+
+
+
+class ReceiptVoucher(models.Model):
+    voucher_number = models.CharField(max_length=50, unique=True)
+    date =  models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    received_in = models.ForeignKey(account,on_delete=models.CASCADE)
+    received_from = models.ForeignKey(account, related_name='receipt_vouchers', on_delete=models.CASCADE)
+    payment_mode = models.ForeignKey(Paymentmodes, related_name='Payment_mode', on_delete=models.CASCADE)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    narration = models.TextField(blank=True, null=True)
+    reference_number = models.CharField(max_length=100, blank=True, null=True)
+    isledgerposting =   models.BooleanField(default=False)
+    receiverbankname = models.CharField(max_length=100, unique=True)
+    chqno = models.CharField(max_length=50, unique=True)
+    chqdate =  models.DateField(verbose_name='chq Date',auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_receipt_vouchers')
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_receipt_vouchers')
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Receipt Voucher #{self.voucher_number}"
+
+
+class ReceiptVoucherInvoiceAllocation(models.Model):
+    receipt_voucher = models.ForeignKey(ReceiptVoucher, related_name='invoice_allocations', on_delete=models.CASCADE)
+    invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE)
+    invoice_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    otheraccount = models.ForeignKey(account,on_delete=models.CASCADE)
+    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.receipt_voucher.voucher_number} - Invoice {self.invoice.invoice_number}"
+    
+
+
+
 
 
 

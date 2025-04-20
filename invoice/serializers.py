@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings
 from financial.models import account,accountHead,ShippingDetails
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -24,9 +24,16 @@ from django_pandas.io import read_frame
 import numpy as np
 import entity.views as entityview
 from django.db.models import Prefetch
+from django.utils import timezone
+from helpers.utils.document_number import reset_counter_if_needed, build_document_number
 #from entity.views import generateeinvoice
 #from entity.serializers import entityfinancialyearSerializer
 
+
+class PaymentmodesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Paymentmodes
+        fields = ['id', 'paymentmode', 'paymentmodecode', 'createdby']
 
 
 class InvoiceTypeSerializer(serializers.ModelSerializer):
@@ -2145,6 +2152,9 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','state','district','city','pincode', 'terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','stbefdiscount', 'subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
 
 
+
+
+
     
 
     def create(self, validated_data):
@@ -2156,8 +2166,15 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
             billno2 = last_order.billno + 1 if last_order else 1
 
+            settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id)
+            reset_counter_if_needed(settings)
+            number = build_document_number(settings)
+            # Check if invoice number already exists (for safety)
+            if SalesOderHeader.objects.filter(invoicenumber=number).exists():
+                raise Exception("Duplicate invoice number generated. Please try again.")
+
             # Create the sales order header
-            order = SalesOderHeader.objects.create(**validated_data, billno=billno2)
+            order = SalesOderHeader.objects.create(**validated_data, billno=billno2,invoicenumber=number)
 
             # Initialize stock transaction
             stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0, description='By Sale Bill No: ', entrytype='I')
@@ -2177,23 +2194,28 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                     sale_other_charge = saleothercharges.objects.create(salesorderdetail=detail, **other_charge_data)
                     stk.createothertransactiondetails(detail=sale_other_charge, stocktype='S')
 
+            
+            # Increment invoice number for next time
+            settings.current_number += 1
+            settings.save()
+
             # Finalize the stock transaction
             stk.createtransaction()
 
-            full_order_data = SalesOrderFullSerializer(order).data
+            # full_order_data = SalesOrderFullSerializer(order).data
 
-            sales_order_data = SalesOrdereinvoiceSerializer(order).data
+            # sales_order_data = SalesOrdereinvoiceSerializer(order).data
 
-            json_data = json.dumps(full_order_data, indent=4, default=str)
+            # json_data = json.dumps(full_order_data, indent=4, default=str)
 
 
-            print('---------------------------------------')
+            # print('---------------------------------------')
 
-            print(json_data)
+            # print(json_data)
 
-            # Create the e-invoice
-            einvoice = einvoicebody(order, invoicetype='INV')
-            einvoice.createeinvoce()
+            # # Create the e-invoice
+            # einvoice = einvoicebody(order, invoicetype='INV')
+            #einvoice.createeinvoce()
 
             return order
 
@@ -5620,6 +5642,22 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "IgstOnIntra": "Y" if obj.isigst else "N"
            
         }
+
+
+class SalesInvoiceSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesInvoiceSettings
+        fields = '__all__'
+
+class PurchaseSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseSettings
+        fields = '__all__'
+
+class ReceiptSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReceiptSettings
+        fields = '__all__'
 
 
 

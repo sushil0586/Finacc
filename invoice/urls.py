@@ -158,6 +158,15 @@ urlpatterns  = [
     path('default-values/<int:pk>/', views.DefaultValuesByEntityRetrieveUpdateDestroyAPIView.as_view(), name='default-values-detail'),
     path('billnos/', views.BillNoListView.as_view(), name='billno-list'),
     path('months/', views.MonthListAPIView.as_view(), name='month-list'),
+    path('paymentmodes/', views.PaymentmodesListAPIView.as_view(), name='paymentmodes-list'),
+    path('settings/', views.SalesInvoiceSettingsView.as_view()),
+    path('settings/<int:pk>/', views.SalesInvoiceSettingsView.as_view()),
+
+    # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
+    # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
+
+    # path('settings/receipt/', views.ReceiptSettingsView.as_view()),
+    # path('settings/receipt/<int:pk>/', views.ReceiptSettingsView.as_view()),
 
     
 
