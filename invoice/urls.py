@@ -161,6 +161,8 @@ urlpatterns  = [
     path('paymentmodes/', views.PaymentmodesListAPIView.as_view(), name='paymentmodes-list'),
     path('settings/', views.SalesInvoiceSettingsView.as_view()),
     path('settings/<int:pk>/', views.SalesInvoiceSettingsView.as_view()),
+    path('doctype/', views.DoctypeAPIView.as_view(), name='doctype-list'),       # GET list with optional ?entity=ID
+    path('doctype/<int:pk>/', views.DoctypeAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
 
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),

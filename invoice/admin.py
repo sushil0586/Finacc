@@ -6,7 +6,7 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype
 )
 from django.utils.translation import gettext_lazy as _
 from import_export.admin import ImportExportMixin
@@ -336,6 +336,9 @@ admin.site.register(PurchaseOrderAttachment)
 admin.site.register(defaultvaluesbyentity)
 admin.site.register(Paymentmodes)
 admin.site.register(SalesInvoiceSettings)
+admin.site.register(doctype)
+
+
 
 
 

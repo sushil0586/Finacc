@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype
 from financial.models import account,accountHead,ShippingDetails
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -5658,6 +5658,14 @@ class ReceiptSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReceiptSettings
         fields = '__all__'
+
+class DoctypeSerializer(serializers.ModelSerializer):
+    doctypeid = serializers.IntegerField(source='id')
+    doctypename = serializers.CharField(source='docname')
+
+    class Meta:
+        model = doctype
+        fields = ['doctypeid', 'doctypename']
 
 
 

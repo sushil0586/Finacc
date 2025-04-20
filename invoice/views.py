@@ -16,7 +16,7 @@ from invoice.models import (
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
     newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
-    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings
+    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype
 )
 
 from invoice.serializers import (
@@ -48,7 +48,7 @@ from invoice.serializers import (
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
     PurchaseSettingsSerializer,
-    ReceiptSettingsSerializer
+    ReceiptSettingsSerializer,DoctypeSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -5583,10 +5583,23 @@ class DocumentSettingsBaseView(APIView):
             instance = get_object_or_404(self.model, pk=pk)
             serializer = self.serializer_class(instance)
             return Response(serializer.data)
-        else:
-            queryset = self.model.objects.all()
-            serializer = self.serializer_class(queryset, many=True)
-            return Response(serializer.data)
+
+        # Filtering by query params
+        entity_id = request.query_params.get('entity')
+        entityfinid_id = request.query_params.get('entityfinid')
+        doctype_id = request.query_params.get('doctype')
+
+        queryset = self.model.objects.all()
+
+        if entity_id:
+            queryset = queryset.filter(entity_id=entity_id)
+        if entityfinid_id:
+            queryset = queryset.filter(entityfinid_id=entityfinid_id)
+        if doctype_id:
+            queryset = queryset.filter(doctype_id=doctype_id)
+
+        serializer = self.serializer_class(queryset, many=True)
+        return Response(serializer.data)
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
@@ -5620,6 +5633,20 @@ class PurchaseSettingsView(DocumentSettingsBaseView):
 class ReceiptSettingsView(DocumentSettingsBaseView):
     model = ReceiptSettings
     serializer_class = ReceiptSettingsSerializer
+
+class DoctypeAPIView(APIView):
+    def get(self, request, pk=None):
+        if pk:
+            instance = get_object_or_404(doctype, pk=pk)
+            serializer = DoctypeSerializer(instance)
+            return Response(serializer.data)
+        else:
+            entity_id = request.query_params.get('entity')
+            queryset = doctype.objects.all()
+            if entity_id:
+                queryset = queryset.filter(entity_id=entity_id)
+            serializer = DoctypeSerializer(queryset, many=True)
+            return Response(serializer.data)
 
 
 
