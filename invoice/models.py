@@ -19,8 +19,15 @@ from geography.models import Country,State,District,City
 # Create your models here.
 
 
+class doctype(TrackingModel):
+    docname = models.CharField(max_length= 255,verbose_name= 'Purchase tax type')
+    doccode = models.CharField(max_length= 255,verbose_name= 'Purchase tax Code')
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
+    createdby = models.ForeignKey(to= User, on_delete=models.PROTECT)
+
+
 class DocumentNumberSettings(models.Model):
-    doctype = models.IntegerField(default=1)
+    doctype = models.ForeignKey(doctype, on_delete=models.CASCADE)
     prefix = models.CharField(max_length=20, default='DOC')
     suffix = models.CharField(max_length=20, blank=True, null=True)
     starting_number = models.IntegerField(default=1)
