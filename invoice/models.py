@@ -27,7 +27,7 @@ class doctype(TrackingModel):
 
 
 class DocumentNumberSettings(models.Model):
-    doctype = models.IntegerField(default=1)
+    doctype = models.ForeignKey(doctype,null=True,on_delete=models.PROTECT)
     prefix = models.CharField(max_length=20, default='DOC')
     suffix = models.CharField(max_length=20, blank=True, null=True)
     starting_number = models.IntegerField(default=1)
