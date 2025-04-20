@@ -15,7 +15,8 @@ from invoice.models import (
     StockTransactions, journalmain, entry, stockdetails, stockmain, goodstransaction,
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
-    newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity
+    newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
+    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings
 )
 
 from invoice.serializers import (
@@ -44,7 +45,10 @@ from invoice.serializers import (
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
     SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
-    SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist
+    SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
+    SalesInvoiceSettingsSerializer,
+    PurchaseSettingsSerializer,
+    ReceiptSettingsSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -83,6 +87,13 @@ from geopy.distance import geodesic
 from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
 
 import tempfile
+
+
+
+class PaymentmodesListAPIView(ListAPIView):
+    queryset = Paymentmodes.objects.all()
+    serializer_class = PaymentmodesSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
 
 # ✅ Get all records and Create a new one
@@ -5560,6 +5571,55 @@ class MonthListAPIView(APIView):
             for i in range(1, 13)
         ]
         return Response(months)
+
+
+# Reusable Base Class
+class DocumentSettingsBaseView(APIView):
+    model = None
+    serializer_class = None
+
+    def get(self, request, pk=None):
+        if pk:
+            instance = get_object_or_404(self.model, pk=pk)
+            serializer = self.serializer_class(instance)
+            return Response(serializer.data)
+        else:
+            queryset = self.model.objects.all()
+            serializer = self.serializer_class(queryset, many=True)
+            return Response(serializer.data)
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk):
+        instance = get_object_or_404(self.model, pk=pk)
+        serializer = self.serializer_class(instance, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        instance = get_object_or_404(self.model, pk=pk)
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+class SalesInvoiceSettingsView(DocumentSettingsBaseView):
+    model = SalesInvoiceSettings
+    serializer_class = SalesInvoiceSettingsSerializer
+
+class PurchaseSettingsView(DocumentSettingsBaseView):
+    model = PurchaseSettings
+    serializer_class = PurchaseSettingsSerializer
+
+class ReceiptSettingsView(DocumentSettingsBaseView):
+    model = ReceiptSettings
+    serializer_class = ReceiptSettingsSerializer
 
 
 
