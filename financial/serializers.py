@@ -260,16 +260,15 @@ class accountservicesSerializeraccounts(serializers.ModelSerializer):
 # Serializer for the account model
 class AccountListtopSerializer(serializers.ModelSerializer):
    
-    state = serializers.PrimaryKeyRelatedField(read_only=True)
-    district = serializers.PrimaryKeyRelatedField(read_only=True)
-    city = serializers.PrimaryKeyRelatedField(read_only=True)
+    
     balance = serializers.SerializerMethodField()
+
+    accountid = serializers.CharField(source= 'id', read_only=True)
     
     class Meta:
         model = account
         fields = [
-            'id', 'accountname', 'accountcode', 'state', 'district', 
-            'city', 'pincode', 'gstno', 'pan', 'saccode', 'balance'
+            'accountid', 'accountname', 'balance'
         ]
     
     def get_balance(self, obj):
@@ -378,9 +377,10 @@ class accountHeadSerializer2(serializers.ModelSerializer):
         
 class accounttypeserializer(serializers.ModelSerializer):
     #id = serializers.IntegerField()
+    accounttypeid = serializers.CharField(source= 'id', read_only=True)
     class Meta:
         model = accounttype
-        fields = ('id','accounttypename','accounttypecode',)
+        fields = ('accounttypeid','accounttypename',)
            
 
 

@@ -5670,7 +5670,7 @@ class GetReceiptNumberAPIView(APIView):
         )
 
         return Response(
-            {"rvouchetno": sales_invoice_settings.current_number},
+            {"rvoucherno": sales_invoice_settings.current_number},
             status=status.HTTP_200_OK
         )
     
