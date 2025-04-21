@@ -31,9 +31,14 @@ from helpers.utils.document_number import reset_counter_if_needed, build_documen
 
 
 class PaymentmodesSerializer(serializers.ModelSerializer):
+
+    paymentmodeid = serializers.CharField(source= 'id', read_only=True)
+    paymentmodename = serializers.CharField(source= 'paymentmode', read_only=True)
+
+
     class Meta:
         model = Paymentmodes
-        fields = ['id', 'paymentmode', 'paymentmodecode', 'createdby']
+        fields = ['paymentmodeid', 'paymentmodename']
 
 
 class InvoiceTypeSerializer(serializers.ModelSerializer):
@@ -1747,12 +1752,13 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     bankname = serializers.CharField(source= 'entity.bank.bankname', read_only=True)
     bankacno = serializers.CharField(source= 'entity.bankacno', read_only=True)
     ifsccode = serializers.CharField(source= 'entity.ifsccode', read_only=True)
+    billno = serializers.CharField(source= 'invoicenumber', read_only=True)
     gst_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOderHeader
         fields = (
-            'id', 'sorderdate', 'billno', 'accountid', 'billtoname', 'billtoaddress1',
+            'id', 'sorderdate', 'billno','accountid', 'billtoname', 'billtoaddress1',
              'billtoaddress2','billtocity','billtostate','billtogst','billtopan','billtopin',
             'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
             'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst','shiptopin',
@@ -2166,7 +2172,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
             billno2 = last_order.billno + 1 if last_order else 1
 
-            settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id)
+            settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id )
             reset_counter_if_needed(settings)
             number = build_document_number(settings)
             # Check if invoice number already exists (for safety)

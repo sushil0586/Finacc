@@ -57,15 +57,15 @@ class DocumentNumberSettings(models.Model):
 
 class SalesInvoiceSettings(DocumentNumberSettings):
     entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
-    entityfinid = models.OneToOneField(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
+    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
 
 class PurchaseSettings(DocumentNumberSettings):
     entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
-    entityfinid = models.OneToOneField(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
+    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
 
 class ReceiptSettings(DocumentNumberSettings):
     entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
-    entityfinid = models.OneToOneField(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
+    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
     
 
 
@@ -1029,6 +1029,7 @@ class ReceiptVoucherInvoiceAllocation(models.Model):
     invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE)
     invoice_amount = models.DecimalField(max_digits=12, decimal_places=2)
     otheraccount = models.ForeignKey(account,on_delete=models.CASCADE)
+    other_amount = models.DecimalField(max_digits=12, decimal_places=2,default =0)
     allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
 
     def __str__(self):
