@@ -164,6 +164,12 @@ urlpatterns  = [
     path('doctype/', views.DoctypeAPIView.as_view(), name='doctype-list'),       # GET list with optional ?entity=ID
     path('doctype/<int:pk>/', views.DoctypeAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
 
+    path('getlatestreceiptvno/', views.GetReceiptNumberAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
+    path('create-receipt-voucher/', views.CreateReceiptVoucherAPIView.as_view(), name='create-receipt-voucher'),
+
+
+    
+
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
 

@@ -16,7 +16,7 @@ from invoice.models import (
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
     newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
-    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype
+    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation
 )
 
 from invoice.serializers import (
@@ -5647,6 +5647,72 @@ class DoctypeAPIView(APIView):
                 queryset = queryset.filter(entity_id=entity_id)
             serializer = DoctypeSerializer(queryset, many=True)
             return Response(serializer.data)
+
+
+class GetReceiptNumberAPIView(APIView):
+    def get(self, request):
+        entity_id = request.query_params.get('entity_id')
+        entityfinid_id = request.query_params.get('entityfinid_id')
+
+        if not entity_id or not entityfinid_id:
+            return Response(
+                {"error": "Both 'entity_id' and 'entityfinid_id' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        doc_type = get_object_or_404(doctype, doccode='1002', entity_id=entity_id)
+
+        sales_invoice_settings = get_object_or_404(
+            SalesInvoiceSettings,
+            doctype=doc_type,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id
+        )
+
+        return Response(
+            {"rvouchetno": sales_invoice_settings.current_number},
+            status=status.HTTP_200_OK
+        )
+    
+
+
+class CreateReceiptVoucherAPIView(APIView):
+    def post(self, request):
+        data = request.data
+
+        try:
+            with transaction.atomic():
+                # Create ReceiptVoucher
+                receipt_voucher = ReceiptVoucher.objects.create(
+                    voucher_number=data['voucher_number'],
+                    received_in_id=data['received_in'],
+                    received_from_id=data['received_from'],
+                    payment_mode_id=data['payment_mode'],
+                    total_amount=data['total_amount'],
+                    narration=data.get('narration', ''),
+                    reference_number=data.get('reference_number', ''),
+                    receiverbankname=data['receiverbankname'],
+                    chqno=data['chqno'],
+                    created_by_id=data['created_by'],
+                    chqdate=date.today(),  # override if passed explicitly
+                )
+
+                # Create related invoice allocations
+                invoice_allocations = data.get('invoice_allocations', [])
+                for allocation in invoice_allocations:
+                    ReceiptVoucherInvoiceAllocation.objects.create(
+                        receipt_voucher=receipt_voucher,
+                        invoice_id=allocation['invoice'],
+                        invoice_amount=allocation['invoice_amount'],
+                        otheraccount_id=allocation['otheraccount'],
+                        other_amount=allocation['other_amount'],
+                        allocated_amount=allocation['allocated_amount']
+                    )
+
+            return Response({"message": "Receipt Voucher created successfully."}, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 

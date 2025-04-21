@@ -259,7 +259,7 @@ class accountservicesSerializeraccounts(serializers.ModelSerializer):
 
 # Serializer for the account model
 class AccountListtopSerializer(serializers.ModelSerializer):
-    accounthead = serializers.PrimaryKeyRelatedField(queryset=accountHead.objects.all())
+   
     state = serializers.PrimaryKeyRelatedField(read_only=True)
     district = serializers.PrimaryKeyRelatedField(read_only=True)
     city = serializers.PrimaryKeyRelatedField(read_only=True)
@@ -268,7 +268,7 @@ class AccountListtopSerializer(serializers.ModelSerializer):
     class Meta:
         model = account
         fields = [
-            'id', 'accounthead', 'accountname', 'accountcode', 'state', 'district', 
+            'id', 'accountname', 'accountcode', 'state', 'district', 
             'city', 'pincode', 'gstno', 'pan', 'saccode', 'balance'
         ]
     
