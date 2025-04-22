@@ -1020,6 +1020,8 @@ class ReceiptVoucher(models.Model):
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_receipt_vouchers')
     created_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+    entity = models.ForeignKey(Entity,on_delete=models.PROTECT,null=True, verbose_name= 'entity')
+    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.PROTECT,verbose_name= 'entity Financial year',null= True)
 
     def __str__(self):
         return f"Receipt Voucher #{self.voucher_number}"
