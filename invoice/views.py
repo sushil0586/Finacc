@@ -48,7 +48,7 @@ from invoice.serializers import (
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
     PurchaseSettingsSerializer,
-    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer
+    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -5718,9 +5718,9 @@ class CreateReceiptVoucherAPIView(APIView):
 class SalesOrderHeaderListView(APIView):
 
     def get(self, request, *args, **kwargs):
-        accountid = request.query_params.get('accountid')
-        entity = request.query_params.get('entity')
-        entityfinid = request.query_params.get('entityfinid')
+        accountid = request.query_params.get('account_id')
+        entity = request.query_params.get('entity_id')
+        entityfinid = request.query_params.get('entityfin_id')
 
         if not all([accountid, entity, entityfinid]):
             return Response({"detail": "accountid, entity and entityfinid are required parameters."}, status=status.HTTP_400_BAD_REQUEST)
@@ -5733,6 +5733,35 @@ class SalesOrderHeaderListView(APIView):
 
         serializer = SalesOrderHeadeListSerializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+
+class ReceiptVoucherListCreateAPIView(APIView):
+    def get(self, request):
+        vouchers = ReceiptVoucher.objects.all()
+        serializer = ReceiptVoucherSerializer(vouchers, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = ReceiptVoucherSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class ReceiptVoucherDetailAPIView(APIView):
+    def get(self, request, pk):
+        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
+        serializer = ReceiptVoucherSerializer(voucher)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
+        serializer = ReceiptVoucherSerializer(voucher, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 

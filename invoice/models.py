@@ -4,7 +4,7 @@ from django.db import models
 from django.forms import DateField
 from helpers.models import TrackingModel
 from Authentication.models import User
-from financial.models import account,accountHead,ShippingDetails
+from financial.models import account,accountHead,ShippingDetails,accounttype
 from inventory.models import Product
 from entity.models import Entity,entityfinancialyear,subentity
 from inventory.models import Product
@@ -1004,9 +1004,10 @@ class journaldetails(TrackingModel):
 
 class ReceiptVoucher(models.Model):
     voucher_number = models.CharField(max_length=50, unique=True)
-    date =  models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
+    voucherdate = models.DateField(verbose_name='Vocucher Date',null=True, blank=True)
     received_in = models.ForeignKey(account,on_delete=models.CASCADE)
     received_from = models.ForeignKey(account, related_name='receipt_vouchers', on_delete=models.CASCADE)
+    account_type = models.ForeignKey(accounttype, related_name='account_type',null=True, blank=True, on_delete=models.CASCADE)
     payment_mode = models.ForeignKey(Paymentmodes, related_name='Payment_mode', on_delete=models.CASCADE)
     total_amount = models.DecimalField(max_digits=12, decimal_places=2)
     narration = models.TextField(blank=True, null=True)
@@ -1014,7 +1015,7 @@ class ReceiptVoucher(models.Model):
     isledgerposting =   models.BooleanField(default=False)
     receiverbankname = models.CharField(max_length=100, unique=True)
     chqno = models.CharField(max_length=50, unique=True)
-    chqdate =  models.DateField(verbose_name='chq Date',auto_now_add=True)
+    chqdate =  models.DateField(verbose_name='chq Date',null=True, blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_receipt_vouchers')
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_receipt_vouchers')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1027,7 +1028,6 @@ class ReceiptVoucher(models.Model):
 class ReceiptVoucherInvoiceAllocation(models.Model):
     receipt_voucher = models.ForeignKey(ReceiptVoucher, related_name='invoice_allocations', on_delete=models.CASCADE)
     invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE)
-    invoice_amount = models.DecimalField(max_digits=12, decimal_places=2)
     otheraccount = models.ForeignKey(account,on_delete=models.CASCADE)
     other_amount = models.DecimalField(max_digits=12, decimal_places=2,default =0)
     allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
