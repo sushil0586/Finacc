@@ -48,7 +48,7 @@ from invoice.serializers import (
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
     PurchaseSettingsSerializer,
-    ReceiptSettingsSerializer,DoctypeSerializer
+    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -5713,6 +5713,26 @@ class CreateReceiptVoucherAPIView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+class SalesOrderHeaderListView(APIView):
+
+    def get(self, request, *args, **kwargs):
+        accountid = request.query_params.get('accountid')
+        entity = request.query_params.get('entity')
+        entityfinid = request.query_params.get('entityfinid')
+
+        if not all([accountid, entity, entityfinid]):
+            return Response({"detail": "accountid, entity and entityfinid are required parameters."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = SalesOderHeader.objects.filter(
+            accountid=accountid,
+            entity=entity,
+            entityfinid=entityfinid
+        )
+
+        serializer = SalesOrderHeadeListSerializer(queryset, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 
