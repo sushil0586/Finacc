@@ -1035,7 +1035,7 @@ class ReceiptVoucherInvoiceAllocation(models.Model):
     allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
 
     def __str__(self):
-        return f"{self.receipt_voucher.voucher_number} - Invoice {self.invoice.invoice_number}"
+        return f"{self.receipt_voucher.voucher_number} - Invoice {self.invoice.invoicenumber}"
     
 
 
