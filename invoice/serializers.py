@@ -5701,15 +5701,24 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
             'id', 'voucher_number', 'voucherdate', 'received_in', 'received_from', 'account_type',
             'payment_mode', 'total_amount', 'narration', 'reference_number', 'isledgerposting',
             'receiverbankname', 'chqno', 'chqdate', 'created_by', 'approved_by',
-            'created_at', 'approved_at', 'invoice_allocations'
+            'created_at', 'approved_at','entity','entityfinid','invoice_allocations'
         ]
         read_only_fields = ['created_at', 'approved_at']
 
     def create(self, validated_data):
         invoice_data = validated_data.pop('invoice_allocations', [])
-        receipt = ReceiptVoucher.objects.create(**validated_data)
+        validated_data.pop('voucher_number')
+        settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id,entityfinid=validated_data['entityfinid'].id,doctype=2)
+        reset_counter_if_needed(settings)
+        number = build_document_number(settings)
+        # Check if invoice number already exists (for safety)
+        if ReceiptVoucher.objects.filter(voucher_number=number).exists():
+            raise Exception("Duplicate invoice number generated. Please try again.")
+        receipt = ReceiptVoucher.objects.create(**validated_data,voucher_number=number)
         for inv in invoice_data:
             ReceiptVoucherInvoiceAllocation.objects.create(receipt_voucher=receipt, **inv)
+        settings.current_number += 1
+        settings.save()
         return receipt
 
     def update(self, instance, validated_data):
