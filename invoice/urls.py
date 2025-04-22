@@ -167,7 +167,8 @@ urlpatterns  = [
     path('getlatestreceiptvno/', views.GetReceiptNumberAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
     path('create-receipt-voucher/', views.CreateReceiptVoucherAPIView.as_view(), name='create-receipt-voucher'),
     path('salesorderslistbyaccountid/', views.SalesOrderHeaderListView.as_view(), name='sales-order-list'),
-
+    path('receipt-vouchers/', views.ReceiptVoucherListCreateAPIView.as_view(), name='receipt-voucher-list-create'),
+    path('receipt-vouchers/<int:pk>/', views.ReceiptVoucherDetailAPIView.as_view(), name='receipt-voucher-detail'),
     
 
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),

@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation
 from financial.models import account,accountHead,ShippingDetails
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -5685,6 +5685,44 @@ class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
 
     def get_invoiceno(self, obj):
         return obj.invoicenumber if obj.invoicenumber else str(obj.billno)
+
+
+class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReceiptVoucherInvoiceAllocation
+        fields = ['id', 'invoice', 'otheraccount', 'other_amount', 'allocated_amount']
+
+class ReceiptVoucherSerializer(serializers.ModelSerializer):
+    invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
+
+    class Meta:
+        model = ReceiptVoucher
+        fields = [
+            'id', 'voucher_number', 'voucherdate', 'received_in', 'received_from', 'account_type',
+            'payment_mode', 'total_amount', 'narration', 'reference_number', 'isledgerposting',
+            'receiverbankname', 'chqno', 'chqdate', 'created_by', 'approved_by',
+            'created_at', 'approved_at', 'invoice_allocations'
+        ]
+        read_only_fields = ['created_at', 'approved_at']
+
+    def create(self, validated_data):
+        invoice_data = validated_data.pop('invoice_allocations', [])
+        receipt = ReceiptVoucher.objects.create(**validated_data)
+        for inv in invoice_data:
+            ReceiptVoucherInvoiceAllocation.objects.create(receipt_voucher=receipt, **inv)
+        return receipt
+
+    def update(self, instance, validated_data):
+        invoice_data = validated_data.pop('invoice_allocations', [])
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Clear old allocations
+        instance.invoice_allocations.all().delete()
+        for inv in invoice_data:
+            ReceiptVoucherInvoiceAllocation.objects.create(receipt_voucher=instance, **inv)
+        return instance
 
 
 
