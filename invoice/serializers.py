@@ -5674,6 +5674,17 @@ class DoctypeSerializer(serializers.ModelSerializer):
         fields = ['doctypeid', 'doctypename']
 
 
+class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
+    invoiceno = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesOderHeader
+        fields = ['id', 'invoiceno', 'gtotal', 'sorderdate']
+
+    def get_invoiceno(self, obj):
+        return obj.invoicenumber if obj.invoicenumber else str(obj.billno)
+
+
 
 
 
