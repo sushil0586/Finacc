@@ -5698,7 +5698,7 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReceiptVoucher
         fields = [
-            'id', 'voucher_number', 'voucherdate', 'received_in', 'received_from', 'account_type',
+            'id', 'voucher_number','vouchernumber', 'voucherdate', 'received_in', 'received_from', 'account_type',
             'payment_mode', 'total_amount', 'narration', 'reference_number', 'isledgerposting',
             'receiverbankname', 'chqno', 'chqdate', 'created_by', 'approved_by',
             'created_at', 'approved_at','entity','entityfinid','invoice_allocations'
@@ -5708,7 +5708,7 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         invoice_data = validated_data.pop('invoice_allocations', [])
-        validated_data.pop('voucher_number')
+      #  validated_data.pop('voucher_number')
 
         settings = SalesInvoiceSettings.objects.select_for_update().get(
             entity=validated_data['entity'].id,
@@ -5720,10 +5720,10 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
         number = build_document_number(settings)
 
         # Check if invoice number already exists (for safety)
-        if ReceiptVoucher.objects.filter(voucher_number=number).exists():
+        if ReceiptVoucher.objects.filter(vouchernumber=number).exists():
             raise Exception("Duplicate invoice number generated. Please try again.")
 
-        receipt = ReceiptVoucher.objects.create(**validated_data, voucher_number=number)
+        receipt = ReceiptVoucher.objects.create(**validated_data, vouchernumber=number)
 
         for inv in invoice_data:
             ReceiptVoucherInvoiceAllocation.objects.create(receipt_voucher=receipt, **inv)

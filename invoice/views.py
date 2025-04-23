@@ -5764,6 +5764,42 @@ class ReceiptVoucherDetailAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class ReceiptVoucherLookupAPIView(APIView):
+    def get(self, request):
+        vouchernumber = request.query_params.get('vouchernumber')
+        entity = request.query_params.get('entity')
+        entityfinid = request.query_params.get('entityfinid')
+
+        if not all([vouchernumber, entity, entityfinid]):
+            return Response({"detail": "Missing query parameters: vouchernumber, entity, entityfinid required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        voucher = get_object_or_404(
+            ReceiptVoucher,
+            voucher_number=vouchernumber,
+            entity=entity,
+            entityfinid=entityfinid
+        )
+
+        # Get corresponding settings
+        settings = get_object_or_404(
+            SalesInvoiceSettings,
+            entity=entity,
+            entityfinid=entityfinid,
+            doctype=2
+        )
+
+        # Convert current and starting number to voucher format (if needed), or compare directly
+        firstnumber = 1 if str(vouchernumber) == str(settings.starting_number) else 0
+        lastnumber = 1 if str(vouchernumber) == str(settings.current_number - 1) else 0
+
+        serializer = ReceiptVoucherSerializer(voucher)
+        data = serializer.data
+        data["firstnumber"] = firstnumber
+        data["lastnumber"] = lastnumber
+
+        return Response(data)
+
 
 
        
