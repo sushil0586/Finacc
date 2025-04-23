@@ -169,6 +169,7 @@ urlpatterns  = [
     path('salesorderslistbyaccountid/', views.SalesOrderHeaderListView.as_view(), name='sales-order-list'),
     path('receipt-vouchers/', views.ReceiptVoucherListCreateAPIView.as_view(), name='receipt-voucher-list-create'),
     path('receipt-vouchers/<int:pk>/', views.ReceiptVoucherDetailAPIView.as_view(), name='receipt-voucher-detail'),
+    path('receiptvoucherbyvoucherid/', views.ReceiptVoucherLookupAPIView.as_view(), name='receipt-voucher-detail'),
     
 
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),

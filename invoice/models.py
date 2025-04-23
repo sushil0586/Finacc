@@ -1003,7 +1003,8 @@ class journaldetails(TrackingModel):
 
 
 class ReceiptVoucher(models.Model):
-    voucher_number = models.CharField(max_length=50, unique=True)
+    voucher_number = models.IntegerField(max_length=50,)
+    vouchernumber = models.CharField(max_length=50,null= True)
     voucherdate = models.DateField(verbose_name='Vocucher Date',null=True, blank=True)
     received_in = models.ForeignKey(account,on_delete=models.CASCADE)
     received_from = models.ForeignKey(account, related_name='receipt_vouchers', on_delete=models.CASCADE)
