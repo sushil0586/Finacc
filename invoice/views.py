@@ -4,6 +4,7 @@ from django.shortcuts import render
 from collections import defaultdict
 from django.utils.encoding import smart_str
 from math import radians, sin, cos, sqrt, atan2
+import io
 import calendar
 
 import json
@@ -5736,9 +5737,32 @@ class SalesOrderHeaderListView(APIView):
 
 
 
-class ReceiptVoucherListCreateAPIView(APIView):
+class   ReceiptVoucherListCreateAPIView(APIView):
     def get(self, request):
         vouchers = ReceiptVoucher.objects.all()
+
+        # Export to Excel if requested
+        if request.query_params.get('export') == 'excel':
+            serializer = ReceiptVoucherSerializer(vouchers, many=True)
+            df = pd.DataFrame(serializer.data)
+
+            # Ensure all data is string to preserve special characters
+            df = df.astype(str)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df.to_excel(writer, index=False, sheet_name='Vouchers')
+                writer.close()
+            output.seek(0)
+
+            response = HttpResponse(
+                output,
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = 'attachment; filename="receipt_vouchers.xlsx"'
+            return response
+
+        # Default JSON response
         serializer = ReceiptVoucherSerializer(vouchers, many=True)
         return Response(serializer.data)
 
@@ -5767,8 +5791,8 @@ class ReceiptVoucherDetailAPIView(APIView):
 class ReceiptVoucherLookupAPIView(APIView):
     def get(self, request):
         vouchernumber = request.query_params.get('vouchernumber')
-        entity = request.query_params.get('entity')
-        entityfinid = request.query_params.get('entityfinid')
+        entity = request.query_params.get('entity_id')
+        entityfinid = request.query_params.get('entityfin_id')
 
         if not all([vouchernumber, entity, entityfinid]):
             return Response({"detail": "Missing query parameters: vouchernumber, entity, entityfinid required."},
