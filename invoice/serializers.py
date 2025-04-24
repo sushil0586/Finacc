@@ -5681,19 +5681,25 @@ class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
-        fields = ['id', 'invoiceno', 'invoiceamount', 'invoicedate']
+        fields = ['id', 'invoiceno','invoiceamount','invoiceamount', 'invoicedate']
 
     def get_invoiceno(self, obj):
         return obj.invoicenumber if obj.invoicenumber else str(obj.billno)
 
 
 class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
+    invoiceno = serializers.SerializerMethodField(read_only=True)
+    invoiceamount = serializers.DecimalField(source= 'invoice.gtotal',max_digits=14, decimal_places=4, read_only=True)
+    invoicedate = serializers.DateTimeField(source= 'invoice.sorderdate', read_only=True)
     class Meta:
         model = ReceiptVoucherInvoiceAllocation
-        fields = ['id', 'invoice', 'otheraccount', 'other_amount', 'allocated_amount']
+        fields = ['id', 'invoice','invoiceno','invoiceamount','invoicedate','otheraccount', 'other_amount', 'allocated_amount']
 
+    def get_invoiceno(self, obj):
+        return obj.invoice.invoicenumber if obj.invoice.invoicenumber else str(obj.invoice.billno)
 class ReceiptVoucherSerializer(serializers.ModelSerializer):
     invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
+    
 
     class Meta:
         model = ReceiptVoucher
