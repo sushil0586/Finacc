@@ -5795,8 +5795,10 @@ class ReceiptVoucherLookupAPIView(APIView):
         entityfinid = request.query_params.get('entityfin_id')
 
         if not all([vouchernumber, entity, entityfinid]):
-            return Response({"detail": "Missing query parameters: vouchernumber, entity, entityfinid required."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Missing query parameters: vouchernumber, entity, entityfinid required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         voucher = get_object_or_404(
             ReceiptVoucher,
@@ -5805,7 +5807,6 @@ class ReceiptVoucherLookupAPIView(APIView):
             entityfinid=entityfinid
         )
 
-        # Get corresponding settings
         settings = get_object_or_404(
             SalesInvoiceSettings,
             entity=entity,
@@ -5813,9 +5814,9 @@ class ReceiptVoucherLookupAPIView(APIView):
             doctype=2
         )
 
-        # Convert current and starting number to voucher format (if needed), or compare directly
-        firstnumber = 1 if str(vouchernumber) == str(settings.starting_number) else 0
-        lastnumber = 1 if str(vouchernumber) == str(settings.current_number - 1) else 0
+        # Use boolean comparison directly
+        firstnumber = str(vouchernumber) == str(settings.starting_number)
+        lastnumber = str(vouchernumber) == str(settings.current_number)
 
         serializer = ReceiptVoucherSerializer(voucher)
         data = serializer.data
