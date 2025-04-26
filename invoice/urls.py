@@ -100,6 +100,7 @@ urlpatterns  = [
     path('tdsvoucherno',views.tdsordelatestview.as_view(), name = 'purchaseorder'),
     path('tdstype',views.tdstypeApiView.as_view(), name = 'purchaseorder'),
     path('tdscancel/<int:id>',views.tdsmaincancel.as_view(), name = 'tdsmain'),
+    path('receiptvouchercancel/<int:id>',views.ReceiptVouchercancel.as_view(), name = 'tdsmain'),
     path('saleinvoicecancel/<int:id>',views.salesordercancel.as_view(), name = 'tdsmain'),
     path('saleordercancel/<int:id>',views.saleordercancel.as_view(), name = 'tdsmain'),
     path('jobworkcancel/<int:id>',views.jobworkchalancancel.as_view(), name = 'tdsmain'),

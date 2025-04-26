@@ -118,6 +118,25 @@ class SaleinvoicecancelSerializer(BaseCancelSerializer):
         ).update(isactive=instance.isactive)
 
         return instance
+    
+class ReceiptVouchercancelSerializer(BaseCancelSerializer):
+    class Meta:
+        model = ReceiptVoucher
+        fields = ('isactive',)
+
+    def update(self, instance, validated_data):
+        super().update(instance, validated_data)
+
+        # Update stock transactions
+        StockTransactions.objects.filter(
+            entity=instance.entity,
+            transactionid=instance.id,
+            transactiontype='S'
+        ).update(isactive=instance.isactive)
+
+        return instance
+    
+
 
 class SalesordercancelSerializer(BaseCancelSerializer):
     class Meta:
@@ -2172,7 +2191,9 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
             billno2 = last_order.billno + 1 if last_order else 1
 
-            settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id )
+            settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id,
+            entityfinid=validated_data['entityfinid'].id,
+            doctype=1 )
             reset_counter_if_needed(settings)
             number = build_document_number(settings)
             # Check if invoice number already exists (for safety)
@@ -5767,6 +5788,9 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
             entity=receipt.entity
         )
 
+        iscashtransaction = receipt.payment_mode.iscash if receipt.payment_mode else False
+        accounttpe = 'CIH' if iscashtransaction else 'M'
+
         # Cash/Bank received
         self.create_stock_transaction(
             accounthead=receipt.received_in.accounthead,
@@ -5780,8 +5804,8 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
             createdby=receipt.created_by,
             entry=entryid,
             entrydatetime=receipt.voucherdate,
-            accounttype='M',
-            iscashtransaction=receipt.payment_mode.iscash,
+            accounttype=accounttpe,
+            iscashtransaction=iscashtransaction,
             voucherno=receipt.voucher_number
         )
 
@@ -5794,12 +5818,12 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
             desc=f'By Voucherno : {receipt.vouchernumber}',
             drcr=0,
             amount=receipt.total_amount,
-            entity=receipt.entity,
+            entity=receipt.entity,  
             createdby=receipt.created_by,
             entry=entryid,
             entrydatetime=receipt.voucherdate,
             accounttype='M',
-            iscashtransaction=receipt.payment_mode.iscash,
+            iscashtransaction=iscashtransaction,
             voucherno=receipt.voucher_number
         )
 

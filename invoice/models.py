@@ -1003,7 +1003,7 @@ class journaldetails(TrackingModel):
 
 
 
-class ReceiptVoucher(models.Model):
+class ReceiptVoucher(TrackingModel):
     voucher_number = models.IntegerField(max_length=50,)
     vouchernumber = models.CharField(max_length=50,null= True)
     voucherdate = models.DateTimeField(verbose_name='Vocucher Date',null=True, blank=True)

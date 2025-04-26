@@ -49,7 +49,7 @@ from invoice.serializers import (
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
     PurchaseSettingsSerializer,
-    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer
+    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -457,6 +457,17 @@ class salesordercancel(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return SalesOderHeader.objects.filter(entity = entity)
+    
+
+class ReceiptVouchercancel(RetrieveUpdateDestroyAPIView):
+
+    serializer_class = ReceiptVouchercancelSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return ReceiptVoucher.objects.filter(entity = entity)
     
 class saleordercancel(RetrieveUpdateDestroyAPIView):
 
