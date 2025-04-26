@@ -5711,29 +5711,146 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_at', 'approved_at']
 
+    @staticmethod
+    def create_stock_transaction(accounthead, account, transactiontype, transactionid, desc, drcr, amount, entity, createdby, entry, entrydatetime, accounttype, iscashtransaction, voucherno):
+        data = {
+            'accounthead': accounthead,
+            'account': account,
+            'transactiontype': transactiontype,
+            'transactionid': transactionid,
+            'desc': desc,
+            'drcr': drcr,
+            'entity': entity,
+            'createdby': createdby,
+            'entry': entry,
+            'entrydatetime': entrydatetime,
+            'accounttype': accounttype,
+            'iscashtransaction': iscashtransaction,
+            'voucherno': voucherno
+        }
+        if drcr == 1:
+            data['debitamount'] = amount
+        else:
+            data['creditamount'] = amount
+
+        StockTransactions.objects.create(**data)
+
+    staticmethod
+    def get_contra_account(account_id, entity_id):
+        try:
+            acc = account.objects.get(id=account_id, entity_id=entity_id)
+            return acc.contraaccount
+        except account.DoesNotExist:
+            return None
+
+
     @transaction.atomic
     def create(self, validated_data):
         invoice_data = validated_data.pop('invoice_allocations', [])
-      #  validated_data.pop('voucher_number')
 
         settings = SalesInvoiceSettings.objects.select_for_update().get(
             entity=validated_data['entity'].id,
             entityfinid=validated_data['entityfinid'].id,
             doctype=2
         )
-        
+
         reset_counter_if_needed(settings)
         number = build_document_number(settings)
 
-        # Check if invoice number already exists (for safety)
         if ReceiptVoucher.objects.filter(vouchernumber=number).exists():
-            raise Exception("Duplicate invoice number generated. Please try again.")
+            raise Exception("Duplicate voucher number generated. Please try again.")
 
         receipt = ReceiptVoucher.objects.create(**validated_data, vouchernumber=number)
 
-        for inv in invoice_data:
-            ReceiptVoucherInvoiceAllocation.objects.create(receipt_voucher=receipt, **inv)
+        entryid, _ = entry.objects.get_or_create(
+            entrydate1=receipt.voucherdate,
+            entity=receipt.entity
+        )
 
+        # Cash/Bank received
+        self.create_stock_transaction(
+            accounthead=receipt.received_in.accounthead,
+            account=receipt.received_in,
+            transactiontype='RV',
+            transactionid=receipt.id,
+            desc=f'By Voucherno : {receipt.vouchernumber}',
+            drcr=1,
+            amount=receipt.total_amount,
+            entity=receipt.entity,
+            createdby=receipt.created_by,
+            entry=entryid,
+            entrydatetime=receipt.voucherdate,
+            accounttype='M',
+            iscashtransaction=receipt.payment_mode.iscash,
+            voucherno=receipt.voucher_number
+        )
+
+        # Received from
+        self.create_stock_transaction(
+            accounthead=receipt.received_from.accounthead,
+            account=receipt.received_from,
+            transactiontype='RV',
+            transactionid=receipt.id,
+            desc=f'By Voucherno : {receipt.vouchernumber}',
+            drcr=0,
+            amount=receipt.total_amount,
+            entity=receipt.entity,
+            createdby=receipt.created_by,
+            entry=entryid,
+            entrydatetime=receipt.voucherdate,
+            accounttype='M',
+            iscashtransaction=receipt.payment_mode.iscash,
+            voucherno=receipt.voucher_number
+        )
+
+        # Invoice allocations
+        for inv in invoice_data:
+            details = ReceiptVoucherInvoiceAllocation.objects.create(
+                receipt_voucher=receipt,
+                **inv
+            )
+
+            contracc = ReceiptVoucherSerializer.get_contra_account(details.otheraccount.id, receipt.entity.id)
+            drcr_value = 1 if details.other_amount > 0 else 0
+
+            # Main transaction
+            self.create_stock_transaction(
+                accounthead=details.otheraccount.accounthead,
+                account=details.otheraccount,
+                transactiontype='RV',
+                transactionid=receipt.id,
+                desc=f'By Voucherno : {receipt.vouchernumber}',
+                drcr=drcr_value,
+                amount=abs(details.other_amount),
+                entity=receipt.entity,
+                createdby=receipt.created_by,
+                entry=entryid,
+                entrydatetime=receipt.voucherdate,
+                accounttype='M',
+                iscashtransaction=False,
+                voucherno=receipt.voucher_number
+            )
+
+            # Contra transaction if applicable
+            if contracc:
+                self.create_stock_transaction(
+                    accounthead=contracc.accounthead,
+                    account=contracc,
+                    transactiontype='RV',
+                    transactionid=receipt.id,
+                    desc=f'By Voucherno : {receipt.vouchernumber}',
+                    drcr=0 if drcr_value == 1 else 1,
+                    amount=abs(details.other_amount),
+                    entity=receipt.entity,
+                    createdby=receipt.created_by,
+                    entry=entryid,
+                    entrydatetime=receipt.voucherdate,
+                    accounttype='M',
+                    iscashtransaction=False,
+                    voucherno=receipt.voucher_number
+                )
+
+        # Update running voucher number
         settings.current_number += 1
         settings.save()
 
@@ -5741,15 +5858,112 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         invoice_data = validated_data.pop('invoice_allocations', [])
+
+        # Update fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # Clear old allocations
+        # Remove old invoice allocations and stock transactions
         instance.invoice_allocations.all().delete()
+        StockTransactions.objects.filter(
+            transactiontype='RV',
+            transactionid=instance.id
+        ).delete()
+
+        # Recreate or fetch entry
+        entryid, _ = entry.objects.get_or_create(
+            entrydate1=instance.voucherdate,
+            entity=instance.entity
+        )
+
+        iscash = instance.payment_mode.iscash if instance.payment_mode else False
+
+        # Recreate Cash/Bank Received transaction
+        self.create_stock_transaction(
+            accounthead=instance.received_in.accounthead,
+            account=instance.received_in,
+            transactiontype='RV',
+            transactionid=instance.id,
+            desc=f'By Voucherno : {instance.vouchernumber}',
+            drcr=1,
+            amount=instance.total_amount,
+            entity=instance.entity,
+            createdby=instance.created_by,
+            entry=entryid,
+            entrydatetime=instance.voucherdate,
+            accounttype='M',
+            iscashtransaction=iscash,
+            voucherno=instance.voucher_number
+        )
+
+        # Recreate Received From transaction
+        self.create_stock_transaction(
+            accounthead=instance.received_from.accounthead,
+            account=instance.received_from,
+            transactiontype='RV',
+            transactionid=instance.id,
+            desc=f'By Voucherno : {instance.vouchernumber}',
+            drcr=0,
+            amount=instance.total_amount,
+            entity=instance.entity,
+            createdby=instance.created_by,
+            entry=entryid,
+            entrydatetime=instance.voucherdate,
+            accounttype='M',
+            iscashtransaction=iscash,
+            voucherno=instance.voucher_number
+        )
+
         for inv in invoice_data:
-            ReceiptVoucherInvoiceAllocation.objects.create(receipt_voucher=instance, **inv)
+            details = ReceiptVoucherInvoiceAllocation.objects.create(
+                receipt_voucher=instance,
+                **inv
+            )
+
+            contracc = ReceiptVoucherSerializer.get_contra_account(details.otheraccount.id, instance.entity.id)
+
+            drcr_value = 1 if details.other_amount > 0 else 0
+
+            # Transaction for otheraccount
+            self.create_stock_transaction(
+                accounthead=details.otheraccount.accounthead,
+                account=details.otheraccount,
+                transactiontype='RV',
+                transactionid=instance.id,
+                desc=f'By Voucherno : {instance.vouchernumber}',
+                drcr=drcr_value,
+                amount=abs(details.other_amount),
+                entity=instance.entity,
+                createdby=instance.created_by,
+                entry=entryid,
+                entrydatetime=instance.voucherdate,
+                accounttype='M',
+                iscashtransaction=False,
+                voucherno=instance.voucher_number
+            )
+
+            # Contra transaction if available
+            if contracc:
+                self.create_stock_transaction(
+                    accounthead=contracc.accounthead,
+                    account=contracc,
+                    transactiontype='RV',
+                    transactionid=instance.id,
+                    desc=f'By Voucherno : {instance.vouchernumber}',
+                    drcr=0 if drcr_value == 1 else 1,  # Opposite
+                    amount=abs(details.other_amount),
+                    entity=instance.entity,
+                    createdby=instance.created_by,
+                    entry=entryid,
+                    entrydatetime=instance.voucherdate,
+                    accounttype='M',
+                    iscashtransaction=False,
+                    voucherno=instance.voucher_number
+                )
+
         return instance
+
 
 
 

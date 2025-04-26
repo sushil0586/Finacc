@@ -90,6 +90,7 @@ class account(TrackingModel):
     gstno       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'),blank = True)
     accountname       = models.CharField(max_length=50, null=True,verbose_name=_('Account Name'))
     legalname =  models.CharField(max_length= 255,null=True)
+    contraaccount = models.ForeignKey("self",null=True,on_delete=models.PROTECT,verbose_name=_('conta account'),blank=True)
     address1       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 1'),blank = True)
     address2       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 2'),blank = True)
     addressfloorno =     models.CharField(max_length= 255,null= True,blank = True)
