@@ -33,7 +33,7 @@ from django.db import models
 
 class PaymentmodesSerializer(serializers.ModelSerializer):
 
-    paymentmodeid = serializers.CharField(source= 'id', read_only=True)
+    paymentmodeid = serializers.IntegerField(source= 'id', read_only=True)
     paymentmodename = serializers.CharField(source= 'paymentmode', read_only=True)
 
 
@@ -5698,6 +5698,7 @@ class DoctypeSerializer(serializers.ModelSerializer):
 
 class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
     invoiceno = serializers.SerializerMethodField()
+    invoice = serializers.DecimalField(source='id', max_digits=14, decimal_places=4, read_only=True)
     invoiceamount = serializers.DecimalField(source='gtotal', max_digits=14, decimal_places=4, read_only=True)
     invoicedate = serializers.DateTimeField(source='sorderdate', read_only=True)
     pendingamount = serializers.DecimalField(source='pending_amount', max_digits=14, decimal_places=4, read_only=True)  # <-- add source!
@@ -5717,7 +5718,7 @@ class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ReceiptVoucherInvoiceAllocation
-        fields = ['id', 'invoice', 'invoiceno', 'trans_amount', 'invoiceamount', 'pendingamount', 'invoicedate', 'otheraccount', 'other_amount', 'allocated_amount']
+        fields = ['invoice', 'invoiceno', 'trans_amount', 'invoiceamount', 'pendingamount', 'invoicedate', 'otheraccount', 'other_amount', 'allocated_amount']
 
     def get_invoiceno(self, obj):
         return obj.invoice.invoicenumber if obj.invoice.invoicenumber else str(obj.invoice.billno)
