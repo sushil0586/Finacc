@@ -49,7 +49,7 @@ from invoice.serializers import (
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
-    PurchaseSettingsSerializer,
+    PurchaseSettingsSerializer,ReceiptVoucherPdfSerializer,
     ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer
 )
 from django.http import FileResponse
@@ -5802,6 +5802,17 @@ class   ReceiptVoucherListCreateAPIView(APIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+    
+
+class ReceiptVoucherDetailPdfAPIView(APIView):
+    def get(self, request, pk):
+        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
+        serializer = ReceiptVoucherPdfSerializer(voucher)
+        return Response(serializer.data)
+
+
 
 class ReceiptVoucherDetailAPIView(APIView):
     def get(self, request, pk):
