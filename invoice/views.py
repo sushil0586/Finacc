@@ -57,7 +57,7 @@ from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
-from django.db.models import Sum,OuterRef,Subquery,F,Count
+from django.db.models import Sum,OuterRef,Subquery,F,Count,Value
 from django.db.models import Prefetch
 from financial.models import account
 from inventory.models import Product
@@ -86,6 +86,7 @@ from django.template.loader import render_to_string
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
+from django.db.models.functions import Coalesce
 
 import tempfile
 
@@ -5728,22 +5729,37 @@ class CreateReceiptVoucherAPIView(APIView):
         
 
 class SalesOrderHeaderListView(APIView):
-
     def get(self, request, *args, **kwargs):
         accountid = request.query_params.get('account_id')
         entity = request.query_params.get('entity_id')
         entityfinid = request.query_params.get('entityfin_id')
 
         if not all([accountid, entity, entityfinid]):
-            return Response({"detail": "accountid, entity and entityfinid are required parameters."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "accountid, entity and entityfinid are required parameters."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        queryset = SalesOderHeader.objects.filter(
+        invoices = SalesOderHeader.objects.filter(
             accountid=accountid,
             entity=entity,
             entityfinid=entityfinid
+        ).annotate(
+            trans_amount=Coalesce(
+                Sum(
+                    'receiptvoucherinvoiceallocation__trans_amount',
+                    filter=Q(receiptvoucherinvoiceallocation__isfullamtreceived=False)
+                ),
+                Value(0),
+                output_field=DecimalField(max_digits=14, decimal_places=4)
+            )
+        ).annotate(
+            pending_amount=F('gtotal') - F('trans_amount')
+        ).filter(
+            pending_amount__gt=0
         )
 
-        serializer = SalesOrderHeadeListSerializer(queryset, many=True)
+        serializer = SalesOrderHeadeListSerializer(invoices, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

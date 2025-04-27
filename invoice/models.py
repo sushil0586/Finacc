@@ -1032,9 +1032,11 @@ class ReceiptVoucher(TrackingModel):
 class ReceiptVoucherInvoiceAllocation(models.Model):
     receipt_voucher = models.ForeignKey(ReceiptVoucher, related_name='invoice_allocations', on_delete=models.CASCADE)
     invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE)
+    trans_amount = models.DecimalField(max_digits=12, decimal_places=2,default =0,null=True, blank=True, )
     otheraccount = models.ForeignKey(account,on_delete=models.CASCADE,null=True)
     other_amount = models.DecimalField(max_digits=12, decimal_places=2,default =0,null=True, blank=True, )
     allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    isfullamtreceived =   models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.receipt_voucher.voucher_number} - Invoice {self.invoice.invoicenumber}"

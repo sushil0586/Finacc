@@ -131,7 +131,7 @@ class ReceiptVouchercancelSerializer(BaseCancelSerializer):
         StockTransactions.objects.filter(
             entity=instance.entity,
             transactionid=instance.id,
-            transactiontype='S'
+            transactiontype='RV'
         ).update(isactive=instance.isactive)
 
         return instance
@@ -5697,16 +5697,16 @@ class DoctypeSerializer(serializers.ModelSerializer):
 
 class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
     invoiceno = serializers.SerializerMethodField()
-    invoiceamount = serializers.DecimalField(source= 'gtotal',max_digits=14, decimal_places=4, read_only=True)
-    invoicedate = serializers.DateTimeField(source= 'sorderdate', read_only=True)
+    invoiceamount = serializers.DecimalField(source='gtotal', max_digits=14, decimal_places=4, read_only=True)
+    invoicedate = serializers.DateTimeField(source='sorderdate', read_only=True)
+    pendingamount = serializers.DecimalField(source='pending_amount', max_digits=14, decimal_places=4, read_only=True)  # <-- add source!
 
     class Meta:
         model = SalesOderHeader
-        fields = ['id', 'invoiceno','invoiceamount','invoiceamount', 'invoicedate']
+        fields = ['id', 'invoiceno', 'invoiceamount', 'invoicedate', 'pendingamount']
 
     def get_invoiceno(self, obj):
         return obj.invoicenumber if obj.invoicenumber else str(obj.billno)
-
 
 class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
     invoiceno = serializers.SerializerMethodField(read_only=True)
@@ -5714,7 +5714,7 @@ class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
     invoicedate = serializers.DateTimeField(source= 'invoice.sorderdate', read_only=True)
     class Meta:
         model = ReceiptVoucherInvoiceAllocation
-        fields = ['id', 'invoice','invoiceno','invoiceamount','invoicedate','otheraccount', 'other_amount', 'allocated_amount']
+        fields = ['id', 'invoice','invoiceno','trans_amount','invoiceamount','invoicedate','otheraccount', 'other_amount', 'allocated_amount']
 
     def get_invoiceno(self, obj):
         return obj.invoice.invoicenumber if obj.invoice.invoicenumber else str(obj.invoice.billno)
