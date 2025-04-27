@@ -120,7 +120,21 @@ class SaleinvoicecancelSerializer(BaseCancelSerializer):
 
         return instance
     
-class ReceiptVouchercancelSerializer(BaseCancelSerializer):
+class BaseCancelSerializer1(serializers.ModelSerializer):
+    fields_to_update = ('isactive',)
+
+    def update(self, instance, validated_data):
+        # Efficiently update only fields present in validated_data
+        for field in self.fields_to_update:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+
+        if any(getattr(instance, field) != validated_data.get(field) for field in validated_data):
+            instance.save()
+
+        return instance
+    
+class ReceiptVouchercancelSerializer(BaseCancelSerializer1):
     class Meta:
         model = ReceiptVoucher
         fields = ('isactive',)
@@ -128,7 +142,7 @@ class ReceiptVouchercancelSerializer(BaseCancelSerializer):
     def update(self, instance, validated_data):
         super().update(instance, validated_data)
 
-        # Update stock transactions
+        # Also cancel stock transactions
         StockTransactions.objects.filter(
             entity=instance.entity,
             transactionid=instance.id,
@@ -136,6 +150,8 @@ class ReceiptVouchercancelSerializer(BaseCancelSerializer):
         ).update(isactive=instance.isactive)
 
         return instance
+
+
     
 
 
@@ -5705,7 +5721,7 @@ class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
-        fields = ['id', 'invoiceno', 'invoiceamount', 'invoicedate', 'pendingamount']
+        fields = ['invoice', 'invoiceno', 'invoiceamount', 'invoicedate', 'pendingamount']
 
     def get_invoiceno(self, obj):
         return obj.invoicenumber if obj.invoicenumber else str(obj.billno)

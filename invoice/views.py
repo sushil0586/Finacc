@@ -6,6 +6,7 @@ from django.utils.encoding import smart_str
 from math import radians, sin, cos, sqrt, atan2
 import io
 import calendar
+from rest_framework.exceptions import ValidationError
 
 import json
 
@@ -468,7 +469,9 @@ class ReceiptVouchercancel(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        return ReceiptVoucher.objects.filter(entity = entity)
+        if not entity:
+            raise ValidationError({"error": "entity parameter is required."})
+        return ReceiptVoucher.objects.filter(entity=entity)  # optional: isactive
     
 class saleordercancel(RetrieveUpdateDestroyAPIView):
 
