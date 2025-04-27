@@ -28,6 +28,7 @@ from django.utils import timezone
 from helpers.utils.document_number import reset_counter_if_needed, build_document_number
 #from entity.views import generateeinvoice
 #from entity.serializers import entityfinancialyearSerializer
+from django.db import models
 
 
 class PaymentmodesSerializer(serializers.ModelSerializer):
@@ -5710,14 +5711,33 @@ class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
 
 class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
     invoiceno = serializers.SerializerMethodField(read_only=True)
-    invoiceamount = serializers.DecimalField(source= 'invoice.gtotal',max_digits=14, decimal_places=4, read_only=True)
-    invoicedate = serializers.DateTimeField(source= 'invoice.sorderdate', read_only=True)
+    invoiceamount = serializers.DecimalField(source='invoice.gtotal', max_digits=14, decimal_places=4, read_only=True)
+    pendingamount = serializers.SerializerMethodField(read_only=True)
+    invoicedate = serializers.DateTimeField(source='invoice.sorderdate', read_only=True)
+
     class Meta:
         model = ReceiptVoucherInvoiceAllocation
-        fields = ['id', 'invoice','invoiceno','trans_amount','invoiceamount','invoicedate','otheraccount', 'other_amount', 'allocated_amount']
+        fields = ['id', 'invoice', 'invoiceno', 'trans_amount', 'invoiceamount', 'pendingamount', 'invoicedate', 'otheraccount', 'other_amount', 'allocated_amount']
 
     def get_invoiceno(self, obj):
         return obj.invoice.invoicenumber if obj.invoice.invoicenumber else str(obj.invoice.billno)
+
+    def get_pendingamount(self, obj):
+        if not obj.invoice:
+            return None
+
+        # Get total invoice amount
+        invoice_total = obj.invoice.gtotal or 0
+
+        # Sum all trans_amounts allocated against this invoice
+        total_allocated = ReceiptVoucherInvoiceAllocation.objects.filter(invoice=obj.invoice).aggregate(
+            total=models.Sum('trans_amount')
+        )['total'] or 0
+
+        # Pending amount is invoice total minus already allocated amount
+        pending_amount = invoice_total - total_allocated
+
+        return pending_amount
 class ReceiptVoucherSerializer(serializers.ModelSerializer):
     invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
     
@@ -5834,36 +5854,22 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
                 **inv
             )
 
-            contracc = ReceiptVoucherSerializer.get_contra_account(details.otheraccount.id, receipt.entity.id)
-            drcr_value = 1 if details.other_amount > 0 else 0
+            # Check if otheraccount exists
+            if details.otheraccount and details.otheraccount.id:
+                contracc = ReceiptVoucherSerializer.get_contra_account(
+                    details.otheraccount.id,
+                    receipt.entity.id
+                )
+                drcr_value = 1 if details.other_amount > 0 else 0
 
-            # Main transaction
-            self.create_stock_transaction(
-                accounthead=details.otheraccount.accounthead,
-                account=details.otheraccount,
-                transactiontype='RV',
-                transactionid=receipt.id,
-                desc=f'By Voucherno : {receipt.vouchernumber}',
-                drcr=drcr_value,
-                amount=abs(details.other_amount),
-                entity=receipt.entity,
-                createdby=receipt.created_by,
-                entry=entryid,
-                entrydatetime=receipt.voucherdate,
-                accounttype='M',
-                iscashtransaction=False,
-                voucherno=receipt.voucher_number
-            )
-
-            # Contra transaction if applicable
-            if contracc:
+                # Main transaction for otheraccount
                 self.create_stock_transaction(
-                    accounthead=contracc.accounthead,
-                    account=contracc,
+                    accounthead=details.otheraccount.accounthead,
+                    account=details.otheraccount,
                     transactiontype='RV',
                     transactionid=receipt.id,
                     desc=f'By Voucherno : {receipt.vouchernumber}',
-                    drcr=0 if drcr_value == 1 else 1,
+                    drcr=drcr_value,
                     amount=abs(details.other_amount),
                     entity=receipt.entity,
                     createdby=receipt.created_by,
@@ -5873,6 +5879,25 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
                     iscashtransaction=False,
                     voucherno=receipt.voucher_number
                 )
+
+                # Contra transaction if contra account exists
+                if contracc:
+                    self.create_stock_transaction(
+                        accounthead=contracc.accounthead,
+                        account=contracc,
+                        transactiontype='RV',
+                        transactionid=receipt.id,
+                        desc=f'By Voucherno : {receipt.vouchernumber}',
+                        drcr=0 if drcr_value == 1 else 1,
+                        amount=abs(details.other_amount),
+                        entity=receipt.entity,
+                        createdby=receipt.created_by,
+                        entry=entryid,
+                        entrydatetime=receipt.voucherdate,
+                        accounttype='M',
+                        iscashtransaction=False,
+                        voucherno=receipt.voucher_number
+                    )
 
         # Update running voucher number
         settings.current_number += 1
@@ -5945,37 +5970,19 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
                 **inv
             )
 
-            contracc = ReceiptVoucherSerializer.get_contra_account(details.otheraccount.id, instance.entity.id)
+            if details.otheraccount and details.otheraccount.id:
+                contracc = ReceiptVoucherSerializer.get_contra_account(details.otheraccount.id, instance.entity.id)
 
-            drcr_value = 1 if details.other_amount > 0 else 0
+                drcr_value = 1 if details.other_amount > 0 else 0
 
-            # Transaction for otheraccount
-            self.create_stock_transaction(
-                accounthead=details.otheraccount.accounthead,
-                account=details.otheraccount,
-                transactiontype='RV',
-                transactionid=instance.id,
-                desc=f'By Voucherno : {instance.vouchernumber}',
-                drcr=drcr_value,
-                amount=abs(details.other_amount),
-                entity=instance.entity,
-                createdby=instance.created_by,
-                entry=entryid,
-                entrydatetime=instance.voucherdate,
-                accounttype='M',
-                iscashtransaction=False,
-                voucherno=instance.voucher_number
-            )
-
-            # Contra transaction if available
-            if contracc:
+                # Transaction for otheraccount
                 self.create_stock_transaction(
-                    accounthead=contracc.accounthead,
-                    account=contracc,
+                    accounthead=details.otheraccount.accounthead,
+                    account=details.otheraccount,
                     transactiontype='RV',
                     transactionid=instance.id,
                     desc=f'By Voucherno : {instance.vouchernumber}',
-                    drcr=0 if drcr_value == 1 else 1,  # Opposite
+                    drcr=drcr_value,
                     amount=abs(details.other_amount),
                     entity=instance.entity,
                     createdby=instance.created_by,
@@ -5985,6 +5992,25 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
                     iscashtransaction=False,
                     voucherno=instance.voucher_number
                 )
+
+                # Contra transaction if available
+                if contracc:
+                    self.create_stock_transaction(
+                        accounthead=contracc.accounthead,
+                        account=contracc,
+                        transactiontype='RV',
+                        transactionid=instance.id,
+                        desc=f'By Voucherno : {instance.vouchernumber}',
+                        drcr=0 if drcr_value == 1 else 1,  # Opposite
+                        amount=abs(details.other_amount),
+                        entity=instance.entity,
+                        createdby=instance.created_by,
+                        entry=entryid,
+                        entrydatetime=instance.voucherdate,
+                        accounttype='M',
+                        iscashtransaction=False,
+                        voucherno=instance.voucher_number
+                    )
 
         return instance
 
