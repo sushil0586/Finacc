@@ -120,7 +120,21 @@ class SaleinvoicecancelSerializer(BaseCancelSerializer):
 
         return instance
     
-class ReceiptVouchercancelSerializer(BaseCancelSerializer):
+class BaseCancelSerializer1(serializers.ModelSerializer):
+    fields_to_update = ('isactive',)
+
+    def update(self, instance, validated_data):
+        # Efficiently update only fields present in validated_data
+        for field in self.fields_to_update:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+
+        if any(getattr(instance, field) != validated_data.get(field) for field in validated_data):
+            instance.save()
+
+        return instance
+    
+class ReceiptVouchercancelSerializer(BaseCancelSerializer1):
     class Meta:
         model = ReceiptVoucher
         fields = ('isactive',)
@@ -128,7 +142,7 @@ class ReceiptVouchercancelSerializer(BaseCancelSerializer):
     def update(self, instance, validated_data):
         super().update(instance, validated_data)
 
-        # Update stock transactions
+        # Also cancel stock transactions
         StockTransactions.objects.filter(
             entity=instance.entity,
             transactionid=instance.id,
@@ -136,6 +150,8 @@ class ReceiptVouchercancelSerializer(BaseCancelSerializer):
         ).update(isactive=instance.isactive)
 
         return instance
+
+
     
 
 
@@ -5705,7 +5721,7 @@ class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalesOderHeader
-        fields = ['id', 'invoiceno', 'invoiceamount', 'invoicedate', 'pendingamount']
+        fields = ['invoice', 'invoiceno', 'invoiceamount', 'invoicedate', 'pendingamount']
 
     def get_invoiceno(self, obj):
         return obj.invoicenumber if obj.invoicenumber else str(obj.billno)
@@ -6015,6 +6031,31 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
 
         return instance
 
+class ReceiptVoucherPdfSerializer(serializers.ModelSerializer):
+    invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
+    received_from_accountname = serializers.CharField(source='received_from.accountname', read_only=True)
+    payment_mode = serializers.CharField(source='payment_mode.paymentmode', read_only=True)
+    account_type = serializers.CharField(source='account_type.accounttypename', read_only=True)
+    voucherdate = serializers.SerializerMethodField()  # 👈 Add this
+    amountinwords = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ReceiptVoucher
+        fields = [
+            'id', 'voucher_number','vouchernumber', 'voucherdate', 'received_in', 'received_from','received_from_accountname',  'account_type',
+            'payment_mode', 'total_amount','amountinwords','narration', 'reference_number', 'isledgerposting',
+            'receiverbankname', 'chqno', 'chqdate', 'created_by', 'approved_by',
+            'created_at', 'approved_at','entity','entityfinid','invoice_allocations'
+        ]
+        read_only_fields = ['created_at', 'approved_at']
+        
+    def get_voucherdate(self, obj):
+        if obj.voucherdate:
+            return obj.voucherdate.strftime("%d-%b-%Y")  # Format as DD-MMM-YYYY
+        return None
+    
+    def get_amountinwords(self, obj):
+        return f"{string.capwords(num2words(obj.total_amount))} only"
 
 
 

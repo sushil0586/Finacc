@@ -6,6 +6,7 @@ from django.utils.encoding import smart_str
 from math import radians, sin, cos, sqrt, atan2
 import io
 import calendar
+from rest_framework.exceptions import ValidationError
 
 import json
 
@@ -48,7 +49,7 @@ from invoice.serializers import (
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
-    PurchaseSettingsSerializer,
+    PurchaseSettingsSerializer,ReceiptVoucherPdfSerializer,
     ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer
 )
 from django.http import FileResponse
@@ -468,7 +469,9 @@ class ReceiptVouchercancel(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
-        return ReceiptVoucher.objects.filter(entity = entity)
+        if not entity:
+            raise ValidationError({"error": "entity parameter is required."})
+        return ReceiptVoucher.objects.filter(entity=entity)  # optional: isactive
     
 class saleordercancel(RetrieveUpdateDestroyAPIView):
 
@@ -5799,6 +5802,17 @@ class   ReceiptVoucherListCreateAPIView(APIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+    
+
+class ReceiptVoucherDetailPdfAPIView(APIView):
+    def get(self, request, pk):
+        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
+        serializer = ReceiptVoucherPdfSerializer(voucher)
+        return Response(serializer.data)
+
+
 
 class ReceiptVoucherDetailAPIView(APIView):
     def get(self, request, pk):
