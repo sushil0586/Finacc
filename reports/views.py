@@ -3812,7 +3812,8 @@ class printvoucherapi(ListAPIView):
             'T': 'TDS Voucher',
             'PR': 'Purchase Return Voucher',
             'SR': 'Sale Return Voucher',
-            'PI': 'Purchase Import Voucher'
+            'PI': 'Purchase Import Voucher',
+            'RV': 'Receipt Voucher'
         }
 
         df['voucher'] = voucher_map.get(transactiontype, 'Unknown Voucher')

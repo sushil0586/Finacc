@@ -263,7 +263,7 @@ class AccountListtopSerializer(serializers.ModelSerializer):
     
     balance = serializers.SerializerMethodField()
 
-    accountid = serializers.CharField(source= 'id', read_only=True)
+    accountid = serializers.IntegerField(source= 'id', read_only=True)
     
     class Meta:
         model = account
@@ -377,7 +377,7 @@ class accountHeadSerializer2(serializers.ModelSerializer):
         
 class accounttypeserializer(serializers.ModelSerializer):
     #id = serializers.IntegerField()
-    accounttypeid = serializers.CharField(source= 'id', read_only=True)
+    accounttypeid = serializers.IntegerField(source= 'id', read_only=True)
     class Meta:
         model = accounttype
         fields = ('accounttypeid','accounttypename',)
