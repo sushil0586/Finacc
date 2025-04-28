@@ -47,7 +47,7 @@ class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = account
         fields = (
-            'id', 'accountcode', 'accountdate', 'accounthead', 'gstno', 'creditaccounthead', 'accountname',
+            'id', 'accountcode', 'accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
             'address1', 'address2', 'gstintype','isaddsameasbillinf',
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
@@ -87,7 +87,7 @@ class AccountSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         fields = [
-            'accountdate', 'accounthead', 'gstno', 'creditaccounthead', 'accountname',  'address1',
+            'accountdate', 'accounthead', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
             'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf',
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
             'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'Adhaarno', 'saccode',
