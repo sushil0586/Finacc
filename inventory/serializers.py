@@ -72,10 +72,10 @@ class ProductSerializer(serializers.ModelSerializer):
             buffer = BytesIO()
             barcode = Code128(barcode_number, writer=ImageWriter())
             barcode.write(buffer, {
-                'module_width': 0.4,       # thicker bars
-                'module_height': 20.0,     # taller bars
-                'font_size': 0,            # turn off default text
-                'quiet_zone': 6.5          # more margin for scanners
+                'module_width': 0.4,        # thicker bars
+                'module_height': 20.0,      # taller bars
+                'quiet_zone': 6.5,          # better margins
+                'write_text': False         # disables default barcode text
             })
             barcode_img = Image.open(buffer)
 
