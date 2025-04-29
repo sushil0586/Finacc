@@ -4,6 +4,12 @@ from inventory.models import Product,ProductCategory, Ratecalculate, UnitofMeasu
 from invoice.models import entry, StockTransactions
 from financial.models import account
 from entity.models import entityfinancialyear
+from PIL import Image, ImageDraw, ImageFont
+from barcode import Code128
+from barcode.writer import ImageWriter
+from io import BytesIO
+from django.core.files.base import ContentFile
+import random
 
 
 class ProductCategoryMainSerializer(serializers.ModelSerializer):
@@ -31,29 +37,107 @@ class ProductCategorySerializer(serializers.ModelSerializer):
 
 
 class ProductSerializer(serializers.ModelSerializer):
+    barcode_image_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Product
         fields = '__all__'
 
+    def get_barcode_image_url(self, obj):
+        request = self.context.get('request')
+        if obj.barcode_image and request:
+            return request.build_absolute_uri(obj.barcode_image.url)
+        return None
+
+    def generate_unique_barcode(self):
+        while True:
+            number = f'{random.randint(100000000000, 999999999999)}'  # 12-digit
+            if not Product.objects.filter(barcode_number=number).exists():
+                return number
+
     def create(self, validated_data):
-        with transaction.atomic():  # Start transaction block
+        with transaction.atomic():
+            # Auto-generate barcode number if not provided
+            barcode_number = validated_data.get('barcode_number') or self.generate_unique_barcode()
+            validated_data['barcode_number'] = barcode_number
+
+            mrp = validated_data.get('mrp')
+            salesprice = validated_data.get('salesprice')
+
+            # Create product without barcode_image first
             product = Product.objects.create(**validated_data)
 
-            # Fetch associated account and entry data
-            os = account.objects.get(entity=product.entity, accountcode=9000)
-            accountdate1 = entityfinancialyear.objects.get(entity=product.entity,isactive = True).finstartyear
+            # Generate barcode image
+            # Generate barcode image
+            buffer = BytesIO()
+            barcode = Code128(barcode_number, writer=ImageWriter())
+            barcode.write(buffer, {
+                'module_width': 0.4,       # thicker bars
+                'module_height': 20.0,     # taller bars
+                'font_size': 0,            # turn off default text
+                'quiet_zone': 6.5          # more margin for scanners
+            })
+            barcode_img = Image.open(buffer)
 
-            
+            # Prepare for adding text below barcode
+            width, height = barcode_img.size
+            extra_height = 60  # more space for text
+            new_image = Image.new('RGB', (width, height + extra_height), 'white')
+            new_image.paste(barcode_img, (0, 0))
+
+            # Draw text on the new image
+            draw = ImageDraw.Draw(new_image)
+            try:
+                font = ImageFont.truetype("arial.ttf", 16)
+            except:
+                font = ImageFont.load_default()
+
+            # Compose text
+            line1 = f"{product.productname} | {barcode_number}"
+            line2 = f"MRP: ₹{mrp or 0:.2f} | Sale: ₹{salesprice or 0:.2f}"
+
+            # Calculate X-position to center-align
+            def center_text(text, width, font):
+                text_width = draw.textlength(text, font=font)
+                return (width - text_width) // 2
+
+            draw.text((center_text(line1, width, font), height + 5), line1, fill='black', font=font)
+            draw.text((center_text(line2, width, font), height + 30), line2, fill='black', font=font)
+
+            # Save final image
+            final_buffer = BytesIO()
+            new_image.save(final_buffer, format='PNG')
+            file_name = f'{barcode_number}.png'
+            product.barcode_image.save(file_name, ContentFile(final_buffer.getvalue()), save=False)
+
+            product.save()
+
+            # Handle stock transactions
+            os = account.objects.get(entity=product.entity, accountcode=9000)
+            accountdate1 = entityfinancialyear.objects.get(entity=product.entity, isactive=True).finstartyear
             entryid, _ = entry.objects.get_or_create(entrydate1=accountdate1, entity=product.entity)
 
             if product.openingstockvalue and (product.openingstockqty or product.openingstockboxqty):
                 qty = product.openingstockqty or product.openingstockboxqty
                 StockTransactions.objects.create(
-                    accounthead=os.accounthead, account=os, stock=product, transactiontype='O', 
-                    transactionid=product.id, desc=f'Opening Stock {product.productname}', stockttype='R', 
-                    quantity=qty, drcr=1, debitamount=product.openingstockvalue, entrydate=accountdate1, 
-                    entity=product.entity, createdby=product.createdby, entry=entryid, entrydatetime=accountdate1, 
-                    accounttype='DD', isactive=True, rate=product.purchaserate
+                    accounthead=os.accounthead,
+                    account=os,
+                    stock=product,
+                    transactiontype='O',
+                    transactionid=product.id,
+                    desc=f'Opening Stock {product.productname}',
+                    stockttype='R',
+                    quantity=qty,
+                    drcr=1,
+                    debitamount=product.openingstockvalue,
+                    entrydate=accountdate1,
+                    entity=product.entity,
+                    createdby=product.createdby,
+                    entry=entryid,
+                    entrydatetime=accountdate1,
+                    accounttype='DD',
+                    isactive=True,
+                    rate=product.purchaserate
                 )
 
             return product
