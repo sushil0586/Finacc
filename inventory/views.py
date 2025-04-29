@@ -72,6 +72,11 @@ class ProductApiView(ListCreateAPIView, EntityFilterMixin):
         entity = self.get_entity()
         return Product.objects.filter(entity=entity)
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
 
 class ProductUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin):
     serializer_class = ProductSerializer
@@ -80,6 +85,11 @@ class ProductUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin
 
     def get_queryset(self):
         return Product.objects.all()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
 
 
 # class AlbumApiView(ListCreateAPIView):

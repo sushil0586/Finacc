@@ -157,17 +157,19 @@ class Product(TrackingModel):
     gsttype = models.ForeignKey(to= gsttype,null=True,blank=True, on_delete=models.PROTECT,verbose_name=_('Gst Type'))
     entity = models.ForeignKey(Entity,on_delete=models.PROTECT)
     createdby = models.ForeignKey(to= User,null=True, on_delete=models.PROTECT)
-    barcode = models.ImageField(upload_to=get_image_path, blank=True)
+    barcode_number = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name=_('Barcode Number'))
+    barcode_image = models.ImageField(upload_to='photos/', null=True, blank=True, verbose_name=_('Barcode Image'))
+   # barcode = models.ImageField(upload_to=get_image_path, blank=True)
 
     def __str__(self):
         return f'{self.productname}'
 
-    def save(self, *args, **kwargs):          # overriding save() 
-        COD128 = barcode.get_barcode_class('code128')
-        rv = BytesIO()
-        code = COD128(f'Mrp: {self.mrp} Our Prrice: {self.salesprice}', writer=ImageWriter()).write(rv)
-        self.barcode.save(f'{self.productname}.png', File(rv), save=False)
-        return super().save(*args, **kwargs)
+    # def save(self, *args, **kwargs):          # overriding save() 
+    #     COD128 = barcode.get_barcode_class('code128')
+    #     rv = BytesIO()
+    #     code = COD128(f'Mrp: {self.mrp} Our Prrice: {self.salesprice}', writer=ImageWriter()).write(rv)
+    #     self.barcode.save(f'{self.productname}.png', File(rv), save=False)
+    #     return super().save(*args, **kwargs)
 
 # class Album(models.Model):
 #     album_name = models.CharField(max_length=100)
