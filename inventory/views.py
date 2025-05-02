@@ -21,6 +21,7 @@ from inventory.serializers import (
 
 from Authentication.models import User
 from entity.models import Entity
+from rest_framework.exceptions import NotFound
 
 
 class EntityFilterMixin:
@@ -90,6 +91,22 @@ class ProductUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+    
+
+class ProductByBarcodeApiView(RetrieveUpdateDestroyAPIView):
+    serializer_class = ProductSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get_queryset(self):
+        return Product.objects.all()
+
+    def get_object(self):
+        barcode = self.kwargs.get("barcode")
+        queryset = self.get_queryset()
+        product = queryset.filter(barcode_number=barcode).first()
+        if not product:
+            raise NotFound("Product with this barcode not found.")
+        return product
 
 
 # class AlbumApiView(ListCreateAPIView):

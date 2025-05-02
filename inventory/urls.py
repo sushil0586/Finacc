@@ -13,6 +13,7 @@ urlpatterns = [
     # path('listProduct', views.ListproductApiView.as_view(), name='listProduct'),
     path('product', views.ProductApiView.as_view(), name='product'),
     path('product/<int:id>', views.ProductUpdateDeleteApiView.as_view(), name='productupdate'),
+    path('product/by-barcode/<str:barcode>/', views.ProductByBarcodeApiView.as_view(), name='product-by-barcode'),
 
     # # Album
     # path('album', views.AlbumApiView.as_view(), name='album'),
