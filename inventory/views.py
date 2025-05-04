@@ -11,12 +11,12 @@ from rest_framework import status
 
 from inventory.models import (
      Product,  ProductCategory, gsttype, typeofgoods, Ratecalculate,
-    UnitofMeasurement, HsnCode,BillOfMaterial,ProductionOrder,BOMItem
+    UnitofMeasurement, HsnCode,BillOfMaterial,ProductionOrder,BOMItem,BarcodeDetail
 )
 from inventory.serializers import (
     ProductSerializer, ProductCategorySerializer,
     GSTSerializer, TOGSerializer, UOMSerializer, RateCalculateSerializer, HSNSerializer,ProductBulkSerializer,ProductListSerializer,ProductBulkSerializerlatest,BillOfMaterialSerializer,ProductionOrderSerializer,BillOfMaterialListSerializer,BOMItemCalculatedSerializer,BillOfMaterialSerializerList,
-    ProductionOrderListSerializer,productionorderVSerializer,BillOfMaterialListbyentitySerializer
+    ProductionOrderListSerializer,productionorderVSerializer,BillOfMaterialListbyentitySerializer,BarcodeDetailSerializer,ProductByBarcodeSerializer
 )
 
 from Authentication.models import User
@@ -93,8 +93,13 @@ class ProductUpdateDeleteApiView(RetrieveUpdateDestroyAPIView, EntityFilterMixin
         return context
     
 
+    
+class BarcodeDetailCreateAPIView(generics.CreateAPIView):
+    queryset = BarcodeDetail.objects.all()
+    serializer_class = BarcodeDetailSerializer
+
 class ProductByBarcodeApiView(RetrieveUpdateDestroyAPIView):
-    serializer_class = ProductSerializer
+    serializer_class = ProductByBarcodeSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     def get_queryset(self):
@@ -102,11 +107,16 @@ class ProductByBarcodeApiView(RetrieveUpdateDestroyAPIView):
 
     def get_object(self):
         barcode = self.kwargs.get("barcode")
-        queryset = self.get_queryset()
-        product = queryset.filter(barcode_number=barcode).first()
-        if not product:
+        barcode_detail = BarcodeDetail.objects.select_related("product").filter(barcode_number=barcode).first()
+        if not barcode_detail:
             raise NotFound("Product with this barcode not found.")
-        return product
+        return barcode_detail.product
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['barcode'] = self.kwargs.get("barcode")  # Pass barcode to serializer
+        return context
+
 
 
 # class AlbumApiView(ListCreateAPIView):
