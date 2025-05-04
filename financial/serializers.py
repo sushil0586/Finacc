@@ -1,7 +1,7 @@
 from sys import implementation
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField
-from financial.models import accountHead,account,accounttype,ShippingDetails
+from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping
 from invoice.models import entry,StockTransactions
 from entity.models import Entity,entityfinancialyear
 from django.db.models import Q, Sum
@@ -163,6 +163,11 @@ class accountcodeSerializer(serializers.ModelSerializer):
     class Meta:
         model = account
         fields =  ['newcode']
+
+class StaticAccountsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = staticacounts
+        fields = '__all__'
 
 
 
@@ -381,6 +386,12 @@ class accounttypeserializer(serializers.ModelSerializer):
     class Meta:
         model = accounttype
         fields = ('accounttypeid','accounttypename',)
+
+
+class StaticAccountMappingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = staticacountsmapping
+        fields = '__all__'
            
 
 

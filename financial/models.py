@@ -199,6 +199,22 @@ class ShippingDetails(models.Model):
 #         verbose_name_plural = _('Account Details2')
 
 
+
+class staticacounts(TrackingModel):
+    accounttype         =     models.ForeignKey(to = accounttype, on_delete= models.SET_NULL,null = True)
+    staticaccount = models.CharField(max_length= 255,verbose_name=_('static acount'))
+    code = models.CharField(max_length= 255,verbose_name=_('Code'))
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
+    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT)
+
+
+class staticacountsmapping(TrackingModel):
+    staticaccount         =     models.ForeignKey(to = staticacounts, on_delete= models.SET_NULL,null = True)
+    account = models.ForeignKey(to = account, on_delete= models.SET_NULL,null = True)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
+    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT)
+
+
     
 
 
