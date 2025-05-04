@@ -144,30 +144,36 @@ class ProductCategorySerializer(serializers.ModelSerializer):
         
 
 class ProductSerializer(serializers.ModelSerializer):
-  #  barcode_image_url = serializers.SerializerMethodField()
-#    barcode_detail = serializers.SerializerMethodField()
+    mrp = serializers.SerializerMethodField()
+    salesprice = serializers.SerializerMethodField()
+    barcode_number = serializers.SerializerMethodField()
+    barcode_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
-        fields = '__all__'
+        fields = '__all__'  # Or list explicitly for more control
 
-#    # def get_barcode_image_url(self, obj):
-#         request = self.context.get('request')
-#         barcode_detail = obj.barcode_detail.first()  # Get the first BarcodeDetail instance
-#         if barcode_detail and barcode_detail.barcode_image and request:
-#             return request.build_absolute_uri(barcode_detail.barcode_image.url)
-#         return None
+    def get_latest_barcode(self, obj):
+        return obj.barcode_detail.order_by('-created_on').first()
 
-#    # def get_barcode_detail(self, obj):
-#         barcode_detail = obj.barcode_detail.first()
-#         if barcode_detail:
-#             return {
-#                 'barcode_number': barcode_detail.barcode_number,
-#                 'barcode_image_url': barcode_detail.barcode_image.url if barcode_detail.barcode_image else None,
-#                 'mrp': barcode_detail.mrp,
-#                 'salesprice': barcode_detail.salesprice,
-#             }
-#         return None
+    def get_mrp(self, obj):
+        latest = self.get_latest_barcode(obj)
+        return latest.mrp if latest else None
+
+    def get_salesprice(self, obj):
+        latest = self.get_latest_barcode(obj)
+        return latest.salesprice if latest else None
+
+    def get_barcode_number(self, obj):
+        latest = self.get_latest_barcode(obj)
+        return latest.barcode_number if latest else None
+
+    def get_barcode_image(self, obj):
+        latest = self.get_latest_barcode(obj)
+        request = self.context.get('request')
+        if latest and latest.barcode_image and request:
+            return request.build_absolute_uri(latest.barcode_image.url)
+        return None
 
     def generate_unique_barcode(self):
         while True:
