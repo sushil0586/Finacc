@@ -1,5 +1,5 @@
 from django.contrib import admin
-from inventory.models import Product,ProductCategory,UnitofMeasurement,typeofgoods,stkvaluationby,stkcalculateby,Ratecalculate,gsttype,HsnCode,HsnChaper,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption
+from inventory.models import Product,ProductCategory,UnitofMeasurement,typeofgoods,stkvaluationby,stkcalculateby,Ratecalculate,gsttype,HsnCode,HsnChaper,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption,BarcodeDetail
 from import_export.admin import ImportExportMixin
 
 
@@ -28,6 +28,7 @@ admin.site.register(Ratecalculate)
 admin.site.register(gsttype)
 admin.site.register(HsnChaper,HSNChapterAdmin)
 admin.site.register(HsnCode,HSNAdmin)
+admin.site.register(BarcodeDetail)
 
 
 

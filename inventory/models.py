@@ -159,10 +159,23 @@ class Product(TrackingModel):
     createdby = models.ForeignKey(to= User,null=True, on_delete=models.PROTECT)
     barcode_number = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name=_('Barcode Number'))
     barcode_image = models.ImageField(upload_to='photos/', null=True, blank=True, verbose_name=_('Barcode Image'))
+    isbarcoderequired = models.BooleanField(default=True, verbose_name=_('Is Barcode Required'))
    # barcode = models.ImageField(upload_to=get_image_path, blank=True)
 
     def __str__(self):
         return f'{self.productname}'
+
+
+class BarcodeDetail(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="barcode_detail", verbose_name=_('Product'))
+    mrp = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
+    salesprice = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
+    barcode_number = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name=_('Barcode Number'))
+    barcode_image = models.ImageField(upload_to='photos/', null=True, blank=True, verbose_name=_('Barcode Image'))
+    created_on = models.DateTimeField(auto_now_add=True, verbose_name=_('Created On'))
+
+    def __str__(self):
+        return f"Barcode Info for {self.product.productname}"
 
     # def save(self, *args, **kwargs):          # overriding save() 
     #     COD128 = barcode.get_barcode_class('code128')
