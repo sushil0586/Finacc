@@ -28,6 +28,10 @@ urlpatterns  = [
     path('shipping-details/', views.ShippingDetailsListCreateView.as_view(), name='shipping-details-list-create'),
     path('shipping-details/<int:pk>/', views.ShippingDetailsRetrieveUpdateDestroyView.as_view(), name='shipping-details-detail'),
     path('shipping-details/account/<int:account_id>/', views.ShippingDetailsByAccountView.as_view(), name='shipping-details-by-account'),
+    path('staticaccounts/', views.StaticAccountsAPIView.as_view()),
+    path('staticaccounts/<int:pk>/', views.StaticAccountsAPIView.as_view()),
+    path('staticaccount-mapping/', views.StaticAccountMappingListCreateView.as_view(), name='staticaccount-mapping-list-create'),
+    path('staticaccount-mapping/<int:pk>/', views.StaticAccountMappingRetrieveUpdateDestroyView.as_view(), name='staticaccount-mapping-detail'),
     
 
     

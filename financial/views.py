@@ -3,8 +3,8 @@ from django.shortcuts import render
 from rest_framework import response,status,permissions
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
-from financial.models import account, accountHead,accounttype,ShippingDetails
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer
+from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -24,6 +24,8 @@ from django.core.exceptions import ValidationError
 from django.http import Http404
 from django.http import JsonResponse
 from helpers.utils.gst_api import get_gst_details
+from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
 
 
 class AccountHeadApiView(ListCreateAPIView):
@@ -769,6 +771,57 @@ class ShippingDetailsByAccountView(ListAPIView):
     def get_queryset(self):
         account_id = self.kwargs.get('account_id')
         return ShippingDetails.objects.filter(account_id=account_id)
+    
+class StaticAccountsAPIView(APIView):
+    
+    def get(self, request, pk=None):
+        if pk:
+            static_account = get_object_or_404(staticacounts, pk=pk)
+            serializer = StaticAccountsSerializer(static_account)
+            return Response(serializer.data)
+        else:
+            static_accounts = staticacounts.objects.all()
+            serializer = StaticAccountsSerializer(static_accounts, many=True)
+            return Response(serializer.data)
+    
+    def post(self, request):
+        serializer = StaticAccountsSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk):
+        static_account = get_object_or_404(staticacounts, pk=pk)
+        serializer = StaticAccountsSerializer(static_account, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        static_account = get_object_or_404(staticacounts, pk=pk)
+        static_account.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+# GET (list), POST (single/bulk)
+class StaticAccountMappingListCreateView(ListCreateAPIView):
+    queryset = staticacountsmapping.objects.all()
+    serializer_class = StaticAccountMappingSerializer
+
+    def create(self, request, *args, **kwargs):
+        is_many = isinstance(request.data, list)
+        serializer = self.get_serializer(data=request.data, many=is_many)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+# GET by ID, PUT, DELETE
+class StaticAccountMappingRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+    queryset = staticacountsmapping.objects.all()
+    serializer_class = StaticAccountMappingSerializer
 
 
     
