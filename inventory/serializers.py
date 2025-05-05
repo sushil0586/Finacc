@@ -144,29 +144,17 @@ class ProductCategorySerializer(serializers.ModelSerializer):
         
 
 class ProductSerializer(serializers.ModelSerializer):
-    mrp = serializers.SerializerMethodField()
-    salesprice = serializers.SerializerMethodField()
-    barcode_number = serializers.SerializerMethodField()
+    mrp = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    salesprice = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    barcode_number = serializers.CharField(required=False)
     barcode_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
-        fields = '__all__'  # Or list explicitly for more control
+        fields = '__all__'
 
     def get_latest_barcode(self, obj):
         return obj.barcode_detail.order_by('-created_on').first()
-
-    def get_mrp(self, obj):
-        latest = self.get_latest_barcode(obj)
-        return latest.mrp if latest else None
-
-    def get_salesprice(self, obj):
-        latest = self.get_latest_barcode(obj)
-        return latest.salesprice if latest else None
-
-    def get_barcode_number(self, obj):
-        latest = self.get_latest_barcode(obj)
-        return latest.barcode_number if latest else None
 
     def get_barcode_image(self, obj):
         latest = self.get_latest_barcode(obj)
@@ -183,15 +171,12 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         with transaction.atomic():
-            # Extract and remove fields that belong to BarcodeDetail
             mrp = validated_data.pop('mrp', None)
             salesprice = validated_data.pop('salesprice', None)
             barcode_number = validated_data.pop('barcode_number', None) or self.generate_unique_barcode()
 
-            # Create product
             product = Product.objects.create(**validated_data)
 
-            # If barcode is required, create BarcodeDetail
             if product.isbarcoderequired:
                 barcode_image = self.generate_barcode_image(barcode_number, product, mrp, salesprice)
                 barcode_detail = BarcodeDetail.objects.create(
@@ -204,6 +189,15 @@ class ProductSerializer(serializers.ModelSerializer):
                 barcode_detail.barcode_image.save(file_name, barcode_image, save=True)
 
             return product
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        latest = self.get_latest_barcode(instance)
+        rep['mrp'] = latest.mrp if latest else None
+        rep['salesprice'] = latest.salesprice if latest else None
+        rep['barcode_number'] = latest.barcode_number if latest else None
+        rep['barcode_image'] = self.get_barcode_image(instance)
+        return rep
 
     def generate_barcode_image(self, barcode_number, product, mrp, salesprice):
         buffer = BytesIO()

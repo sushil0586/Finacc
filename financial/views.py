@@ -770,7 +770,7 @@ class ShippingDetailsByAccountView(ListAPIView):
     
     def get_queryset(self):
         account_id = self.kwargs.get('account_id')
-        return ShippingDetails.objects.filter(account_id=account_id)
+        return ShippingDetails.objects.select_related('country', 'state', 'district', 'city').filter(account_id=account_id)
     
 class StaticAccountsAPIView(APIView):
     

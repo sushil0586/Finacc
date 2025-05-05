@@ -23,14 +23,14 @@ class ShippingDetailsSerializer(serializers.ModelSerializer):
 
 
 class ShippingDetailsListSerializer(serializers.ModelSerializer):
-    country = serializers.IntegerField(source='country.id')
-    countryName = serializers.CharField(source='country.countryname')
-    state = serializers.IntegerField(source='state.id')
-    stateName = serializers.CharField(source='state.statename')
-    district = serializers.IntegerField(source='district.id')
-    districtName = serializers.CharField(source='district.districtname')
-    city = serializers.IntegerField(source='city.id')
-    cityName = serializers.CharField(source='city.cityname')
+    country = serializers.SerializerMethodField()
+    countryName = serializers.SerializerMethodField()
+    state = serializers.SerializerMethodField()
+    stateName = serializers.SerializerMethodField()
+    district = serializers.SerializerMethodField()
+    districtName = serializers.SerializerMethodField()
+    city = serializers.SerializerMethodField()
+    cityName = serializers.SerializerMethodField()
 
     class Meta:
         model = ShippingDetails
@@ -39,6 +39,30 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
             'city', 'cityName'
         ]
+
+    def get_country(self, obj):
+        return obj.country.id if obj.country else None
+
+    def get_countryName(self, obj):
+        return obj.country.countryname if obj.country else None
+
+    def get_state(self, obj):
+        return obj.state.id if obj.state else None
+
+    def get_stateName(self, obj):
+        return obj.state.statename if obj.state else None
+
+    def get_district(self, obj):
+        return obj.district.id if obj.district else None
+
+    def get_districtName(self, obj):
+        return obj.district.districtname if obj.district else None
+
+    def get_city(self, obj):
+        return obj.city.id if obj.city else None
+
+    def get_cityName(self, obj):
+        return obj.city.cityname if obj.city else None
 
 class AccountSerializer(serializers.ModelSerializer):
 
