@@ -1,6 +1,7 @@
 from django.http import request
 from django.shortcuts import render
 from rest_framework import response,status,permissions
+from django.db import transaction
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping
@@ -810,12 +811,51 @@ class StaticAccountMappingListCreateView(ListCreateAPIView):
     queryset = staticacountsmapping.objects.all()
     serializer_class = StaticAccountMappingSerializer
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         is_many = isinstance(request.data, list)
-        serializer = self.get_serializer(data=request.data, many=is_many)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        data_list = request.data if is_many else [request.data]
+        results = []
+
+        for item in data_list:
+            staticaccount_id = item.get("staticaccount")
+            entity_id = item.get("entity")
+            account_id = item.get("account")
+
+            if not staticaccount_id or not entity_id:
+                return Response(
+                    {"detail": "Both 'staticaccount' and 'entity' are required."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                instance = staticacountsmapping.objects.get(
+                    staticaccount_id=staticaccount_id,
+                    entity_id=entity_id
+                )
+
+                if account_id is None:
+                    # Delete if account is null
+                    instance.delete()
+                    continue
+
+                # Update existing mapping
+                serializer = self.get_serializer(instance, data=item, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
+                results.append(serializer.data)
+
+            except staticacountsmapping.DoesNotExist:
+                if account_id is None:
+                    # Don't create if account is null
+                    continue
+                # Create new mapping
+                serializer = self.get_serializer(data=item)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
+                results.append(serializer.data)
+
+        return Response(results, status=status.HTTP_200_OK)
 
 
 # GET by ID, PUT, DELETE
