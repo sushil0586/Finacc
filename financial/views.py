@@ -10,7 +10,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 import os
 import json
 from django.db.models import Sum
-from django.db.models import Q
+from django.db.models import Q,OuterRef, Subquery,F
 import numpy as np
 import pandas as pd
 from rest_framework.response import Response
@@ -822,6 +822,36 @@ class StaticAccountMappingListCreateView(ListCreateAPIView):
 class StaticAccountMappingRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
     queryset = staticacountsmapping.objects.all()
     serializer_class = StaticAccountMappingSerializer
+
+
+class StaticAccountFlatListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        entity_id = request.query_params.get('entity')
+        accounttype_id = request.query_params.get('accounttype')
+
+        if not entity_id:
+            return Response({'detail': 'entity is required'}, status=400)
+
+        mapping_qs = staticacountsmapping.objects.filter(
+            staticaccount=OuterRef('pk'),
+            entity_id=entity_id
+        ).values('account_id')[:1]
+
+        base_filter = Q()
+        if accounttype_id:
+            base_filter &= Q(accounttype_id=accounttype_id)
+
+        queryset = staticacounts.objects.filter(base_filter).annotate(
+            staticaccountid=F('id'),
+            staticaccountname=F('staticaccount'),
+            accountid=Subquery(mapping_qs)
+        ).values(
+            'staticaccountid', 'staticaccountname', 'accountid'
+        )
+
+        return Response(list(queryset))
 
 
     
