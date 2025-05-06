@@ -212,7 +212,7 @@ class staticacountsmapping(TrackingModel):
     staticaccount         =     models.ForeignKey(to = staticacounts, on_delete= models.SET_NULL,null = True)
     account = models.ForeignKey(to = account, on_delete= models.SET_NULL,null = True)
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
-    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT)
+    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT,null = True)
 
 
     
