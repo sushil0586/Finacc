@@ -205,7 +205,7 @@ class staticacounts(TrackingModel):
     staticaccount = models.CharField(max_length= 255,verbose_name=_('static acount'))
     code = models.CharField(max_length= 255,verbose_name=_('Code'))
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
-    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT)
+    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT,null = True)
 
 
 class staticacountsmapping(TrackingModel):
