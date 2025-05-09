@@ -27,7 +27,11 @@ admin.site.register(account,accountAdmin)
 
 admin.site.register(accounttype)
 admin.site.register(ShippingDetails)
-admin.site.register(staticacounts)
+
+class staticacountsadAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['accounttype','staticaccount','code']
+ 
+admin.site.register(staticacounts,staticacountsadAdmin)
 admin.site.register(staticacountsmapping)
 
 
