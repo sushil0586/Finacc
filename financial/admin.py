@@ -25,7 +25,10 @@ admin.site.register(account,accountAdmin)
 # admin.site.register(account_detials1)
 # admin.site.register(account_detials2)
 
-admin.site.register(accounttype)
+class accounttypeadmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['id', 'accounttypename','accounttypecode','entity']
+
+admin.site.register(accounttype,accounttypeadmin)
 admin.site.register(ShippingDetails)
 
 class staticacountsadAdmin(ImportExportMixin,admin.ModelAdmin):
