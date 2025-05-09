@@ -1,6 +1,7 @@
 from django.contrib import admin
 from import_export.admin import ImportExportMixin
 
+
 from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping
 # Register your models here.
 
