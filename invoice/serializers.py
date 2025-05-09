@@ -7,7 +7,7 @@ from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation
-from financial.models import account,accountHead,ShippingDetails
+from financial.models import account,accountHead,ShippingDetails,staticacounts,staticacountsmapping
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
@@ -426,48 +426,56 @@ class purchasetaxtypeserializer(serializers.ModelSerializer):
 
 class stocktransconstant:
 
-    def getcgst(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6001)
-    
-    def getsgst(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6002)
-    
-    def getigst(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6003)
-    
-    def getcgstr(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6005)
-    
-    def getsgstr(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6006)
-    
-    def getigstr(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6007)
-    
-    def getcessid(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 6004)
-    
-    def gettcs206c1ch2id(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 8050)
+    def get_account_by_static_code(self, pentity, code):
+        try:
+            static_account = staticacounts.objects.get(code=code)
+            mapping = staticacountsmapping.objects.get(staticaccount=static_account, entity=pentity)
+            return mapping.account
+        except (staticacounts.DoesNotExist, staticacountsmapping.DoesNotExist):
+            return None
 
-    def gettcs206C2id(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 8051)
-    
-    def gettds194q1id(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 8100)
-    
-    def getexpensesid(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 8300)
-    
-    def getcashid(self,pentity):
-        return account.objects.get(entity =pentity,accountcode = 4000)
+    def getcgst(self, pentity):
+        return self.get_account_by_static_code(pentity, '6001')
+
+    def getsgst(self, pentity):
+        return self.get_account_by_static_code(pentity, '6002')
+
+    def getigst(self, pentity):
+        return self.get_account_by_static_code(pentity, '6003')
+
+    def getcgstr(self, pentity):
+        return self.get_account_by_static_code(pentity, '6005')
+
+    def getsgstr(self, pentity):
+        return self.get_account_by_static_code(pentity, '6006')
+
+    def getigstr(self, pentity):
+        return self.get_account_by_static_code(pentity, '6007')
+
+    def getcessid(self, pentity):
+        return self.get_account_by_static_code(pentity, '6004')
+
+    def gettcs206c1ch2id(self, pentity):
+        return self.get_account_by_static_code(pentity, '8050')
+
+    def gettcs206C2id(self, pentity):
+        return self.get_account_by_static_code(pentity, '8051')
+
+    def gettds194q1id(self, pentity):
+        return self.get_account_by_static_code(pentity, '8100')
+
+    def getexpensesid(self, pentity):
+        return self.get_account_by_static_code(pentity, '8300')
+
+    def getcashid(self, pentity):
+        return self.get_account_by_static_code(pentity, '4000')
     
     def gettdsreturnid(self):
         return tdsreturns.objects.get(tdsreturnname = '26Q TDS')
     
 
     def gettdstypeid(self):
-        return tdstype.objects.get(tdssection = '194Q')
+        return tdstype.objects.get(tdssection = '194Q')     
 
     
     def gettdsvbono(self,pentity):

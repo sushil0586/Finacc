@@ -5669,14 +5669,15 @@ class GetReceiptNumberAPIView(APIView):
     def get(self, request):
         entity_id = request.query_params.get('entity_id')
         entityfinid_id = request.query_params.get('entityfinid_id')
+        doccode = request.query_params.get('doccode')
 
-        if not entity_id or not entityfinid_id:
+        if not entity_id or not entityfinid_id or not doccode:
             return Response(
-                {"error": "Both 'entity_id' and 'entityfinid_id' are required."},
+                {"error": "Parameters 'entity_id', 'entityfinid_id', and 'doccode' are required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        doc_type = get_object_or_404(doctype, doccode='1002', entity_id=entity_id)
+        doc_type = get_object_or_404(doctype, doccode=doccode, entity_id=entity_id)
 
         sales_invoice_settings = get_object_or_404(
             SalesInvoiceSettings,
