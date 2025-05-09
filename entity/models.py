@@ -3,6 +3,7 @@ from django.db.models.fields import NullBooleanField
 from helpers.models import TrackingModel
 from Authentication.models import User,MainMenu,Submenu
 from geography.models import Country,State,District,City
+from django.utils.dateformat import DateFormat
 #from Authentication.models import User 
 
 # Create your models here.
@@ -137,7 +138,11 @@ class entityfinancialyear(TrackingModel):
 
 
     def __str__(self):
-        return f'{self.entity}'
+        if self.finstartyear and self.finendyear:
+            start_str = DateFormat(self.finstartyear).format('m-Y')
+            end_str = DateFormat(self.finendyear).format('m-Y')
+            return f'{start_str} - {end_str}'
+        return 'Financial Year'
     
 
 class entityconstitution(TrackingModel):
