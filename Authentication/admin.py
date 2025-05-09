@@ -15,7 +15,10 @@ class MainMenuAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('mainmenu', 'menuurl','menucode','order',)
 
 
-admin.site.register(User)
+class userAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ( 'id','username', 'email',)
+   
+admin.site.register(User,userAdmin)
 
 
 admin.site.register(MainMenu,MainMenuAdmin)
