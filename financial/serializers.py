@@ -14,12 +14,12 @@ from django.db import transaction
 class ShippingDetailsgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
 
 class ShippingDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
 
 
 class ShippingDetailsListSerializer(serializers.ModelSerializer):
@@ -35,7 +35,7 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
         fields = [
-            'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
+            'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name','emailid',
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
             'city', 'cityName'
         ]
@@ -68,12 +68,12 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
 class ContactDetailsgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
 
 class ContactDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
 
 
 class ContactDetailsListSerializer(serializers.ModelSerializer):
@@ -90,7 +90,7 @@ class ContactDetailsListSerializer(serializers.ModelSerializer):
         model = ContactDetails
         fields = [
             'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
-            'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
+            'country', 'countryName', 'state', 'stateName', 'district', 'districtName','emailid',
             'city', 'cityName'
         ]
 
@@ -126,11 +126,11 @@ class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = account
         fields = (
-            'id', 'accountcode','iscompany','reminders', 'accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
+            'id', 'accountcode','iscompany','reminders','website','accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
             'address1', 'address2', 'gstintype','isaddsameasbillinf',
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
-            'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'BanKAcno', 'composition', 'accounttype', 'createdby','shipping_details','contact_details',
+            'bankname', 'adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'banKAcno', 'composition', 'accounttype', 'createdby','shipping_details','contact_details',
         )
 
     def create(self, validated_data):
@@ -172,11 +172,11 @@ class AccountSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         fields = [
-            'accountdate', 'accounthead','iscompany','reminders', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
+            'accountdate', 'accounthead','iscompany','reminders','website', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
             'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf',
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
-            'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'Adhaarno', 'saccode',
-            'contactperson', 'deprate', 'tdsrate', 'gstshare', 'BanKAcno', 'accounttype',
+            'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'adhaarno', 'saccode',
+            'contactperson', 'deprate', 'tdsrate', 'gstshare', 'banKAcno', 'accounttype',
             'composition', 'createdby'
         ]
 

@@ -85,6 +85,7 @@ class accountHead(TrackingModel):
 class account(TrackingModel):
     accountdate = models.DateTimeField(verbose_name='Account date',null = True)
     iscompany       = models.BooleanField(verbose_name=_('IsCompany'),null=True)
+    website       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'),blank = True)
     reminders = models.IntegerField(verbose_name=_('Reminders'),null=True,blank=True)
     accounthead = models.ForeignKey(to = accountHead,related_name='accounthead_accounts', on_delete= models.PROTECT,null = True)
     creditaccounthead = models.ForeignKey(to = accountHead,related_name='accounthead_creditaccounts', on_delete= models.PROTECT,null = True)
@@ -120,7 +121,7 @@ class account(TrackingModel):
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT,)
     rtgsno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Rtgs no'))
     bankname          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Bank Name'))
-    Adhaarno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Adhaar No'))
+    adhaarno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Adhaar No'))
     saccode          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('SAC Code'))
     contactperson       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact Person'))
     deprate             = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Depreciaion Rate'))
@@ -128,7 +129,7 @@ class account(TrackingModel):
     gstshare            = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Adhaar No'))
     quanity1            = models.IntegerField(verbose_name=_('Quanity 1'),null=True,blank=True)
     quanity2            = models.IntegerField(verbose_name=_('Quanity 2'),null=True,blank=True)
-    BanKAcno            = models.IntegerField(verbose_name=_('Bank A/c No'),null=True,blank=True)
+    banKAcno            = models.IntegerField(verbose_name=_('Bank A/c No'),null=True,blank=True)
     composition         = models.BooleanField(verbose_name=_('Bank A/c No'),null=True,blank=True)
     canbedeleted        = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
     accounttype         =     models.ForeignKey(to = accounttype, on_delete= models.SET_NULL,null = True)
@@ -166,6 +167,7 @@ class ShippingDetails(models.Model):
     city = models.ForeignKey(City, null=True, on_delete=models.PROTECT)
     pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Pincode'))
     phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Phone No'))
+    emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
     full_name = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Full Name'))
     
     def __str__(self):
@@ -182,6 +184,7 @@ class ContactDetails(models.Model):
     city = models.ForeignKey(City, null=True, on_delete=models.PROTECT)
     pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Pincode'))
     phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Phone No'))
+    emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
     full_name = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Full Name'))
     
     def __str__(self):

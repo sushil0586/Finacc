@@ -31,7 +31,7 @@ from invoice.serializers import (
     accounthserializer, stocktranserilaizer, cashserializer, journalmainSerializer,
     stockdetailsSerializer, stockmainSerializer, PRSerializer, SRSerializer,
     stockVSerializer, stockserializer, Purchasebyaccountserializer, Salebyaccountserializer,
-    entitySerializer1, cbserializer, ledgerserializer, ledgersummaryserializer,
+    entitySerializer1,  ledgerserializer, ledgersummaryserializer,
     stockledgersummaryserializer, stockledgerbookserializer, balancesheetserializer,
     gstr1b2bserializer, gstr1hsnserializer, purchasetaxtypeserializer, tdsmainSerializer,
     tdsVSerializer, tdstypeSerializer, TdsmaincancelSerializer, SaleinvoicecancelSerializer,
@@ -3671,32 +3671,32 @@ class daybookviewapi(ListAPIView):
         return queryset
 
 
-class cbviewapi(ListAPIView):
+# class cbviewapi(ListAPIView):
 
-    serializer_class = cbserializer
-  #  filter_class = accountheadFilter
-    permission_classes = (permissions.IsAuthenticated,)
+#     serializer_class = cbserializer
+#   #  filter_class = accountheadFilter
+#     permission_classes = (permissions.IsAuthenticated,)
 
-    filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id']
-    def get_queryset(self):
-        #account = self.request.query_params.get('account')
-        entity = self.request.query_params.get('entity')
-        startdate = self.request.query_params.get('startdate')
-        enddate =  datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
+#     filter_backends = [DjangoFilterBackend]
+#     #filterset_fields = ['id']
+#     def get_queryset(self):
+#         #account = self.request.query_params.get('account')
+#         entity = self.request.query_params.get('entity')
+#         startdate = self.request.query_params.get('startdate')
+#         enddate =  datetime.strptime(self.request.query_params.get('enddate') , '%Y-%m-%d') + timedelta(days = 1)
 
 
 
-      #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
+#       #  queryset1=StockTransactions.objects.filter(entity=entity,accounttype = 'M').order_by('account').only('account__accountname','transactiontype','drcr','transactionid','desc','debitamount','creditamount')
 
-        queryset=entry.objects.filter(entity=entity,entrydate1__range = (startdate,enddate)).prefetch_related('cashtrans').order_by('entrydate1')
+#         queryset=entry.objects.filter(entity=entity,entrydate1__range = (startdate,enddate)).prefetch_related('cashtrans').order_by('entrydate1')
 
        
 
      
         
      
-        return queryset
+#         return queryset
 
 
 
