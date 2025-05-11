@@ -729,8 +729,8 @@ class purchaseorder(TrackingModel):
     cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
     expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
     gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
-    roundOff = models.DecimalField(max_digits=14, decimal_places=4,default=0 , verbose_name= 'G Total')
-    finalAmount = models.DecimalField(max_digits=14, decimal_places=4,default=0 , verbose_name= 'G Total')
+    roundOff = models.DecimalField(max_digits=14, decimal_places=4,default=0 , verbose_name= 'round off')
+    finalAmount = models.DecimalField(max_digits=14, decimal_places=4,default=0 , verbose_name= 'Final amount')
     subentity = models.ForeignKey(subentity,on_delete=models.PROTECT,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.PROTECT,verbose_name= 'entity')
     

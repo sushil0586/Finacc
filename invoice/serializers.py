@@ -470,6 +470,19 @@ class stocktransconstant:
     def getcashid(self, pentity):
         return self.get_account_by_static_code(pentity, '4000')
     
+    def getdiscount(self, pentity):
+        return self.get_account_by_static_code(pentity, '8400')
+    
+    def getbankcharges(self, pentity):
+        return self.get_account_by_static_code(pentity, '8500')
+    
+    def getroundoffincome(self, pentity):
+        return self.get_account_by_static_code(pentity, '6011')
+    
+    def getroundoffexpnses(self, pentity):
+        return self.get_account_by_static_code(pentity, '6012')
+
+    
     def gettdsreturnid(self):
         return tdsreturns.objects.get(tdsreturnname = '26Q TDS')
     
@@ -886,6 +899,7 @@ class stocktransaction:
         tcs206C2 = self.order.tcs206C2
         tds194q1 = self.order.tds194q1
         expenses = self.order.expenses
+        roundOff = self.order.roundOff
         gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
 
         const = stocktransconstant()
@@ -908,11 +922,22 @@ class stocktransaction:
         if self.order.billcash == 0:
             iscash = True
             cash = const.getcashid(pentity)
+
                 
             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = self.transactiontype,transactionid = id,desc = 'Cash Credit Purchase V.No : ' + str(self.order.voucherno),drcr=0,creditamount=gtotal,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype='CIH',iscashtransaction= iscash,voucherno = self.order.voucherno)
             StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = ' Cash Purchase By V.No : ' + str(self.order.voucherno),drcr=1,debitamount=gtotal,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',iscashtransaction = iscash,voucherno = self.order.voucherno)
 
-       
+        if roundOff != 0:
+            if roundOff > 0:
+                roundoffid = const.getroundoffexpnses(pentity)
+                StockTransactions.objects.create(accounthead = roundoffid.accounthead, account= roundoffid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.debit,debitamount=abs(roundOff),entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,voucherno = self.order.voucherno)
+
+            if roundOff < 0:
+                roundoffid = const.getroundoffincome(pentity)
+                StockTransactions.objects.create(accounthead = roundoffid.accounthead, account= roundoffid,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno) ,drcr=self.credit,creditamount=abs(roundOff),entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,voucherno = self.order.voucherno)
+
+
+
         StockTransactions.objects.create(accounthead= self.order.account.accounthead,account= self.order.account,transactiontype = self.transactiontype,transactionid = id,desc = self.description + ' ' + str(self.order.voucherno),drcr=self.credit,creditamount=gtotal,entity=pentity,createdby= self.order.createdby,entry =entryid,entrydatetime = self.order.billdate,accounttype = 'M',voucherno = self.order.voucherno)
         #Transactions.objects.create(account= purchaseid,transactiontype = 'P',transactionid = id,desc = 'Purchase from',drcr=1,amount=subtotal,entity=pentity,createdby = order.createdby )
         if igst > 0:
@@ -1003,11 +1028,12 @@ class stocktransactionsale:
         sgst = self.order.sgst
         igst = self.order.igst
         cess = self.order.cess
+        roundOff = self.order.roundOff
         tcs206c1ch2 = self.order.tcs206c1ch2
         tcs206C2 = self.order.tcs206C2
         tds194q1 = self.order.tds194q1
         expenses = self.order.expenses
-        gtotal = self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2)
+        gtotal = round(self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2))
         pentity = self.order.entity
         const = stocktransconstant()
 
@@ -1037,6 +1063,16 @@ class stocktransactionsale:
             cash = const.getcashid(pentity)
             StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
             StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
+        
+
+        if roundOff != 0:
+            if roundOff < 0:
+                roundoffid = const.getroundoffexpnses(pentity)
+                StockTransactions.objects.create(accounthead=roundoffid.accounthead, account=roundoffid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=abs(roundOff), entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
+
+            if roundOff > 0:
+                roundoffid = const.getroundoffincome(pentity)
+                StockTransactions.objects.create(accounthead=roundoffid.accounthead, account=roundoffid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=abs(roundOff), entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
 
         StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
         
@@ -1363,6 +1399,7 @@ class journalmainSerializer(serializers.ModelSerializer):
         fields = ('id','voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entityfinid','entity','createdby', 'isactive','journaldetails',)
     def create(self, validated_data):
         journaldetails_data = validated_data.pop('journaldetails')
+        const = stocktransconstant()
         with transaction.atomic():
             order = journalmain.objects.create(**validated_data)
             for journaldetail_data in journaldetails_data:
@@ -1398,12 +1435,14 @@ class journalmainSerializer(serializers.ModelSerializer):
                     iscash = True
 
                     #if self.order.account.accountcode == 4000:
+
+                    cash = const.getcashid(order.entity)
                         
-                    cash = account.objects.get(entity =order.entity,accountcode = 4000)
+                    #cash = account.objects.get(entity =order.entity,accountcode = 4000)
                     if detail.drcr == 1:
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            disc = const.getdiscount(order.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
@@ -1411,7 +1450,7 @@ class journalmainSerializer(serializers.ModelSerializer):
                     else:
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            disc = const.getdiscount(order.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
@@ -1425,18 +1464,18 @@ class journalmainSerializer(serializers.ModelSerializer):
                         if detail.discount > 0:
 
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            disc = const.getdiscount(order.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
-                            bc = account.objects.get(entity =order.entity,accountcode = 8500)
+                            bc = const.getbankcharges(order.entity)
                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
                         if detail.tds > 0:
                             nnation = ' (tds)'
-                            tds = account.objects.get(entity =order.entity,accountcode = 8100)
+                            tds = const.gettds194q1id(order.entity)
                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
@@ -1444,17 +1483,17 @@ class journalmainSerializer(serializers.ModelSerializer):
                     else:
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =order.entity,accountcode = 8400)
+                            disc = const.getdiscount(order.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation ,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
-                            bc = account.objects.get(entity =order.entity,accountcode = 8500)
+                            bc = const.getbankcharges(order.entity)
                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                         if detail.tds > 0:
                             nnation = ' (tds)'
-                            tds = account.objects.get(entity =order.entity,accountcode = 8100)
+                            tds = const.gettds194q1id(order.entity)
                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
@@ -1468,6 +1507,7 @@ class journalmainSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
+        const = stocktransconstant()
         fields = ['voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entityfinid', 'entity','createdby','isactive',]
         for field in fields:
             try:
@@ -1504,11 +1544,11 @@ class journalmainSerializer(serializers.ModelSerializer):
                     iscash = True
                     #if self.order.account.accountcode == 4000:
                         
-                    cash = account.objects.get(entity =instance.entity,accountcode = 4000)
+                    cash = const.getcashid(instance.entity)
                     if detail.drcr == 1:
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =instance.entity,accountcode = 8400)
+                            disc = const.getdiscount(instance.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno,iscashtransaction= iscash)
                             
@@ -1517,7 +1557,7 @@ class journalmainSerializer(serializers.ModelSerializer):
                     else:
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =instance.entity,accountcode = 8400)
+                            disc = const.getdiscount(instance.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno,iscashtransaction= iscash)
                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = instance.voucherno)
@@ -1529,18 +1569,18 @@ class journalmainSerializer(serializers.ModelSerializer):
 
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =instance.entity,accountcode = 8400)
+                            disc = const.getdiscount(instance.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
-                            bc = account.objects.get(entity =instance.entity,accountcode = 8500)
+                            bc = const.getbankcharges(instance.entity)
                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                         
                         if detail.tds > 0:
                             nnation = ' (tds)'
-                            tds = account.objects.get(entity =instance.entity,accountcode = 8100)
+                            tds = const.gettds194q1id(instance.entity)
                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
@@ -1548,19 +1588,19 @@ class journalmainSerializer(serializers.ModelSerializer):
                     else:
                         if detail.discount > 0:
                             nnation = ' (discount)'
-                            disc = account.objects.get(entity =instance.entity,accountcode = 8400)
+                            disc = const.getdiscount(instance.entity)
                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                         
                         if detail.bankcharges > 0:
                             nnation = ' (B Charges)'
-                            bc = account.objects.get(entity =instance.entity,accountcode = 8500)
+                            bc = const.getbankcharges(instance.entity)
                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
                         if detail.tds > 0:
                             nnation = ' (tds)'
-                            tds = account.objects.get(entity =instance.entity,accountcode = 8100)
+                            tds = const.gettds194q1id(instance.entity)
                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
@@ -3491,172 +3531,172 @@ class cashserializer(serializers.ModelSerializer):
 
 
 
-class   cbserializer(serializers.ModelSerializer):
+# class   cbserializer(serializers.ModelSerializer):
 
 
-   # cashtrans = stocktranserilaizer(source = 'account_transactions', many=True, read_only=True)
+#    # cashtrans = stocktranserilaizer(source = 'account_transactions', many=True, read_only=True)
 
-    openingbalance  = serializers.SerializerMethodField()
-    reciept  = serializers.SerializerMethodField()
-    payment = serializers.SerializerMethodField()
-    entrydate = serializers.SerializerMethodField()
-    payments = serializers.SerializerMethodField()
-    reciepts = serializers.SerializerMethodField()
-    cashinhand = serializers.SerializerMethodField()
-    reciepttotal = serializers.SerializerMethodField()
-    paymenttotal = serializers.SerializerMethodField()
-
-
-
-
-
-   # stk = stocktranserilaizer(many=True, read_only=True)
-   # select_related_fields = ('accounthead')
-
-    # debit  = serializers.SerializerMethodField()
-   # day = serializers.CharField()
-
-    class Meta:
-        model = entry
-        fields = ['id','entrydate','openingbalance','cashinhand','reciept','payment','reciepttotal','paymenttotal', 'payments','reciepts']
-
-    def get_reciept(self, obj):
-
-        # yesterday = obj.entrydate1 - timedelta(days = 0)
-        # startdate = obj.entrydate1 - timedelta(days = 10)
-
-       # print(obj.cashtrans('account'))
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
-
-    def get_payment(self, obj):
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return obj.cashtrans.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
-
-    def get_openingbalance(self, obj):
-
-        yesterday = obj.entrydate1 - timedelta(days = 1)
-        startdate = obj.entrydate1 - timedelta(days = 200)
-        debit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
-        credit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
-        # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
-        # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
-        if not debit:
-            debit = 0
-        if not credit:
-            credit = 0
-
-
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return debit - credit
-
-    
-    def get_cashinhand(self, obj):
-
-        yesterday = obj.entrydate1 - timedelta(days = 1)
-        startdate = obj.entrydate1 - timedelta(days = 200)
-        debit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
-        credit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
-        # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
-        # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
-        if not debit:
-            debit = 0
-        if not credit:
-            credit = 0
-        if not self.get_reciept(obj=obj):
-            reciept = 0
-        else:
-            reciept = self.get_reciept(obj=obj)
-
-        if not self.get_payment(obj=obj):
-            payment = 0
-        else:
-            payment = self.get_payment(obj=obj)
-
-
-
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return debit - credit + reciept - payment
-
-    def get_entrydate(self,obj):
-        return obj.entrydate1.strftime("%d-%m-%Y")
-
-    def get_reciepttotal(self, obj):
-
-        # yesterday = obj.entrydate1 - timedelta(days = 0)
-        # startdate = obj.entrydate1 - timedelta(days = 10)
-
-        if not self.get_openingbalance(obj):
-            balance = 0
-        else:
-            balance = self.get_openingbalance(obj)
-        
-        if not self.get_reciept(obj):
-            reciept = 0
-        else:
-            reciept = self.get_reciept(obj)
+#     openingbalance  = serializers.SerializerMethodField()
+#     reciept  = serializers.SerializerMethodField()
+#     payment = serializers.SerializerMethodField()
+#     entrydate = serializers.SerializerMethodField()
+#     payments = serializers.SerializerMethodField()
+#     reciepts = serializers.SerializerMethodField()
+#     cashinhand = serializers.SerializerMethodField()
+#     reciepttotal = serializers.SerializerMethodField()
+#     paymenttotal = serializers.SerializerMethodField()
 
 
 
 
-       # print(obj.cashtrans('account'))
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return balance + reciept
+
+#    # stk = stocktranserilaizer(many=True, read_only=True)
+#    # select_related_fields = ('accounthead')
+
+#     # debit  = serializers.SerializerMethodField()
+#    # day = serializers.CharField()
+
+#     class Meta:
+#         model = entry
+#         fields = ['id','entrydate','openingbalance','cashinhand','reciept','payment','reciepttotal','paymenttotal', 'payments','reciepts']
+
+#     def get_reciept(self, obj):
+
+#         # yesterday = obj.entrydate1 - timedelta(days = 0)
+#         # startdate = obj.entrydate1 - timedelta(days = 10)
+
+#        # print(obj.cashtrans('account'))
+#         # fromDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         # toDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         return obj.cashtrans.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+
+#     def get_payment(self, obj):
+#         # fromDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         # toDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         return obj.cashtrans.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
+
+#     def get_openingbalance(self, obj):
+
+#         yesterday = obj.entrydate1 - timedelta(days = 1)
+#         startdate = obj.entrydate1 - timedelta(days = 200)
+#         debit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+#         credit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
+#         # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
+#         # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
+#         if not debit:
+#             debit = 0
+#         if not credit:
+#             credit = 0
+
+
+#         # fromDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         # toDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         return debit - credit
 
     
-    def get_paymenttotal(self, obj):
+#     def get_cashinhand(self, obj):
 
-        if not self.get_cashinhand(obj):
-            cashinhand = 0
-        else:
-            cashinhand =self.get_cashinhand(obj)
+#         yesterday = obj.entrydate1 - timedelta(days = 1)
+#         startdate = obj.entrydate1 - timedelta(days = 200)
+#         debit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('debitamount'))['debitamount__sum']
+#         credit = StockTransactions.objects.filter(account__accountcode = 4000,accounttype = 'CIH',iscashtransaction = True,entry__entrydate1__range = (startdate,yesterday),entity = obj.entity,isactive = 1).aggregate(Sum('creditamount'))['creditamount__sum']
+#         # debit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('debitamount'))['debitamount__sum']
+#         # credit = obj.cashtrans.filter(accounttype = 'CIH').aggregate(Sum('creditamount'))['creditamount__sum']
+#         if not debit:
+#             debit = 0
+#         if not credit:
+#             credit = 0
+#         if not self.get_reciept(obj=obj):
+#             reciept = 0
+#         else:
+#             reciept = self.get_reciept(obj=obj)
+
+#         if not self.get_payment(obj=obj):
+#             payment = 0
+#         else:
+#             payment = self.get_payment(obj=obj)
+
+
+
+#         # fromDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         # toDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         return debit - credit + reciept - payment
+
+#     def get_entrydate(self,obj):
+#         return obj.entrydate1.strftime("%d-%m-%Y")
+
+#     def get_reciepttotal(self, obj):
+
+#         # yesterday = obj.entrydate1 - timedelta(days = 0)
+#         # startdate = obj.entrydate1 - timedelta(days = 10)
+
+#         if not self.get_openingbalance(obj):
+#             balance = 0
+#         else:
+#             balance = self.get_openingbalance(obj)
         
-        if not self.get_payment(obj):
-            payment = 0
-        else:
-            payment = self.get_payment(obj)
+#         if not self.get_reciept(obj):
+#             reciept = 0
+#         else:
+#             reciept = self.get_reciept(obj)
 
 
-        # yesterday = obj.entrydate1 - timedelta(days = 0)
-        # startdate = obj.entrydate1 - timedelta(days = 10)
 
-       # print(obj.cashtrans('account'))
-        # fromDate = parse_datetime(self.context['request'].query_params.get(
-        #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        # toDate = parse_datetime(self.context['request'].query_params.get(
-        #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
-        return cashinhand + payment
 
-    def get_reciepts(self,obj):
-        print(self.context['request'])
-        
-        #stock =  obj.cashtrans.filter(drcr = False).order_by('account')
-       # print(stock)
-
-        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False,accounttype__in = ['M'],isactive = 1,iscashtransaction= 1)
-        #return account1Serializer(accounts,many=True).data
-        return stocktranserilaizer(stock, many=True).data
+#        # print(obj.cashtrans('account'))
+#         # fromDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         # toDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         return balance + reciept
 
     
-    def get_payments(self,obj):
-        stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,accounttype__in = ['M'],isactive = 1,iscashtransaction= 1)
-        #return account1Serializer(accounts,many=True).data
-        return stocktranserilaizer(stock, many=True).data
+#     def get_paymenttotal(self, obj):
+
+#         if not self.get_cashinhand(obj):
+#             cashinhand = 0
+#         else:
+#             cashinhand =self.get_cashinhand(obj)
+        
+#         if not self.get_payment(obj):
+#             payment = 0
+#         else:
+#             payment = self.get_payment(obj)
+
+
+#         # yesterday = obj.entrydate1 - timedelta(days = 0)
+#         # startdate = obj.entrydate1 - timedelta(days = 10)
+
+#        # print(obj.cashtrans('account'))
+#         # fromDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'fromDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         # toDate = parse_datetime(self.context['request'].query_params.get(
+#         #     'toDate') + ' ' + '00:00:00').strftime('%Y-%m-%d %H:%M:%S')
+#         return cashinhand + payment
+
+#     def get_reciepts(self,obj):
+#         print(self.context['request'])
+        
+#         #stock =  obj.cashtrans.filter(drcr = False).order_by('account')
+#        # print(stock)
+
+#         stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = False,accounttype__in = ['M'],isactive = 1,iscashtransaction= 1)
+#         #return account1Serializer(accounts,many=True).data
+#         return stocktranserilaizer(stock, many=True).data
+
+    
+#     def get_payments(self,obj):
+#         stock = obj.cashtrans.filter(account__in = obj.cashtrans.values('account'),drcr = True,accounttype__in = ['M'],isactive = 1,iscashtransaction= 1)
+#         #return account1Serializer(accounts,many=True).data
+#         return stocktranserilaizer(stock, many=True).data
 
 
 
