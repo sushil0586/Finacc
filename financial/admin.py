@@ -2,7 +2,7 @@ from django.contrib import admin
 from import_export.admin import ImportExportMixin
 
 
-from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping
+from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
 # Register your models here.
 
 
@@ -31,6 +31,25 @@ class accounttypeadmin(ImportExportMixin,admin.ModelAdmin):
 
 admin.site.register(accounttype,accounttypeadmin)
 admin.site.register(ShippingDetails)
+@admin.register(ContactDetails)
+class ContactDetailsAdmin(admin.ModelAdmin):
+    list_display = (
+        'full_name',
+        'account_name',
+        'address1',
+        'city',
+        'district',
+        'state',
+        'country',
+        'pincode',
+        'phoneno',
+    )
+    search_fields = ('full_name', 'account__accountname', 'phoneno', 'pincode')
+    list_filter = ('country', 'state', 'district', 'city')
+
+    def account_name(self, obj):
+        return obj.account.accountname
+    account_name.short_description = 'Account Name'
 
 class staticacountsadAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['accounttype','staticaccount','code']

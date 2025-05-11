@@ -84,6 +84,8 @@ class accountHead(TrackingModel):
 
 class account(TrackingModel):
     accountdate = models.DateTimeField(verbose_name='Account date',null = True)
+    iscompany       = models.BooleanField(verbose_name=_('IsCompany'),null=True)
+    reminders = models.IntegerField(verbose_name=_('Reminders'),null=True,blank=True)
     accounthead = models.ForeignKey(to = accountHead,related_name='accounthead_accounts', on_delete= models.PROTECT,null = True)
     creditaccounthead = models.ForeignKey(to = accountHead,related_name='accounthead_creditaccounts', on_delete= models.PROTECT,null = True)
     accountcode = models.IntegerField(verbose_name=_('Account Code'),null=True,blank=True,default=1000)
@@ -156,6 +158,22 @@ class account(TrackingModel):
 
 class ShippingDetails(models.Model):
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name='shipping_details')
+    address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 1'))
+    address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 2'))
+    country = models.ForeignKey(Country, null=True, on_delete=models.PROTECT)
+    state = models.ForeignKey(State, null=True, on_delete=models.PROTECT)
+    district = models.ForeignKey(District, null=True, on_delete=models.PROTECT)
+    city = models.ForeignKey(City, null=True, on_delete=models.PROTECT)
+    pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Pincode'))
+    phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Phone No'))
+    full_name = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Full Name'))
+    
+    def __str__(self):
+        return f"{self.full_name} - {self.account.accountname}"
+    
+
+class ContactDetails(models.Model):
+    account = models.ForeignKey(account, on_delete=models.CASCADE, related_name='contact_details')
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 1'))
     address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 2'))
     country = models.ForeignKey(Country, null=True, on_delete=models.PROTECT)
