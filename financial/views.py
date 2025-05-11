@@ -4,8 +4,8 @@ from rest_framework import response,status,permissions
 from django.db import transaction
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
-from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer
+from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -764,6 +764,15 @@ class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
     queryset = ShippingDetails.objects.all()
     serializer_class = ShippingDetailsgetSerializer
 
+
+class ContactDetailsListCreateView(ListCreateAPIView):
+    queryset = ContactDetails.objects.all()
+    serializer_class = ContactDetailsgetSerializer
+
+class ContactDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+    queryset = ContactDetails.objects.all()
+    serializer_class = ContactDetailsgetSerializer
+
 # API View to Get Shipping Details by Account
 class ShippingDetailsByAccountView(ListAPIView):
     serializer_class = ShippingDetailsListSerializer
@@ -772,6 +781,15 @@ class ShippingDetailsByAccountView(ListAPIView):
     def get_queryset(self):
         account_id = self.kwargs.get('account_id')
         return ShippingDetails.objects.select_related('country', 'state', 'district', 'city').filter(account_id=account_id)
+    
+
+class ContactDetailsByAccountView(ListAPIView):
+    serializer_class = ContactDetailsListSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        account_id = self.kwargs.get('account_id')
+        return ContactDetails.objects.select_related('country', 'state', 'district', 'city').filter(account_id=account_id)
     
 class StaticAccountsAPIView(APIView):
     

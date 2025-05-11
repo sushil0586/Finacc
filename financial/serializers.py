@@ -1,7 +1,7 @@
 from sys import implementation
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField
-from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping
+from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
 from invoice.models import entry,StockTransactions
 from entity.models import Entity,entityfinancialyear
 from django.db.models import Q, Sum
@@ -33,7 +33,61 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     cityName = serializers.SerializerMethodField()
 
     class Meta:
-        model = ShippingDetails
+        model = ContactDetails
+        fields = [
+            'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
+            'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
+            'city', 'cityName'
+        ]
+
+    def get_country(self, obj):
+        return obj.country.id if obj.country else None
+
+    def get_countryName(self, obj):
+        return obj.country.countryname if obj.country else None
+
+    def get_state(self, obj):
+        return obj.state.id if obj.state else None
+
+    def get_stateName(self, obj):
+        return obj.state.statename if obj.state else None
+
+    def get_district(self, obj):
+        return obj.district.id if obj.district else None
+
+    def get_districtName(self, obj):
+        return obj.district.districtname if obj.district else None
+
+    def get_city(self, obj):
+        return obj.city.id if obj.city else None
+
+    def get_cityName(self, obj):
+        return obj.city.cityname if obj.city else None
+    
+
+class ContactDetailsgetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactDetails
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+
+class ContactDetailsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactDetails
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name',)
+
+
+class ContactDetailsListSerializer(serializers.ModelSerializer):
+    country = serializers.SerializerMethodField()
+    countryName = serializers.SerializerMethodField()
+    state = serializers.SerializerMethodField()
+    stateName = serializers.SerializerMethodField()
+    district = serializers.SerializerMethodField()
+    districtName = serializers.SerializerMethodField()
+    city = serializers.SerializerMethodField()
+    cityName = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ContactDetails
         fields = [
             'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
@@ -67,21 +121,25 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
 class AccountSerializer(serializers.ModelSerializer):
 
     shipping_details = ShippingDetailsSerializer(many=True, required=False)
+    contact_details = ContactDetailsSerializer(many=True, required=False)
 
     class Meta:
         model = account
         fields = (
-            'id', 'accountcode', 'accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
+            'id', 'accountcode','iscompany','reminders', 'accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
             'address1', 'address2', 'gstintype','isaddsameasbillinf',
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
-            'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'BanKAcno', 'composition', 'accounttype', 'createdby','shipping_details',
+            'bankname', 'Adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'BanKAcno', 'composition', 'accounttype', 'createdby','shipping_details','contact_details',
         )
 
     def create(self, validated_data):
         # Extract and clean shipping data
         shipping_data = validated_data.pop('shipping_details', [])
         shipping_data = [shipping for shipping in shipping_data if shipping.get('id', None) != 0]
+
+        contact_data = validated_data.pop('contact_details', [])
+        contact_data = [contact for contact in contact_data if contact.get('id', None) != 0]
 
         with transaction.atomic():
             entity = validated_data['entity']
@@ -93,6 +151,9 @@ class AccountSerializer(serializers.ModelSerializer):
             # Create shipping details
             for shipping in shipping_data:
                 ShippingDetails.objects.create(account=detail, **shipping)
+
+            for contact in contact_data:
+                ContactDetails.objects.create(account=detail, **contact)
 
             # Get the financial year start date
             accountdate1 = (
@@ -111,7 +172,7 @@ class AccountSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         fields = [
-            'accountdate', 'accounthead', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
+            'accountdate', 'accounthead','iscompany','reminders', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
             'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf',
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
             'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'Adhaarno', 'saccode',
@@ -136,6 +197,17 @@ class AccountSerializer(serializers.ModelSerializer):
             else:
                 # If no ID, create a new shipping record
                 ShippingDetails.objects.create(account=instance, **shipping)
+
+        # Update or create shipping details
+        contact_data = validated_data.pop('contact_details', [])
+        for contact in contact_data:
+            contact_id = contact.get('id', None)
+            if contact_id:  
+                # If ID exists, update the existing record
+                ContactDetails.objects.filter(id=contact_id, account=instance).update(**contact)
+            else:
+                # If no ID, create a new shipping record
+                ContactDetails.objects.create(account=instance, **contact)
 
         # Handle stock transactions for opening balances
         StockTransactions.objects.filter(entity=instance.entity, transactionid=instance.id, transactiontype='OA').delete()
