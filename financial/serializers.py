@@ -467,7 +467,7 @@ class accountHeadSerializer2(serializers.ModelSerializer):
     class Meta:
         model = accountHead
         fields = ('id', 'name', 'code', 'detailsingroup', 'balanceType', 'drcreffect', 
-                  'description', 'accountheadsr', 'entity', 'accountHeadName', 
+                  'description', 'accountheadsr', 'entity', 'accountHeadName','accounttype',
                   'detailsingroupName', 'canbedeleted')
 
     def get_accountHeadName(self, obj):
