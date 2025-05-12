@@ -16,6 +16,7 @@ from django.core.exceptions import ValidationError
 class accounttype(TrackingModel):
     accounttypename = models.CharField(max_length= 255,verbose_name=_('Acc type Name'))
     accounttypecode = models.CharField(max_length= 255,verbose_name=_('Acc Type Code'))
+    balanceType =  models.BooleanField(verbose_name=_('Balance details'),default = True)
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
     createdby = models.ForeignKey(to= User, on_delete= models.PROTECT)
 
@@ -48,6 +49,7 @@ class accountHead(TrackingModel):
     name = models.CharField(max_length=200,verbose_name=_('Account Name'))
     code = models.IntegerField(verbose_name=_('Account Head Code'))
     balanceType =  models.CharField(max_length=50,null=True,verbose_name=_('Balance Type'))
+    accounttype = models.ForeignKey(to = accounttype,related_name='accounthead_accounttype', on_delete= models.PROTECT,null = True)
     drcreffect =   models.CharField(max_length=20,verbose_name=_('Debit/credit Effect'))
     description =   models.CharField(max_length=200,verbose_name=_('Description'),null=True)
     accountheadsr = models.ForeignKey("self",null=True,on_delete=models.PROTECT,verbose_name=_('Account head Sr'),blank=True)
@@ -110,7 +112,7 @@ class account(TrackingModel):
     openingbdr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Dr'))
     contactno       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no'))
     contactno2       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no2'))
-    pincode       =models.CharField(max_length=50, null=True,verbose_name=_('Pincode'))
+    pincode       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Pincode'))
     emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
     agent       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Agent/Group'))
     pan       = models.CharField(max_length=50, null=True,verbose_name=_('PAN'),blank = True)

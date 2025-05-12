@@ -414,7 +414,7 @@ class AccountHeadSerializer(serializers.ModelSerializer):
         model = accountHead
         fields = (
             'id', 'name', 'code', 'detailsingroup', 'balanceType',
-            'drcreffect', 'description', 'accountheadsr', 'entity',
+            'drcreffect', 'description', 'accountheadsr', 'entity','accounttype',
             'accountHeadName', 'accounthead_accounts',
         )
 
@@ -452,6 +452,12 @@ class AccountHeadSerializer(serializers.ModelSerializer):
         account.objects.bulk_create(accounts_to_create)
 
         return account_head_instance
+    
+
+class AccountHeadMinimalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = accountHead
+        fields = ['id', 'balanceType']
 
 
 class accountHeadSerializer2(serializers.ModelSerializer):  
