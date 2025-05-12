@@ -36,7 +36,7 @@ urlpatterns  = [
     path('staticaccount-mapping/', views.StaticAccountMappingListCreateView.as_view(), name='staticaccount-mapping-list-create'),
     path('staticaccount-mapping/<int:pk>/', views.StaticAccountMappingRetrieveUpdateDestroyView.as_view(), name='staticaccount-mapping-detail'),
     path('staticaccountslist/', views.StaticAccountFlatListView.as_view(), name='staticaccounts-flat-list'),
-
+    path('top-account-head/', views.TopAccountHeadAPIView.as_view(), name='top-account-head'),
     
 
     

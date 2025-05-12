@@ -5,7 +5,7 @@ from django.db import transaction
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer,AccountHeadMinimalSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -910,6 +910,28 @@ class StaticAccountFlatListView(APIView):
         )
 
         return Response(list(queryset))
+    
+
+class TopAccountHeadAPIView(APIView):
+    def get(self, request):
+        accounttype_id = request.query_params.get('accounttype')
+        entity_id = request.query_params.get('entityid')
+
+        if not accounttype_id or not entity_id:
+            return Response({"detail": "Missing required parameters: accounttype and entityid"}, status=status.HTTP_400_BAD_REQUEST)
+
+        account_head = (
+            accountHead.objects
+            .filter(accounttype_id=accounttype_id, entity_id=entity_id)
+            .order_by('id')  # ensures consistent "first" record
+            .first()
+        )
+
+        if account_head:
+            serializer = AccountHeadMinimalSerializer(account_head)
+            return Response(serializer.data)
+        else:
+            return Response({"detail": "No account head found"}, status=status.HTTP_404_NOT_FOUND)
 
 
     
