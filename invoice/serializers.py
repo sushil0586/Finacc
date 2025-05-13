@@ -2256,9 +2256,11 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
             billno2 = last_order.billno + 1 if last_order else 1
 
-            settings = SalesInvoiceSettings.objects.select_for_update().get(entity=validated_data['entity'].id,
-            entityfinid=validated_data['entityfinid'].id,
-            doctype=1 )
+            settings = SalesInvoiceSettings.objects.select_for_update().filter(
+                entity=validated_data['entity'].id,
+                entityfinid=validated_data['entityfinid'].id,
+                doctype__doccode='1001'
+            ).first()
             reset_counter_if_needed(settings)
             number = build_document_number(settings)
             # Check if invoice number already exists (for safety)
@@ -5854,11 +5856,11 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         invoice_data = validated_data.pop('invoice_allocations', [])
 
-        settings = SalesInvoiceSettings.objects.select_for_update().get(
+        settings = SalesInvoiceSettings.objects.select_for_update().filter(
             entity=validated_data['entity'].id,
             entityfinid=validated_data['entityfinid'].id,
-            doctype=2
-        )
+            doctype__doccode='1002'
+        ).first()
 
         reset_counter_if_needed(settings)
         number = build_document_number(settings)
