@@ -140,6 +140,7 @@ class entityfinancialyear(TrackingModel):
     def __str__(self):
         entity_str = str(self.entity) if self.entity else 'No Entity'
         if self.finstartyear and self.finendyear:
+            
             start_str = DateFormat(self.finstartyear).format('m-Y')
             end_str = DateFormat(self.finendyear).format('m-Y')
             return f'{entity_str} | {start_str} - {end_str}'
