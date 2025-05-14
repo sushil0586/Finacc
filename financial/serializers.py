@@ -14,12 +14,12 @@ from django.db import transaction
 class ShippingDetailsgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
 
 class ShippingDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShippingDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
 
 
 class ShippingDetailsListSerializer(serializers.ModelSerializer):
@@ -37,7 +37,7 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
         fields = [
             'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name','emailid',
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
-            'city', 'cityName'
+            'city', 'cityName','isprimary'
         ]
 
     def get_country(self, obj):
@@ -68,12 +68,12 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
 class ContactDetailsgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 class ContactDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid',)
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 
 class ContactDetailsListSerializer(serializers.ModelSerializer):
@@ -91,7 +91,7 @@ class ContactDetailsListSerializer(serializers.ModelSerializer):
         fields = [
             'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName','emailid',
-            'city', 'cityName'
+            'city', 'cityName','designation'
         ]
 
     def get_country(self, obj):
@@ -409,13 +409,14 @@ class AccountListtopSerializer(serializers.ModelSerializer):
 class AccountHeadSerializer(serializers.ModelSerializer):
     accountHeadName = serializers.SerializerMethodField()
     accounthead_accounts = AccountSerializer(many=True)
+    accounthead_creditaccounts = AccountSerializer(many=True)
 
     class Meta:
         model = accountHead
         fields = (
             'id', 'name', 'code', 'detailsingroup', 'balanceType',
             'drcreffect', 'description', 'accountheadsr', 'entity','accounttype',
-            'accountHeadName', 'accounthead_accounts',
+            'accountHeadName', 'accounthead_accounts','accounthead_creditaccounts'
         )
 
     def get_accountHeadName(self, obj):
@@ -494,6 +495,41 @@ class StaticAccountMappingSerializer(serializers.ModelSerializer):
     class Meta:
         model = staticacountsmapping
         fields = '__all__'
+
+
+class AccountTypeJsonSerializer(serializers.ModelSerializer):
+    accounthead_accounttype = AccountHeadSerializer(many=True)
+
+    
+
+    class Meta:
+        model = accounttype  # Replace with your actual AccountType model
+        fields = [
+            'id', 'accounttypename', 'accounttypecode', 'balanceType',
+            'entity', 'createdby', 'accounthead_accounttype'
+        ]
+
+    def create(self, validated_data):
+        heads_data = validated_data.pop('accounthead_accounttype', [])
+        acc_type = accounttype.objects.create(**validated_data)
+        for head_data in heads_data:
+            accounts_data = head_data.pop('accounthead_accounts', [])
+            head = accountHead.objects.create(accounttype=acc_type, **head_data)
+            for account_data in accounts_data:
+                account.objects.create(accounthead=head, **account_data)
+
+            accounts_data = head_data.pop('accounthead_creditaccounts', [])
+            head = accountHead.objects.create(accounttype=acc_type, **head_data)
+            for account_data in accounts_data:
+                account.objects.create(accounthead=head, **account_data)
+            
+            
+        # for head_data in heads_data:
+        #     accounts_data = head_data.pop('accounthead_creditaccounts', [])
+        #     head = accountHead.objects.create(accounttype=acc_type, **head_data)
+        #     for account_data in accounts_data:
+        #         account.objects.create(accounthead=head, **account_data)
+        return acc_type
            
 
 
