@@ -68,12 +68,12 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
 class ContactDetailsgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation')
+        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 class ContactDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation')
+        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 
 class ContactDetailsListSerializer(serializers.ModelSerializer):
