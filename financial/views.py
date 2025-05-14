@@ -5,7 +5,7 @@ from django.db import transaction
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer,AccountHeadMinimalSerializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer,AccountHeadMinimalSerializer,AccountTypeJsonSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -207,6 +207,21 @@ class accountApiView3(ListAPIView):
 class accounttypeApiView(ListCreateAPIView):
 
     serializer_class = accounttypeserializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    filter_backends = [DjangoFilterBackend]
+    #filterset_fields = ['gstno']
+
+
+    
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        return accounttype.objects.filter(entity = entity)
+    
+
+class accounttypejsonApiView(ListCreateAPIView):
+
+    serializer_class = AccountTypeJsonSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]

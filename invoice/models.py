@@ -25,6 +25,10 @@ class doctype(TrackingModel):
     entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
     createdby = models.ForeignKey(to= User, on_delete=models.PROTECT)
 
+    def __str__(self):
+       # entity_name = self.entity.entityname if self.entity else "NoEntity"
+        return f'{self.entity}-{self.docname}-{self.doccode}'
+
 
 class DocumentNumberSettings(models.Model):
     doctype = models.ForeignKey(doctype,null=True,on_delete=models.PROTECT)

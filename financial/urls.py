@@ -23,6 +23,9 @@ urlpatterns  = [
     path('accountList',views.AccountListNewApiView.as_view(), name = 'Trialbalance'),
     path('accountListPost',views.AccountListPostApiView.as_view(), name = 'Trialbalance'),
     path('accounttype',views.accounttypeApiView.as_view(), name = 'Trialbalance'),
+    path('accounttypejson',views.accounttypejsonApiView.as_view(), name = 'Trialbalance'),
+
+    
     path('getaccountdetailsbygst',views.GetGstinDetails.as_view(), name = 'unittypeid'),
     path('baseaccountlist/', views.AccountListView.as_view(), name='account-list'),
     path('shipping-details/', views.ShippingDetailsListCreateView.as_view(), name='shipping-details-list-create'),
