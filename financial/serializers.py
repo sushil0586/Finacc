@@ -33,7 +33,7 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     cityName = serializers.SerializerMethodField()
 
     class Meta:
-        model = ContactDetails
+        model = ShippingDetails
         fields = [
             'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name','emailid',
             'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
