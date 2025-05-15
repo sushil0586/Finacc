@@ -162,16 +162,21 @@ class AccountSerializer(serializers.ModelSerializer):
 
             # Get the financial year start date
             accountdate1 = (
-                entityfinancialyear.objects.filter(entity=detail.entity)
-                .order_by("finstartyear")  # Sort by earliest date
-                .first()  # Get the first record
-            )
+                entityfinancialyear.objects
+                .filter(entity=detail.entity)
+                .order_by('finstartyear')
+                .values_list('finstartyear', flat=True)
+                .first()
+)
+
+
+            print(accountdate1)
 
             # # Create entry if not exists
-            # entryid, created = entry.objects.get_or_create(entrydate1=accountdate1, entity=detail.entity)
+            entryid, created = entry.objects.get_or_create(entrydate1=accountdate1, entity=detail.entity)
 
             # # Handle opening balances
-            # self._handle_opening_balances(detail, entryid, accountdate1)
+            self._handle_opening_balances(detail, entryid, accountdate1)
 
         return detail
 
@@ -217,9 +222,17 @@ class AccountSerializer(serializers.ModelSerializer):
         # Handle stock transactions for opening balances
         StockTransactions.objects.filter(entity=instance.entity, transactionid=instance.id, transactiontype='OA').delete()
 
+        first_start_date = (
+            entityfinancialyear.objects
+            .filter(entity=instance.entity)
+            .order_by('finstartyear')
+            .values_list('finstartyear', flat=True)
+            .first()
+)
+
         # Handle opening balances after update
-        entry_instance, _ = entry.objects.get_or_create(entrydate1=instance.accountdate, entity=instance.entity)
-        self._handle_opening_balances(instance, entry_instance, instance.accountdate)
+        entry_instance, _ = entry.objects.get_or_create(entrydate1=first_start_date, entity=instance.entity)
+        self._handle_opening_balances(instance, entry_instance, first_start_date)
 
         return instance
 
