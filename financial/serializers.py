@@ -12,14 +12,17 @@ from django.db import transaction
 
 
 class ShippingDetailsgetSerializer(serializers.ModelSerializer):
+
+    id = serializers.IntegerField(source= 'id', read_only=True)
     class Meta:
         model = ShippingDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
+        fields = ('id','account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
 
 class ShippingDetailsSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source= 'id', read_only=True)
     class Meta:
         model = ShippingDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
+        fields = ('id','address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
 
 
 class ShippingDetailsListSerializer(serializers.ModelSerializer):
@@ -66,14 +69,16 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     
 
 class ContactDetailsgetSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source= 'id', read_only=True)
     class Meta:
         model = ContactDetails
-        fields = ('account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
+        fields = ('id','account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 class ContactDetailsSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source= 'id', read_only=True)
     class Meta:
         model = ContactDetails
-        fields = ('address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
+        fields = ('id','address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 
 class ContactDetailsListSerializer(serializers.ModelSerializer):
@@ -408,8 +413,8 @@ class AccountListtopSerializer(serializers.ModelSerializer):
 
 class AccountHeadSerializer(serializers.ModelSerializer):
     accountHeadName = serializers.SerializerMethodField()
-    accounthead_accounts = AccountSerializer(many=True)
-    accounthead_creditaccounts = AccountSerializer(many=True)
+    accounthead_accounts = AccountSerializer(many=True,required=False)
+    accounthead_creditaccounts = AccountSerializer(many=True,required=False)
 
     class Meta:
         model = accountHead
@@ -497,13 +502,13 @@ class StaticAccountMappingSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-class AccountTypeJsonSerializer(serializers.ModelSerializer):
-    accounthead_accounttype = AccountHeadSerializer(many=True)
 
-    
+
+class AccountTypeJsonSerializer(serializers.ModelSerializer):
+    accounthead_accounttype = AccountHeadSerializer(many=True, required=False)
 
     class Meta:
-        model = accounttype  # Replace with your actual AccountType model
+        model = accounttype
         fields = [
             'id', 'accounttypename', 'accounttypecode', 'balanceType',
             'entity', 'createdby', 'accounthead_accounttype'
@@ -511,24 +516,20 @@ class AccountTypeJsonSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         heads_data = validated_data.pop('accounthead_accounttype', [])
-        acc_type = accounttype.objects.create(**validated_data)
-        for head_data in heads_data:
-            accounts_data = head_data.pop('accounthead_accounts', [])
-            head = accountHead.objects.create(accounttype=acc_type, **head_data)
-            for account_data in accounts_data:
-                account.objects.create(accounthead=head, **account_data)
 
-            accounts_data = head_data.pop('accounthead_creditaccounts', [])
-            head = accountHead.objects.create(accounttype=acc_type, **head_data)
-            for account_data in accounts_data:
-                account.objects.create(accounthead=head, **account_data)
-            
-            
-        # for head_data in heads_data:
-        #     accounts_data = head_data.pop('accounthead_creditaccounts', [])
-        #     head = accountHead.objects.create(accounttype=acc_type, **head_data)
-        #     for account_data in accounts_data:
-        #         account.objects.create(accounthead=head, **account_data)
+        with transaction.atomic():
+            acc_type = accounttype.objects.create(**validated_data)
+
+            for head_data in heads_data:
+                accounts_data = head_data.pop('accounthead_accounts', [])
+                head = accountHead.objects.create(accounttype=acc_type, **head_data)
+
+                for account_data in accounts_data:
+                    if head.balanceType == "Credit":  # or 0 if it's integer
+                        account.objects.create(creditaccounthead=head, **account_data)
+                    else:
+                        account.objects.create(accounthead=head, **account_data)
+
         return acc_type
            
 
