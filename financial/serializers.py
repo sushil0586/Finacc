@@ -13,13 +13,13 @@ from django.db import transaction
 
 class ShippingDetailsgetSerializer(serializers.ModelSerializer):
 
-    id = serializers.IntegerField(source= 'id', read_only=True)
+    id = serializers.IntegerField(read_only=True)
     class Meta:
         model = ShippingDetails
         fields = ('id','account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
 
 class ShippingDetailsSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(source= 'id', read_only=True)
+    id = serializers.IntegerField(read_only=True)
     class Meta:
         model = ShippingDetails
         fields = ('id','address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
@@ -69,13 +69,13 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     
 
 class ContactDetailsgetSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(source= 'id', read_only=True)
+    id = serializers.IntegerField(read_only=True)
     class Meta:
         model = ContactDetails
         fields = ('id','account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
 
 class ContactDetailsSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(source= 'id', read_only=True)
+    id = serializers.IntegerField(read_only=True)
     class Meta:
         model = ContactDetails
         fields = ('id','address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
