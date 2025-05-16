@@ -121,7 +121,7 @@ class defaultvaluesbyentity(TrackingModel):
 
 
     def __str__(self):
-        return f'{self.purchasetaxtype} - {self.entity}'
+        return f'{self.taxtype} - {self.entity}'
 
         
 
