@@ -5,7 +5,7 @@ from entity.models import Entity,entity_details,unitType,entityfinancialyear,ent
 from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountHeadSerializer2,accounttypeserializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountHeadSerializer2,accounttypeserializer,AccountTypeJsonSerializer
 from inventory.serializers import RateCalculateSerializer,UOMSerializer,TOGSerializer,TOGSerializer,ProductCategoryMainSerializer
 from invoice.serializers import purchasetaxtypeserializer,InvoiceTypeSerializer
 import os
@@ -267,7 +267,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
     InvoiceType = InvoiceTypeSerializer
     pcategory = ProductCategoryMainSerializer
-    acounttype = accounttypeserializer
+    acounttype = AccountTypeJsonSerializer
 
     def process_json_file(self, newentity, users, accountdate1):
         # Load JSON data once
@@ -277,8 +277,8 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Mapping serializers to corresponding JSON keys
         serializers_mapping = {
-            "entity_accountheads": (self.serializer, {"entity": newentity, "createdby": users[0], "acountdate": accountdate1}),
-            "accountheads": (self.accounthead, {"entity": newentity, "createdby": users[0]}),
+            "acconttype": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
+            # "accountheads": (self.accounthead, {"entity": newentity, "createdby": users[0]}),
             "Roles": (self.roleserializer, {"entity": newentity}),
             "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": users[0]}),
             "UOM": (self.uomser, {"entity": newentity, "createdby": users[0]}),
@@ -405,16 +405,16 @@ class entityAddSerializer(serializers.ModelSerializer):
         entityconstitution.objects.bulk_create(constitution_details)
         account.objects.bulk_create(account_details)
 
-        # Update accounts in bulk
-        account_updates = [
-            {"code": 1000, "credit_code": 3000},
-            {"code": 6000, "credit_code": 6100},
-            {"code": 8000, "credit_code": 7000},
-        ]
-        for update in account_updates:
-            account.objects.filter(accounthead__code=update["code"], entity=newentity).update(
-                creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=newentity)
-            )
+        # # Update accounts in bulk
+        # account_updates = [
+        #     {"code": 1000, "credit_code": 3000},
+        #     {"code": 6000, "credit_code": 6100},
+        #     {"code": 8000, "credit_code": 7000},
+        # ]
+        # for update in account_updates:
+        #     account.objects.filter(accounthead__code=update["code"], entity=newentity).update(
+        #         creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=newentity)
+        #     )
 
         return newentity
     

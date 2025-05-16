@@ -17,8 +17,8 @@ class accounttype(TrackingModel):
     accounttypename = models.CharField(max_length= 255,verbose_name=_('Acc type Name'))
     accounttypecode = models.CharField(max_length= 255,verbose_name=_('Acc Type Code'))
     balanceType =  models.BooleanField(verbose_name=_('Balance details'),default = True)
-    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
-    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE, null= True)
 
 
     def __str__(self):
@@ -49,14 +49,14 @@ class accountHead(TrackingModel):
     name = models.CharField(max_length=200,verbose_name=_('Account Name'))
     code = models.IntegerField(verbose_name=_('Account Head Code'))
     balanceType =  models.CharField(max_length=50,null=True,verbose_name=_('Balance Type'))
-    accounttype = models.ForeignKey(to = accounttype,related_name='accounthead_accounttype', on_delete= models.PROTECT,null = True)
+    accounttype = models.ForeignKey(to = accounttype,related_name='accounthead_accounttype', on_delete=models.CASCADE,null = True)
     drcreffect =   models.CharField(max_length=20,verbose_name=_('Debit/credit Effect'))
     description =   models.CharField(max_length=200,verbose_name=_('Description'),null=True)
-    accountheadsr = models.ForeignKey("self",null=True,on_delete=models.PROTECT,verbose_name=_('Account head Sr'),blank=True)
+    accountheadsr = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('Account head Sr'),blank=True)
     detailsingroup =  models.IntegerField(null=True,blank = True)
-    entity = models.ForeignKey(Entity,related_name='entity_accountheads',null=True,on_delete=models.PROTECT)
+    entity = models.ForeignKey(Entity,related_name='entity_accountheads',null=True,on_delete=models.CASCADE)
     canbedeleted      = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
-    createdby = models.ForeignKey(to= User,  on_delete= models.PROTECT,null= True)
+    createdby = models.ForeignKey(to= User,  on_delete=models.CASCADE,null= True)
 
 
     def delete(self, *args, **kwargs):
@@ -89,13 +89,13 @@ class account(TrackingModel):
     iscompany       = models.BooleanField(verbose_name=_('IsCompany'),null=True)
     website       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'),blank = True)
     reminders = models.IntegerField(verbose_name=_('Reminders'),null=True,blank=True)
-    accounthead = models.ForeignKey(to = accountHead,related_name='accounthead_accounts', on_delete= models.PROTECT,null = True)
-    creditaccounthead = models.ForeignKey(to = accountHead,related_name='accounthead_creditaccounts', on_delete= models.PROTECT,null = True)
+    accounthead = models.ForeignKey(to = accountHead,related_name='accounthead_accounts', on_delete=models.CASCADE,null = True)
+    creditaccounthead = models.ForeignKey(to = accountHead,related_name='accounthead_creditaccounts', on_delete=models.CASCADE,null = True)
     accountcode = models.IntegerField(verbose_name=_('Account Code'),null=True,blank=True,default=1000)
     gstno       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'),blank = True)
     accountname       = models.CharField(max_length=50, null=True,verbose_name=_('Account Name'))
     legalname =  models.CharField(max_length= 255,null=True)
-    contraaccount = models.ForeignKey("self",null=True,on_delete=models.PROTECT,verbose_name=_('conta account'),blank=True)
+    contraaccount = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name=_('conta account'),blank=True)
     address1       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 1'),blank = True)
     address2       = models.CharField(max_length=50, null=True,verbose_name=_('Address Line 2'),blank = True)
     addressfloorno =     models.CharField(max_length= 255,null= True,blank = True)
@@ -104,10 +104,10 @@ class account(TrackingModel):
     blockstatus = models.CharField(max_length= 10,null= True,verbose_name='Block Status')
     dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
-    country       = models.ForeignKey(Country,null=True,on_delete=models.PROTECT)
-    state       = models.ForeignKey(to=State,on_delete=models.PROTECT,null=True)
-    district    = models.ForeignKey(to=District,on_delete=models.PROTECT,null=True)
-    city       = models.ForeignKey(to=City,on_delete=models.PROTECT,null=True)
+    country       = models.ForeignKey(Country,null=True,on_delete=models.CASCADE)
+    state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
+    district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
+    city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
     openingbcr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Cr'))
     openingbdr = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Opening Balance Dr'))
     contactno       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no'))
@@ -120,7 +120,7 @@ class account(TrackingModel):
     isaddsameasbillinf       = models.BooleanField(verbose_name=_('isaddsameasbillinf'),null=True)
     approved       = models.BooleanField(verbose_name=_('Wheather aproved'),null=True)
     tdsno       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Tds A/c No'))
-    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT,)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE,)
     rtgsno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Rtgs no'))
     bankname          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Bank Name'))
     adhaarno          = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Adhaar No'))
@@ -136,7 +136,7 @@ class account(TrackingModel):
     canbedeleted        = models.BooleanField(verbose_name=_('Can be deleted'),default = True)
     accounttype         =     models.ForeignKey(to = accounttype, on_delete= models.SET_NULL,null = True)
     sharepercentage             = models.DecimalField(max_digits=14, decimal_places=2,null=True,blank=True,verbose_name=_('Share Percentage'))
-    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT,null=True,)
+    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True,)
 
     def __str__(self):
         return f'{self.accountname} , {self.gstno}'
@@ -163,10 +163,10 @@ class ShippingDetails(models.Model):
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name='shipping_details')
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 1'))
     address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 2'))
-    country = models.ForeignKey(Country, null=True, on_delete=models.PROTECT)
-    state = models.ForeignKey(State, null=True, on_delete=models.PROTECT)
-    district = models.ForeignKey(District, null=True, on_delete=models.PROTECT)
-    city = models.ForeignKey(City, null=True, on_delete=models.PROTECT)
+    country = models.ForeignKey(Country, null=True, on_delete=models.CASCADE)
+    state = models.ForeignKey(State, null=True, on_delete=models.CASCADE)
+    district = models.ForeignKey(District, null=True, on_delete=models.CASCADE)
+    city = models.ForeignKey(City, null=True, on_delete=models.CASCADE)
     isprimary        = models.BooleanField(verbose_name=_('Is Primary'),default = False)
     pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Pincode'))
     phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Phone No'))
@@ -182,10 +182,10 @@ class ContactDetails(models.Model):
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 1'))
     address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 2'))
     designation = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('designation'))
-    country = models.ForeignKey(Country, null=True, on_delete=models.PROTECT)
-    state = models.ForeignKey(State, null=True, on_delete=models.PROTECT)
-    district = models.ForeignKey(District, null=True, on_delete=models.PROTECT)
-    city = models.ForeignKey(City, null=True, on_delete=models.PROTECT)
+    country = models.ForeignKey(Country, null=True, on_delete=models.CASCADE)
+    state = models.ForeignKey(State, null=True, on_delete=models.CASCADE)
+    district = models.ForeignKey(District, null=True, on_delete=models.CASCADE)
+    city = models.ForeignKey(City, null=True, on_delete=models.CASCADE)
     pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Pincode'))
     phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_('Phone No'))
     emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
@@ -196,7 +196,7 @@ class ContactDetails(models.Model):
 
 
 # class account_detials1(TrackingModel):
-#     account = models.OneToOneField(account,on_delete=models.PROTECT,primary_key=True)
+#     account = models.OneToOneField(account,on_delete=models.CASCADE,primary_key=True)
 #     accountno       = models.CharField(max_length=50, null=True,verbose_name=_('Account no'))
 #     rtgsno          = models.CharField(max_length=50, null=True,verbose_name=_('Rtgs no'))
 #     bankname          = models.CharField(max_length=50, null=True,verbose_name=_('Bank Name'))
@@ -208,7 +208,7 @@ class ContactDetails(models.Model):
 #         verbose_name_plural = _('Account Details1')
 
 # class account_detials2(TrackingModel):
-#     account = models.OneToOneField(account,on_delete=models.PROTECT,primary_key=True)
+#     account = models.OneToOneField(account,on_delete=models.CASCADE,primary_key=True)
 #     contactperson       = models.CharField(max_length=50, null=True,verbose_name=_('Contact Person'))
 #     deprate             = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True,verbose_name=_('Depreciaion Rate'))
 #     tdsrate             = models.DecimalField(max_digits=14, decimal_places=2,default=True,blank=True,verbose_name=_('TDS Rate'))
@@ -229,15 +229,15 @@ class staticacounts(TrackingModel):
     accounttype         =     models.ForeignKey(to = accounttype, on_delete= models.SET_NULL,null = True)
     staticaccount = models.CharField(max_length= 255,verbose_name=_('static acount'))
     code = models.CharField(max_length= 255,verbose_name=_('Code'))
-    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
-    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT,null = True)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null = True)
 
 
 class staticacountsmapping(TrackingModel):
     staticaccount         =     models.ForeignKey(to = staticacounts, on_delete= models.SET_NULL,null = True)
     account = models.ForeignKey(to = account, on_delete= models.SET_NULL,null = True)
-    entity = models.ForeignKey(Entity,null=True,on_delete=models.PROTECT)
-    createdby = models.ForeignKey(to= User, on_delete= models.PROTECT,null = True)
+    entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null = True)
 
 
     

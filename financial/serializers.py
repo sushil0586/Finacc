@@ -532,16 +532,18 @@ class AccountTypeJsonSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             acc_type = accounttype.objects.create(**validated_data)
+            entity = validated_data.get('entity')
+            user = validated_data.get('createdby')
 
             for head_data in heads_data:
                 accounts_data = head_data.pop('accounthead_accounts', [])
-                head = accountHead.objects.create(accounttype=acc_type, **head_data)
+                head = accountHead.objects.create(accounttype=acc_type, **head_data,entity = entity,createdby = user)
 
                 for account_data in accounts_data:
                     if head.balanceType == "Credit":  # or 0 if it's integer
-                        account.objects.create(creditaccounthead=head, **account_data)
+                        account.objects.create(creditaccounthead=head, **account_data,entity = entity,createdby = user,accounttype = acc_type)
                     else:
-                        account.objects.create(accounthead=head, **account_data)
+                        account.objects.create(accounthead=head, **account_data,entity = entity,createdby = user,accounttype = acc_type)
 
         return acc_type
            
