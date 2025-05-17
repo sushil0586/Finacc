@@ -55,7 +55,16 @@ class staticacountsadAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['accounttype','staticaccount','code']
  
 admin.site.register(staticacounts,staticacountsadAdmin)
-admin.site.register(staticacountsmapping)
+
+class staticacountsmappingAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['staticaccount','account','entity']
+    list_filter = (
+        ('entity', admin.RelatedOnlyFieldListFilter),
+    )
+
+
+
+admin.site.register(staticacountsmapping,staticacountsmappingAdmin)
 
 
 

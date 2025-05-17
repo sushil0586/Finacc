@@ -113,6 +113,9 @@ class account(TrackingModel):
     contactno       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no'))
     contactno2       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Contact no2'))
     pincode       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Pincode'))
+    cin       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('cin'))
+    msme       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('msme'))
+    gsttdsno       =models.CharField(max_length=50, null=True,blank=True,verbose_name=_('gsttdsno'))
     emailid       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Email id'))
     agent       = models.CharField(max_length=50, null=True,blank=True,verbose_name=_('Agent/Group'))
     pan       = models.CharField(max_length=50, null=True,verbose_name=_('PAN'),blank = True)
@@ -231,6 +234,9 @@ class staticacounts(TrackingModel):
     code = models.CharField(max_length= 255,verbose_name=_('Code'))
     entity = models.ForeignKey(Entity,null=True,on_delete=models.CASCADE)
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null = True)
+
+    def __str__(self):
+        return f"{self.staticaccount}"
 
 
 class staticacountsmapping(TrackingModel):
