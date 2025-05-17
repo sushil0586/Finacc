@@ -284,7 +284,7 @@ class entityAddSerializer(serializers.ModelSerializer):
             "UOM": (self.uomser, {"entity": newentity, "createdby": users[0]}),
             "TOG": (self.TOGSR, {"entity": newentity, "createdby": users[0]}),
             "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": users[0]}),
-            "ACCOUNTTYPE": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
+          #  "ACCOUNTTYPE": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
             "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": users[0]}),
             "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": users[0]}),
             "productcategory": (self.pcategory, {"createdby": users[0]}),

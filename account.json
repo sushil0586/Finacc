@@ -3,71 +3,7 @@
 
 
         "acconttype" : [
-            {
-                "accounttypename": "CurrentAssets",
-                "accounttypecode": "1002",
-                "balanceType": true,
-                "accounthead_accounttype": [
-                    {
-                      
-                        "name": "Opening Stock",
-                        "code": 9000,
-                        "detailsingroup": 1,
-                        "balanceType": "Debit",
-                        "drcreffect": "Yes",
-                        "description": "desc",
-                        "accounthead_accounts": [
-                            {
-                                "accountcode": 9000,
-                                "accountname": "Opening Stock"
-                            }
-                        ]
-                    },
-                    {
-                        
-                        "name": "Closing Stock",
-                        "code": 200,
-                        "detailsingroup": 1,
-                        "balanceType": "Debit",
-                        "drcreffect": "Yes",
-                        "description": "desc",
-                      
-                       
-                        "accounthead_accounts": [
-                            {
-                               
-                                "accountcode": 200,
-                                "accountname": "Closing Stock"
-                               
-                             
-                            }
-                        ]
-                   
-                    },
-                    {
-                      
-                        "name": "Advance Recoverable",
-                        "code": 6100,
-                        "detailsingroup": 3,
-                        "balanceType": "Debit",
-                        "drcreffect": "Yes",
-                        "description": "desc",
-                    
-                      
-                      
-                        "accounthead_accounts": [
-                            {
-                              
-                                "accountcode": 6001,
-                                "accountname": "GST(CGST)"
-                               
-                               
-                            }
-                        ]
-        
-                    }
-                ]
-        },
+            
         {
             "accounttypename": "Receivable",
             "accounttypecode": "1001",
@@ -86,6 +22,195 @@
                    
                 }
             ]
+        },
+        {
+            "accounttypename": "CurrentAssets",
+            "accounttypecode": "1002",
+            "balanceType": true,
+            "accounthead_accounttype": [
+                {
+                  
+                    "name": "Opening Stock",
+                    "code": 9000,
+                    "detailsingroup": 1,
+                    "balanceType": "Debit",
+                    "drcreffect": "Yes",
+                    "description": "desc",
+                    "accounthead_accounts": [
+                        {
+                            "accountcode": 9000,
+                            "accountname": "Opening Stock"
+                        }
+                    ]
+                },
+                {
+                    
+                    "name": "Closing Stock",
+                    "code": 200,
+                    "detailsingroup": 1,
+                    "balanceType": "Debit",
+                    "drcreffect": "Yes",
+                    "description": "desc",
+                  
+                   
+                    "accounthead_accounts": [
+                        {
+                           
+                            "accountcode": 200,
+                            "accountname": "Closing Stock"
+                           
+                         
+                        }
+                    ]
+               
+                },
+                {
+                  
+                    "name": "Advance Recoverable",
+                    "code": 6100,
+                    "detailsingroup": 3,
+                    "balanceType": "Debit",
+                    "drcreffect": "Yes",
+                    "description": "desc",
+                
+                  
+                  
+                    "accounthead_accounts": [
+                        {
+                          
+                            "accountcode": 6001,
+                            "accountname": "GST(CGST)"
+                           
+                           
+                        }
+                    ]
+    
+                }
+            ]
+    },
+    {
+        
+        "accounttypename": "Bank and Cash",
+        "accounttypecode": "1003",
+        "balanceType": true,
+        "accounthead_accounttype": [
+            {
+                
+                "name": "Cash",
+                "code": 4000,
+                "detailsingroup": 2,
+                "balanceType": "Debit",
+                "drcreffect": "Yes",
+                "description": "Cash In Hand",
+                "accounthead_accounts": [
+                    {
+                      
+                        "accountcode": 4000,
+                        "accountname": "Cash"
+                     }
+                  
+                ]
+            }
+        ]
+    },
+
+    {
+            "accounttypename": "Payable",
+            "accounttypecode": "1008",
+            "balanceType": true,
+            "accounthead_accounttype": [
+              {
+                "name": "Advance Payable",
+                "code": 6000,
+                "detailsingroup": 3,
+                "balanceType": "Credit",
+                "drcreffect": "Yes",
+                "description": "desc",
+                "accounthead_accounts": [
+                  {
+                    "accountcode": 6002,
+                    "accountname": "GST(SGST)"
+                  },
+                  {
+                    "accountcode": 6003,
+                    "accountname": "GST(IGST)"
+                 
+                  },
+                  {
+                    "accountcode": 6004,
+                    "accountname": "CESS"
+                  
+                  },
+                  {
+                    "accountcode": 8050,
+                    "accountname": "TCS206C1H"
+                   
+                  },
+                  {
+                    "accountcode": 8051,
+                    "accountname": "TCS206C"
+                  
+                  },
+                  {
+                    "accountcode": 8100,
+                    "accountname": "TDS194Q"
+                   
+                  },
+                  {
+                    "accountcode": 6005,
+                    "accountname": "GST(CGST) Reverse"
+                   
+                  },
+                  {
+                    "accountcode": 6006,
+                    "accountname": "GST(SGST) Reverse"
+                   
+                  },
+                  {
+                    "accountcode": 6007,
+                    "accountname": "GST(IGST) Reverse"
+                  
+                  },
+                  {
+                    "accountcode": 6001,
+                    "accountname": "GST(CGST)"
+                 
+                  }
+                ]
+              },
+              {
+                "name": "Sundry Creditors",
+                "code": 7000,
+                "detailsingroup": 3,
+                "balanceType": "Credit",
+                "drcreffect": "Yes",
+                "description": "desc"
+              }
+            ]
+          },
+          {
+      
+            "accounttypename": "Credit Card",
+            "accounttypecode": "1009",
+            "balanceType": true
+       
+          
+        },
+        {
+           
+            "accounttypename": "Current Liabilities",
+            "accounttypecode": "1010",
+            "balanceType": true
+         
+            
+        },
+        {
+            
+            "accounttypename": "Non-Current Liabilities",
+            "accounttypecode": "1011",
+            "balanceType": true
+          
+           
         },
         {
       
@@ -289,6 +414,14 @@
                  
                   }
                 ]
+              },
+              {
+                "name": "Sundry Creditors",
+                "code": 7000,
+                "detailsingroup": 3,
+                "balanceType": "Credit",
+                "drcreffect": "Yes",
+                "description": "desc"
               }
             ]
           },
@@ -342,6 +475,31 @@
          
         }
       ]
+    },
+    {
+        
+        "accounttypename": "Income",
+        "accounttypecode": "1014",
+        "balanceType": true,
+        "accounthead_accounttype": [
+            {
+                
+                "name": "Sale",
+                "code": 3000,
+                "detailsingroup": 2,
+                "balanceType": "Credit",
+                "drcreffect": "Yes",
+                "description": "Indirect Income",
+                "accounthead_accounts": [
+                    {
+                      
+                        "accountcode": 3000,
+                        "accountname": "Sale"
+                     }
+                  
+                ]
+            }
+        ]
     }
         
         ],

@@ -477,10 +477,10 @@ class stocktransconstant:
         return self.get_account_by_static_code(pentity, '8500')
     
     def getroundoffincome(self, pentity):
-        return self.get_account_by_static_code(pentity, '6011')
+        return self.get_account_by_static_code(pentity, '6012')
     
     def getroundoffexpnses(self, pentity):
-        return self.get_account_by_static_code(pentity, '6012')
+        return self.get_account_by_static_code(pentity, '6011')
 
     
     def gettdsreturnid(self):
@@ -1067,11 +1067,11 @@ class stocktransactionsale:
 
         if roundOff != 0:
             if roundOff < 0:
-                roundoffid = const.getroundoffexpnses(pentity)
+                roundoffid = const.getroundoffincome(pentity)
                 StockTransactions.objects.create(accounthead=roundoffid.accounthead, account=roundoffid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=abs(roundOff), entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
 
             if roundOff > 0:
-                roundoffid = const.getroundoffincome(pentity)
+                roundoffid = const.getroundoffexpnses(pentity)
                 StockTransactions.objects.create(accounthead=roundoffid.accounthead, account=roundoffid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=abs(roundOff), entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
 
         StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
@@ -2516,7 +2516,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseReturn
        # fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','vehicle','taxtype','billcash','supply','shippedto','remarks','transport','broker','tds194q','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','subtotal','subtotal','cgst','sgst','igst','expenses','gtotal','entity','owner','purchasereturndetails',)
-        fields = ('id','sorderdate','billno','accountid','state','district','city','pincode', 'latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' , 'cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails',)
+        fields = ('id','sorderdate','billno','accountid','state','district','city','pincode', 'latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' ,'roundOff', 'cgst','sgst','igst','cess','totalgst', 'expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails',)
 
 
     def create(self, validated_data):
@@ -2547,7 +2547,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid', 'state','district','city','pincode','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','entityfinid','subentity','entity','createdby','isactive',]
+        fields = ['sorderdate','billno','accountid', 'state','district','city','pincode','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity','entity','createdby','isactive',]
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
@@ -4981,7 +4981,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturn
-        fields = ('id','voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','invoicetype','reversecharge' ,'addless','cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','salereturndetails',)
+        fields = ('id','voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','invoicetype','reversecharge' ,'addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount', 'entityfinid','subentity','entity','isactive','salereturndetails',)
 
     
     

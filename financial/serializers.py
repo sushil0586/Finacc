@@ -132,7 +132,7 @@ class AccountSerializer(serializers.ModelSerializer):
         model = account
         fields = (
             'id', 'accountcode','iscompany','reminders','website','accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
-            'address1', 'address2', 'gstintype','isaddsameasbillinf',
+            'address1', 'address2', 'gstintype','isaddsameasbillinf','cin','msme','gsttdsno',
             'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
             'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
             'bankname', 'adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'banKAcno', 'composition', 'accounttype', 'createdby','shipping_details','contact_details',
@@ -183,7 +183,7 @@ class AccountSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         fields = [
             'accountdate', 'accounthead','iscompany','reminders','website', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
-            'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf',
+            'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf','cin','msme','gsttdsno',
             'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
             'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'adhaarno', 'saccode',
             'contactperson', 'deprate', 'tdsrate', 'gstshare', 'banKAcno', 'accounttype',
