@@ -330,11 +330,7 @@
                     "drcreffect": "Yes",
                     "description": "Indirect Income",
                     "accounthead_accounts": [
-                        {
-                          
-                            "accountcode": 8400,
-                            "accountname": "Discounts"
-                         },
+                        
                         {
                             
                             "accountcode": 8300,

@@ -10,6 +10,7 @@ from .models import (
 )
 from django.utils.translation import gettext_lazy as _
 from import_export.admin import ImportExportMixin
+from simple_history.admin import SimpleHistoryAdmin
 
 
 
@@ -51,7 +52,7 @@ admin.site.register(gstorderservicesdetails, GstOrderServicesDetailsAdmin)
 
 
 # Admin for SalesOderHeader
-class SalesOrderHeaderAdmin(admin.ModelAdmin):
+class SalesOrderHeaderAdmin(SimpleHistoryAdmin):
     list_display = ('billno', 'sorderdate', 'totalgst', 'gtotal', 'entity', 'subentity', 'createdby',  'created_at')
     search_fields = ('billno', 'grno', 'vehicle', 'remarks', 'terms')
     ordering = ('billno',)
@@ -62,7 +63,7 @@ admin.site.register(SalesOderHeader, SalesOrderHeaderAdmin)
 
 # Admin for salesOrderdetails
 @admin.register(salesOrderdetails)
-class SalesOrderDetailsAdmin(admin.ModelAdmin):
+class SalesOrderDetailsAdmin(SimpleHistoryAdmin):
     list_display = ('salesorderheader', 'product', 'orderqty', 'pieces', 'rate', 'amount', 'cgst', 'sgst', 'igst', 'linetotal', 'entity', 'subentity')
     search_fields = ('product__name', 'productdesc')
     ordering = ('salesorderheader',)

@@ -19,7 +19,6 @@ from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 from django.conf import settings
 from django.conf.urls.static import static
-
 schema_view = get_schema_view(
    openapi.Info(
       title="Snippets API",
@@ -33,10 +32,7 @@ schema_view = get_schema_view(
    permission_classes=(permissions.AllowAny,),
    authentication_classes = [],
 )
-
-
 urlpatterns = [
-   
     path('admin/', admin.site.urls),
     path('api/auth/',include('Authentication.urls',namespace = 'Authentication_api')),
     path('api/inventory/',include('inventory.urls',namespace = 'inventory_api')),
