@@ -104,11 +104,12 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 DATABASES = {
    'default': {
        'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'accounting',
-       'USER': 'postgres',
-       'PASSWORD': 'ansh@1789',
+       'NAME': 'finacc',
+       'USER': 'educure',
+       'PASSWORD': 'Ansh@1789',
        'HOST': 'localhost',
-       'PORT': '',
+       'PORT': '5432',
+
    }
 }
 # # Database
