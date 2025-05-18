@@ -8,10 +8,10 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 from pathlib import Path
 import os
-
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)  # <== this MUST be above the LOGGING config
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')  
@@ -22,7 +22,7 @@ SECRET_KEY = 'django-insecure-(zyb)qx!o_p@$vjqscb=p+)8&-(tj(v*ne_=qc(r@7f(%%a5ey
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS =["34.203.203.126", "127.0.0.1", "localhost"]
+ALLOWED_HOSTS = ['*']
 
 AUTH_USER_MODEL = "Authentication.User"
 # Application definition
@@ -60,7 +60,11 @@ INSTALLED_APPS = [
     'import_export',
     'payroll',
     'reports',
+    'simple_history',
+    'errorlogger',
 ]
+
+INSTALLED_APPS += ['auditlogger']
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -70,7 +74,15 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
+    'simple_history.middleware.HistoryRequestMiddleware',
+    'errorlogger.middleware.GlobalExceptionLoggingMiddleware',
+]   
+
+MIDDLEWARE.insert(0, 'auditlogger.middleware.AuditMiddleware')
+
+
+#MIDDLEWARE += ['FA.middleware.AuditMiddleware']
+
 ROOT_URLCONF = 'FA.urls'
 CORS_ORIGIN_ALLOW_ALL=True
 TEMPLATES = [
@@ -89,29 +101,29 @@ TEMPLATES = [
     },
 ]
 WSGI_APPLICATION = 'FA.wsgi.application'
+DATABASES = {
+   'default': {
+       'ENGINE': 'django.db.backends.postgresql',
+       'NAME': 'accounting',
+       'USER': 'postgres',
+       'PASSWORD': 'ansh@1789',
+       'HOST': 'localhost',
+       'PORT': '',
+   }
+}
+# # Database
+# # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 # DATABASES = {
 #    'default': {
 #        'ENGINE': 'django.db.backends.postgresql',
 #        'NAME': 'accounts',
-#        'USER': 'postgres',
+#        'USER': 'accountuser',
 #        'PASSWORD': 'ansh@1789',
 #        'HOST': 'localhost',
 #        'PORT': '',
+
 #    }
 # }
-# # Database
-# # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
-DATABASES = {
-   'default': {
-       'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'finacc',
-       'USER': 'educure',
-       'PASSWORD': 'Ansh@1789',
-       'HOST': 'localhost',
-       'PORT': '5432',
-
-   }
-}
 
     
           
@@ -152,14 +164,44 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+# PASSWORD_HASHERS = [
+#     "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+#     "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+#     "django.contrib.auth.hashers.Argon2PasswordHasher",
+#     "django.contrib.auth.hashers.BCryptSHA256PasswordHasher",
+#     "django.contrib.auth.hashers.ScryptPasswordHasher",
+# ]
+
+# LOGGING = {
+#     'version': 1,
+#     'disable_existing_loggers': False,
+#     'handlers': {
+#         'console': {
+#             'class': 'logging.StreamHandler',
+#         },
+#         'file': {
+#             'level': 'DEBUG',
+#             'class': 'logging.FileHandler',
+#             'filename': 'django_debug.log',
+#         },
+#     },
+#     'loggers': {
+#         'django': {
+#             'handlers': ['console', 'file'],
+#             'level': 'DEBUG',
+#         },
+#     },
+# }
 REST_FRAMEWORK = {
     'COERCE_DECIMAL_TO_STRING': False,
-    #'DATE_INPUT_FORMATS': ['%d-%m-%Y'],
     'DATETIME_FORMAT': '%d-%m-%Y',
     'DATE_FORMAT': '%d-%m-%Y',
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'Authentication.jwt.JwtAuthentication',
-    ]
+    ],
+    'EXCEPTION_HANDLER': 'errorlogger.drf_exception_handler.custom_exception_handler'
+
 }
 # Internationalization
 # https://docs.djangoproject.com/en/3.2/topics/i18n/
@@ -180,13 +222,46 @@ USE_L10N = True
 USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/3.2/howto/static-files/
-STATIC_URL = '/static/'  # URL to access static files
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')  # Collect all static files here
-STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]  # Where Django looks for static files
-
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
-
+STATIC_URL = '/static/'
 # Default primary key field type
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'sushilbansal86@gmail.com'
+EMAIL_HOST_PASSWORD = 'zmge ddhy ixby sjkj'  # App Password, not your login password
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+
+    'formatters': {
+        'simple': {
+            'format': '{levelname} {asctime} {message}',
+            'style': '{',
+        },
+    },
+
+    'handlers': {
+        'file': {
+            'level': 'ERROR',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIR, 'error.log'),
+            'formatter': 'simple',
+        },
+    },
+
+    'loggers': {
+        'django': {
+            'handlers': ['file'],
+            'level': 'ERROR',
+            'propagate': True,
+        },
+    },
+}
+

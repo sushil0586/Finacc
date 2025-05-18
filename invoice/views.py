@@ -7,6 +7,8 @@ from math import radians, sin, cos, sqrt, atan2
 import io
 import calendar
 from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound
+from helpers.utils.pdf import render_to_pdf
 
 import json
 
@@ -650,6 +652,24 @@ class SalesOderHeaderApiView(ListCreateAPIView):
 
 
         return SalesOderHeader.objects.filter(entity = entity)
+
+
+class SalesOrderPDFViewlatest(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, pk):
+        try:
+            sale = SalesOderHeader.objects.select_related('accountid').prefetch_related('saleInvoiceDetails').get(pk=pk)
+        except SalesOderHeader.DoesNotExist:
+            raise NotFound("Sales order not found.")
+
+        context = {'sale': sale}
+        pdf = render_to_pdf('sales_invoice_template.html', context)
+
+        filename = f"Invoice_{sale.invoicenumber or sale.billno}.pdf"
+        response = HttpResponse(pdf, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{filename}"'
+        return response
 
 class SalesOderApiView(ListCreateAPIView):
 

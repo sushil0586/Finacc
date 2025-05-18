@@ -14,6 +14,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Index, Func, DateField, F
 from django.db.models.functions import Cast
 from geography.models import Country,State,District,City
+from simple_history.models import HistoricalRecords
 
 
 # Create your models here.
@@ -261,6 +262,7 @@ class SalesOderHeader(TrackingModel):
     einvoice =   models.BooleanField(default=False)
     einvoicepluseway =   models.BooleanField(default=False)
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+    history = HistoricalRecords()
    
 
     class Meta:
@@ -299,7 +301,7 @@ class salesOrderdetails(TrackingModel):
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
-
+    history = HistoricalRecords()
 
     def __str__(self):
         return f'{self.product} '

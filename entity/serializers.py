@@ -405,16 +405,16 @@ class entityAddSerializer(serializers.ModelSerializer):
         entityconstitution.objects.bulk_create(constitution_details)
         account.objects.bulk_create(account_details)
 
-        # # Update accounts in bulk
-        # account_updates = [
-        #     {"code": 1000, "credit_code": 3000},
-        #     {"code": 6000, "credit_code": 6100},
-        #     {"code": 8000, "credit_code": 7000},
-        # ]
-        # for update in account_updates:
-        #     account.objects.filter(accounthead__code=update["code"], entity=newentity).update(
-        #         creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=newentity)
-        #     )
+        # Update accounts in bulk
+        account_updates = [
+            {"code": 1000, "credit_code": 3000},
+            {"code": 6000, "credit_code": 6100},
+            {"code": 8000, "credit_code": 7000},
+        ]
+        for update in account_updates:
+            account.objects.filter(accounthead__code=update["code"], entity=newentity).update(
+                creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=newentity)
+            )
 
         return newentity
     

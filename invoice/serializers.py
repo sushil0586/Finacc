@@ -29,6 +29,8 @@ from helpers.utils.document_number import reset_counter_if_needed, build_documen
 #from entity.views import generateeinvoice
 #from entity.serializers import entityfinancialyearSerializer
 from django.db import models
+from helpers.utils.pdf import render_to_pdf
+from helpers.utils.email import send_invoice_email
 
 
 class PaymentmodesSerializer(serializers.ModelSerializer):
@@ -2295,6 +2297,19 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
             # Finalize the stock transaction
             stk.createtransaction()
+
+            context = {'sale': order}  # Add more context as needed
+            pdf_content = render_to_pdf('sales_invoice_template.html', context)
+
+            # Send email (to customer's email from `accountid`)
+            if pdf_content and order.accountid and order.accountid.emailid:
+                send_invoice_email(
+                    subject=f"Invoice #{order.invoicenumber or order.billno}",
+                    body="Dear Customer,\n\nPlease find attached your invoice.\n\nThanks.",
+                    to_email=order.accountid.emailid,
+                    pdf_content=pdf_content,
+                    filename=f"Invoice_{order.invoicenumber or order.billno}.pdf"
+                )
 
             # full_order_data = SalesOrderFullSerializer(order).data
 

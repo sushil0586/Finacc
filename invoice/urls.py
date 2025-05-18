@@ -172,7 +172,7 @@ urlpatterns  = [
     path('receipt-vouchers/<int:pk>/', views.ReceiptVoucherDetailAPIView.as_view(), name='receipt-voucher-detail'),
     path('receiptvoucherpdf/<int:pk>/', views.ReceiptVoucherDetailPdfAPIView.as_view(), name='receipt-voucher-detail'),
     path('receiptvoucherbyvoucherid/', views.ReceiptVoucherLookupAPIView.as_view(), name='receipt-voucher-detail'),
-    
+    path('sales-orders/<int:pk>/pdf/', views.SalesOrderPDFViewlatest.as_view(), name='sales-order-pdf'),
 
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),

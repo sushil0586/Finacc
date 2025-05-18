@@ -330,11 +330,7 @@
                     "drcreffect": "Yes",
                     "description": "Indirect Income",
                     "accounthead_accounts": [
-                        {
-                          
-                            "accountcode": 8400,
-                            "accountname": "Discounts"
-                         },
+                        
                         {
                             
                             "accountcode": 8300,
@@ -351,80 +347,7 @@
                 }
             ]
         },
-        {
-            "accounttypename": "Payable",
-            "accounttypecode": "1008",
-            "balanceType": true,
-            "accounthead_accounttype": [
-              {
-                "name": "Advance Payable",
-                "code": 6000,
-                "detailsingroup": 3,
-                "balanceType": "Credit",
-                "drcreffect": "Yes",
-                "description": "desc",
-                "accounthead_accounts": [
-                  {
-                    "accountcode": 6002,
-                    "accountname": "GST(SGST)"
-                  },
-                  {
-                    "accountcode": 6003,
-                    "accountname": "GST(IGST)"
-                 
-                  },
-                  {
-                    "accountcode": 6004,
-                    "accountname": "CESS"
-                  
-                  },
-                  {
-                    "accountcode": 8050,
-                    "accountname": "TCS206C1H"
-                   
-                  },
-                  {
-                    "accountcode": 8051,
-                    "accountname": "TCS206C"
-                  
-                  },
-                  {
-                    "accountcode": 8100,
-                    "accountname": "TDS194Q"
-                   
-                  },
-                  {
-                    "accountcode": 6005,
-                    "accountname": "GST(CGST) Reverse"
-                   
-                  },
-                  {
-                    "accountcode": 6006,
-                    "accountname": "GST(SGST) Reverse"
-                   
-                  },
-                  {
-                    "accountcode": 6007,
-                    "accountname": "GST(IGST) Reverse"
-                  
-                  },
-                  {
-                    "accountcode": 6001,
-                    "accountname": "GST(CGST)"
-                 
-                  }
-                ]
-              },
-              {
-                "name": "Sundry Creditors",
-                "code": 7000,
-                "detailsingroup": 3,
-                "balanceType": "Credit",
-                "drcreffect": "Yes",
-                "description": "desc"
-              }
-            ]
-          },
+        
           {
       
             "accounttypename": "Credit Card",
