@@ -1,107 +1,193 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Sales Invoice</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            font-size: 12px;
-        }
-        .header, .footer {
-            text-align: center;
-        }
-        .details, .summary {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        .details th, .details td, .summary th, .summary td {
-            border: 1px solid #000;
-            padding: 6px;
-        }
-        .details th {
-            background-color: #f2f2f2;
-        }
-        .summary {
-            margin-top: 30px;
-        }
-        .totals {
-            float: right;
-            width: 40%;
-        }
-    </style>
-</head>
-<body>
-
-    <div class="header">
-        <h2>Sales Invoice</h2>
-        <p><strong>Invoice No:</strong> {{ sale.invoicenumber }} | <strong>Date:</strong> {{ sale.sorderdate|date:"d-m-Y" }}</p>
-        <p><strong>Bill No:</strong> {{ sale.billno }}</p>
-    </div>
-
-    <div>
-        <p><strong>Customer:</strong> {{ sale.accountid.name }}</p>
-        <p><strong>Shipping To:</strong> {{ sale.shippedto.address }}</p>
-        <p><strong>Vehicle:</strong> {{ sale.vehicle }}</p>
-        <p><strong>GR No:</strong> {{ sale.grno }}</p>
-        <p><strong>Due Date:</strong> {{ sale.duedate|date:"d-m-Y" }}</p>
-    </div>
-
-    <table class="details">
-        <thead>
+<div id="printTaxInvoice" style="max-width: fit-content;" class="mt-2">
+    <table border="1" cellspacing="0" cellpadding="5" style="width: 100%; border-collapse: collapse;">
+         <thead>
             <tr>
-                <th>#</th>
-                <th>Product</th>
-                <th>Description</th>
-                <th>Qty</th>
-                <th>Rate</th>
-                <th>Amount</th>
-                <th>CGST</th>
-                <th>SGST</th>
-                <th>IGST</th>
-                <th>Total</th>
+                <th colspan="15">
+                    <div style="display: flex; justify-content: space-between;">
+                        <div>
+                            <b>GSTIN:</b> <span style="font-weight: normal;">{{saleInvoice.entitygst}}</span><br />    
+                            <b>PAN:</b> <span style="font-weight: normal;">{{saleInvoice.entitypan}}</span>
+                        </div>
+                        <div><b>Form GST INV-1</b></div>
+                        <div style="text-align: right;">
+                            <b>Tel:</b> <span style="font-weight: normal;">{{saleInvoice.phoneno}}</span><br />
+                            <span style="font-weight: normal;">{{saleInvoice.phoneno2}}</span>
+                        </div>
+                    </div>
+                </th>
+            </tr>
+            <tr>
+                <th colspan="15">
+                    <div style="font-size: 24px;"><b>{{saleInvoice.entityname}}</b></div>
+                    <div style="font-size: 16px;"><span style="font-weight: normal;">{{saleInvoice.entitydesc}}</span></div>
+                    <div style="font-size: 16px;"><span style="font-weight: normal;">{{saleInvoice.entityaddress}}</span></div>
+                </th>
+            </tr>
+            <tr>
+                <th colspan="7" rowspan="2" style="font-size: 24px;"><b>TAX-INVOICE</b></th>
+                <th colspan="4"><b>Invoice No:</b> <span style="font-weight: normal;">{{saleInvoice.billno}}</span></th>
+                <th colspan="4"><b>Reverse Charge:</b> <span style="font-weight: normal;">No</span></th>
+            </tr>
+            <tr>
+                <th colspan="4"><b>Invoice Date:</b> <span style="font-weight: normal;">{{saleInvoice.sorderdate}}</span></th>
+                <th colspan="4"><b>Payment Mode:</b> <span style="font-weight: normal;"></span></th>
+            </tr>
+            <tr>
+                <th colspan="7"><b>OFFICE COPY</b></th>
+                <th colspan="4"><b>Vehicle No:</b> <span style="font-weight: normal;">{{saleInvoice.vehicle}}</span></th>
+                <th colspan="4"><b>GR No:</b> <span style="font-weight: normal;">{{saleInvoice.grno}}</span></th>
+            </tr>
+            <tr>
+                <th colspan="7"><b>Place of Supply:</b> <span style="font-weight: normal;">{{saleInvoice.entitycityname}}, {{saleInvoice.entitystate}}</span></th>
+                <th colspan="8"><b>Transport Name:</b> <span style="font-weight: normal;">{{saleInvoice.transportname}}</span></th>
+            </tr>
+            <tr>
+                <th colspan="7">
+                    <u><b>Details of Receiver (Billed to)</b></u><br />
+                    <b>Name:</b> <span style="font-weight: normal;">{{saleInvoice.billtoname}}</span><br />
+                    <b>Address:</b> <span style="font-weight: normal;">{{saleInvoice.billtoaddress1}}, {{saleInvoice.billtoaddress2}}</span><br />
+                    <b>State:</b> <span style="font-weight: normal;">{{saleInvoice.billtostate}}</span><br />
+                    <b>GSTIN:</b> <span style="font-weight: normal;">{{saleInvoice.billtogst}}</span> &nbsp;
+                    <b>PAN:</b> <span style="font-weight: normal;">{{saleInvoice.billtopan}}</span>
+                </th>
+                <th colspan="8">
+                    <u><b>Details of Consignee (Shipped to)</b></u><br />
+                    <b>Name:</b> <span style="font-weight: normal;">{{saleInvoice.shiptoname}}</span><br />
+                    <b>Address:</b> <span style="font-weight: normal;">{{saleInvoice.shiptoaddress1}}, {{saleInvoice.shiptoaddress2}}</span><br />
+                    <b>State:</b> <span style="font-weight: normal;">{{saleInvoice.shiptostate}}</span><br />
+                    <b>GSTIN:</b> <span style="font-weight: normal;">{{saleInvoice.shiptogst}}</span> &nbsp;
+                    <b>PAN:</b> <span style="font-weight: normal;">{{saleInvoice.billtopan}}</span>
+                </th>
+            </tr>
+            <tr>
+                <th style="width: 40px;"><b>Sr</b></th>
+                <th colspan="2"><b>Description</b></th>
+                <th style="width: 60px;"><b>HSN</b></th>
+                <th><b>Pcs</b></th>
+                <th><b>Qty</b></th>
+                <th><b>Unit</b></th>
+                <th><b>Rate</b></th>
+                <th style="width: 100px;"><b>Discount %</b></th>
+                <th colspan="2"><b>Actual Rate</b></th>
+                <th colspan="2"><b>Amount</b></th>
             </tr>
         </thead>
         <tbody>
-            {% for item in sale.saleInvoiceDetails.all %}
+           {% for detail in saleInvoice.saleInvoiceDetails %}
             <tr>
-                <td>{{ forloop.counter }}</td>
-                <td>{{ item.product.name }}</td>
-                <td>{{ item.productdesc }}</td>
-                <td>{{ item.orderqty }}</td>
-                <td>{{ item.rate }}</td>
-                <td>{{ item.amount }}</td>
-                <td>{{ item.cgst }}</td>
-                <td>{{ item.sgst }}</td>
-                <td>{{ item.igst }}</td>
-                <td>{{ item.linetotal }}</td>
+                <td colspan="1"><span style="font-weight: normal;">{{ forloop.counter }}</span></td>
+                <td colspan="2"><span style="font-weight: normal;">{{ detail.productname }}</span></td>
+                <td colspan="1"><span style="font-weight: normal;">{{ detail.hsn }}</span></td>
+                <td><span style="font-weight: normal;">{{ detail.pieces }}</span></td>
+                <td><span style="font-weight: normal;">{{ detail.orderqty }}</span></td>
+                <td><span style="font-weight: normal;">{{ detail.units }}</span></td>
+                <td><span style="font-weight: normal;">{{ detail.ratebefdiscount }}</span></td>
+                <td><span style="font-weight: normal;">{{ detail.orderDiscount }}</span></td>
+                <td colspan="2"><span style="font-weight: normal;">{{ detail.rate }}</span></td>
+                <td colspan="2"><span style="font-weight: normal;">{{ detail.amount }}</span></td>
             </tr>
             {% endfor %}
         </tbody>
+			<tfoot>
+				<tr>
+					<td colspan="5"><b>Total</b></td>
+					<td></td>
+					<td>{{saleInvoice.totalpieces}}</td>
+					<td>{{saleInvoice.totalquanity}}</td>
+					<td></td>
+					<td></td>
+					<td></td>
+					<td colspan="2"></td>
+					<td colspan="2" style="text-align: right;"><b>{{saleInvoice.subtotal }}</b></td>
+				</tr>
+				<tr>
+					<th colspan="7"><u>Remarks</u></th>
+					<th colspan="4"><u>Other Details</u></th>
+					<th colspan="2">Expenses</th>
+					<th colspan="2" style="text-align: right;">{{ saleInvoice.expenses }}</th>
+				</tr>
+				<tr>
+					<th rowspan="7" colspan="7" valign="top">
+						<table border="1" cellspacing="0" cellpadding="3" style="width: 100%;">
+							<tr>
+								<th>Tax Rate</th>
+								<th>Taxable</th>
+								<th>CGST</th>
+								<th>SGST</th>
+								<th>IGST</th>
+							</tr>
+							
+                             {% for gst in saleInvoice.gst_summary %}
+							<tr>
+							    <td><span style="font-weight: normal;">{{ gst.taxPercent }}</span></td>
+                                <td><span style="font-weight: normal;">{{ gst.taxable_amount }}</span></td>
+                                <td><span style="font-weight: normal;">{{ gst.total_cgst_amount }}</span></td>
+                                <td><span style="font-weight: normal;">{{ gst.total_sgst_amount }}</span></td>
+                                <td><span style="font-weight: normal;">{{ gst.total_igst_amount }}</span></td>
+							</tr>
+                            {% endfor %}
+						</table>
+					</th>
+					<th rowspan="6" colspan="4"></th>
+					<th colspan="2">Actual Total</th>
+					<th colspan="2" style="text-align: right;">{{saleInvoice.stbefdiscount}}</th>
+				</tr>
+				<tr>
+					<th colspan="2">Discount Total</th>
+					<th colspan="2" style="text-align: right;">{{saleInvoice.discount}}</th>
+				</tr>
+				<tr>
+					<th colspan="2">Taxable Value</th>
+					<th colspan="2" style="text-align: right;"> {{saleInvoice.subtotal}}</th>
+				</tr>
+				<tr>
+					<th colspan="2">CGST</th>
+					<th colspan="2" style="text-align: right;">{{saleInvoice.cgst}}</th>
+				</tr>
+				<tr>
+					<th colspan="2">SGST</th>
+					<th colspan="2" style="text-align: right;">  {{saleInvoice.sgst}}</th>
+				</tr>
+				<tr>
+					<th colspan="2">IGST</th>
+					<th colspan="2" style="text-align: right;">{{saleInvoice.igst}}</th>
+				</tr>
+				<tr>
+					<th colspan="4">Total GST Rs: {{saleInvoice.totalgst }}</th>
+					<th colspan="2">Cess (if any)</th>
+				</tr>
+				<tr>
+					<th colspan="11">{{saleInvoice.amountinwords}}</th>
+					<th colspan="2">Grand Total</th>
+					<th colspan="2" style="text-align: right;"> {{saleInvoice.gtotal }}</th>
+				</tr>
+				<tr>
+					<th colspan="9">
+						<b><u>Our Bank</u></b><br />
+						Bank Name - {{saleInvoice.bankname}}<br />
+						A/C No - {{saleInvoice.bankacno}}<br />
+						IFSC CODE -  {{saleInvoice.ifsccode}}
+					</th>
+					<th colspan="6">
+						<div>For <b>{{saleInvoice.entityname}}</b></div>
+						<div style="text-align: right;">Authorised Signatory</div>
+					</th>
+				</tr>
+				<tr>
+					<th colspan="15">
+						<b>Terms & Conditions:</b>
+						<ol>
+							<li>Our responsibility ceases after the goods are removed from our premises</li>
+							<li>Goods once sold are not returnable or exchangeable</li>
+							<li>If the bill is not paid within a week interest @24% will be charged from date of bill</li>
+						</ol>
+						<div style="display: flex; justify-content: space-around; margin-top: 20px;">
+							<div>Checked By</div>
+							<div>Prepared By</div>
+							<div>Customer's Sign</div>
+						</div>
+					</th>
+				</tr>
+			</tfoot>
     </table>
-
-    <div class="totals">
-        <table class="summary">
-            <tr><th>Sub Total</th><td>{{ sale.subtotal }}</td></tr>
-            <tr><th>Discount</th><td>{{ sale.discount }}</td></tr>
-            <tr><th>Add/Less</th><td>{{ sale.addless }}</td></tr>
-            <tr><th>CGST</th><td>{{ sale.cgst }}</td></tr>
-            <tr><th>SGST</th><td>{{ sale.sgst }}</td></tr>
-            <tr><th>IGST</th><td>{{ sale.igst }}</td></tr>
-            <tr><th>CESS</th><td>{{ sale.cess }}</td></tr>
-            <tr><th>Expenses</th><td>{{ sale.expenses }}</td></tr>
-            <tr><th>Advance</th><td>{{ sale.advance }}</td></tr>
-            <tr><th><strong>Grand Total</strong></th><td><strong>{{ sale.gtotal }}</strong></td></tr>
-            <tr><th>Round Off</th><td>{{ sale.roundOff }}</td></tr>
-        </table>
-    </div>
-
-    <div style="clear: both;"></div>
-
-    <div class="footer">
-        <p>Thank you for your business!</p>
-    </div>
-
-</body>
-</html>
+</div>

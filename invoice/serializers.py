@@ -2298,7 +2298,16 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             # Finalize the stock transaction
             stk.createtransaction()
 
-            context = {'sale': order}  # Add more context as needed
+
+            full_order_data = SalesOrderHeaderPDFSerializer(order).data
+
+
+            
+
+
+
+
+            context = {'saleInvoice': full_order_data}  # Add more context as needed
             pdf_content = render_to_pdf('sales_invoice_template.html', context)
 
             # Send email (to customer's email from `accountid`)

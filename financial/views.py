@@ -27,6 +27,8 @@ from django.http import JsonResponse
 from helpers.utils.gst_api import get_gst_details
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
+import xlwt
+from django.http import HttpResponse
 
 
 class AccountHeadApiView(ListCreateAPIView):
@@ -462,24 +464,22 @@ class AccountListPostApiView(ListAPIView):
     permission_classes = (IsAuthenticated,)
 
     def post(self, request, format=None):
-        # Extract parameters from request
         entity = request.data.get('entity')
         account_ids = request.data.get('account_ids')
         accounthead_ids = request.data.get('accounthead_ids')
         sort_by = request.data.get('sort_by', 'account')
         sort_order = request.data.get('sort_order', 'asc')
         top_n = request.data.get('top_n')
+        download = request.query_params.get('download')  # ?download=xls
 
         if not entity:
             return Response({"error": "Entity is required"}, status=400)
 
-        # Get financial year for the entity
         try:
             current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
         except entityfinancialyear.DoesNotExist:
             return Response({"error": "Financial year not found for the entity"}, status=404)
 
-        # Build dynamic filters for StockTransactions
         stock_filter = {
             "entity": entity,
             "isactive": 1,
@@ -504,7 +504,6 @@ class AccountListPostApiView(ListAPIView):
             balance=Sum('debitamount') - Sum('creditamount')
         )
 
-        # Build dynamic filters for account
         account_filter = {
             "entity": entity,
             "isactive": 1
@@ -524,7 +523,6 @@ class AccountListPostApiView(ListAPIView):
         stock_data = list(stock_queryset)
         account_data = list(account_queryset)
 
-        # Merge account and stock data
         final_data = []
         for acc in account_data:
             balance = next((item.get('balance') for item in stock_data if item['account__id'] == acc['id']), 0)
@@ -548,7 +546,6 @@ class AccountListPostApiView(ListAPIView):
                 'drcr': drcr
             })
 
-        # Sorting
         sort_field_map = {
             'account': 'accountname',
             'accounthead': 'daccountheadname'
@@ -557,15 +554,46 @@ class AccountListPostApiView(ListAPIView):
         reverse_sort = sort_order.lower() == 'desc'
         final_data.sort(key=lambda x: x.get(sort_key, '').lower(), reverse=reverse_sort)
 
-        # Top N limit
         if top_n:
             try:
                 top_n = int(top_n)
                 final_data = final_data[:top_n]
             except ValueError:
-                pass  # Ignore invalid top_n values
+                pass
 
+        # ======= XLS download logic =======
+        if download == 'xls':
+            response = HttpResponse(content_type='application/ms-excel')
+            response['Content-Disposition'] = 'attachment; filename="account_report.xls"'
+
+            wb = xlwt.Workbook(encoding='utf-8')
+            ws = wb.add_sheet('Accounts')
+
+            # Column headers
+            columns = ['Account Name', 'Debit', 'Credit', 'GST No', 'PAN', 'City', 'Account Head', 'Credit Account Head', 'Balance', 'DR/CR', 'Can Be Deleted']
+            for col_num, column_title in enumerate(columns):
+                ws.write(0, col_num, column_title)
+
+            # Data rows
+            for row_num, row_data in enumerate(final_data, start=1):
+                ws.write(row_num, 0, row_data['accountname'])
+                ws.write(row_num, 1, row_data['debit'])
+                ws.write(row_num, 2, row_data['credit'])
+                ws.write(row_num, 3, row_data['accgst'])
+                ws.write(row_num, 4, row_data['accpan'])
+                ws.write(row_num, 5, row_data['cityname'])
+                ws.write(row_num, 6, row_data['daccountheadname'])
+                ws.write(row_num, 7, row_data['caccountheadname'])
+                ws.write(row_num, 8, row_data['balance'])
+                ws.write(row_num, 9, row_data['drcr'])
+                ws.write(row_num, 10, 'Yes' if row_data['accanbedeleted'] else 'No')
+
+            wb.save(response)
+            return response
+
+        # ======= JSON response (default) =======
         return Response(final_data)
+
     
 
 
