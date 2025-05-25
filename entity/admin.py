@@ -2,13 +2,24 @@ from django.contrib import admin
 from entity.models import (
     unitType, Entity, entity_details, entityfinancialyear, Constitution,
     entityconstitution, subentity, Rolepriv, Role, Userrole,
-    GstAccountsdetails, Mastergstdetails,Bankdetails
+    GstAccountsdetails, Mastergstdetails,Bankdetails,GstRegitrationTypes,OwnerShipTypes
 )
+from import_export.admin import ImportExportMixin
 
 # Admin classes
-class UnitTypeAdmin(admin.ModelAdmin):
-    list_display = ['UnitName', 'UnitDesc', 'createdby']
+class UnitTypeAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['UnitName', 'UnitDesc']
     search_fields = ['UnitName', 'UnitDesc']
+    list_per_page = 50
+
+class GstRegitrationTypesAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['Name', 'Description']
+    search_fields = ['Name', 'Description']
+    list_per_page = 50
+
+class OwnerShipTypesAdmin(ImportExportMixin,admin.ModelAdmin):
+    list_display = ['Name', 'Description']
+    search_fields = ['Name', 'Description']
     list_per_page = 50
 
 
@@ -58,6 +69,8 @@ class GstAccountAdmin(admin.ModelAdmin):
 
 # Register models with admin site
 admin.site.register(unitType, UnitTypeAdmin)
+admin.site.register(GstRegitrationTypes, GstRegitrationTypesAdmin)
+admin.site.register(OwnerShipTypes, OwnerShipTypesAdmin)
 admin.site.register(Entity, EntityAdmin)
 admin.site.register(entity_details)
 admin.site.register(entityfinancialyear)
