@@ -1,9 +1,10 @@
 from django.http import request
 from django.shortcuts import render
+from rest_framework.views import APIView
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
-from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails
-from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist
+from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails,GstRegitrationTypes,BankAccount
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -17,6 +18,7 @@ from django.db.models import Count
 from geography.models import Country,State,District,City
 from rest_framework import response,status,permissions
 from helpers.utils.gst_api import get_gst_details
+from django.shortcuts import get_object_or_404
 
 
 
@@ -701,6 +703,58 @@ class EntityFinancialYearView(ListAPIView):
         if entity_id:
             return entityfinancialyear.objects.filter(entity_id=entity_id)
         return entityfinancialyear.objects.none()  # Return empty if no entity provided
+    
+
+
+
+class MasterDataView(ListAPIView):
+    def get(self, request):
+        unit_types = unitType.objects.all()
+        gst_types = GstRegitrationTypes.objects.all()
+
+        unit_serializer = unitTypeSerializer(unit_types, many=True)
+        gst_serializer = GstRegitrationTypesSerializer(gst_types, many=True)
+
+        return Response({
+            'unitTypes': unit_serializer.data,
+            'gstRegistrationTypes': gst_serializer.data
+        }, status=status.HTTP_200_OK)
+    
+
+class BankAccountCreateView(APIView):
+    def post(self, request):
+        serializer = BankAccountSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BankAccountDetailView(APIView):
+    def get(self, request, pk):
+        bank_account = get_object_or_404(BankAccount, pk=pk)
+        serializer = BankAccountSerializer(bank_account)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        bank_account = get_object_or_404(BankAccount, pk=pk)
+        serializer = BankAccountSerializer(bank_account, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        bank_account = get_object_or_404(BankAccount, pk=pk)
+        bank_account.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BankAccountListByEntityView(APIView):
+    def get(self, request, entity_id):
+        bank_accounts = BankAccount.objects.filter(entity__id=entity_id)
+        serializer = BankAccountSerializer(bank_accounts, many=True)
+        return Response(serializer.data)
         
             
     

@@ -5,7 +5,7 @@ from django.db import transaction
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer,AccountHeadMinimalSerializer,AccountTypeJsonSerializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer,AccountHeadMinimalSerializer,AccountTypeJsonSerializer,AccountBalanceSerializer,AccountHeadListSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -315,29 +315,27 @@ class accountheadApiView3(ListAPIView):
         return accountHead.objects.filter(entity = entity)
     
 
-class AccountBindApiView(ListAPIView):
+class AccountBindApiView(APIView):
     """
-    API view to retrieve account balances and related information for a given entity.
+    Optimized API view to retrieve account balances and related information.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, format=None):
-        # Retrieve entity from query parameters
-        entity = self.request.query_params.get('entity')
+        entity = request.query_params.get('entity')
         if not entity:
-            return Response({"error": "Entity parameter is required."}, status=400)
+            return Response({"error": "Entity parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get the financial year for the entity
         try:
-            current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
+            fy = entityfinancialyear.objects.get(entity=entity, isactive=1)
         except entityfinancialyear.DoesNotExist:
-            return Response({"error": "Active financial year not found for the given entity."}, status=404)
+            return Response({"error": "Active financial year not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Query for transactions within the financial year
+        # Get transactions with balance
         transactions = StockTransactions.objects.filter(
             entity=entity,
             isactive=1,
-            entrydatetime__range=(current_dates.finstartyear, current_dates.finendyear)
+            entrydatetime__range=(fy.finstartyear, fy.finendyear)
         ).exclude(
             accounttype='MD'
         ).exclude(
@@ -346,45 +344,139 @@ class AccountBindApiView(ListAPIView):
             'account__id', 'account__accountname', 'account__accountcode',
             'account__gstno', 'account__pan', 'account__city', 'account__saccode'
         ).annotate(
-            balance=Sum('debitamount', default=0) - Sum('creditamount', default=0)
+            balance=Sum('debitamount') - Sum('creditamount')
         )
 
-        # Query for accounts associated with the entity
+        # Convert transactions to dict
+        transaction_map = {}
+        for t in transactions:
+            aid = t['account__id']
+            transaction_map[aid] = {
+                'id': aid,
+                'accountname': t['account__accountname'],
+                'accountcode': t['account__accountcode'],
+                'gstno': t.get('account__gstno') or '',
+                'pan': t.get('account__pan') or '',
+                'city': t.get('account__city'),
+                'saccode': t.get('account__saccode') or '',
+                'balance': t['balance'] or 0
+            }
+
+        # Include accounts with no transactions (default balance 0)
         accounts = account.objects.filter(entity=entity).values(
             'id', 'accountname', 'accountcode', 'gstno', 'pan', 'city__id', 'saccode'
         )
 
-        # Convert querysets to DataFrames
-        df_transactions = read_frame(transactions).fillna('')
-        df_accounts = read_frame(accounts).fillna('')
+        for acc in accounts:
+            aid = acc['id']
+            if aid not in transaction_map:
+                transaction_map[aid] = {
+                    'id': aid,
+                    'accountname': acc['accountname'],
+                    'accountcode': acc['accountcode'],
+                    'gstno': acc.get('gstno') or '',
+                    'pan': acc.get('pan') or '',
+                    'city': acc.get('city__id'),
+                    'saccode': acc.get('saccode') or '',
+                    'balance': 0
+                }
 
-        # Rename columns for consistency
-        df_transactions.rename(columns={
-            'account__id': 'id',
-            'account__accountname': 'accountname',
-            'account__accountcode': 'accountcode',
-            'account__gstno': 'gstno',
-            'account__pan': 'pan',
-            'account__city': 'city',
-            'account__saccode': 'saccode'
-        }, inplace=True)
+        # Add DR/CR field
+        final_data = []
+        for entry in transaction_map.values():
+            entry['drcr'] = 'CR' if entry['balance'] < 0 else 'DR'
+            final_data.append(entry)
 
-        df_accounts.rename(columns={'city__id': 'city'}, inplace=True)
-        df_accounts['balance'] = 0  # Add balance column with default 0
+        # Sort by accountname
+        final_data.sort(key=lambda x: x['accountname'])
 
-        # Combine transactions and accounts data
-        combined_df = pd.concat([df_transactions, df_accounts]).reset_index(drop=True)
+        # Serialize and return
+        serializer = AccountBalanceSerializer(final_data, many=True)
+        return Response(serializer.data)
+    
 
-        # Group by unique account attributes and calculate total balance
-        final_df = combined_df.groupby(
-            ['id', 'accountname', 'accountcode', 'gstno', 'saccode', 'city']
-        )[['balance']].sum().reset_index()
 
-        # Add 'drcr' column based on balance sign
-        final_df['drcr'] = np.where(final_df['balance'] < 0, 'CR', 'DR')
+class InvoiceBindApiView(APIView):
+    """
+    Optimized API view to retrieve account balances and related information.
+    """
+    permission_classes = [permissions.IsAuthenticated]
 
-        # Return sorted and formatted response
-        return Response(final_df.sort_values(by=['accountname']).to_dict(orient='records'))
+    def get(self, request, format=None):
+        entity = request.query_params.get('entity')
+        if not entity:
+            return Response({"error": "Entity parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            fy = entityfinancialyear.objects.get(entity=entity, isactive=1)
+        except entityfinancialyear.DoesNotExist:
+            return Response({"error": "Active financial year not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Get transactions with balance
+        transactions = StockTransactions.objects.filter(
+            entity=entity,
+            isactive=1,
+            account__accounthead__code__in=['4000', '7000', '8000'],
+            entrydatetime__range=(fy.finstartyear, fy.finendyear)
+        ).exclude(
+            accounttype='MD'
+        ).exclude(
+            transactiontype__in=['PC']
+        ).values(
+            'account__id', 'account__accountname', 'account__accountcode',
+            'account__gstno', 'account__pan', 'account__city', 'account__saccode'
+        ).annotate(
+            balance=Sum('debitamount') - Sum('creditamount')
+        )
+
+        # Convert transactions to dict
+        transaction_map = {}
+        for t in transactions:
+            aid = t['account__id']
+            transaction_map[aid] = {
+                'id': aid,
+                'accountname': t['account__accountname'],
+                'accountcode': t['account__accountcode'],
+                'gstno': t.get('account__gstno') or '',
+                'pan': t.get('account__pan') or '',
+                'city': t.get('account__city'),
+                'saccode': t.get('account__saccode') or '',
+                'balance': t['balance'] or 0
+            }
+
+        # Include accounts with no transactions (default balance 0)
+        accounts = account.objects.filter(entity=entity,
+                                           accounthead__code__in=['4000', '7000', '8000']  # <-- apply filter here
+                                          ).values(
+            'id', 'accountname', 'accountcode', 'gstno', 'pan', 'city__id', 'saccode'
+        )
+
+        for acc in accounts:
+            aid = acc['id']
+            if aid not in transaction_map:
+                transaction_map[aid] = {
+                    'id': aid,
+                    'accountname': acc['accountname'],
+                    'accountcode': acc['accountcode'],
+                    'gstno': acc.get('gstno') or '',
+                    'pan': acc.get('pan') or '',
+                    'city': acc.get('city__id'),
+                    'saccode': acc.get('saccode') or '',
+                    'balance': 0
+                }
+
+        # Add DR/CR field
+        final_data = []
+        for entry in transaction_map.values():
+            entry['drcr'] = 'CR' if entry['balance'] < 0 else 'DR'
+            final_data.append(entry)
+
+        # Sort by accountname
+        final_data.sort(key=lambda x: x['accountname'])
+
+        # Serialize and return
+        serializer = AccountBalanceSerializer(final_data, many=True)
+        return Response(serializer.data)
     
 
 
@@ -399,6 +491,7 @@ class AccountListNewApiView(ListAPIView):
         stock_queryset = StockTransactions.objects.filter(
             entity=entity,
             isactive=1,
+              
             entrydatetime__range=(current_dates.finstartyear, current_dates.finendyear)
         ).values(
             'account__id', 'account__accountname', 'account__gstno', 'account__pan',
@@ -975,6 +1068,22 @@ class TopAccountHeadAPIView(APIView):
             return Response(serializer.data)
         else:
             return Response({"detail": "No account head found"}, status=status.HTTP_404_NOT_FOUND)
+        
+
+
+
+class AccountHeadListByEntityAPIView(APIView):
+    def get(self, request, entity_id):
+        credit_heads = accountHead.objects.filter(entity_id=entity_id, balanceType='Credit')
+        debit_heads = accountHead.objects.filter(entity_id=entity_id, balanceType='Debit')
+
+        credit_data = AccountHeadListSerializer(credit_heads, many=True).data
+        debit_data = AccountHeadListSerializer(debit_heads, many=True).data
+
+        return Response({
+            "credit": credit_data,
+            "debit": debit_data
+        }, status=status.HTTP_200_OK)
 
 
     

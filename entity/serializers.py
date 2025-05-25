@@ -1,7 +1,7 @@
 #import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import Entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole
+from entity.models import Entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole,GstRegitrationTypes,BankAccount
 from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
@@ -698,3 +698,32 @@ class entityDetailsSerializer(serializers.ModelSerializer):
 #         else:
 #             acc =  obj.role.rolename
 #             return acc
+
+
+class GstRegitrationTypesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GstRegitrationTypes
+        fields = ['id', 'Name', 'Description']
+
+
+class BankAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BankAccount
+        fields = [
+            'id',
+            'entity',
+            'bank_name',
+            'branch',
+            'account_number',
+            'ifsc_code',
+            'account_type',
+            'is_primary',
+        ]
+
+    def validate(self, attrs):
+        # Optional: prevent multiple primary accounts for the same entity
+        if attrs.get("is_primary") and self.instance is None:
+            entity = attrs.get("entity")
+            if BankAccount.objects.filter(entity=entity, is_primary=True).exists():
+                raise serializers.ValidationError("A primary bank account already exists for this entity.")
+        return attrs
