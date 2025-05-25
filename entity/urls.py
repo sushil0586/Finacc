@@ -32,6 +32,11 @@ urlpatterns  = [
     path('userAddApiView',views.userAddApiView.as_view(), name = 'unittypeid'),
     path('getentitybygst',views.getgstindetails.as_view(), name = 'unittypeid'),
     path('getyearsbyentity',views.EntityFinancialYearView.as_view(), name = 'unittypeid'),
+    path('entitymasterdetails',views.MasterDataView.as_view(), name = 'unittypeid'),
+    path('bankaccounts/', views.BankAccountCreateView.as_view(), name='bankaccount-create'),
+    path('bankaccounts/<int:pk>/', views.BankAccountDetailView.as_view(), name='bankaccount-detail'),
+    path('bankaccounts/entity/<int:entity_id>/', views.BankAccountListByEntityView.as_view(), name='bankaccount-by-entity'),
+    
 
     
 

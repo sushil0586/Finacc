@@ -546,6 +546,26 @@ class AccountTypeJsonSerializer(serializers.ModelSerializer):
                         account.objects.create(accounthead=head, **account_data,entity = entity,createdby = user,accounttype = acc_type)
 
         return acc_type
+    
+
+
+class AccountBalanceSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    accountname = serializers.CharField()
+    accountcode = serializers.CharField()
+    gstno = serializers.CharField(allow_blank=True, required=False)
+    pan = serializers.CharField(allow_blank=True, required=False)
+    city = serializers.IntegerField(allow_null=True)
+    saccode = serializers.CharField(allow_blank=True, required=False)
+    balance = serializers.DecimalField(max_digits=15, decimal_places=2)
+    drcr = serializers.CharField()
+
+
+
+class AccountHeadListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = accountHead
+        fields = ['id', 'name', 'code']
            
 
 

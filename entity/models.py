@@ -9,13 +9,34 @@ from django.utils.dateformat import DateFormat
 # Create your models here.
 
 class unitType(models.Model):
-    UnitName =    models.CharField(max_length= 255)
-    UnitDesc =    models.TextField()
-    createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
+    UnitName =    models.CharField(max_length= 100)
+    UnitDesc =    models.CharField(max_length= 255)
+    #createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
 
 
     def __str__(self):
         return f'{self.UnitName}'
+    
+
+class GstRegitrationTypes(models.Model):
+    Name =           models.CharField(max_length= 100)
+    Description =    models.CharField(max_length= 255)
+    #createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
+
+
+    def __str__(self):
+        return f'{self.Name}'
+    
+class OwnerShipTypes(models.Model):
+    Name =           models.CharField(max_length= 100)
+    Description =    models.CharField(max_length= 255)
+    #createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
+
+
+    def __str__(self):
+        return f'{self.Name}'
+    
+
     
 
 
@@ -49,6 +70,9 @@ class Entity(TrackingModel):
     entityname =  models.CharField(max_length= 100)
     entitydesc =  models.CharField(max_length= 255,null=True)
     legalname =  models.CharField(max_length= 100,null=True)
+    unitType =        models.ForeignKey(unitType, on_delete=models.CASCADE,null= True)
+    GstRegitrationType =        models.ForeignKey(GstRegitrationTypes, on_delete=models.CASCADE,null= True)
+    website = models.URLField(blank=True, null=True)
     address =     models.CharField(max_length= 100)
     address2 =     models.CharField(max_length= 100,null= True,blank = True)
     addressfloorno =     models.CharField(max_length= 50,null= True,blank = True)
@@ -76,7 +100,6 @@ class Entity(TrackingModel):
     dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
     const =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True)
-
     user = models.ManyToManyField(to = 'Authentication.User',related_name='uentity',null=True,default=[1])
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,default=1,blank=True)
     
@@ -84,6 +107,19 @@ class Entity(TrackingModel):
     
     def __str__(self):
         return f'{self.entityname}'
+    
+
+class BankAccount(models.Model):
+    entity = models.ForeignKey(to= 'Entity', on_delete=models.CASCADE, related_name='bank_accounts')
+    bank_name = models.CharField(max_length=100)
+    branch = models.CharField(max_length=100)
+    account_number = models.CharField(max_length=20)
+    ifsc_code = models.CharField(max_length=11)
+    account_type = models.CharField(max_length=20, choices=[('current', 'Current'), ('savings', 'Savings')])
+    is_primary = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.bank_name} - {self.account_number}"
     
 
 class GstAccountsdetails(TrackingModel):
@@ -157,6 +193,34 @@ class entityconstitution(TrackingModel):
 
     def __str__(self):
         return f'{self.entity}'
+    
+class EntityOwnership(models.Model):
+    # OWNERSHIP_TYPE_CHOICES = [
+    #     ('owner', 'Owner'),
+    #     ('partner', 'Partner'),
+    #     ('shareholder', 'Shareholder'),
+    #     ('trustee', 'Trustee'),
+    #     ('board_member', 'Board Member'),
+    #     ('official', 'Government Official'),
+    # ]
+    OwnerShipType = models.ForeignKey(OwnerShipTypes, on_delete=models.CASCADE, related_name='ownerships')
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name='ownerships')
+    name = models.CharField(max_length=100)
+    email = models.EmailField(blank=True, null=True)
+    mobile = models.CharField(max_length=15, blank=True, null=True)
+    pan_number = models.CharField(max_length=10, blank=True, null=True)
+    aadhaar_number = models.CharField(max_length=12, blank=True, null=True)
+    share_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    capital_contribution = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    is_primary = models.BooleanField(default=False)
+    designation = models.CharField(max_length=100, blank=True, null=True)
+    remarks = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.name} - {self.ownership_type}"
+    
+
+
 
 
 

@@ -20,6 +20,7 @@ urlpatterns  = [
     #path('accountList',views.accountListApiView.as_view(),name ='accounthead'),
     path('accountcode',views.AccountCodeLatestView.as_view(), name = 'purchaseorder'),
     path('accountbind',views.AccountBindApiView.as_view(), name = 'Trialbalance'),
+    path('invoiceAccounts',views.InvoiceBindApiView.as_view(), name = 'Trialbalance'),
     path('accountList',views.AccountListNewApiView.as_view(), name = 'Trialbalance'),
     path('accountListPost',views.AccountListPostApiView.as_view(), name = 'Trialbalance'),
     path('accounttype',views.accounttypeApiView.as_view(), name = 'Trialbalance'),
@@ -40,7 +41,7 @@ urlpatterns  = [
     path('staticaccount-mapping/<int:pk>/', views.StaticAccountMappingRetrieveUpdateDestroyView.as_view(), name='staticaccount-mapping-detail'),
     path('staticaccountslist/', views.StaticAccountFlatListView.as_view(), name='staticaccounts-flat-list'),
     path('top-account-head/', views.TopAccountHeadAPIView.as_view(), name='top-account-head'),
-    
+    path('accountheads/entity/<int:entity_id>/', views.AccountHeadListByEntityAPIView.as_view(), name='accounthead-list-by-entity'),    
 
     
 
