@@ -412,7 +412,7 @@ class InvoiceBindApiView(APIView):
         except entityfinancialyear.DoesNotExist:
             return Response({"error": "Active financial year not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Get transactions with balance
+        # Get transactions with balances
         transactions = StockTransactions.objects.filter(
             entity=entity,
             isactive=1,
@@ -423,13 +423,20 @@ class InvoiceBindApiView(APIView):
         ).exclude(
             transactiontype__in=['PC']
         ).values(
-            'account__id', 'account__accountname', 'account__accountcode',
-            'account__gstno', 'account__pan', 'account__city', 'account__saccode'
+            'account__id',
+            'account__accountname',
+            'account__accountcode',
+            'account__gstno',
+            'account__pan',                # ✅ Important for pancode
+            'account__city',
+            'account__saccode',
+            'account__state',              # ✅ Include for state ID
+            'account__district',           # ✅ Include for district ID
+            'account__pincode'
         ).annotate(
             balance=Sum('debitamount') - Sum('creditamount')
         )
 
-        # Convert transactions to dict
         transaction_map = {}
         for t in transactions:
             aid = t['account__id']
@@ -438,17 +445,30 @@ class InvoiceBindApiView(APIView):
                 'accountname': t['account__accountname'],
                 'accountcode': t['account__accountcode'],
                 'gstno': t.get('account__gstno') or '',
-                'pan': t.get('account__pan') or '',
+                'pancode': t.get('account__pan') or '',
                 'city': t.get('account__city'),
+                'state': t.get('account__state'),
+                'district': t.get('account__district'),
+                'pincode': t.get('account__pincode') or '',
                 'saccode': t.get('account__saccode') or '',
                 'balance': t['balance'] or 0
             }
 
-        # Include accounts with no transactions (default balance 0)
-        accounts = account.objects.filter(entity=entity,
-                                           accounthead__code__in=['4000', '7000', '8000']  # <-- apply filter here
-                                          ).values(
-            'id', 'accountname', 'accountcode', 'gstno', 'pan', 'city__id', 'saccode'
+        # Accounts with no transactions
+        accounts = account.objects.filter(
+            entity=entity,
+            accounthead__code__in=['4000', '7000', '8000']
+        ).values(
+            'id',
+            'accountname',
+            'accountcode',
+            'gstno',
+            'pan',
+            'city__id',
+            'state__id',
+            'district__id',
+            'pincode',
+            'saccode'
         )
 
         for acc in accounts:
@@ -459,24 +479,26 @@ class InvoiceBindApiView(APIView):
                     'accountname': acc['accountname'],
                     'accountcode': acc['accountcode'],
                     'gstno': acc.get('gstno') or '',
-                    'pan': acc.get('pan') or '',
+                    'pancode': acc.get('pan') or '',
                     'city': acc.get('city__id'),
+                    'state': acc.get('state__id'),
+                    'district': acc.get('district__id'),
+                    'pincode': acc.get('pincode') or '',
                     'saccode': acc.get('saccode') or '',
                     'balance': 0
                 }
 
-        # Add DR/CR field
         final_data = []
         for entry in transaction_map.values():
             entry['drcr'] = 'CR' if entry['balance'] < 0 else 'DR'
             final_data.append(entry)
 
-        # Sort by accountname
         final_data.sort(key=lambda x: x['accountname'])
 
-        # Serialize and return
         serializer = AccountBalanceSerializer(final_data, many=True)
         return Response(serializer.data)
+
+
     
 
 
