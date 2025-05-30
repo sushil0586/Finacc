@@ -36,6 +36,8 @@ urlpatterns  = [
     path('bankaccounts/', views.BankAccountCreateView.as_view(), name='bankaccount-create'),
     path('bankaccounts/<int:pk>/', views.BankAccountDetailView.as_view(), name='bankaccount-detail'),
     path('bankaccounts/entity/<int:entity_id>/', views.BankAccountListByEntityView.as_view(), name='bankaccount-by-entity'),
+    path('entity/create/', views.EntityCreateUpdateAPIView.as_view(), name='entity-create'),
+    path('entity/update/<int:pk>/', views.EntityCreateUpdateAPIView.as_view(), name='entity-update'),
     
 
     

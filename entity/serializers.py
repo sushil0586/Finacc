@@ -311,6 +311,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Bulk create financial year details
         # Prepare financial year objects
+        
         fy_details = [
             entityfinancialyear(entity=newentity, **data, createdby=users[0])
             for data in fydata
@@ -727,3 +728,102 @@ class BankAccountSerializer(serializers.ModelSerializer):
             if BankAccount.objects.filter(entity=entity, is_primary=True).exists():
                 raise serializers.ValidationError("A primary bank account already exists for this entity.")
         return attrs
+
+
+class BankAccountNewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BankAccount
+        exclude = ['entity']
+
+
+class SubEntityNewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = subentity
+        exclude = ['entity']
+
+
+class EntityFinancialYearNewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = entityfinancialyear
+        exclude = ['entity']
+
+
+class EntityConstitutionNewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = entityconstitution
+        exclude = ['entity']
+
+
+class EntityNewSerializer(serializers.ModelSerializer):
+    bank_accounts = BankAccountNewSerializer(many=True)
+    subentity = SubEntityNewSerializer(many=True)
+    fy = EntityFinancialYearNewSerializer(many=True)
+    constitution = EntityConstitutionNewSerializer(many=True)
+
+    class Meta:
+        model = Entity
+        fields = '__all__'
+
+    def create(self, validated_data):
+        bank_data = validated_data.pop('bank_accounts', [])
+        subentities_data = validated_data.pop('subentity', [])
+        financial_years_data = validated_data.pop('fy', [])
+        constitutions_data = validated_data.pop('constitution', [])
+
+        entity = Entity.objects.create(**validated_data)
+
+        for b in bank_data:
+            BankAccount.objects.create(entity=entity, **b)
+
+        for s in subentities_data:
+            subentity.objects.create(entity=entity, **s)
+
+        for f in financial_years_data:
+            entityfinancialyear.objects.create(entity=entity, **f)
+
+        for c in constitutions_data:
+            entityconstitution.objects.create(entity=entity, **c)
+
+        return entity
+    
+
+    def update(self, instance, validated_data):
+        def update_nested_data(model, related_name, child_data, parent_instance, lookup_field='id'):
+            existing_items = getattr(parent_instance, related_name).all()
+            existing_map = {getattr(item, lookup_field): item for item in existing_items}
+            new_ids = []
+
+            for item_data in child_data:
+                item_id = item_data.get(lookup_field)
+                if item_id and item_id in existing_map:
+                    # Update existing item
+                    child_instance = existing_map[item_id]
+                    for attr, value in item_data.items():
+                        setattr(child_instance, attr, value)
+                    child_instance.save()
+                    new_ids.append(item_id)
+                else:
+                    # Create new item
+                    model.objects.create(**item_data, **{model._meta.model_name: parent_instance})
+
+            # Delete removed items
+            for item_id, item in existing_map.items():
+                if item_id not in new_ids:
+                    item.delete()
+
+        bank_data = validated_data.pop('bank_accounts', [])
+        subentity_data = validated_data.pop('subentity', [])
+        fy_data = validated_data.pop('fy', [])
+        constitution_data = validated_data.pop('constitution', [])
+
+        # Update base fields of entity
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        update_nested_data(BankAccount, 'bank_accounts', bank_data, instance)
+        update_nested_data(subentity, 'subentity', subentity_data, instance)
+        update_nested_data(entityfinancialyear, 'fy', fy_data, instance)
+        update_nested_data(entityconstitution, 'constitution', constitution_data, instance)
+
+        return instance

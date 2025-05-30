@@ -2,9 +2,9 @@ from django.http import request
 from django.shortcuts import render
 from rest_framework.views import APIView
 
-from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView
+from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView
 from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails,GstRegitrationTypes,BankAccount
-from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer,EntityNewSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -755,6 +755,38 @@ class BankAccountListByEntityView(APIView):
         bank_accounts = BankAccount.objects.filter(entity__id=entity_id)
         serializer = BankAccountSerializer(bank_accounts, many=True)
         return Response(serializer.data)
+    
+
+class EntityCreateUpdateAPIView(APIView):
+    def post(self, request, *args, **kwargs):
+        serializer = EntityNewSerializer(data=request.data)
+        if serializer.is_valid():
+            entity = serializer.save(user = [self.request.user])
+            return Response(EntityNewSerializer(entity).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk=None, *args, **kwargs):
+        try:
+            entity = Entity.objects.get(pk=pk)
+        except Entity.DoesNotExist:
+            return Response({"error": "Entity not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = EntityNewSerializer(entity, data=request.data)
+        if serializer.is_valid():
+            entity = serializer.save()
+            return Response(EntityNewSerializer(entity).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class EntityListView(ListAPIView):
+    queryset = Entity.objects.all()
+    serializer_class = EntityNewSerializer
+    permission_classes = [permissions.IsAuthenticated]  # Optional: restrict access
+
+class EntityDetailView(RetrieveAPIView):
+    queryset = Entity.objects.all()
+    serializer_class = EntityNewSerializer
+    permission_classes = [permissions.IsAuthenticated] # Optional
         
             
     
