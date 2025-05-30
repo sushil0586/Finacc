@@ -311,6 +311,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Bulk create financial year details
         # Prepare financial year objects
+        
         fy_details = [
             entityfinancialyear(entity=newentity, **data, createdby=users[0])
             for data in fydata
