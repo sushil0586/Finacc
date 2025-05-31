@@ -923,7 +923,7 @@ class EntityNewSerializer(serializers.ModelSerializer):
     
 
     def update(self, instance, validated_data):
-        def update_nested_data(model, related_name, child_data, parent_instance, lookup_field='id'):
+        def update_nested_data(model, related_name, child_data, parent_instance, parent_field, lookup_field='id'):
             existing_items = getattr(parent_instance, related_name).all()
             existing_map = {getattr(item, lookup_field): item for item in existing_items}
             new_ids = []
@@ -939,7 +939,7 @@ class EntityNewSerializer(serializers.ModelSerializer):
                     new_ids.append(item_id)
                 else:
                     # Create new item
-                    model.objects.create(**item_data, **{model._meta.model_name: parent_instance})
+                    model.objects.create(**item_data, **{parent_field: parent_instance})
 
             # Delete removed items
             for item_id, item in existing_map.items():
@@ -956,9 +956,40 @@ class EntityNewSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
 
-        update_nested_data(BankAccount, 'bank_accounts', bank_data, instance)
-        update_nested_data(subentity, 'subentity', subentity_data, instance)
-        update_nested_data(entityfinancialyear, 'fy', fy_data, instance)
-        update_nested_data(entityconstitution, 'constitution', constitution_data, instance)
+        update_nested_data(BankAccount, 'bank_accounts', bank_data, instance, parent_field='entity')
+        update_nested_data(subentity, 'subentity', subentity_data, instance, parent_field='entity')
+        update_nested_data(entityfinancialyear, 'fy', fy_data, instance, parent_field='entity')
+        update_nested_data(entityconstitution, 'constitution', constitution_data, instance, parent_field='entity')
 
         return instance
+    
+
+class UserEntityRoleSerializer(serializers.ModelSerializer):
+    entityid = serializers.IntegerField(source='entity.id')
+    entityname = serializers.CharField(source='entity.entityname')
+    gstno = serializers.CharField(source='entity.gstno')
+    email = serializers.EmailField(source='user.email')
+    role = serializers.SerializerMethodField()
+    roleid = serializers.IntegerField(source='role.id')
+
+    class Meta:
+        model = Userrole
+        fields = ['entityid', 'entityname', 'email', 'gstno', 'role', 'roleid']
+
+    def get_role(self, obj):
+        return f"{obj.role.rolename} - {obj.entity.entityname}"
+
+
+class UserSerializerentities(serializers.ModelSerializer):
+    userid = serializers.IntegerField(source='id')
+    user = serializers.EmailField(source='email')
+    uentity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['userid', 'first_name', 'last_name', 'email', 'user', 'uentity']
+
+    def get_uentity(self, obj):
+        userroles = Userrole.objects.filter(user=obj).select_related('entity', 'role')
+        return UserEntityRoleSerializer(userroles, many=True).data
+

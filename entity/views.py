@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView
 from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails,GstRegitrationTypes,BankAccount
-from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer,EntityNewSerializer
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer,EntityNewSerializer,UserEntityRoleSerializer,UserSerializerentities
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -801,6 +801,16 @@ class EntityRetrieveAPIView(RetrieveAPIView):
         entity = get_object_or_404(self.queryset, id=entity_id)
         serializer = self.get_serializer(entity)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+class UserEntitiesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        serialized = UserSerializerentities(user)
+        return Response([serialized.data])  # wrap in list to match expected output
+
         
             
     
