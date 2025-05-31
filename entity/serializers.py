@@ -311,7 +311,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Bulk create financial year details
         # Prepare financial year objects
-        
+
         fy_details = [
             entityfinancialyear(entity=newentity, **data, createdby=users[0])
             for data in fydata
@@ -764,27 +764,162 @@ class EntityNewSerializer(serializers.ModelSerializer):
         model = Entity
         fields = '__all__'
 
+    serializer = AccountHeadSerializer
+    accounthead = accountHeadSerializer2
+    roleserializer = rolemainSerializer1
+
+ 
+    rateerializer = RateCalculateSerializer
+    uomser = UOMSerializer
+    TOGSR = TOGSerializer
+    GSTSR = TOGSerializer
+    PTaxType = purchasetaxtypeserializer
+
+    InvoiceType = InvoiceTypeSerializer
+    pcategory = ProductCategoryMainSerializer
+    acounttype = AccountTypeJsonSerializer
+
+    def process_json_file(self, newentity, users, accountdate1):
+        # Load JSON data once
+        file_path = os.path.join(os.getcwd(), "account.json")
+        with open(file_path, 'r') as jsonfile:
+            json_data = json.load(jsonfile)
+
+        # Mapping serializers to corresponding JSON keys
+        serializers_mapping = {
+            "acconttype": (self.acounttype, {"entity": newentity, "createdby": users}),
+            # "accountheads": (self.accounthead, {"entity": newentity, "createdby": users[0]}),
+            "Roles": (self.roleserializer, {"entity": newentity}),
+            "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": users}),
+            "UOM": (self.uomser, {"entity": newentity, "createdby": users}),
+            "TOG": (self.TOGSR, {"entity": newentity, "createdby": users}),
+            "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": users}),
+          #  "ACCOUNTTYPE": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
+            "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": users}),
+            "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": users}),
+            "productcategory": (self.pcategory, {"createdby": users}),
+        }
+
+        # Iterate through the JSON keys and process data
+        for key, (serializer_class, extra_kwargs) in serializers_mapping.items():
+            if key in json_data:
+                objects_to_create = []
+                for item in json_data[key]:
+                    serializer = serializer_class(data=item)
+                    serializer.is_valid(raise_exception=True)
+                    objects_to_create.append(serializer.save(**extra_kwargs))
+
+    from django.db import transaction
+
+    @transaction.atomic
     def create(self, validated_data):
         bank_data = validated_data.pop('bank_accounts', [])
         subentities_data = validated_data.pop('subentity', [])
         financial_years_data = validated_data.pop('fy', [])
         constitutions_data = validated_data.pop('constitution', [])
+        user = validated_data.get("createdby")
+        account_details = []
 
+        # Create the main entity
         entity = Entity.objects.create(**validated_data)
 
-        for b in bank_data:
-            BankAccount.objects.create(entity=entity, **b)
-
-        for s in subentities_data:
-            subentity.objects.create(entity=entity, **s)
-
+        # Create related financial years
         for f in financial_years_data:
             entityfinancialyear.objects.create(entity=entity, **f)
 
+        accountdate = financial_years_data[0]['finstartyear'] if financial_years_data else None
+
+        # Process uploaded chart of accounts (if applicable)
+        self.process_json_file(newentity=entity, users=user, accountdate1=accountdate)
+
+        # Create Admin role association
+        roleid = Role.objects.get(entity=entity, rolename="Admin")
+        Userrole.objects.create(entity=entity, role=roleid, user=user)
+
+        # Create related bank accounts
+        for b in bank_data:
+            BankAccount.objects.create(entity=entity, **b)
+
+        # Create sub-entities
+        for s in subentities_data:
+            subentity.objects.create(entity=entity, **s)
+
+        # Create constitutions
         for c in constitutions_data:
-            entityconstitution.objects.create(entity=entity, **c)
+            detail = entityconstitution.objects.create(entity=entity, **c)
+
+            if entity.const.constcode == "01":
+                achead = accountHead.objects.get(entity=entity, code=6200)
+                account_details.append(
+                    account(
+                        accounthead=achead,
+                        creditaccounthead=achead,
+                        accountname=detail.shareholder,
+                        pan=detail.pan,
+                        entity=entity,
+                        createdby=user,
+                        sharepercentage=detail.sharepercentage,
+                        country=entity.country,
+                        state=entity.state,
+                        district=entity.district,
+                        city=entity.city,
+                        emailid=entity.email,
+                        accountdate=accountdate,
+                    )
+                )
+            elif entity.const.id == "02":
+                achead = accountHead.objects.get(entity=entity, code=6300)
+                account_details.append(
+                    account(
+                        accounthead=achead,
+                        creditaccounthead=achead,
+                        accountname=detail.shareholder,
+                        pan=detail.pan,
+                        entity=entity,
+                        createdby=user,
+                        sharepercentage=detail.sharepercentage,
+                        country=entity.country,
+                        state=entity.state,
+                        district=entity.district,
+                        city=entity.city,
+                        emailid=entity.email,
+                        accountdate=entity,
+                    )
+                )
+
+        
+
+        submenus = Submenu.objects.all()
+        role_privileges = [
+            Rolepriv(role=roleid, submenu=submenu, entity=entity) for submenu in submenus
+        ]
+        Rolepriv.objects.bulk_create(role_privileges)
+
+        # Process constitution data
+        
+        
+
+       
+
+            # Logic for account creation based on constitution code
+        
+
+       
+        account.objects.bulk_create(account_details)
+
+        # Update accounts in bulk
+        account_updates = [
+            {"code": 1000, "credit_code": 3000},
+            {"code": 6000, "credit_code": 6100},
+            {"code": 8000, "credit_code": 7000},
+        ]
+        for update in account_updates:
+            account.objects.filter(accounthead__code=update["code"], entity=entity).update(
+                creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=entity)
+            )
 
         return entity
+
     
 
     def update(self, instance, validated_data):

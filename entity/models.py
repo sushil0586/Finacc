@@ -77,7 +77,7 @@ class Entity(TrackingModel):
     address2 =     models.CharField(max_length= 100,null= True,blank = True)
     addressfloorno =     models.CharField(max_length= 50,null= True,blank = True)
     addressstreet =     models.CharField(max_length= 100,null= True,blank = True)
-    ownername =   models.CharField(max_length= 100)
+    ownername =   models.CharField(max_length= 100,null= True)
     country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
     state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
     district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
@@ -100,13 +100,16 @@ class Entity(TrackingModel):
     dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
     const =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True)
-    user = models.ManyToManyField(to = 'Authentication.User',related_name='uentity',null=True,default=[1])
+    createdby =  models.ForeignKey(User, on_delete=models.CASCADE,null= True)
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,default=1,blank=True)
     
 
     
     def __str__(self):
         return f'{self.entityname}'
+    
+
+
     
 
 class BankAccount(models.Model):

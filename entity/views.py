@@ -153,6 +153,7 @@ class entityAddApiView(ListCreateAPIView):
     #filterset_fields = ['id','unitType','entityName']
     @transaction.atomic
     def perform_create(self, serializer):
+
         return serializer.save(user = [self.request.user])
     
     def get_queryset(self):
@@ -761,7 +762,7 @@ class EntityCreateUpdateAPIView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = EntityNewSerializer(data=request.data)
         if serializer.is_valid():
-            entity = serializer.save(user = [self.request.user])
+            entity = serializer.save(createdby = self.request.user)
             return Response(EntityNewSerializer(entity).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -787,6 +788,19 @@ class EntityDetailView(RetrieveAPIView):
     queryset = Entity.objects.all()
     serializer_class = EntityNewSerializer
     permission_classes = [permissions.IsAuthenticated] # Optional
+
+
+class EntityRetrieveAPIView(RetrieveAPIView):
+    serializer_class = EntityNewSerializer
+    permission_classes =  [permissions.IsAuthenticated]  # Optional: remove if not needed
+    lookup_field = 'id'  # Assuming you're using `id` in URL
+    queryset = Entity.objects.all()
+
+    def get(self, request, *args, **kwargs):
+        entity_id = kwargs.get("id")
+        entity = get_object_or_404(self.queryset, id=entity_id)
+        serializer = self.get_serializer(entity)
+        return Response(serializer.data, status=status.HTTP_200_OK)
         
             
     
