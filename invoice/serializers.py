@@ -2242,19 +2242,11 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOderHeader
         fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','state','district','city','pincode', 'terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','stbefdiscount', 'subtotal','discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity','entity','createdby','eway','einvoice','einvoicepluseway','isactive','saleInvoiceDetails',)
-
-
-
-
-
-    
-
     def create(self, validated_data):
         with transaction.atomic():
             sales_order_details_data = validated_data.pop('saleInvoiceDetails')
-            validated_data.pop('billno')
+            validated_data.pop('billno', None)
 
-            # Get the last order's billno for the same entity and increment it by 1
             last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
             billno2 = last_order.billno + 1 if last_order else 1
 
@@ -2265,52 +2257,33 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             ).first()
             reset_counter_if_needed(settings)
             number = build_document_number(settings)
-            # Check if invoice number already exists (for safety)
+
             if SalesOderHeader.objects.filter(invoicenumber=number).exists():
                 raise Exception("Duplicate invoice number generated. Please try again.")
 
-            # Create the sales order header
-            order = SalesOderHeader.objects.create(**validated_data, billno=billno2,invoicenumber=number)
+            order = SalesOderHeader.objects.create(**validated_data, billno=billno2, invoicenumber=number)
+            stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='I')
 
-            # Initialize stock transaction
-            stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0, description='By Sale Bill No: ', entrytype='I')
-
-            # Process each sales order detail
             for order_detail_data in sales_order_details_data:
+                order_detail_data.pop('id', None)  # ✅ Remove id during create
                 sales_order_other_charges = order_detail_data.pop('otherchargesdetail')
 
-                # Create sales order detail and link to the order
                 detail = salesOrderdetails.objects.create(salesorderheader=order, **order_detail_data)
-
-                # Create stock transaction for the detail
                 stk.createtransactiondetails(detail=detail, stocktype='S')
 
-                # Process other charges related to the detail
                 for other_charge_data in sales_order_other_charges:
-                    sale_other_charge = saleothercharges.objects.create(salesorderdetail=detail, **other_charge_data)
-                    stk.createothertransactiondetails(detail=sale_other_charge, stocktype='S')
+                    charge = saleothercharges.objects.create(salesorderdetail=detail, **other_charge_data)
+                    stk.createothertransactiondetails(detail=charge, stocktype='S')
 
-            
-            # Increment invoice number for next time
             settings.current_number += 1
             settings.save()
 
-            # Finalize the stock transaction
             stk.createtransaction()
 
-
             full_order_data = SalesOrderHeaderPDFSerializer(order).data
-
-
-            
-
-
-
-
-            context = {'saleInvoice': full_order_data}  # Add more context as needed
+            context = {'saleInvoice': full_order_data}
             pdf_content = render_to_pdf('sales_invoice_template.html', context)
 
-            # Send email (to customer's email from `accountid`)
             if pdf_content and order.accountid and order.accountid.emailid:
                 send_invoice_email(
                     subject=f"Invoice #{order.invoicenumber or order.billno}",
@@ -2320,22 +2293,8 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                     filename=f"Invoice_{order.invoicenumber or order.billno}.pdf"
                 )
 
-            # full_order_data = SalesOrderFullSerializer(order).data
-
-            # sales_order_data = SalesOrdereinvoiceSerializer(order).data
-
-            # json_data = json.dumps(full_order_data, indent=4, default=str)
-
-
-            # print('---------------------------------------')
-
-            # print(json_data)
-
-            # # Create the e-invoice
-            # einvoice = einvoicebody(order, invoicetype='INV')
-            #einvoice.createeinvoce()
-
             return order
+
 
     def update(self, instance, validated_data):
         fields = [
@@ -2348,26 +2307,56 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         for field in fields:
             try:
                 setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+            except KeyError:
                 pass
 
         with transaction.atomic():
             instance.save()
             stk = stocktransactionsale(instance, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='U')
-            salesOrderdetails.objects.filter(salesorderheader=instance, entity=instance.entity).delete()
+
+            incoming_details = validated_data.get('saleInvoiceDetails', [])
+            existing_details = salesOrderdetails.objects.filter(salesorderheader=instance)
+            existing_ids = {detail.id for detail in existing_details}
+            payload_ids = set()
             stk.createtransaction()
+            
+            for detail_data in incoming_details:
+                detail_id = detail_data.get('id', 0)
+                salesorderdetails_data = detail_data.pop('otherchargesdetail')
 
-            salesOrderdetails_data = validated_data.get('saleInvoiceDetails')
+                if detail_id == 0:
+                    # ✅ New record (Insert)    
+                    detail_data.pop('id', None)
+                    new_detail = salesOrderdetails.objects.create(salesorderheader=instance, **detail_data)
+                    stk.createtransactiondetails(detail=new_detail, stocktype='S')
+                    for oc in salesorderdetails_data:
+                        new_charge = saleothercharges.objects.create(salesorderdetail=new_detail, **oc)
+                        stk.createothertransactiondetails(detail=new_charge, stocktype='S')
+                else:
+                    payload_ids.add(detail_id)
+                    # ✅ Existing record (Update)
+                    try:
+                        existing_detail = salesOrderdetails.objects.get(id=detail_id, salesorderheader=instance)
+                        for attr, value in detail_data.items():
+                            setattr(existing_detail, attr, value)
+                        existing_detail.save()
+                        
+                        saleothercharges.objects.filter(salesorderdetail=existing_detail).delete()
+                        for oc in salesorderdetails_data:
+                            updated_charge = saleothercharges.objects.create(salesorderdetail=existing_detail, **oc)
+                            stk.createothertransactiondetails(detail=updated_charge, stocktype='S')
 
-            for PurchaseOrderDetail_data in salesOrderdetails_data:
-                salesorderdetails_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
-                detail = salesOrderdetails.objects.create(salesorderheader=instance, **PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail, stocktype='S')
-                for salesorderdetail_data in salesorderdetails_data:
-                    detail2 = saleothercharges.objects.create(salesorderdetail=detail, **salesorderdetail_data)
-                    stk.createothertransactiondetails(detail=detail2, stocktype='S')
+                        stk.createtransactiondetails(detail=existing_detail, stocktype='S')
+                    except salesOrderdetails.DoesNotExist:
+                        continue
 
-        #  stk.updateransaction()
+            # ✅ Delete records not present in the payload
+            ids_to_delete = existing_ids - payload_ids
+            if ids_to_delete:
+                salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()
+
+            
+
         return instance
 
 class SalesOrderSerializer(serializers.ModelSerializer):
@@ -2557,10 +2546,13 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             order = PurchaseReturn.objects.create(**validated_data,billno = billno2)
             stk = stocktransactionsale(order, transactiontype= 'PR',debit=1,credit=0,description= 'Purchase Return',entrytype= 'I')
             #print(tracks_data)
+
+          
             
-            for PurchaseOrderDetail_data in salesOrderdetails_data:
-                otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
-                detail = Purchasereturndetails.objects.create(purchasereturn = order, **PurchaseOrderDetail_data)
+            for detail_data in salesOrderdetails_data:
+                detail_data.pop('id', None)  # Remove id in case it's passed as 0
+                otherchargesdetail = detail_data.pop('otherchargesdetail', [])
+                detail = Purchasereturndetails.objects.create(purchasereturn=order, **detail_data)
                 stk.createtransactiondetails(detail=detail,stocktype='S')
                 for otherchargedetail in otherchargesdetail:
                     detail = Purchasereturnothercharges.objects.create(purchasereturnorderdetail = detail, **otherchargedetail)
@@ -2571,30 +2563,65 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        fields = ['sorderdate','billno','accountid', 'state','district','city','pincode','latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst','sgst','igst','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity','entity','createdby','isactive',]
+        fields = [
+            'sorderdate','billno','accountid', 'state','district','city','pincode','latepaymentalert',
+            'grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance',
+            'shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1',
+            'tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst',
+            'sgst','igst','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity',
+            'entity','createdby','isactive'
+        ]
         for field in fields:
-            try:
+            if field in validated_data:
                 setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
+
+        stk = stocktransactionsale(instance, transactiontype='PR', debit=1, credit=0, description='Purchase Return', entrytype='U')
+
         with transaction.atomic():
-            instance.save()
-            stk = stocktransactionsale(instance, transactiontype= 'PR',debit=1,credit=0,description= 'Purchase Return',entrytype= 'I')
             stk.createtransaction()
+            instance.save()
 
-            Purchasereturndetails.objects.filter(purchasereturn=instance,entity = instance.entity).delete()
+            existing_details = Purchasereturndetails.objects.filter(purchasereturn=instance, entity=instance.entity)
+            existing_details_map = {detail.id: detail for detail in existing_details}
 
-            salesOrderdetails_data = validated_data.get('purchasereturndetails')
+            submitted_details = validated_data.get('purchasereturndetails', [])
+            updated_detail_ids = []
 
-            for PurchaseOrderDetail_data in salesOrderdetails_data:
-                otherchargesdetail = PurchaseOrderDetail_data.pop('otherchargesdetail')
-                detail = Purchasereturndetails.objects.create(purchasereturn = instance, **PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='S')
-                for otherchargedetail in otherchargesdetail:
-                    detail = Purchasereturnothercharges.objects.create(purchasereturnorderdetail = detail, **otherchargedetail)
+            for detail_data in submitted_details:
+                detail_id = detail_data.get('id', 0)
+                othercharges_data = detail_data.pop('otherchargesdetail', [])
 
-        
+                if detail_id == 0:
+                    # New Detail
+                    detail_data.pop('id', None)
+                    detail = Purchasereturndetails.objects.create(purchasereturn=instance, **detail_data)
+                    stk.createtransactiondetails(detail=detail, stocktype='S')
+                elif detail_id in existing_details_map:
+                    # Update existing detail
+                    detail = existing_details_map[detail_id]
+                    for attr, value in detail_data.items():
+                        setattr(detail, attr, value)
+                    detail.save()
+                    stk.createtransactiondetails(detail=detail, stocktype='S')
+                    existing_details_map.pop(detail_id)
+                else:
+                    # Skip invalid or mismatched ID
+                    continue
+
+                updated_detail_ids.append(detail.id)
+
+                # Delete and recreate other charges
+                Purchasereturnothercharges.objects.filter(purchasereturnorderdetail=detail).delete()
+                for charge_data in othercharges_data:
+                    detail1 = Purchasereturnothercharges.objects.create(purchasereturnorderdetail=detail, **charge_data)
+                    stk.createothertransactiondetails(detail=detail1, stocktype='S')
+
+            # Delete any remaining details not present in update payload
+            for remaining_detail in existing_details_map.values():
+                remaining_detail.delete()
+
         return instance
+
 
 class PRSerializer(serializers.ModelSerializer):
     #entityUser = entityUserSerializer(many=True)
@@ -2854,57 +2881,82 @@ class purchaseorderSerializer(serializers.ModelSerializer):
 
 
     def create(self, validated_data):
-       # print(validated_data)
         PurchaseOrderDetails_data = validated_data.pop('purchaseInvoiceDetails')
         with transaction.atomic():
             order = purchaseorder.objects.create(**validated_data)
-            stk = stocktransaction(order, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype= 'I')
-            #print(order.objects.get("id"))
-            #print(tracks_data)
-            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
-                detail = PurchaseOrderDetails.objects.create(purchaseorder = order, **PurchaseOrderDetail_data)
-                for purchaseothercharge_data in purchaseothercharges_data:
-                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
-                    stk.createothertransactiondetails(detail=detail1,stocktype='P')
+            stk = stocktransaction(order, transactiontype='P', debit=1, credit=0, description='To Purchase V.No: ', entrytype='I')
 
-            
-                stk.createtransactiondetails(detail=detail,stocktype='P')
-                
-            
+            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
+                PurchaseOrderDetail_data.pop('id', None)  # Remove id if exists
+                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail', [])
+
+                detail = PurchaseOrderDetails.objects.create(purchaseorder=order, **PurchaseOrderDetail_data)
+                for purchaseothercharge_data in purchaseothercharges_data:
+                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail=detail, **purchaseothercharge_data)
+                    stk.createothertransactiondetails(detail=detail1, stocktype='P')
+
+                stk.createtransactiondetails(detail=detail, stocktype='P')
+
             stk.createtransaction()
         return order
 
-    def update(self, instance, validated_data):
-        fields = ['voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','showledgeraccount','terms','taxtype','reversecharge','invoicetype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount', 'entityfinid','subentity', 'entity','isactive']
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        
 
-        # print(instance.id)
-        stk = stocktransaction(instance, transactiontype= 'P',debit=1,credit=0,description= 'To Purchase V.No: ',entrytype='U')
-        with transaction.atomic():
-            stk.createtransaction()
+        def update(self, instance, validated_data):
+            fields = ['voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','showledgeraccount','terms','taxtype','reversecharge','invoicetype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount', 'entityfinid','subentity', 'entity','isactive']
+            for field in fields:
+                if field in validated_data:
+                    setattr(instance, field, validated_data[field])
+
+            stk = stocktransaction(instance, transactiontype='P', debit=1, credit=0, description='To Purchase V.No: ', entrytype='U')
             
-            i = instance.save()
+            with transaction.atomic():
+                stk.createtransaction()
+                instance.save()
 
-            PurchaseOrderDetails.objects.filter(purchaseorder=instance,entity = instance.entity).delete()
-        
-            PurchaseOrderDetails_data = validated_data.get('purchaseInvoiceDetails')
+                existing_details = PurchaseOrderDetails.objects.filter(purchaseorder=instance, entity=instance.entity)
+                existing_details_map = {detail.id: detail for detail in existing_details}
 
-            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail')
-                detail = PurchaseOrderDetails.objects.create(purchaseorder = instance, **PurchaseOrderDetail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='P')
-                for purchaseothercharge_data in purchaseothercharges_data:
-                  
-                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail = detail, **purchaseothercharge_data)
-                    stk.createothertransactiondetails(detail=detail1,stocktype='P')
+                submitted_details = validated_data.get('purchaseInvoiceDetails', [])
+                updated_detail_ids = []
 
-        return instance
+                for detail_data in submitted_details:
+                    detail_id = detail_data.get('id', 0)
+                    purchaseothercharges_data = detail_data.pop('otherchargesdetail', [])
+
+                    if detail_id == 0:
+                        # New Detail
+                        detail_data.pop('id', None)
+                        detail = PurchaseOrderDetails.objects.create(purchaseorder=instance, **detail_data)
+                        stk.createtransactiondetails(detail=detail, stocktype='P')
+                    elif detail_id in existing_details_map:
+                        # Update existing detail
+                        detail = existing_details_map[detail_id]
+                        for attr, value in detail_data.items():
+                            setattr(detail, attr, value)
+                        detail.save()
+                        # Remove from deletion list
+                        stk.createtransactiondetails(detail=detail, stocktype='P')
+                        existing_details_map.pop(detail_id)
+                    else:
+                        # Not in existing DB -> skip it (invalid id)
+                        continue
+
+                    updated_detail_ids.append(detail.id)
+
+                    
+
+                    # Delete and recreate other charges
+                    purchaseothercharges.objects.filter(purchaseorderdetail=detail).delete()
+                    for purchaseothercharge_data in purchaseothercharges_data:
+                        detail1 = purchaseothercharges.objects.create(purchaseorderdetail=detail, **purchaseothercharge_data)
+                        stk.createothertransactiondetails(detail=detail1, stocktype='P')
+
+                # Delete any details not included in update
+                for remaining_detail in existing_details_map.values():
+                    remaining_detail.delete()
+
+            return instance
+
 
 class newPurchaseOrderDetailsSerializer(serializers.ModelSerializer):
    # otherchargesdetail = purchaseotherdetailsSerializer(many=True,required=False)

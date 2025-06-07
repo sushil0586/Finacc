@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from payroll.models import salarycomponent,employee,employeesalary,salarytrans,department,designation
+from payroll.models import salarycomponent,employee,employeesalary,salarytrans,department,designation,EmployeePayrollComponent,EntityPayrollComponentConfig
 from Authentication.serializers import Registerserializers
 from Authentication.models import User
 from django.contrib.auth.hashers import make_password
@@ -167,6 +167,79 @@ class employeeListfullSerializer(serializers.ModelSerializer):
     class Meta:
         model = employee
         fields =  ('employeeid','email','firstname','lastname','employee_id',)
+
+
+class EmployeePayrollComponentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmployeePayrollComponent
+        fields = [
+            'id', 'component', 'default_value', 'is_opted_in',
+            'overridden_value', 'final_value'
+        ]
+
+class EmployeeSerializer(serializers.ModelSerializer):
+    payroll_components = EmployeePayrollComponentSerializer(
+        many=True,
+        source='employeepayrollcomponent_set',
+        required=False
+    )
+
+    class Meta:
+        model = employee
+        fields = ['firstname','lastname','middlename','email','password',
+            'tax_regime', 'dateofjoining', 'department', 'designation',
+            'reportingmanager', 'bankname', 'bankaccountno', 'pan', 'address1', 'address2',
+            'country', 'state', 'district', 'city', 'entity', 'createdby',
+            'payroll_components'
+        ]
+
+    def create(self, validated_data):
+        payroll_data = validated_data.pop('employeepayrollcomponent_set', [])
+        emp = employee.objects.create(**validated_data)
+
+        for component_data in payroll_data:
+            EmployeePayrollComponent.objects.create(employee=emp, **component_data)
+        return emp
+
+    def update(self, instance, validated_data):
+        payroll_data = validated_data.pop('employeepayrollcomponent_set', [])
+
+        # Update employee fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update payroll components (upsert logic)
+        existing_ids = [item.id for item in instance.employeepayrollcomponent_set.all()]
+        sent_ids = []
+
+        for comp_data in payroll_data:
+            comp_id = comp_data.get('id', None)
+            if comp_id and comp_id in existing_ids:
+                # Update existing component
+                epc = EmployeePayrollComponent.objects.get(id=comp_id, employee=instance)
+                for attr, value in comp_data.items():
+                    setattr(epc, attr, value)
+                epc.save()
+                sent_ids.append(comp_id)
+            else:
+                # Create new component
+                epc = EmployeePayrollComponent.objects.create(employee=instance, **comp_data)
+                sent_ids.append(epc.id)
+
+        # Optionally delete components not sent in update
+        EmployeePayrollComponent.objects.filter(employee=instance).exclude(id__in=sent_ids).delete()
+
+        return instance
+    
+
+class EntityPayrollComponentConfigSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='component.id')
+    name = serializers.CharField(source='component.name')
+
+    class Meta:
+        model = EntityPayrollComponentConfig
+        fields = ['id', 'name', 'default_value', 'min_value', 'max_value']
 
 
 

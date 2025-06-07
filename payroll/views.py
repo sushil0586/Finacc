@@ -2,12 +2,14 @@ from itertools import product
 from django.http import request,JsonResponse
 from django.shortcuts import render
 import json
+from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,employeeListSerializer,employeeListfullSerializer
-from payroll.models import salarycomponent,employee,employeesalary,designation,department
+from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,employeeListSerializer,employeeListfullSerializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer
+from payroll.models import salarycomponent,employee,employeesalary,designation,department,EntityPayrollComponentConfig
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
 from django.db.models import Sum,OuterRef,Subquery,F
@@ -29,6 +31,7 @@ from decimal import Decimal
 from datetime import timedelta,date,datetime
 from django_pivot.pivot import pivot
 from Authentication.models import User
+from payroll.utils.payroll import calculate_salary_components
 
 
 
@@ -196,6 +199,41 @@ class employeeListfullApiView(RetrieveAPIView):
        # print(queryset.query.__str__())
         return queryset
     
+
+class EmployeePayrollAPIView(APIView):
+    def get(self, request, id):
+        emp = get_object_or_404(employee, id=id)
+        serializer = EmployeeSerializer(emp)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = EmployeeSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, id):
+        emp = get_object_or_404(employee, id=id)
+        serializer = EmployeeSerializer(emp, data=request.data, partial=False)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+class EmployeesByEntityAPIView(APIView):
+    def get(self, request, entity_id):
+        """
+        GET: List all employees by entity_id with nested payroll components
+        """
+        employees = employee.objects.filter(entity_id=entity_id)
+        if not employees.exists():
+            return Response({"detail": "No employees found for this entity."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = EmployeeSerializer(employees, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
 class getsalarystructure(ListAPIView):
 
    # serializer_class = balancesheetserializer
@@ -228,3 +266,31 @@ class getsalarystructure(ListAPIView):
      
       
         return Response(df.groupby(['id','salarycomponentname','salarycomponentcode','componentperiod','componenttype' ,'defaultpercentage'])[['yearlycomponent','monthlycomponent']].sum().abs().reset_index().sort_values(by=['salarycomponentname']).T.to_dict().values())
+    
+
+class CalculateSalaryComponentsView(APIView):
+    def post(self, request):
+        try:
+            basic_salary = float(request.data.get('basic_salary'))
+            entity_id = int(request.data.get('entity_id'))
+
+            if not basic_salary or not entity_id:
+                return Response({"error": "basic_salary and entity_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Call the utility function to calculate salary
+            data = calculate_salary_components(basic_salary, entity_id)
+            return Response(data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+class ActivePayrollComponentsByEntity(APIView):
+    def get(self, request, entity_id):
+        configs = EntityPayrollComponentConfig.objects.filter(
+            entity_id=entity_id,
+            is_active=True
+        ).select_related('component')
+
+        serializer = EntityPayrollComponentConfigSerializer(configs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
