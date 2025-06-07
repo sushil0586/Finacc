@@ -64,7 +64,7 @@ admin.site.register(SalesOderHeader, SalesOrderHeaderAdmin)
 # Admin for salesOrderdetails
 @admin.register(salesOrderdetails)
 class SalesOrderDetailsAdmin(SimpleHistoryAdmin):
-    list_display = ('salesorderheader', 'product', 'orderqty', 'pieces', 'rate', 'amount', 'cgst', 'sgst', 'igst', 'linetotal', 'entity', 'subentity')
+    list_display = ('salesorderheader', 'id', 'product', 'orderqty', 'pieces', 'rate', 'amount', 'cgst', 'sgst', 'igst', 'linetotal', 'entity', 'subentity')
     search_fields = ('product__name', 'productdesc')
     ordering = ('salesorderheader',)
 

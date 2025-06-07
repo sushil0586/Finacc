@@ -1233,6 +1233,7 @@ class StockTransactions(TrackingModel):
     stock = models.ForeignKey(to = Product, on_delete=models.CASCADE,null=True,blank=True,verbose_name='Product Name',related_name='stocktrans')
     transactiontype = models.CharField(max_length=50, null=True,verbose_name='TransactionType')
     transactionid = models.IntegerField(verbose_name='Transaction id')
+    detailid = models.IntegerField(verbose_name='Detail id',null=True)
     voucherno = models.IntegerField(verbose_name='voucherno',null=True)
     desc = models.CharField(max_length=500, null=True,verbose_name='Description')
     stockttype = models.CharField(verbose_name='Stock Transaction',max_length=10,null=True)
@@ -1254,21 +1255,7 @@ class StockTransactions(TrackingModel):
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
 
-    # class Meta:
-    #     indexes = [
-    #         # Composite index on entity and entrydatetime
-    #         Index(fields=['entity', 'entrydatetime'], name='entity_entry_dt_idx'),
-            
-    #         # Indexes on accounttype and transactiontype to speed up filters
-    #         Index(fields=['accounttype'], name='accounttype_idx'),
-    #         Index(fields=['transactiontype'], name='transactiontype_idx'),
-
-    #         # Functional index using your custom immutable_date function
-    #         Index(
-    #             Func(F('entrydatetime'), function='immutable_date', output_field=DateField()),
-    #             name='entrydate_idx'
-    #         ),
-    #     ]
+    
 
 
 
