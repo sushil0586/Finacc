@@ -8,8 +8,8 @@ from rest_framework.views import APIView
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeeserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,employeeListSerializer,employeeListfullSerializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer
-from payroll.models import salarycomponent,employee,employeesalary,designation,department,EntityPayrollComponentConfig
+from payroll.serializers import salarycomponentserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer
+from payroll.models import salarycomponent,employeesalary,designation,department,EntityPayrollComponentConfig,employeenew
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
 from django.db.models import Sum,OuterRef,Subquery,F
@@ -65,31 +65,10 @@ class salarycomponentupdatedelApiView(RetrieveUpdateDestroyAPIView):
 
     
 
-class employeeApiView(ListCreateAPIView):
-
-    serializer_class = employeeserializer
-    permission_classes = (permissions.IsAuthenticated,)
-
-    filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['tdsreturn']
-
-    def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return employee.objects.filter(entity = entity)
 
 
-class employeeupdatedelview(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = employeeserializer
-    permission_classes = (permissions.IsAuthenticated,)
-    lookup_field = "employee"
 
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return employee.objects.filter(entity = entity)
     
 
 
@@ -159,50 +138,15 @@ class departmentApiView(ListAPIView):
     
 
 
-class employeeListApiView(ListAPIView):
-
-    serializer_class = employeeListSerializer
-    permission_classes = (permissions.IsAuthenticated,)
 
     
-    
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        queryset =  employee.objects.filter( Q(entity = entity)).values('employee','employee__email')
-
-        #query = queryset.exclude(accounttrans__accounttype  = 'MD')
-
-        #annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
-
-       # print(queryset.query.__str__())
-        return queryset
-    
 
 
-class employeeListfullApiView(RetrieveAPIView):
 
-    serializer_class = employeeListfullSerializer
-    permission_classes = (permissions.IsAuthenticated,)
-    lookup_field = "employee"
-
-    
-    
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-       # employeeid = self.request.query_params.get('employeeid')
-        queryset =  employee.objects.filter( Q(entity = entity)).values('employee','employee__email','employee__first_name','employee__last_name','employeeid',)
-
-        #query = queryset.exclude(accounttrans__accounttype  = 'MD')
-
-        #annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0))
-
-       # print(queryset.query.__str__())
-        return queryset
-    
 
 class EmployeePayrollAPIView(APIView):
     def get(self, request, id):
-        emp = get_object_or_404(employee, id=id)
+        emp = get_object_or_404(employeenew, id=id)
         serializer = EmployeeSerializer(emp)
         return Response(serializer.data)
 
@@ -214,7 +158,7 @@ class EmployeePayrollAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def put(self, request, id):
-        emp = get_object_or_404(employee, id=id)
+        emp = get_object_or_404(employeenew, id=id)
         serializer = EmployeeSerializer(emp, data=request.data, partial=False)
         if serializer.is_valid():
             serializer.save()
@@ -227,7 +171,7 @@ class EmployeesByEntityAPIView(APIView):
         """
         GET: List all employees by entity_id with nested payroll components
         """
-        employees = employee.objects.filter(entity_id=entity_id)
+        employees = employeenew.objects.filter(entity_id=entity_id)
         if not employees.exists():
             return Response({"detail": "No employees found for this entity."}, status=status.HTTP_404_NOT_FOUND)
 

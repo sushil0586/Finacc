@@ -3,7 +3,7 @@ from .models import (
     department, designation, TaxRegime, InvestmentSection,
     CalculationType, BonusFrequency, CalculationValue, ComponentType,
     PayrollComponent, EntityPayrollComponentConfig, salarycomponent,
-    employee, EmployeePayrollComponent, employeesalary,
+    employeenew, EmployeePayrollComponent, employeesalary,
     salarytrans, salarytransdetails, EmployeeInvestment,
     EmployeeInvestmentSummary, EmployeeLoan
 )
@@ -19,7 +19,7 @@ admin.site.register(ComponentType)
 admin.site.register(PayrollComponent)
 admin.site.register(EntityPayrollComponentConfig)
 admin.site.register(salarycomponent)
-admin.site.register(employee)
+admin.site.register(employeenew)
 admin.site.register(EmployeePayrollComponent)
 admin.site.register(employeesalary)
 admin.site.register(salarytrans)
