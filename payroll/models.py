@@ -151,7 +151,7 @@ class salarycomponent(TrackingModel):
 class employee(TrackingModel):
 
     # employee = models.OneToOneField(to= User, on_delete= models.CASCADE,primary_key=True)
-    id = models.BigAutoField(primary_key=True,null=True)  # ✅ This is okay
+    id = models.BigAutoField()  # ✅ This is okay
     tax_regime = models.ForeignKey(TaxRegime, on_delete=models.SET_NULL, null=True)
     firstname = models.CharField(max_length= 200,verbose_name= 'firstname',null=True)
     lastname = models.CharField(max_length= 200,verbose_name= 'lastname',null=True)
