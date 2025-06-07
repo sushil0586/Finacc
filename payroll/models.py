@@ -148,10 +148,43 @@ class salarycomponent(TrackingModel):
         return f'{self.salarycomponentname}'
     
 
-class employee(TrackingModel):
+# class employee(TrackingModel):
 
-    # employee = models.OneToOneField(to= User, on_delete= models.CASCADE,primary_key=True)
-    id = models.BigAutoField()  # ✅ This is okay
+#     employee = models.OneToOneField(to= User, on_delete= models.CASCADE,primary_key=True)
+   
+   
+#     tax_regime = models.ForeignKey(TaxRegime, on_delete=models.SET_NULL, null=True)
+#     firstname = models.CharField(max_length= 200,verbose_name= 'firstname',null=True)
+#     lastname = models.CharField(max_length= 200,verbose_name= 'lastname',null=True)
+#     middlename = models.CharField(max_length= 200,verbose_name= 'middlename',null=True)
+#     email = models.CharField(max_length= 200,verbose_name= 'email',null=True)
+#     password = models.CharField(max_length= 200,verbose_name= 'email',null=True)
+#     employeeid = models.CharField(max_length= 200,verbose_name= 'employee id')
+#     dateofjoining = models.DateTimeField(verbose_name='Date Of Joining',auto_now_add=True, blank=True)
+#     department = models.ForeignKey(department,on_delete=models.CASCADE,verbose_name= 'department',null= True)
+#     designation = models.ForeignKey(designation,on_delete=models.CASCADE,verbose_name= 'designation',null= True)
+#     reportingmanager = models.ForeignKey("self", on_delete= models.CASCADE,null=True,blank = True,verbose_name='Reporting Manager',related_name='rmanager')
+#     bankname = models.CharField(max_length= 50,verbose_name= 'Bank Name',blank = True,null=True)
+#     bankaccountno = models.CharField(max_length= 20,verbose_name= 'Bank Account No',blank = True,null=True)
+#     pan = models.CharField(max_length= 20,verbose_name= 'Pan Card details',blank = True,null=True)
+#     address1       = models.CharField(max_length=50, null=True,verbose_name='Address Line 1',blank = True)
+#     address2       = models.CharField(max_length=50, null=True,verbose_name='Address Line 2',blank = True)
+#     country       = models.ForeignKey(Country,on_delete=models.CASCADE,null=True)
+#     state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
+#     district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
+#     city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
+#     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
+#     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,related_name='employeeuser')
+
+#     def __str__(self):
+#         return f'{self.employeeid}'
+    
+
+class employeenew(TrackingModel):
+
+    # # employee = models.OneToOneField(to= User, on_delete= models.CASCADE,primary_key=True)
+    # id = models.BigAutoField(primary_key=True)  # Django default
+    # employee = models.OneToOneField(to=User, on_delete=models.CASCADE)
     tax_regime = models.ForeignKey(TaxRegime, on_delete=models.SET_NULL, null=True)
     firstname = models.CharField(max_length= 200,verbose_name= 'firstname',null=True)
     lastname = models.CharField(max_length= 200,verbose_name= 'lastname',null=True)
@@ -180,7 +213,7 @@ class employee(TrackingModel):
 
 
 class EmployeePayrollComponent(models.Model):
-    employee = models.ForeignKey(employee, on_delete=models.CASCADE)
+    employee = models.ForeignKey(employeenew, on_delete=models.CASCADE)
     component = models.ForeignKey(PayrollComponent, on_delete=models.CASCADE)
     default_value = models.FloatField()
     is_opted_in = models.BooleanField(default=True)
@@ -193,7 +226,7 @@ class EmployeePayrollComponent(models.Model):
     
 class employeesalary(TrackingModel):
 
-    employee = models.ForeignKey(to= employee, on_delete= models.CASCADE,null=True)
+    employee = models.ForeignKey(to= employeenew, on_delete= models.CASCADE,null=True)
     
     scomponent = models.ForeignKey(to= salarycomponent, on_delete= models.CASCADE,null=True)
     percentageofctc =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'percentage of ctc')
@@ -204,7 +237,7 @@ class employeesalary(TrackingModel):
 
 
 class salarytrans(TrackingModel):
-    employee = models.ForeignKey(to= employee, on_delete= models.CASCADE,null=True)
+    employee = models.ForeignKey(to= employeenew, on_delete= models.CASCADE,null=True)
     salaryamountexpected =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Salary amount Expected')
     salaryamountactual =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Salary amount Actual')
     grossearnings =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Gross earnings')
@@ -227,7 +260,7 @@ class salarytransdetails(TrackingModel):
 
 
 class EmployeeInvestment(models.Model):
-    employee = models.ForeignKey(employee, on_delete=models.CASCADE)
+    employee = models.ForeignKey(employeenew, on_delete=models.CASCADE)
     section = models.ForeignKey(InvestmentSection, on_delete=models.CASCADE)
     sub_category = models.CharField(max_length=100, null=True, blank=True)
     amount = models.FloatField()
@@ -242,14 +275,14 @@ class EmployeeInvestment(models.Model):
     is_locked = models.BooleanField(default=False)
 
 class EmployeeInvestmentSummary(models.Model):
-    employee = models.ForeignKey(employee, on_delete=models.CASCADE)
+    employee = models.ForeignKey(employeenew, on_delete=models.CASCADE)
     total_declared = models.FloatField()
     total_approved = models.FloatField()
     effective_taxable_income = models.FloatField()
     assessment_year = models.CharField(max_length=10)
 
 class EmployeeLoan(models.Model):
-    employee = models.ForeignKey(employee, on_delete=models.CASCADE)
+    employee = models.ForeignKey(employeenew, on_delete=models.CASCADE)
     loan_type = models.CharField(max_length=50)  # e.g., 'Advance', 'Salary'
     amount = models.FloatField()
     balance = models.FloatField()
