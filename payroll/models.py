@@ -7,7 +7,7 @@ from helpers.models import TrackingModel
 from Authentication.models import User
 from financial.models import account,accountHead
 from inventory.models import Product
-from entity.models import Entity
+from entity.models import Entity,Role
 from inventory.models import Product
 from django.db.models import Sum 
 import datetime
@@ -186,12 +186,22 @@ class employeenew(TrackingModel):
     # id = models.BigAutoField(primary_key=True)  # Django default
     # employee = models.OneToOneField(to=User, on_delete=models.CASCADE)
     tax_regime = models.ForeignKey(TaxRegime, on_delete=models.SET_NULL, null=True)
+    username = models.CharField(
+    ('username'),
+        max_length=150,null=True,
+       # unique=True,
+        help_text=('Required. 150 characters or fewer. Letters, digits and @/./+/-/_ only.'),
+        #validators=[username_validator],
+        error_messages={
+            'unique': ("A user with that username already exists."),
+        },
+    )
     firstname = models.CharField(max_length= 200,verbose_name= 'firstname',null=True)
     lastname = models.CharField(max_length= 200,verbose_name= 'lastname',null=True)
     middlename = models.CharField(max_length= 200,verbose_name= 'middlename',null=True)
     email = models.CharField(max_length= 200,verbose_name= 'email',null=True)
-    password = models.CharField(max_length= 200,verbose_name= 'email',null=True)
-    employeeid = models.CharField(max_length= 200,verbose_name= 'employee id')
+    password = models.CharField(max_length= 200,verbose_name= 'password',null=True)
+    employeeid = models.CharField(max_length= 200,verbose_name= 'employee id',null = True)
     dateofjoining = models.DateTimeField(verbose_name='Date Of Joining',auto_now_add=True, blank=True)
     department = models.ForeignKey(department,on_delete=models.CASCADE,verbose_name= 'department',null= True)
     designation = models.ForeignKey(designation,on_delete=models.CASCADE,verbose_name= 'designation',null= True)
@@ -205,6 +215,8 @@ class employeenew(TrackingModel):
     state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
     district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
     city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
+    is_active = models.BooleanField(default=True)
+    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,related_name='employeeuser')
 
