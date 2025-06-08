@@ -8,8 +8,8 @@ from rest_framework.views import APIView
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer
-from payroll.models import salarycomponent,employeesalary,designation,department,EntityPayrollComponentConfig,employeenew
+from payroll.serializers import salarycomponentserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer,CalculationTypeSerializer,BonusFrequencySerializer,CalculationValueSerializer,ComponentTypeSerializer,PayrollComponentSerializer
+from payroll.models import salarycomponent,employeesalary,designation,department,EntityPayrollComponentConfig,employeenew,CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
 from django.db.models import Sum,OuterRef,Subquery,F
@@ -60,6 +60,28 @@ class salarycomponentupdatedelApiView(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
         return salarycomponent.objects.filter(entity = entity)
+    
+class PayrollComponentByEntityAPIView(APIView):
+    def get(self, request, entity_id):
+        try:
+            entity = Entity.objects.get(pk=entity_id)
+        except Entity.DoesNotExist:
+            return Response({"detail": "Entity not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        components = PayrollComponent.objects.filter(entity=entity)
+        serializer = PayrollComponentSerializer(components, many=True)
+        return Response(serializer.data)
+    
+
+class PayrollComponentDetailAPIView(APIView):
+    def get(self, request, pk):
+        try:
+            component = PayrollComponent.objects.get(pk=pk)
+        except PayrollComponent.DoesNotExist:
+            return Response({"detail": "PayrollComponent not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = PayrollComponentSerializer(component)
+        return Response(serializer.data)
     
 
 
@@ -238,3 +260,42 @@ class ActivePayrollComponentsByEntity(APIView):
 
         serializer = EntityPayrollComponentConfigSerializer(configs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+class CalculationTypeListAPIView(ListAPIView):
+    queryset = CalculationType.objects.all()
+    serializer_class = CalculationTypeSerializer
+
+class BonusFrequencyListAPIView(ListAPIView):
+    queryset = BonusFrequency.objects.all()
+    serializer_class = BonusFrequencySerializer
+
+
+class CalculationValueListAPIView(ListAPIView):
+    queryset = CalculationValue.objects.all()
+    serializer_class = CalculationValueSerializer
+
+class ComponentTypeListAPIView(ListAPIView):
+    queryset = ComponentType.objects.all()
+    serializer_class = ComponentTypeSerializer
+
+
+class PayrollComponentAPIView(APIView):
+
+    def post(self, request):
+        serializer = PayrollComponentSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk):
+        try:
+            instance = PayrollComponent.objects.get(pk=pk)
+        except PayrollComponent.DoesNotExist:
+            return Response({"detail": "PayrollComponent not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = PayrollComponentSerializer(instance, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

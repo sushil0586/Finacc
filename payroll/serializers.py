@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from payroll.models import salarycomponent,employeesalary,salarytrans,department,designation,EmployeePayrollComponent,EntityPayrollComponentConfig,employeenew
+from payroll.models import salarycomponent,employeesalary,salarytrans,department,designation,EmployeePayrollComponent,EntityPayrollComponentConfig,employeenew, CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent
 from Authentication.serializers import Registerserializers
 from Authentication.models import User
 from django.contrib.auth.hashers import make_password
@@ -186,10 +186,10 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = employeenew
-        fields = ['firstname','lastname','middlename','email','password',
+        fields = ['firstname','lastname','middlename','email','password','employeeid','is_active','role','username',
             'tax_regime', 'dateofjoining', 'department', 'designation',
             'reportingmanager', 'bankname', 'bankaccountno', 'pan', 'address1', 'address2',
-            'country', 'state', 'district', 'city', 'entity', 'createdby',
+            'country', 'state', 'district', 'city', 'entity', 'createdby','id',
             'payroll_components'
         ]
 
@@ -236,10 +236,95 @@ class EmployeeSerializer(serializers.ModelSerializer):
 class EntityPayrollComponentConfigSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(source='component.id')
     name = serializers.CharField(source='component.name')
+    componenttype = serializers.CharField(source='component.component_type.name')
 
     class Meta:
         model = EntityPayrollComponentConfig
-        fields = ['id', 'name', 'default_value', 'min_value', 'max_value']
+        fields = ['id', 'name', 'default_value','componenttype', 'min_value', 'max_value']
+
+
+
+class CalculationTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CalculationType
+        fields = '__all__'
+
+class BonusFrequencySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BonusFrequency
+        fields = '__all__'
+
+class CalculationValueSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CalculationValue
+        fields = '__all__'
+
+class ComponentTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ComponentType
+        fields = '__all__'
+
+
+class EntityPayrollComponentConfigSerializerlist(serializers.ModelSerializer):
+    class Meta:
+        model = EntityPayrollComponentConfig
+        fields = ['id', 'entity', 'default_value', 'selected_amount', 'min_value', 'max_value', 'is_active']
+
+
+class PayrollComponentSerializer(serializers.ModelSerializer):
+    configs = EntityPayrollComponentConfigSerializerlist(many=True, write_only=True)
+
+    class Meta:
+        model = PayrollComponent
+        fields = [
+            'id', 'name', 'code', 'component_type', 'calculation_type',
+            'is_taxable', 'is_mandatory', 'is_basic', 'entity',
+            'bonus_frequency', 'formula_expression', 'configs'
+        ]
+
+    def create(self, validated_data):
+        configs_data = validated_data.pop('configs', [])
+        component = PayrollComponent.objects.create(**validated_data)
+        for config_data in configs_data:
+            EntityPayrollComponentConfig.objects.create(component=component, **config_data)
+        return component
+
+    def update(self, instance, validated_data):
+        configs_data = validated_data.pop('configs', [])
+
+        # Update parent fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        existing_ids = []
+        incoming_ids = []
+
+        for config_data in configs_data:
+            config_id = config_data.get('id', 0)
+            if config_id:
+                try:
+                    config_instance = EntityPayrollComponentConfig.objects.get(id=config_id, component=instance)
+                    for attr, value in config_data.items():
+                        if attr != 'id':
+                            setattr(config_instance, attr, value)
+                    config_instance.save()
+                    incoming_ids.append(config_id)
+                except EntityPayrollComponentConfig.DoesNotExist:
+                    continue  # Skip invalid id
+            else:
+                new_config = EntityPayrollComponentConfig.objects.create(component=instance, **config_data)
+                incoming_ids.append(new_config.id)
+
+        # Delete records not present in incoming data
+        existing_ids = list(
+            EntityPayrollComponentConfig.objects.filter(component=instance).values_list('id', flat=True)
+        )
+        to_delete = set(existing_ids) - set(incoming_ids)
+        EntityPayrollComponentConfig.objects.filter(id__in=to_delete).delete()
+
+        return instance
+
 
 
 
