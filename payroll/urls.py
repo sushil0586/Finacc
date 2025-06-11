@@ -28,4 +28,5 @@ urlpatterns  = [
     path('payroll-component/<int:pk>/', views.PayrollComponentAPIView.as_view()),  # For PUT
     path('payroll-component/entity/<int:entity_id>/', views.PayrollComponentByEntityAPIView.as_view()), # GET by entity
     path('payroll-component/detail/<int:pk>/', views.PayrollComponentDetailAPIView.as_view()), # GET by component id
+    path('payroll-component/delete/<int:id>', views.PayrollComponentDeleteAPIView.as_view(), name='payroll-component-delete'),
 ]
