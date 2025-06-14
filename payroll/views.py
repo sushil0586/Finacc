@@ -338,11 +338,13 @@ class CalculatePayrollFromCTCAPIView(APIView):
                 return Response({'error': 'Basic component not configured for this entity.'}, status=400)
 
             basic_percent = basic_config.default_value
-            monthly_basic = (monthly_ctc * basic_percent) / 100
+            monthly_basic = (monthly_ctc * 100) / 100
 
             variables = {'basic': monthly_basic}
-            total_monthly = 0
-            total_annual = 0
+            total_earnings_monthly = 0
+            total_earnings_annual = 0
+            total_deductions_monthly = 0
+            total_deductions_annual = 0
             components_result = []
 
             aeval = Interpreter()
@@ -353,7 +355,6 @@ class CalculatePayrollFromCTCAPIView(APIView):
                 comp_code = comp.code.lower()
                 calc_type = comp.calculation_type.name.lower() if comp.calculation_type else 'fixed'
                 freq = comp.bonus_frequency.name.lower() if comp.bonus_frequency else 'monthly'
-                multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(freq, 1)
 
                 monthly_value = 0
                 if calc_type == 'percent':
@@ -362,21 +363,18 @@ class CalculatePayrollFromCTCAPIView(APIView):
                     monthly_value = config.default_value
 
                 config._monthly_value = monthly_value
-                config._annual_value = monthly_value * multiplier
                 variables[comp_code] = monthly_value
 
-            # === Second pass: Formula ===
+            # === Second pass: Formula and Annuals ===
             for config in configs:
                 comp = config.component
                 comp_code = comp.code.lower()
                 calc_type = comp.calculation_type.name.lower() if comp.calculation_type else 'fixed'
                 freq = comp.bonus_frequency.name.lower() if comp.bonus_frequency else 'monthly'
-                multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(freq, 1)
 
                 if calc_type == 'formula' and comp.formula_expression:
                     try:
                         expression = comp.formula_expression
-                        # Replace variables
                         for key, val in variables.items():
                             expression = expression.replace(f'{{{key}}}', str(val))
                         monthly_value = float(aeval(expression))
@@ -385,17 +383,26 @@ class CalculatePayrollFromCTCAPIView(APIView):
                 else:
                     monthly_value = config._monthly_value
 
-                annual_value = monthly_value * multiplier
+                # Get correct annual value based on frequency
+                if freq == 'yearly':
+                    annual_value = monthly_value
+                elif freq == 'quarterly':
+                    annual_value = monthly_value * 4
+                else:  # monthly
+                    annual_value = monthly_value * 12
+
                 variables[comp_code] = monthly_value
 
-                # === Direction Based on Component Type ===
                 comp_type = comp.component_type.name.lower() if comp.component_type else 'unknown'
                 include_in_total = comp_type in ['earning', 'bonus']
-                direction = '+' if comp_type in ['earning', 'bonus'] else '-'
+                direction = '+' if include_in_total else '-'
 
                 if include_in_total:
-                    total_monthly += monthly_value
-                    total_annual += annual_value
+                    total_earnings_monthly += monthly_value
+                    total_earnings_annual += annual_value
+                elif comp_type in ['deduction', 'statutory']:
+                    total_deductions_monthly += monthly_value
+                    total_deductions_annual += annual_value
 
                 components_result.append({
                     "component_id": comp.id,
@@ -416,11 +423,18 @@ class CalculatePayrollFromCTCAPIView(APIView):
                     "formula_expression": comp.formula_expression,
                 })
 
+            net_monthly_salary = total_earnings_monthly - total_deductions_monthly
+            net_annual_salary = total_earnings_annual - total_deductions_annual
+
             return Response({
                 "input_ctc": round(ctc_amount, 2),
                 "monthly_basic": round(monthly_basic, 2),
-                "gross_monthly_total": round(total_monthly, 2),
-                "gross_annual_total": round(total_annual, 2),
+                "gross_monthly_total": round(total_earnings_monthly, 2),
+                "gross_annual_total": round(total_earnings_annual, 2),
+                "total_deductions_monthly": round(total_deductions_monthly, 2),
+                "total_deductions_annual": round(total_deductions_annual, 2),
+                "net_monthly_salary": round(net_monthly_salary, 2),
+                "net_annual_salary": round(net_annual_salary, 2),
                 "components": components_result
             })
 
