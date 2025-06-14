@@ -4,6 +4,7 @@ from django.shortcuts import render
 import json
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
+from asteval import Interpreter
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status
@@ -306,3 +307,122 @@ class PayrollComponentDeleteAPIView(APIView):
         payroll_component = get_object_or_404(PayrollComponent, id=id)
         payroll_component.delete()
         return Response({"message": "Payroll Component deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
+
+
+class CalculatePayrollFromCTCAPIView(APIView):
+    def post(self, request):
+        try:
+            entity_id = request.data.get("entity_id")
+            ctc_amount = request.data.get("ctc_amount")
+
+            if not entity_id or not ctc_amount:
+                return Response({'error': 'entity_id and ctc_amount are required.'}, status=400)
+
+            ctc_amount = float(ctc_amount)
+            monthly_ctc = ctc_amount / 12
+
+            configs = EntityPayrollComponentConfig.objects.filter(
+                entity_id=entity_id,
+                is_active=True
+            ).select_related(
+                'component__component_type',
+                'component__calculation_type',
+                'component__bonus_frequency'
+            )
+
+            if not configs.exists():
+                return Response({'error': 'No active components found for this entity.'}, status=404)
+
+            basic_config = configs.filter(component__is_basic=True).first()
+            if not basic_config:
+                return Response({'error': 'Basic component not configured for this entity.'}, status=400)
+
+            basic_percent = basic_config.default_value
+            monthly_basic = (monthly_ctc * basic_percent) / 100
+
+            variables = {'basic': monthly_basic}
+            total_monthly = 0
+            total_annual = 0
+            components_result = []
+
+            aeval = Interpreter()
+
+            # === First pass: Fixed and Percent ===
+            for config in configs:
+                comp = config.component
+                comp_code = comp.code.lower()
+                calc_type = comp.calculation_type.name.lower() if comp.calculation_type else 'fixed'
+                freq = comp.bonus_frequency.name.lower() if comp.bonus_frequency else 'monthly'
+                multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(freq, 1)
+
+                monthly_value = 0
+                if calc_type == 'percent':
+                    monthly_value = (monthly_basic * config.default_value) / 100
+                elif calc_type == 'fixed':
+                    monthly_value = config.default_value
+
+                config._monthly_value = monthly_value
+                config._annual_value = monthly_value * multiplier
+                variables[comp_code] = monthly_value
+
+            # === Second pass: Formula ===
+            for config in configs:
+                comp = config.component
+                comp_code = comp.code.lower()
+                calc_type = comp.calculation_type.name.lower() if comp.calculation_type else 'fixed'
+                freq = comp.bonus_frequency.name.lower() if comp.bonus_frequency else 'monthly'
+                multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(freq, 1)
+
+                if calc_type == 'formula' and comp.formula_expression:
+                    try:
+                        expression = comp.formula_expression
+                        # Replace variables
+                        for key, val in variables.items():
+                            expression = expression.replace(f'{{{key}}}', str(val))
+                        monthly_value = float(aeval(expression))
+                    except Exception:
+                        monthly_value = 0
+                else:
+                    monthly_value = config._monthly_value
+
+                annual_value = monthly_value * multiplier
+                variables[comp_code] = monthly_value
+
+                # === Direction Based on Component Type ===
+                comp_type = comp.component_type.name.lower() if comp.component_type else 'unknown'
+                include_in_total = comp_type in ['earning', 'bonus']
+                direction = '+' if comp_type in ['earning', 'bonus'] else '-'
+
+                if include_in_total:
+                    total_monthly += monthly_value
+                    total_annual += annual_value
+
+                components_result.append({
+                    "component_id": comp.id,
+                    "component": comp.name,
+                    "component_type": comp.component_type.name if comp.component_type else "Unknown",
+                    "component_type_id": comp.component_type.id if comp.component_type else None,
+                    "direction": direction,
+                    "calculation_type": comp.calculation_type.name if comp.calculation_type else "Fixed",
+                    "calculation_type_id": comp.calculation_type.id if comp.calculation_type else None,
+                    "bonus_frequency": comp.bonus_frequency.name if comp.bonus_frequency else "Monthly",
+                    "bonus_frequency_id": comp.bonus_frequency.id if comp.bonus_frequency else None,
+                    "default_value": round(config.default_value, 2),
+                    "monthly_value": round(monthly_value, 2),
+                    "annual_value": round(annual_value, 2),
+                    "included_in_total": include_in_total,
+                    "min_value": config.min_value,
+                    "max_value": config.max_value,
+                    "formula_expression": comp.formula_expression,
+                })
+
+            return Response({
+                "input_ctc": round(ctc_amount, 2),
+                "monthly_basic": round(monthly_basic, 2),
+                "gross_monthly_total": round(total_monthly, 2),
+                "gross_annual_total": round(total_annual, 2),
+                "components": components_result
+            })
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)

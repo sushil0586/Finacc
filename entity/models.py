@@ -307,6 +307,7 @@ class Mastergstdetails(TrackingModel):
     client_id = models.CharField(max_length=200, null=True,verbose_name='clientid')
     client_secret = models.CharField(max_length=200, null=True,verbose_name='client_secret')
     gstin = models.CharField(max_length=20, null=True,verbose_name='gstin')
+    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
 
     def __str__(self):
          return f'{self.username}'

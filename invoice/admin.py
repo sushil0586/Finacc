@@ -6,7 +6,7 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,ReceiptVoucherInvoiceAllocation,ReceiptVoucher
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,ReceiptVoucherInvoiceAllocation,ReceiptVoucher,invoicetypes,EInvoiceDetails
 )
 from django.utils.translation import gettext_lazy as _
 from import_export.admin import ImportExportMixin
@@ -30,6 +30,15 @@ class InvoiceTypeAdmin(admin.ModelAdmin):
     ordering = ('invoicetype',)
 
 admin.site.register(InvoiceType, InvoiceTypeAdmin)
+
+
+# Admin for InvoiceType
+class InvoiceTypesAdmin(admin.ModelAdmin):
+    list_display = ('invoicetypename', 'invoicetypecode')
+    search_fields = ('invoicetypename', 'invoicetypecode')
+    ordering = ('invoicetypename',)
+
+admin.site.register(invoicetypes, InvoiceTypesAdmin)
 
 
 # Admin for gstorderservices
@@ -270,7 +279,7 @@ class accountentryAdmin(admin.ModelAdmin):
 
 
 class StockTransactionsAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['accounthead', 'account', 'stock', 'transactiontype', 'transactionid', 'voucherno', 'desc', 'stockttype', 'quantity', 'rate', 'drcr', 'debitamount', 'creditamount', 'entry', 'entrydate', 'entrydatetime', 'accounttype', 'pieces', 'weightqty', 'iscashtransaction', 'isbalancesheet', 'istrial', 'entity', 'createdby']
+    list_display = ['accounthead','id', 'account', 'stock', 'transactiontype', 'transactionid', 'voucherno', 'desc', 'stockttype', 'quantity', 'rate', 'drcr', 'debitamount', 'creditamount', 'entry', 'entrydate', 'entrydatetime', 'accounttype', 'pieces', 'weightqty', 'iscashtransaction', 'isbalancesheet', 'istrial', 'entity', 'createdby']
     search_fields = ['transactionid', 'account__name', 'stock__name', 'entity__name']
    
 
@@ -340,6 +349,10 @@ admin.site.register(SalesInvoiceSettings)
 admin.site.register(doctype)
 admin.site.register(ReceiptVoucher)
 admin.site.register(ReceiptVoucherInvoiceAllocation)
+admin.site.register(EInvoiceDetails)
+
+
+
 
 
 

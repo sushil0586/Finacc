@@ -15,9 +15,50 @@ from django.db.models import Index, Func, DateField, F
 from django.db.models.functions import Cast
 from geography.models import Country,State,District,City
 from simple_history.models import HistoricalRecords
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
 
 
 # Create your models here.
+
+
+class invoicetypes(TrackingModel):
+    invoicetypename = models.CharField(max_length= 255,verbose_name= 'Invoice Type Name')
+    invoicetypecode = models.CharField(max_length= 255,verbose_name= 'Invoice Type Code')
+   
+
+    def __str__(self):
+       # entity_name = self.entity.entityname if self.entity else "NoEntity"
+        return f'{self.invoicetypename}-{self.invoicetypecode}'
+
+
+class modeofpayment(TrackingModel):
+    paymentmode = models.CharField(max_length= 255,verbose_name= 'Payment Mode')
+    paymentmodecode = models.CharField(max_length= 255,verbose_name= 'Payment mode code')
+   
+
+    def __str__(self):
+       # entity_name = self.entity.entityname if self.entity else "NoEntity"
+        return f'{self.paymentmode}-{self.paymentmodecode}'
+    
+class transportmode(TrackingModel):
+    transmode = models.CharField(max_length= 255,verbose_name= 'Transport Mode')
+    transmodecode = models.CharField(max_length= 255,verbose_name= 'Transport mode code')
+   
+
+    def __str__(self):
+       # entity_name = self.entity.entityname if self.entity else "NoEntity"
+        return f'{self.transmode}-{self.transmodecode}'
+    
+    
+class vehicalType(TrackingModel):
+    vehicaltype = models.CharField(max_length= 255,verbose_name= 'Vehical Type')
+    vehicaltypecode = models.CharField(max_length= 255,verbose_name= 'Vehical type code')
+   
+
+    def __str__(self):
+       # entity_name = self.entity.entityname if self.entity else "NoEntity"
+        return f'{self.vehicaltype}-{self.vehicaltypecode}'
 
 
 class doctype(TrackingModel):
@@ -211,6 +252,7 @@ class SalesOderHeader(TrackingModel):
     billno = models.IntegerField(verbose_name='Bill No')
     invoicenumber = models.CharField(max_length=50, null=True,verbose_name='Invoice Number')
     accountid = models.ForeignKey(to = account, on_delete=models.CASCADE,blank=True)
+    invoicetypeid = models.ForeignKey(to = invoicetypes, on_delete=models.CASCADE,blank=True,null = True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
     grno = models.CharField(max_length=50,verbose_name='GR No',null=True)
     terms = models.IntegerField(verbose_name='Terms')
@@ -261,6 +303,8 @@ class SalesOderHeader(TrackingModel):
     eway =   models.BooleanField(default=False)
     einvoice =   models.BooleanField(default=False)
     einvoicepluseway =   models.BooleanField(default=False)
+    isammended =   models.BooleanField(default=False)
+    originalinvoice = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name='Orinial invoice',blank=True)
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
     history = HistoricalRecords()
    
@@ -297,7 +341,7 @@ class salesOrderdetails(TrackingModel):
     # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
     cess = models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'Cess')
     linetotal =  models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'Line Total')
-    isService = models.CharField(max_length=10,default = 'N',verbose_name='is Service')
+    isService = models.BooleanField(default=False,verbose_name= 'Is Service')
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
@@ -307,6 +351,112 @@ class salesOrderdetails(TrackingModel):
         return f'{self.product} '
     
 
+
+class PayDtls(models.Model):
+    invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='paydtls')
+    Nm = models.CharField(max_length=100, null=True, blank=True)  # Mode of Payment (e.g., Cash, Credit)
+    FinInsBr = models.CharField(max_length=100, null=True, blank=True)
+    PayTerm = models.CharField(max_length=100, null=True, blank=True)
+    PayInstr = models.CharField(max_length=100, null=True, blank=True)
+    CrTrn = models.CharField(max_length=100, null=True, blank=True)
+    DirDr = models.CharField(max_length=100, null=True, blank=True)
+    CrDay = models.IntegerField(null=True, blank=True)
+    PaidAmt = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    PayRefNo = models.CharField(max_length=100, null=True, blank=True)
+
+class RefDtls(models.Model):
+    invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='refdtls')
+    InvRm = models.TextField(null=True, blank=True)
+    PrecDocNo = models.CharField(max_length=100, null=True, blank=True)
+    PrecDocDt = models.DateField(null=True, blank=True)
+    ContrRefr = models.CharField(max_length=100, null=True, blank=True)
+
+class AddlDocDtls(models.Model):
+    invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE, related_name='addldocdtls')
+    Url = models.URLField(null=True, blank=True)
+    Docs = models.CharField(max_length=255)
+    Info = models.CharField(max_length=255, null=True, blank=True)
+
+class EwbDtls(models.Model):
+    invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='ewbdtls')
+    TransId = models.CharField(max_length=20)
+    TransName = models.CharField(max_length=100)
+    Distance = models.DecimalField(max_digits=8, decimal_places=2)
+    TransDocNo = models.CharField(max_length=50)
+    TransMode = models.CharField(max_length=1)  # e.g., R - Road, A - Air
+    TransDocDt = models.DateField()
+    VehNo = models.CharField(max_length=20)
+    VehType = models.CharField(max_length=1)  # e.g., R - Regular, O - ODC
+
+class ExpDtls(models.Model):
+    invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='expdtls')
+    ShipBNo = models.CharField(max_length=100, null=True, blank=True)
+    ShipBDt = models.DateField(null=True, blank=True)
+    Port = models.CharField(max_length=50)
+    RefClm = models.CharField(max_length=3, null=True, blank=True)
+    ForCur = models.CharField(max_length=3)
+    CntryCd = models.CharField(max_length=3)
+    ExpDuty = models.BooleanField(default=False)
+
+    
+
+
+    
+
+class paymentdetails(TrackingModel):
+      salesorderheader = models.ForeignKey(to = SalesOderHeader,on_delete=models.CASCADE,verbose_name= 'Sale Order Number')
+      account = models.ForeignKey(to = account, on_delete=models.CASCADE,blank=True)
+      payeename = models.CharField(max_length=50, null=True,verbose_name='PayeeName')
+      bankname = models.CharField(max_length=50, null=True,verbose_name='Ifsccode')
+      Ifsccode = models.CharField(max_length=50, null=True,verbose_name='bankname')
+      accountnumber = models.CharField(max_length=50, null=True,verbose_name='Account Number')
+      modeofpayment = models.ForeignKey(to = modeofpayment, on_delete=models.CASCADE,blank=True)
+      paymentterms = models.CharField(max_length=50, null=True,verbose_name='paymentterms')
+      paymentinstructions = models.CharField(max_length=50, null=True,verbose_name='paymentinstructions')
+      creditdays = models.IntegerField(verbose_name='Credit Days')
+      paidamount = models.IntegerField(verbose_name='Paid Amount')
+      paymentDue = models.IntegerField(verbose_name='Payment Due')
+
+
+class ewbdetails(TrackingModel):
+      salesorderheader = models.ForeignKey(to = SalesOderHeader,on_delete=models.CASCADE,verbose_name= 'Sale Order Number')
+      account = models.ForeignKey(to = account, on_delete=models.CASCADE,blank=True)
+      gstno   = models.CharField(max_length=50, null=True,verbose_name= ('Gst No'),blank = True)
+      transportname = models.CharField(max_length=50, null=True,verbose_name='Transport Name')
+      transportmode = models.ForeignKey(to = transportmode, on_delete=models.CASCADE,blank=True)
+      distance = models.IntegerField(verbose_name='Distance')
+      transportdocno = models.CharField(max_length=50, null=True,verbose_name='Transport doc no')
+      transdocdate = models.DateTimeField(verbose_name='Transport document date',null = True)
+      vehicalno = models.CharField(max_length=50, null=True,verbose_name='vehicalno')
+      vehicaltype = models.ForeignKey(to = vehicalType, on_delete=models.CASCADE,blank=True)
+
+
+
+class EInvoiceDetails(models.Model):
+    # Generic relation to any invoice-like model (SalesOderHeader, CreditNote, etc.)
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    document = GenericForeignKey('content_type', 'object_id')
+
+    irn = models.CharField(max_length=100, unique=True)
+    ack_no = models.BigIntegerField()
+    ack_date = models.DateTimeField()
+    signed_invoice = models.TextField()
+    signed_qr_code = models.TextField()
+    status = models.CharField(max_length=20, default='ACT')
+
+    ewb_no = models.BigIntegerField(null=True, blank=True)
+    ewb_date = models.DateTimeField(null=True, blank=True)
+    ewb_valid_till = models.DateTimeField(null=True, blank=True)
+    remarks = models.TextField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('content_type', 'object_id')  # Prevent duplicates per document
+      
+    
 class SalesOder(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
     sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)

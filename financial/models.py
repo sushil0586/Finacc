@@ -163,6 +163,7 @@ class account(TrackingModel):
 
 
 class ShippingDetails(models.Model):
+    gstno       = models.CharField(max_length=50, null=True,verbose_name=_('Gst No'),blank = True)
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name='shipping_details')
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 1'))
     address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_('Address Line 2'))
