@@ -112,7 +112,7 @@ class PayrollComponent(models.Model):
 
 class EntityPayrollComponentConfig(models.Model):
     entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
-    component = models.ForeignKey(PayrollComponent, on_delete=models.CASCADE)
+    component = models.ForeignKey(PayrollComponent, related_name='configs', on_delete=models.CASCADE)
     default_value = models.FloatField()
     selected_amount = models.FloatField(null=True, blank=True)
     min_value = models.FloatField(null=True, blank=True)

@@ -385,11 +385,18 @@ class CalculatePayrollFromCTCAPIView(APIView):
 
                 # Get correct annual value based on frequency
                 if freq == 'yearly':
-                    annual_value = monthly_value
+                    periodic_value = monthly_value
+                    annual_value = periodic_value
+                    monthly_value = annual_value / 12
                 elif freq == 'quarterly':
-                    annual_value = monthly_value * 4
+                    periodic_value = monthly_value
+                    annual_value = periodic_value * 4
+                    monthly_value = annual_value / 12
                 else:  # monthly
-                    annual_value = monthly_value * 12
+                    periodic_value = monthly_value
+                    annual_value = periodic_value * 12
+                    monthly_value = periodic_value
+
 
                 variables[comp_code] = monthly_value
 
@@ -431,6 +438,8 @@ class CalculatePayrollFromCTCAPIView(APIView):
                 "monthly_basic": round(monthly_basic, 2),
                 "gross_monthly_total": round(total_earnings_monthly, 2),
                 "gross_annual_total": round(total_earnings_annual, 2),
+                "difference": round(ctc_amount, 2) - round(total_earnings_annual, 2),
+                "difference%": (round(ctc_amount, 2) - round(total_earnings_annual, 2))*100/round(ctc_amount, 2),
                 "total_deductions_monthly": round(total_deductions_monthly, 2),
                 "total_deductions_annual": round(total_deductions_annual, 2),
                 "net_monthly_salary": round(net_monthly_salary, 2),
