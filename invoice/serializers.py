@@ -2360,14 +2360,19 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             addldocdtls_data = adddetails_data.get('addldocdtls', [])
 
             if paydtls_data:
+                paydtls_data.pop('id', None)
                 PayDtls.objects.create(invoice=order, **paydtls_data)
             if refdtls_data:
+                refdtls_data.pop('id', None)
                 RefDtls.objects.create(invoice=order, **refdtls_data)
             if ewbdtls_data:
+                ewbdtls_data.pop('id', None)
                 EwbDtls.objects.create(invoice=order, **ewbdtls_data)
             if expdtls_data:
+                expdtls_data.pop('id', None)
                 ExpDtls.objects.create(invoice=order, **expdtls_data)
             for doc_data in addldocdtls_data:
+                doc_data.pop('id', None)
                 AddlDocDtls.objects.create(invoice=order, **doc_data)
 
             # Stock and Invoice Details
