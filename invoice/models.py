@@ -362,6 +362,7 @@ class PayDtls(models.Model):
     DirDr = models.CharField(max_length=100, null=True, blank=True)
     CrDay = models.IntegerField(null=True, blank=True)
     PaidAmt = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    PamtDue = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     PayRefNo = models.CharField(max_length=100, null=True, blank=True)
 
 class RefDtls(models.Model):
