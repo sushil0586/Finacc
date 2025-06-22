@@ -371,7 +371,7 @@ class RefDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='refdtls')
     InvRm = models.TextField(null=True, blank=True)
     PrecDocNo = models.CharField(max_length=100, null=True, blank=True)
-    PrecDocDt = models.DateField(null=True, blank=True)
+    PrecDocDt = models.DateTimeField(verbose_name='PrecDocDt',null = True)
     ContrRefr = models.CharField(max_length=100, null=True, blank=True)
 
 class AddlDocDtls(models.Model):
@@ -387,14 +387,14 @@ class EwbDtls(models.Model):
     Distance = models.DecimalField(max_digits=8, decimal_places=2)
     TransDocNo = models.CharField(max_length=50)
     TransMode = models.CharField(max_length=1)  # e.g., R - Road, A - Air
-    TransDocDt = models.DateField()
+    TransDocDt = models.DateTimeField(verbose_name='TransDocDt',null = True)
     VehNo = models.CharField(max_length=20)
     VehType = models.CharField(max_length=1)  # e.g., R - Regular, O - ODC
 
 class ExpDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='expdtls')
     ShipBNo = models.CharField(max_length=100, null=True, blank=True)
-    ShipBDt = models.DateField(null=True, blank=True)
+    ShipBDt = models.DateTimeField(verbose_name='SShipBDt',null = True)
     Port = models.CharField(max_length=50)
     RefClm = models.CharField(max_length=3, null=True, blank=True)
     ForCur = models.CharField(max_length=3)
