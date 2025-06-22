@@ -2293,12 +2293,12 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'discount', 'cgst', 'sgst', 'igst', 'isigst', 'invoicetype', 'reversecharge', 'cess', 'totalgst',
             'expenses', 'gtotal', 'roundOff', 'entityfinid', 'subentity', 'entity', 'createdby', 'eway', 'einvoice',
             'isammended', 'originalinvoice', 'originalinvoice_number', 'einvoicepluseway', 'isactive',
-            'saleInvoiceDetails', 'paydtls', 'refdtls', 'addldocdtls', 'ewbdtls', 'expdtls', 'einvoice_details',
+            'saleInvoiceDetails', 'adddetails', 'einvoice_details','isadditionaldetail',
         )
     
     def get_originalinvoice_number(self, obj):
         if obj.originalinvoice:
-            return obj.originalinvoice.invoicenumber
+            return getattr(obj.originalinvoice, "invoicenumber", None)
         return None
     
     def get_einvoice_details(self, obj):
@@ -2323,36 +2323,62 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             "qr_image_base64": qr_image_base64
         }
     
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+
+        # Construct adddetails manually
+        adddetails = {}
+
+        pay = PayDtls.objects.filter(invoice=instance).first()
+        ref = RefDtls.objects.filter(invoice=instance).first()
+        ewb = EwbDtls.objects.filter(invoice=instance).first()
+        exp = ExpDtls.objects.filter(invoice=instance).first()
+        addldocs = AddlDocDtls.objects.filter(invoice=instance)
+
+        if pay:
+            adddetails['paydtls'] = PayDtlsSerializer(pay).data
+        if ref:
+            adddetails['refdtls'] = RefDtlsSerializer(ref).data
+        if ewb:
+            adddetails['ewbdtls'] = EwbDtlsSerializer(ewb).data
+        if exp:
+            adddetails['expdtls'] = ExpDtlsSerializer(exp).data
+        adddetails['addldocdtls'] = AddlDocDtlsSerializer(addldocs, many=True).data
+
+        representation['adddetails'] = adddetails
+        return representation
+    
     def create(self, validated_data):
         with transaction.atomic():
             sales_order_details_data = validated_data.pop('saleInvoiceDetails', [])
-            paydtls_data = validated_data.pop('paydtls', None)
-            refdtls_data = validated_data.pop('refdtls', None)
-            addldocdtls_data = validated_data.pop('addldocdtls', [])
-            ewbdtls_data = validated_data.pop('ewbdtls', None)
-            expdtls_data = validated_data.pop('expdtls', None)
             validated_data.pop('billno', None)
 
-            # Generate Bill No & Invoice No
-            last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).last()
-            billno2 = last_order.billno + 1 if last_order else 1
+            # Generate Bill No
+            last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).order_by('-id').first()
+            billno2 = last_order.billno + 1 if last_order and last_order.billno else 1
 
+            # Get and validate SalesInvoiceSettings
             settings = SalesInvoiceSettings.objects.select_for_update().filter(
                 entity=validated_data['entity'].id,
                 entityfinid=validated_data['entityfinid'].id,
                 doctype__doccode='1001'
             ).first()
+
+            if not settings:
+                raise Exception("SalesInvoiceSettings not configured for this entity/financial year.")
+
             reset_counter_if_needed(settings)
             number = build_document_number(settings)
 
             if SalesOderHeader.objects.filter(invoicenumber=number).exists():
                 raise Exception("Duplicate invoice number generated. Please try again.")
 
+            # Create Sales Order
+            adddetails_data = validated_data.pop('adddetails', {})
             order = SalesOderHeader.objects.create(**validated_data, billno=billno2, invoicenumber=number)
 
-            # Create child models
-
-            adddetails_data = validated_data.pop('adddetails', {})
+            # Handle nested adddetails
+            
             paydtls_data = adddetails_data.get('paydtls')
             refdtls_data = adddetails_data.get('refdtls')
             ewbdtls_data = adddetails_data.get('ewbdtls')
@@ -2375,16 +2401,16 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                 doc_data.pop('id', None)
                 AddlDocDtls.objects.create(invoice=order, **doc_data)
 
-            # Stock and Invoice Details
+            # Stock and order details
             stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='I')
 
             for order_detail_data in sales_order_details_data:
                 order_detail_data.pop('id', None)
-                sales_order_other_charges = order_detail_data.pop('otherchargesdetail', [])
+                other_charges = order_detail_data.pop('otherchargesdetail', [])
                 detail = salesOrderdetails.objects.create(salesorderheader=order, **order_detail_data)
                 stk.createtransactiondetails(detail=detail, stocktype='S')
-                for other_charge_data in sales_order_other_charges:
-                    charge = saleothercharges.objects.create(salesorderdetail=detail, **other_charge_data)
+                for charge_data in other_charges:
+                    charge = saleothercharges.objects.create(salesorderdetail=detail, **charge_data)
                     stk.createothertransactiondetails(detail=charge, stocktype='S')
 
             settings.current_number += 1
@@ -2427,20 +2453,21 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
 
     def update(self, instance, validated_data):
-        # Handle simple fields
         fields = [
             'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
             'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
             'tds194q', 'tds194q1', 'tcs206c1ch1', 'state', 'district', 'city', 'pincode', 'tcs206c1ch2', 'tcs206c1ch3',
             'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'stbefdiscount', 'subtotal', 'discount', 'cgst', 'sgst', 'igst',
             'isigst', 'invoicetype', 'reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'roundOff', 'isactive',
-            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby'
+            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby','isadditionaldetail', 'adddetails'
         ]
-        for field in fields:
+
+        adddetails_data = validated_data.pop('adddetails', {})
+        for field in fields:    
             if field in validated_data:
                 setattr(instance, field, validated_data[field])
 
-        adddetails_data = validated_data.pop('adddetails', {})
+        
         paydtls_data = adddetails_data.get('paydtls')
         refdtls_data = adddetails_data.get('refdtls')
         ewbdtls_data = adddetails_data.get('ewbdtls')
@@ -2451,27 +2478,18 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             instance.save()
 
-            # Stock header transaction
             stk = stocktransactionsale(instance, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='U')
             stk.createtransaction()
 
-            # 1️⃣ Update or create PayDtls
             if paydtls_data:
                 PayDtls.objects.update_or_create(invoice=instance, defaults=paydtls_data)
-
-            # 2️⃣ Update or create RefDtls
             if refdtls_data:
                 RefDtls.objects.update_or_create(invoice=instance, defaults=refdtls_data)
-
-            # 3️⃣ Update or create EwbDtls
             if ewbdtls_data:
                 EwbDtls.objects.update_or_create(invoice=instance, defaults=ewbdtls_data)
-
-            # 4️⃣ Update or create ExpDtls
             if expdtls_data:
                 ExpDtls.objects.update_or_create(invoice=instance, defaults=expdtls_data)
 
-            # 5️⃣ Delete old AddlDocDtls and recreate
             existing_docs = AddlDocDtls.objects.filter(invoice=instance)
             existing_doc_ids = {doc.id for doc in existing_docs}
             incoming_doc_ids = set()
@@ -2479,35 +2497,30 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             for doc_data in addldocdtls_data:
                 doc_id = doc_data.get('id', 0)
                 if doc_id and doc_id in existing_doc_ids:
-                    # Update existing
                     doc = AddlDocDtls.objects.get(id=doc_id, invoice=instance)
                     for attr, value in doc_data.items():
                         setattr(doc, attr, value)
                     doc.save()
                     incoming_doc_ids.add(doc_id)
                 else:
-                    # Create new
                     AddlDocDtls.objects.create(invoice=instance, **doc_data)
 
-            # Delete docs not in payload
             to_delete_ids = existing_doc_ids - incoming_doc_ids
             if to_delete_ids:
                 AddlDocDtls.objects.filter(id__in=to_delete_ids).delete()
 
-            # 6️⃣ Handle Order Details and Other Charges
             existing_details = salesOrderdetails.objects.filter(salesorderheader=instance)
             existing_ids = {detail.id for detail in existing_details}
             payload_ids = set()
 
             for detail_data in sales_order_details_data:
                 detail_id = detail_data.get('id', 0)
-                salesorderdetails_data = detail_data.pop('otherchargesdetail', [])
+                other_charges = detail_data.pop('otherchargesdetail', [])
 
                 if detail_id == 0:
-                    # ➕ Create new line
                     new_detail = salesOrderdetails.objects.create(salesorderheader=instance, **detail_data)
                     stk.createtransactiondetails(detail=new_detail, stocktype='S')
-                    for oc in salesorderdetails_data:
+                    for oc in other_charges:
                         oc_obj = saleothercharges.objects.create(salesorderdetail=new_detail, **oc)
                         stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
                 else:
@@ -2519,15 +2532,13 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                         detail.save()
                         stk.createtransactiondetails(detail=detail, stocktype='S')
 
-                        # Replace other charges
                         saleothercharges.objects.filter(salesorderdetail=detail).delete()
-                        for oc in salesorderdetails_data:
+                        for oc in other_charges:
                             oc_obj = saleothercharges.objects.create(salesorderdetail=detail, **oc)
                             stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
                     except salesOrderdetails.DoesNotExist:
                         continue
 
-            # ➖ Delete removed lines
             ids_to_delete = existing_ids - payload_ids
             if ids_to_delete:
                 salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()

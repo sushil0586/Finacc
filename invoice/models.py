@@ -342,6 +342,7 @@ class salesOrderdetails(TrackingModel):
     cess = models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'Cess')
     linetotal =  models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'Line Total')
     isService = models.BooleanField(default=False,verbose_name= 'Is Service')
+    isadditionaldetail = models.BooleanField(default=False,verbose_name= 'Is Additional details')
     subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
