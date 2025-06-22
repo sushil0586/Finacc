@@ -354,7 +354,8 @@ class salesOrderdetails(TrackingModel):
 
 class PayDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='paydtls')
-    Nm = models.CharField(max_length=100, null=True, blank=True)  # Mode of Payment (e.g., Cash, Credit)
+    Nm = models.CharField(max_length=100, null=True, blank=True)
+    Mode = models.CharField(max_length=100, null=True, blank=True)  # Mode of Payment (e.g., Cash, Credit)
     FinInsBr = models.CharField(max_length=100, null=True, blank=True)
     PayTerm = models.CharField(max_length=100, null=True, blank=True)
     PayInstr = models.CharField(max_length=100, null=True, blank=True)
