@@ -377,28 +377,28 @@ class RefDtls(models.Model):
 class AddlDocDtls(models.Model):
     invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE, related_name='addldocdtls')
     Url = models.URLField(null=True, blank=True)
-    Docs = models.CharField(max_length=255)
+    Docs = models.CharField(max_length=255,null=True, blank=True)
     Info = models.CharField(max_length=255, null=True, blank=True)
 
 class EwbDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='ewbdtls')
-    TransId = models.CharField(max_length=20)
-    TransName = models.CharField(max_length=100)
-    Distance = models.DecimalField(max_digits=8, decimal_places=2)
-    TransDocNo = models.CharField(max_length=50)
-    TransMode = models.CharField(max_length=1)  # e.g., R - Road, A - Air
+    TransId = models.CharField(max_length=20,null=True, blank=True)
+    TransName = models.CharField(max_length=100,null=True, blank=True)
+    Distance = models.DecimalField(max_digits=8, decimal_places=2,null=True, blank=True)
+    TransDocNo = models.CharField(max_length=50,null=True, blank=True)
+    TransMode = models.CharField(max_length=1,null=True, blank=True)  # e.g., R - Road, A - Air
     TransDocDt = models.DateTimeField(verbose_name='TransDocDt',null = True)
-    VehNo = models.CharField(max_length=20)
-    VehType = models.CharField(max_length=1)  # e.g., R - Regular, O - ODC
+    VehNo = models.CharField(max_length=20,null = True)
+    VehType = models.CharField(max_length=1,null = True)  # e.g., R - Regular, O - ODC
 
 class ExpDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE, related_name='expdtls')
     ShipBNo = models.CharField(max_length=100, null=True, blank=True)
     ShipBDt = models.DateTimeField(verbose_name='SShipBDt',null = True)
-    Port = models.CharField(max_length=50)
+    Port = models.CharField(max_length=50,null = True)
     RefClm = models.CharField(max_length=3, null=True, blank=True)
-    ForCur = models.CharField(max_length=3)
-    CntryCd = models.CharField(max_length=3)
+    ForCur = models.CharField(max_length=3,null = True)
+    CntryCd = models.CharField(max_length=3,null = True)
     ExpDuty = models.BooleanField(default=False)
 
     
