@@ -679,7 +679,7 @@ class GetAddDetailsAPIView(APIView):
     def get(self, request, pk):
         sales_order = get_object_or_404(SalesOderHeader, pk=pk)
 
-        adddetails = {
+        response_data = {
             "paydtls": None,
             "refdtls": None,
             "ewbdtls": None,
@@ -688,21 +688,22 @@ class GetAddDetailsAPIView(APIView):
         }
 
         if hasattr(sales_order, 'paydtls'):
-            adddetails["paydtls"] = PayDtlsSerializer(sales_order.paydtls).data
+            response_data["paydtls"] = PayDtlsSerializer(sales_order.paydtls).data
 
         if hasattr(sales_order, 'refdtls'):
-            adddetails["refdtls"] = RefDtlsSerializer(sales_order.refdtls).data
+            response_data["refdtls"] = RefDtlsSerializer(sales_order.refdtls).data
 
         if hasattr(sales_order, 'ewbdtls'):
-            adddetails["ewbdtls"] = EwbDtlsSerializer(sales_order.ewbdtls).data
+            response_data["ewbdtls"] = EwbDtlsSerializer(sales_order.ewbdtls).data
 
         if hasattr(sales_order, 'expdtls'):
-            adddetails["expdtls"] = ExpDtlsSerializer(sales_order.expdtls).data
+            response_data["expdtls"] = ExpDtlsSerializer(sales_order.expdtls).data
 
         addldoc_qs = sales_order.addldocdtls.all()
-        adddetails["addldocdtls"] = AddlDocDtlsSerializer(addldoc_qs, many=True).data
+        response_data["addldocdtls"] = AddlDocDtlsSerializer(addldoc_qs, many=True).data
 
-        return Response({"adddetails": adddetails}, status=status.HTTP_200_OK)
+        return Response(response_data, status=status.HTTP_200_OK)
+
 
 class SalesOderHeaderApiView(ListCreateAPIView):
 
