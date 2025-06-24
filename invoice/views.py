@@ -636,13 +636,12 @@ class purchasetaxtypeApiView(ListCreateAPIView):
 class UpdateAddDetailsAPIView(APIView):
     def put(self, request, pk):
         sales_order = get_object_or_404(SalesOderHeader, pk=pk)
-        adddetails = request.data.get("adddetails", {})
 
-        paydtls_data = adddetails.get("paydtls")
-        refdtls_data = adddetails.get("refdtls")
-        ewbdtls_data = adddetails.get("ewbdtls")
-        expdtls_data = adddetails.get("expdtls")
-        addldocdtls_data = adddetails.get("addldocdtls", [])
+        paydtls_data = request.data.get("paydtls")
+        refdtls_data = request.data.get("refdtls")
+        ewbdtls_data = request.data.get("ewbdtls")
+        expdtls_data = request.data.get("expdtls")
+        addldocdtls_data = request.data.get("addldocdtls", [])
 
         try:
             with transaction.atomic():
@@ -673,6 +672,7 @@ class UpdateAddDetailsAPIView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class GetAddDetailsAPIView(APIView):
