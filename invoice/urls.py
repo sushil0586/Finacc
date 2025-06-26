@@ -175,6 +175,8 @@ urlpatterns  = [
     path('sales-orders/<int:pk>/pdf/', views.SalesOrderPDFViewlatest.as_view(), name='sales-order-pdf'),
     path('salesorder/update-adddetails/<int:pk>/', views.UpdateAddDetailsAPIView.as_view(), name='update-adddetails'),
     path('salesorder/get-adddetails/<int:pk>/', views.GetAddDetailsAPIView.as_view(), name='get-adddetails'),
+    path('salesreturn/update-adddetails/<int:pk>/', views.UpdateAddDetailsAPIViewSR.as_view(), name='update-adddetails'),
+    path('salesreturn/get-adddetails/<int:pk>/', views.GetAddDetailsAPIViewSR.as_view(), name='get-adddetails'),
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
 
