@@ -2747,17 +2747,18 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
 
 class PurchasereturnSerializer(serializers.ModelSerializer):
     purchasereturndetails = purchasereturndetailsSerializer(many=True)
+    adddetails = AddDetailsSerializer(required=False)
 
     class Meta:
         model = PurchaseReturn
        # fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','vehicle','taxtype','billcash','supply','shippedto','remarks','transport','broker','tds194q','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','subtotal','subtotal','cgst','sgst','igst','expenses','gtotal','entity','owner','purchasereturndetails',)
-        fields = ('id','sorderdate','billno','accountid','state','district','city','pincode', 'latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' ,'roundOff', 'cgst','sgst','igst','cess','totalgst', 'expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails',)
+        fields = ('id','sorderdate','billno','accountid','state','district','city','pincode', 'latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' ,'roundOff', 'cgst','sgst','igst','cess','totalgst', 'expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails','adddetails',)
 
 
     def create(self, validated_data):
         #print(validated_data)
 
-        
+        adddetails_data = validated_data.pop('adddetails', {})
         salesOrderdetails_data = validated_data.pop('purchasereturndetails')
         validated_data.pop('billno')
         if PurchaseReturn.objects.filter(entity= validated_data['entity'].id).count() == 0:
@@ -2768,6 +2769,29 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             order = PurchaseReturn.objects.create(**validated_data,billno = billno2)
             stk = stocktransactionsale(order, transactiontype= 'PR',debit=1,credit=0,description= 'Purchase Return',entrytype= 'I')
             #print(tracks_data)
+
+
+            paydtls_data = adddetails_data.get('paydtls')
+            refdtls_data = adddetails_data.get('refdtls')
+            ewbdtls_data = adddetails_data.get('ewbdtls')
+            expdtls_data = adddetails_data.get('expdtls')
+            addldocdtls_data = adddetails_data.get('addldocdtls', [])
+
+            if paydtls_data:
+                paydtls_data.pop('id', None)
+                PayDtls.objects.create(purchase_return=order, **paydtls_data)
+            if refdtls_data:
+                refdtls_data.pop('id', None)
+                RefDtls.objects.create(purchase_return=order, **refdtls_data)
+            if ewbdtls_data:
+                ewbdtls_data.pop('id', None)
+                EwbDtls.objects.create(purchase_return=order, **ewbdtls_data)
+            if expdtls_data:
+                expdtls_data.pop('id', None)
+                ExpDtls.objects.create(purchase_return=order, **expdtls_data)
+            for doc_data in addldocdtls_data:
+                doc_data.pop('id', None)
+                AddlDocDtls.objects.create(purchase_return=order, **doc_data)
 
           
             
@@ -2791,8 +2815,9 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             'shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1',
             'tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst',
             'sgst','igst','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity',
-            'entity','createdby','isactive'
+            'entity','createdby','isactive','adddetails'
         ]
+        adddetails_data = validated_data.pop('adddetails', {})
         for field in fields:
             if field in validated_data:
                 setattr(instance, field, validated_data[field])
@@ -2802,6 +2827,40 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             stk.createtransaction()
             instance.save()
+
+            paydtls_data = adddetails_data.get('paydtls')
+            refdtls_data = adddetails_data.get('refdtls')
+            ewbdtls_data = adddetails_data.get('ewbdtls')
+            expdtls_data = adddetails_data.get('expdtls')
+            addldocdtls_data = adddetails_data.get('addldocdtls', [])
+
+            if paydtls_data:
+                PayDtls.objects.update_or_create(invoice=instance, defaults=paydtls_data)
+            if refdtls_data:
+                RefDtls.objects.update_or_create(invoice=instance, defaults=refdtls_data)
+            if ewbdtls_data:
+                EwbDtls.objects.update_or_create(invoice=instance, defaults=ewbdtls_data)
+            if expdtls_data:
+                ExpDtls.objects.update_or_create(invoice=instance, defaults=expdtls_data)
+
+            existing_docs = AddlDocDtls.objects.filter(invoice=instance)
+            existing_doc_ids = {doc.id for doc in existing_docs}
+            incoming_doc_ids = set()
+
+            for doc_data in addldocdtls_data:
+                doc_id = doc_data.get('id', 0)
+                if doc_id and doc_id in existing_doc_ids:
+                    doc = AddlDocDtls.objects.get(id=doc_id, invoice=instance)
+                    for attr, value in doc_data.items():
+                        setattr(doc, attr, value)
+                    doc.save()
+                    incoming_doc_ids.add(doc_id)
+                else:
+                    AddlDocDtls.objects.create(invoice=instance, **doc_data)
+
+            to_delete_ids = existing_doc_ids - incoming_doc_ids
+            if to_delete_ids:
+                AddlDocDtls.objects.filter(id__in=to_delete_ids).delete()
 
             existing_details = Purchasereturndetails.objects.filter(purchasereturn=instance, entity=instance.entity)
             existing_details_map = {detail.id: detail for detail in existing_details}

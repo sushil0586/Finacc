@@ -177,6 +177,8 @@ urlpatterns  = [
     path('salesorder/get-adddetails/<int:pk>/', views.GetAddDetailsAPIView.as_view(), name='get-adddetails'),
     path('salesreturn/update-adddetails/<int:pk>/', views.UpdateAddDetailsAPIViewSR.as_view(), name='update-adddetails'),
     path('salesreturn/get-adddetails/<int:pk>/', views.GetAddDetailsAPIViewSR.as_view(), name='get-adddetails'),
+    path('purchasereturn/update-adddetails/<int:pk>/', views.UpdateAddDetailsAPIViewPR.as_view(), name='update-adddetails'),
+    path('purchasereturn/get-adddetails/<int:pk>/', views.GetAddDetailsAPIViewPR.as_view(), name='get-adddetails'),
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
 
