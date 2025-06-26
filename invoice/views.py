@@ -705,6 +705,78 @@ class GetAddDetailsAPIView(APIView):
         return Response(response_data, status=status.HTTP_200_OK)
 
 
+class UpdateAddDetailsAPIViewSR(APIView):
+    def put(self, request, pk):
+        sales_order = get_object_or_404(salereturn, pk=pk)
+
+        paydtls_data = request.data.get("paydtls")
+        refdtls_data = request.data.get("refdtls")
+        ewbdtls_data = request.data.get("ewbdtls")
+        expdtls_data = request.data.get("expdtls")
+        addldocdtls_data = request.data.get("addldocdtls", [])
+
+        try:
+            with transaction.atomic():
+                # 1️⃣ PayDtls
+                if paydtls_data and paydtls_data.get("id", 0) != 0:
+                    PayDtls.objects.filter(id=paydtls_data["id"], invoice=sales_order).update(**paydtls_data)
+
+                # 2️⃣ RefDtls
+                if refdtls_data and refdtls_data.get("id", 0) != 0:
+                    RefDtls.objects.filter(id=refdtls_data["id"], invoice=sales_order).update(**refdtls_data)
+
+                # 3️⃣ EwbDtls
+                if ewbdtls_data and ewbdtls_data.get("id", 0) != 0:
+                    EwbDtls.objects.filter(id=ewbdtls_data["id"], invoice=sales_order).update(**ewbdtls_data)
+
+                # 4️⃣ ExpDtls
+                if expdtls_data and expdtls_data.get("id", 0) != 0:
+                    ExpDtls.objects.filter(id=expdtls_data["id"], invoice=sales_order).update(**expdtls_data)
+
+                # 5️⃣ AddlDocDtls
+                for doc in addldocdtls_data:
+                    if doc.get("id", 0) != 0:
+                        AddlDocDtls.objects.filter(id=doc["id"], invoice=sales_order).update(**doc)
+
+            # ✅ Serialize and return updated SalesOderHeader
+            serializer = SalesOderHeaderSerializer(sales_order)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class GetAddDetailsAPIViewSR(APIView):
+    def get(self, request, pk):
+        sales_order = get_object_or_404(salereturn, pk=pk)
+
+        response_data = {
+            "paydtls": None,
+            "refdtls": None,
+            "ewbdtls": None,
+            "expdtls": None,
+            "addldocdtls": []
+        }
+
+        if hasattr(sales_order, 'paydtls'):
+            response_data["paydtls"] = PayDtlsSerializer(sales_order.paydtls).data
+
+        if hasattr(sales_order, 'refdtls'):
+            response_data["refdtls"] = RefDtlsSerializer(sales_order.refdtls).data
+
+        if hasattr(sales_order, 'ewbdtls'):
+            response_data["ewbdtls"] = EwbDtlsSerializer(sales_order.ewbdtls).data
+
+        if hasattr(sales_order, 'expdtls'):
+            response_data["expdtls"] = ExpDtlsSerializer(sales_order.expdtls).data
+
+        addldoc_qs = sales_order.addldocdtls.all()
+        response_data["addldocdtls"] = AddlDocDtlsSerializer(addldoc_qs, many=True).data
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
+
 class SalesOderHeaderApiView(ListCreateAPIView):
 
     serializer_class = SalesOderHeaderSerializer
