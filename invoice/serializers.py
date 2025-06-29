@@ -1806,6 +1806,112 @@ class SalesOrderDetailsPDFSerializer(serializers.ModelSerializer):
         return obj.product.igst if obj.igst else 0
 
 
+class PurchaseReturnDetailsPDFSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    productname = serializers.CharField(source='product.productname', read_only=True)
+    hsn = serializers.CharField(source='product.hsn.hsnCode', read_only=True)
+    mrp = serializers.DecimalField(source='product.mrp', max_digits=10, decimal_places=2, read_only=True)
+    units = serializers.CharField(source='product.unitofmeasurement.unitname', read_only=True)
+    cgstrate = serializers.DecimalField(source='product.cgst', max_digits=5, decimal_places=2, read_only=True)
+    sgstrate = serializers.DecimalField(source='product.sgst', max_digits=5, decimal_places=2, read_only=True)
+    igstrate = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Purchasereturndetails
+        fields = (
+            'id', 'product', 'productname', 'hsn', 'units', 'mrp', 'productdesc', 'orderqty', 'pieces', 
+            'rate', 'amount', 'othercharges', 'cgstrate', 'cgst', 'sgstrate', 'sgst', 'igstrate', 
+            'igst', 'cess', 'linetotal', 'entity',
+        )
+
+    def get_igstrate(self, obj):
+        return obj.product.igst if obj.igst else 0
+    
+
+class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
+   # saleInvoiceDetails1 = serializers.SerializerMethodField()
+    purchasereturndetails = PurchaseReturnDetailsPDFSerializer(many=True, read_only=True)
+    entityname = serializers.CharField(source='entity.entityname', read_only=True)
+    entitypan = serializers.CharField(source='entity.panno', read_only=True)
+    entitydesc = serializers.CharField(source='entity.entitydesc', read_only=True)
+   # entityaddress = serializers.SerializerMethodField()
+    entityaddress = serializers.CharField(source='entity.address', read_only=True)
+    entitycityname = serializers.CharField(source='entity.city.cityname', read_only=True)
+    entitystate = serializers.CharField(source='entity.state.statename', read_only=True)
+    entitypincode = serializers.CharField(source='entity.pincode', read_only=True)
+    entitygst = serializers.CharField(source='entity.gstno', read_only=True)
+    billtoname = serializers.CharField(source='accountid.accountname', read_only=True)
+    billtoaddress1 = serializers.CharField(source='accountid.address1', read_only=True)
+    billtoaddress2 = serializers.CharField(source='accountid.address2', read_only=True)
+    billtostate = serializers.CharField(source='accountid.state.statename', read_only=True)
+    billtocity = serializers.CharField(source='accountid.city.cityname', read_only=True)
+    billtopin = serializers.CharField(source='accountid.city.pincode', read_only=True)
+    billtopan = serializers.CharField(source='accountid.pan', read_only=True)
+    #billtoaddress = serializers.SerializerMethodField()
+    billtogst = serializers.CharField(source='accountid.gstno', read_only=True)
+    shiptoname = serializers.CharField(source='shippedto.full_name', read_only=True)
+    shiptoaddress1 = serializers.CharField(source='shippedto.address1', read_only=True)
+    shiptoaddress2 = serializers.CharField(source='shippedto.address2', read_only=True)
+    shiptostate = serializers.CharField(source='shippedto.state.statename', read_only=True)
+    shiptocity = serializers.CharField(source='shippedto.city.cityname', read_only=True)
+    shiptopin = serializers.CharField(source='shippedto.city.pincode', read_only=True)
+    shiptopan = serializers.CharField(source='shippedto.pan', read_only=True)
+    shiptogst = serializers.CharField(source='shippedto.gstno', read_only=True)
+    transportname = serializers.CharField(source='transport.accountname', read_only=True)
+    #shiptoaddress = serializers.SerializerMethodField()
+    amountinwords = serializers.SerializerMethodField()
+    phoneno = serializers.CharField(source='entity.phoneoffice', read_only=True)
+    phoneno2 = serializers.CharField(source= 'entity.phoneresidence', read_only=True)
+    bankname = serializers.CharField(source= 'entity.bank.bankname', read_only=True)
+    bankacno = serializers.CharField(source= 'entity.bankacno', read_only=True)
+    ifsccode = serializers.CharField(source= 'entity.ifsccode', read_only=True)
+    billno = serializers.CharField(source= 'invoicenumber', read_only=True)
+    gst_summary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseReturn
+        fields = (
+            'id', 'sorderdate', 'billno','accountid', 'billtoname', 'billtoaddress1',
+             'billtoaddress2','billtocity','billtostate','billtogst','billtopan','billtopin',
+            'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
+            'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst','shiptopin',
+            'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
+            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
+            'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
+            'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby',  'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
+            'entitypan', 'purchasereturndetails','gst_summary'
+        )
+
+   
+
+    
+
+    def get_amountinwords(self, obj):
+        return f"{string.capwords(num2words(obj.gtotal))} only"
+
+    def get_gst_summary(self, obj):
+        """
+        Fetch and serialize GST summary data for the sales order header.
+        """
+        salesorderheader_id = obj.id
+        aggregated_data = (
+            Purchasereturndetails.objects.filter(purchasereturn_id=salesorderheader_id)
+            .values("purchasereturn")
+            .annotate(
+                taxPercent=Case(
+                    When(igstpercent=0, then=F("cgstpercent") + F("sgstpercent")),
+                    default=F("igstpercent"),
+                    output_field=FloatField(),
+                ),
+                taxable_amount=Sum("amount"),  # <- Removed filter
+                total_cgst_amount=Sum("cgst", filter=Q(cgst__isnull=False)),
+                total_sgst_amount=Sum("sgst", filter=Q(sgst__isnull=False)),
+                total_igst_amount=Sum("igst", filter=Q(igst__isnull=False)),
+            )
+        )
+        return list(aggregated_data)
+
+
 class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
    # saleInvoiceDetails1 = serializers.SerializerMethodField()
     saleInvoiceDetails = SalesOrderDetailsPDFSerializer(many=True, read_only=True)
@@ -2428,6 +2534,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             print(json_data)
 
             gst_response = gstinvoice(order, json_data)
+            print(gst_response)
             if gst_response.get("status_cd") == "1":
                 data = gst_response["data"]
                 ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
