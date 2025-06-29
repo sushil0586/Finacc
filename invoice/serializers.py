@@ -2532,6 +2532,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             json_data = json.dumps(einvoice_data, indent=4, default=str)
 
             print(json_data)
+            
 
             gst_response = gstinvoice(order, json_data)
             print(gst_response)
