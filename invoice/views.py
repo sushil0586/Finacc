@@ -52,7 +52,7 @@ from invoice.serializers import (
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
     PurchaseSettingsSerializer,ReceiptVoucherPdfSerializer,
-    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer
+    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -964,6 +964,24 @@ class salesOrderdetailsApiView(ListCreateAPIView):
     
     def get_queryset(self):
         return salesOrderdetails.objects.filter()
+    
+
+class purchaseRerurnpdfview(RetrieveAPIView):
+
+    serializer_class = PurchaseReturnPDFSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+    lookup_field = "id"
+
+    def get_queryset(self):
+        entity = self.request.query_params.get('entity')
+        entityfinid = self.request.query_params.get('entityfinid')  # Get entity financial year ID
+
+        queryset = PurchaseReturn.objects.filter(entity = entity)
+
+        if entityfinid:
+            queryset = queryset.filter(entityfinid=entityfinid)
+        
+        return queryset.prefetch_related('purchasereturndetails')
 
 
         
