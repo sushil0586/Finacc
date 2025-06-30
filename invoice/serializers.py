@@ -1951,6 +1951,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     ifsccode = serializers.CharField(source= 'entity.ifsccode', read_only=True)
     billno = serializers.CharField(source= 'invoicenumber', read_only=True)
     gst_summary = serializers.SerializerMethodField()
+    einvoice_details = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOderHeader
@@ -1964,8 +1965,31 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
             'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'saleInvoiceDetails','gst_summary'
+            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details'
         )
+
+
+    def get_einvoice_details(self, obj):
+        try:
+            content_type = ContentType.objects.get_for_model(SalesOderHeader)
+            einv = EInvoiceDetails.objects.get(content_type=content_type, object_id=obj.id)
+        except EInvoiceDetails.DoesNotExist:
+            return None
+
+        qr_image_base64 = None
+        if einv.signed_qr_code:
+            # Generate QR image from SignedQRCode
+            qr = qrcode.make(einv.signed_qr_code)
+            buffered = BytesIO()
+            qr.save(buffered, format="PNG")
+            qr_image_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+        return {
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
+            "qr_image_base64": qr_image_base64
+        }
 
    
 
@@ -2532,7 +2556,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             json_data = json.dumps(einvoice_data, indent=4, default=str)
 
             print(json_data)
-            
+
 
             gst_response = gstinvoice(order, json_data)
             print(gst_response)
@@ -6382,7 +6406,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     RefDtls = serializers.SerializerMethodField()
     AddlDocDtls = serializers.SerializerMethodField()
     EwbDtls = serializers.SerializerMethodField()
-    ExpDtls = serializers.SerializerMethodField()
+  #  ExpDtls = serializers.SerializerMethodField()
 
 
     class Meta:
@@ -6390,7 +6414,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
         fields = [
             "TranDtls", "DocDtls", "SellerDtls", "BuyerDtls",
             "DispDtls", "ShipDtls", "ItemList", "ValDtls",
-            "PayDtls", "RefDtls", "AddlDocDtls", "EwbDtls", "ExpDtls"
+            "PayDtls", "RefDtls", "AddlDocDtls", "EwbDtls"
         ]
 
     
@@ -6546,7 +6570,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
         return {
             "TransId": ewb.TransId,
             "TransName": ewb.TransName,
-            "Distance": float(ewb.Distance),
+            "Distance": int(ewb.Distance),
             "TransDocNo": ewb.TransDocNo,
             "TransMode": ewb.TransMode,
             "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
@@ -6554,19 +6578,19 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "VehType": ewb.VehType
         }
 
-    def get_ExpDtls(self, obj):
-        exp = getattr(obj, 'expdtls', None)
-        if not exp:
-            return None
-        return {
-            "ShipBNo": exp.ShipBNo,
-            "ShipBDt": exp.ShipBDt.strftime("%d/%m/%Y") if exp.ShipBDt else None,
-            "Port": exp.Port,
-            "RefClm": exp.RefClm,
-            "ForCur": exp.ForCur,
-            "CntryCd": exp.CntryCd,
-            "ExpDuty": "Y" if exp.ExpDuty else "N"
-        }
+    # def get_ExpDtls(self, obj):
+    #     exp = getattr(obj, 'expdtls', None)
+    #     if not exp:
+    #         return None
+    #     return {
+    #         "ShipBNo": exp.ShipBNo,
+    #         "ShipBDt": exp.ShipBDt.strftime("%d/%m/%Y") if exp.ShipBDt else None,
+    #         "Port": exp.Port,
+    #         "RefClm": exp.RefClm,
+    #         "ForCur": exp.ForCur,
+    #         "CntryCd": exp.CntryCd,
+    #         "ExpDuty": "Y" if exp.ExpDuty else "N"
+    #     }
 
 
     
