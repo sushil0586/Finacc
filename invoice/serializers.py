@@ -1830,7 +1830,7 @@ class PurchaseReturnDetailsPDFSerializer(serializers.ModelSerializer):
 
 class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
    # saleInvoiceDetails1 = serializers.SerializerMethodField()
-    purchasereturndetails = PurchaseReturnDetailsPDFSerializer(many=True, read_only=True)
+    saleInvoiceDetails = PurchaseReturnDetailsPDFSerializer(many=True, read_only=True, source='purchasereturndetails')
     entityname = serializers.CharField(source='entity.entityname', read_only=True)
     entitypan = serializers.CharField(source='entity.panno', read_only=True)
     entitydesc = serializers.CharField(source='entity.entitydesc', read_only=True)
@@ -1879,7 +1879,7 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby',  'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'purchasereturndetails','gst_summary'
+            'entitypan', 'saleInvoiceDetails','gst_summary'
         )
 
    
