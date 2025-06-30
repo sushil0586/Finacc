@@ -1988,8 +1988,12 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             "irn": einv.irn,
             "ack_no": einv.ack_no,
             "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
-            "qr_image_base64": qr_image_base64
+            "qr_image_base64": qr_image_base64,
+            "ewb_no": einv.ewb_no,
+            "ewb_date": einv.ewb_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_date else None,
+            "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None
         }
+
 
    
 
