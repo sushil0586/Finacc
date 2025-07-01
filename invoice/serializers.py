@@ -2888,7 +2888,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseReturn
        # fields = ('id','sorderdate','billno','accountid','latepaymentalert','grno','vehicle','taxtype','billcash','supply','shippedto','remarks','transport','broker','tds194q','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','subtotal','subtotal','cgst','sgst','igst','expenses','gtotal','entity','owner','purchasereturndetails',)
-        fields = ('id','sorderdate','billno','accountid','state','district','city','pincode', 'latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' ,'roundOff', 'cgst','sgst','igst','cess','totalgst', 'expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','purchasereturndetails','adddetails',)
+        fields = ('id','sorderdate','billno','accountid','state','district','city','pincode', 'latepaymentalert','grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','invoicetype','reversecharge' ,'roundOff', 'cgst','sgst','igst','cess','totalgst', 'expenses','gtotal','entityfinid','subentity','entity','createdby','isactive','isammended','originalinvoice','purchasereturndetails','adddetails',)
 
 
     def create(self, validated_data):
@@ -2950,7 +2950,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             'grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance',
             'shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1',
             'tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless', 'duedate','subtotal','cgst',
-            'sgst','igst','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity',
+            'sgst','igst','cess','totalgst','expenses','gtotal','roundOff','entityfinid','subentity','isammended','originalinvoice',
             'entity','createdby','isactive','adddetails'
         ]
         adddetails_data = validated_data.pop('adddetails', {})
@@ -5475,7 +5475,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = salereturn
-        fields = ('id','voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','invoicetype','reversecharge' ,'addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount', 'entityfinid','subentity','entity','isactive','salereturndetails','adddetails',)
+        fields = ('id','voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','invoicetype','reversecharge' ,'addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount', 'entityfinid','subentity','entity','isactive','salereturndetails','isammended','originalinvoice', 'adddetails',)
 
     
     
@@ -5533,7 +5533,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
                 'terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks',
                 'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3',
                 'tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless',
-                'cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','adddetails']
+                'cgst','sgst','igst','cess','expenses','gtotal','entityfinid','subentity','entity','isactive','isammended','originalinvoice','adddetails']
         
         adddetails_data = validated_data.pop('adddetails', {})
         for field in fields:
