@@ -5484,13 +5484,17 @@ class salesreturnSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         #print(validated_data)
         PurchaseOrderDetails_data = validated_data.pop('salereturndetails')
+        validated_data.pop('voucherno', None)
         
 
         print(validated_data.get('account'))
         with transaction.atomic():
+
+            last_order = salereturn.objects.filter(entity=validated_data['entity'].id).order_by('-id').first()
+            billno2 = last_order.voucherno + 1 if last_order and last_order.voucherno else 1
             
             adddetails_data = validated_data.pop('adddetails', {})
-            order = salereturn.objects.create(**validated_data)
+            order = salereturn.objects.create(**validated_data,voucherno=billno2)
 
             paydtls_data = adddetails_data.get('paydtls')
             refdtls_data = adddetails_data.get('refdtls')
