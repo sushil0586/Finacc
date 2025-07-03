@@ -1806,6 +1806,152 @@ class SalesOrderDetailsPDFSerializer(serializers.ModelSerializer):
         return obj.product.igst if obj.igst else 0
 
 
+class SaleReturnDetailsPDFSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    productname = serializers.CharField(source='product.productname', read_only=True)
+    hsn = serializers.CharField(source='product.hsn.hsnCode', read_only=True)
+    mrp = serializers.DecimalField(source='product.mrp', max_digits=10, decimal_places=2, read_only=True)
+    units = serializers.CharField(source='product.unitofmeasurement.unitname', read_only=True)
+    cgstrate = serializers.DecimalField(source='product.cgst', max_digits=5, decimal_places=2, read_only=True)
+    sgstrate = serializers.DecimalField(source='product.sgst', max_digits=5, decimal_places=2, read_only=True)
+    igstrate = serializers.SerializerMethodField()
+
+    class Meta:
+        model = salereturnDetails
+        fields = (
+            'id', 'product', 'productname', 'hsn', 'units', 'mrp', 'productdesc', 'orderqty', 'pieces', 
+            'rate', 'amount', 'othercharges', 'cgstrate', 'cgst', 'sgstrate', 'sgst', 'igstrate', 
+            'igst', 'cess', 'linetotal', 'entity',
+        )
+
+    def get_igstrate(self, obj):
+        return obj.product.igst if obj.igst else 0
+
+
+class SaleReturnPDFSerializer(serializers.ModelSerializer):
+   # saleInvoiceDetails1 = serializers.SerializerMethodField()
+    saleInvoiceDetails = SaleReturnDetailsPDFSerializer(many=True, read_only=True, source='salereturndetails')
+    entityname = serializers.CharField(source='entity.entityname', read_only=True)
+    entitypan = serializers.CharField(source='entity.panno', read_only=True)
+    entitydesc = serializers.CharField(source='entity.entitydesc', read_only=True)
+   # entityaddress = serializers.SerializerMethodField()
+    entityaddress = serializers.CharField(source='entity.address', read_only=True)
+    entitycityname = serializers.CharField(source='entity.city.cityname', read_only=True)
+    entitystate = serializers.CharField(source='entity.state.statename', read_only=True)
+    entitypincode = serializers.CharField(source='entity.pincode', read_only=True)
+    entitygst = serializers.CharField(source='entity.gstno', read_only=True)
+    billtoname = serializers.CharField(source='account.accountname', read_only=True)
+    billtoaddress1 = serializers.CharField(source='account.address1', read_only=True)
+    billtoaddress2 = serializers.CharField(source='account.address2', read_only=True)
+    billtostate = serializers.CharField(source='account.state.statename', read_only=True)
+    billtocity = serializers.CharField(source='account.city.cityname', read_only=True)
+    billtopin = serializers.CharField(source='account.city.pincode', read_only=True)
+    billtopan = serializers.CharField(source='account.pan', read_only=True)
+    #billtoaddress = serializers.SerializerMethodField()
+    billtogst = serializers.CharField(source='account.gstno', read_only=True)
+    shiptoname = serializers.CharField(source='subentity.subentityname', read_only=True)
+    shiptoaddress1 = serializers.CharField(source='subentity.address', read_only=True)
+    shiptoaddress2 = serializers.CharField(source='subentity.address', read_only=True)
+    shiptostate = serializers.CharField(source='subentity.state.statename', read_only=True)
+    shiptocity = serializers.CharField(source='subentity.city.cityname', read_only=True)
+    shiptopin = serializers.CharField(source='subentity.city.pincode', read_only=True)
+    shiptopan = serializers.CharField(source='entity.pan', read_only=True)
+    shiptogst = serializers.CharField(source='entity.gstno', read_only=True)
+    transportname = serializers.CharField(source='transport.accountname', read_only=True)
+    #shiptoaddress = serializers.SerializerMethodField()
+    amountinwords = serializers.SerializerMethodField()
+    phoneno = serializers.CharField(source='entity.phoneoffice', read_only=True)
+    phoneno2 = serializers.CharField(source= 'entity.phoneresidence', read_only=True)
+    bankname = serializers.CharField(source= 'entity.bank.bankname', read_only=True)
+    bankacno = serializers.CharField(source= 'entity.bankacno', read_only=True)
+    ifsccode = serializers.CharField(source= 'entity.ifsccode', read_only=True)
+    billno = serializers.CharField(source= 'invoicenumber', read_only=True)
+    sorderdate = serializers.CharField(source= 'voucherdate', read_only=True)
+    gst_summary = serializers.SerializerMethodField()
+    totalgst = serializers.SerializerMethodField()
+    doctype = serializers.SerializerMethodField()
+
+
+    einvoice_details = serializers.SerializerMethodField()
+
+    class Meta:
+        model = salereturn
+        fields = (
+            'id', 'sorderdate', 'billno','account', 'billtoname', 'billtoaddress1',
+             'billtoaddress2','billtocity','billtostate','billtogst','billtopan','billtopin',
+            'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
+            'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst','shiptopin',
+            'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
+            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
+            'cgst', 'sgst', 'igst', 'cess','totalgst', 'expenses', 'gtotal', 'amountinwords',
+            'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby',  'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
+            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details','doctype'
+        )
+
+    def get_einvoice_details(self, obj):
+        try:
+            content_type = ContentType.objects.get_for_model(salereturn)
+            einv = EInvoiceDetails.objects.get(content_type=content_type, object_id=obj.id)
+        except EInvoiceDetails.DoesNotExist:
+            return None
+
+        qr_image_base64 = None
+        if einv.signed_qr_code:
+            # Generate QR image from SignedQRCode
+            qr = qrcode.make(einv.signed_qr_code)
+            buffered = BytesIO()
+            qr.save(buffered, format="PNG")
+            qr_image_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+        return {
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
+            "qr_image_base64": qr_image_base64,
+            "ewb_no": einv.ewb_no,
+            "ewb_date": einv.ewb_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_date else None,
+            "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None
+        }
+    
+
+    def get_totalgst(self, obj):
+        if obj.igst == 0:
+            return float(obj.cgst or 0) + float(obj.sgst or 0)
+        return float(obj.igst or 0)
+
+    def get_doctype(self, obj):
+        return "Debit Note"
+
+   
+
+    
+
+    def get_amountinwords(self, obj):
+        return f"{string.capwords(num2words(obj.gtotal))} only"
+
+    def get_gst_summary(self, obj):
+        """
+        Fetch and serialize GST summary data for the sales order header.
+        """
+        salesorderheader_id = obj.id
+        aggregated_data = (
+            salereturnDetails.objects.filter(salereturn_id=salesorderheader_id)
+            .values("salereturn")
+            .annotate(
+                taxPercent=Case(
+                    When(igstpercent=0, then=F("cgstpercent") + F("sgstpercent")),
+                    default=F("igstpercent"),
+                    output_field=FloatField(),
+                ),
+                taxable_amount=Sum("amount"),  # <- Removed filter
+                total_cgst_amount=Sum("cgst", filter=Q(cgst__isnull=False)),
+                total_sgst_amount=Sum("sgst", filter=Q(sgst__isnull=False)),
+                total_igst_amount=Sum("igst", filter=Q(igst__isnull=False)),
+            )
+        )
+        return list(aggregated_data)
+
+
 class PurchaseReturnDetailsPDFSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     productname = serializers.CharField(source='product.productname', read_only=True)
@@ -1826,6 +1972,9 @@ class PurchaseReturnDetailsPDFSerializer(serializers.ModelSerializer):
 
     def get_igstrate(self, obj):
         return obj.product.igst if obj.igst else 0
+
+
+
     
 
 class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
@@ -1867,6 +2016,7 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
     ifsccode = serializers.CharField(source= 'entity.ifsccode', read_only=True)
     billno = serializers.CharField(source= 'invoicenumber', read_only=True)
     gst_summary = serializers.SerializerMethodField()
+    einvoice_details = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseReturn
@@ -1879,8 +2029,33 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby',  'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'saleInvoiceDetails','gst_summary'
+            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details'
         )
+
+    def get_einvoice_details(self, obj):
+        try:
+            content_type = ContentType.objects.get_for_model(PurchaseReturn)
+            einv = EInvoiceDetails.objects.get(content_type=content_type, object_id=obj.id)
+        except EInvoiceDetails.DoesNotExist:
+            return None
+
+        qr_image_base64 = None
+        if einv.signed_qr_code:
+            # Generate QR image from SignedQRCode
+            qr = qrcode.make(einv.signed_qr_code)
+            buffered = BytesIO()
+            qr.save(buffered, format="PNG")
+            qr_image_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+        return {
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
+            "qr_image_base64": qr_image_base64,
+            "ewb_no": einv.ewb_no,
+            "ewb_date": einv.ewb_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_date else None,
+            "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None
+        }
 
    
 
@@ -2878,7 +3053,7 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
         return obj.product.hsn.hsnCode
     
     def get_mrp(self,obj):
-        return obj.product.mrp
+        return obj.product.mrp      
 
 
 class PurchasereturnSerializer(serializers.ModelSerializer):
@@ -2892,20 +3067,34 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
 
 
     def create(self, validated_data):
-        #print(validated_data)
-
         adddetails_data = validated_data.pop('adddetails', {})
         salesOrderdetails_data = validated_data.pop('purchasereturndetails')
         validated_data.pop('billno')
-        if PurchaseReturn.objects.filter(entity= validated_data['entity'].id).count() == 0:
-                billno2 = 1
-        else:
-                billno2 = (PurchaseReturn.objects.filter(entity= validated_data['entity'].id).last().billno) + 1
-        with transaction.atomic():
-            order = PurchaseReturn.objects.create(**validated_data,billno = billno2)
-            stk = stocktransactionsale(order, transactiontype= 'PR',debit=1,credit=0,description= 'Purchase Return',entrytype= 'I')
-            #print(tracks_data)
 
+        with transaction.atomic():
+
+            settings = SalesInvoiceSettings.objects.select_for_update().filter(
+                entity=validated_data['entity'].id,
+                entityfinid=validated_data['entityfinid'].id,
+                doctype__doccode='1004'
+            ).first()
+
+            if not settings:
+                raise Exception("SalesInvoiceSettings not configured for this entity/financial year.")
+
+            reset_counter_if_needed(settings)
+            number = build_document_number(settings)
+
+            if PurchaseReturn.objects.filter(invoicenumber=number).exists():
+                raise Exception("Duplicate invoice number generated. Please try again.")
+
+            if PurchaseReturn.objects.filter(entity=validated_data['entity'].id).count() == 0:
+                billno2 = 1
+            else:
+                billno2 = PurchaseReturn.objects.filter(entity=validated_data['entity'].id).last().billno + 1
+
+            order = PurchaseReturn.objects.create(**validated_data, billno=billno2, invoicenumber=number)
+            stk = stocktransactionsale(order, transactiontype='PR', debit=1, credit=0, description='Purchase Return', entrytype='I')
 
             paydtls_data = adddetails_data.get('paydtls')
             refdtls_data = adddetails_data.get('refdtls')
@@ -2929,19 +3118,48 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
                 doc_data.pop('id', None)
                 AddlDocDtls.objects.create(purchase_return=order, **doc_data)
 
-          
-            
             for detail_data in salesOrderdetails_data:
-                detail_data.pop('id', None)  # Remove id in case it's passed as 0
+                detail_data.pop('id', None)
                 otherchargesdetail = detail_data.pop('otherchargesdetail', [])
                 detail = Purchasereturndetails.objects.create(purchasereturn=order, **detail_data)
-                stk.createtransactiondetails(detail=detail,stocktype='S')
+                stk.createtransactiondetails(detail=detail, stocktype='S')
                 for otherchargedetail in otherchargesdetail:
-                    detail = Purchasereturnothercharges.objects.create(purchasereturnorderdetail = detail, **otherchargedetail)
+                    Purchasereturnothercharges.objects.create(purchasereturnorderdetail=detail, **otherchargedetail)
 
-                
+            einvoice_data = PurchasereturnFullSerializer(order).data
+            json_data = json.dumps(einvoice_data, indent=4, default=str)
 
-            stk.createtransaction()
+            gst_response = gstinvoice(order, json_data)
+
+            print(gst_response)
+
+            if gst_response.get("status_cd") == "1":
+                data = gst_response["data"]
+                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
+                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+
+                EInvoiceDetails.objects.update_or_create(
+                    content_type=ContentType.objects.get_for_model(order),
+                    object_id=order.id,
+                    defaults={
+                        "irn": data["Irn"],
+                        "ack_no": data["AckNo"],
+                        "ack_date": ack_dt,
+                        "signed_invoice": data["SignedInvoice"],
+                        "signed_qr_code": data["SignedQRCode"],
+                        "status": data.get("Status", "ACT"),
+                        "ewb_no": data.get("EwbNo"),
+                        "ewb_date": ewb_dt,
+                        "ewb_valid_till": ewb_valid_till,
+                        "remarks": data.get("Remarks"),
+                    }
+                )
+                stk.createtransaction()
+
+            settings.current_number += 1
+            settings.save()
+
         return order
 
     def update(self, instance, validated_data):
@@ -5490,11 +5708,26 @@ class salesreturnSerializer(serializers.ModelSerializer):
         print(validated_data.get('account'))
         with transaction.atomic():
 
+            settings = SalesInvoiceSettings.objects.select_for_update().filter(
+                entity=validated_data['entity'].id,
+                entityfinid=validated_data['entityfinid'].id,
+                doctype__doccode='1005'
+            ).first()
+
+            if not settings:
+                raise Exception("SalesInvoiceSettings not configured for this entity/financial year.")
+
+            reset_counter_if_needed(settings)
+            number = build_document_number(settings)
+
+            if salereturn.objects.filter(invoicenumber=number).exists():
+                raise Exception("Duplicate invoice number generated. Please try again.")
+
             last_order = salereturn.objects.filter(entity=validated_data['entity'].id).order_by('-id').first()
             billno2 = last_order.voucherno + 1 if last_order and last_order.voucherno else 1
             
             adddetails_data = validated_data.pop('adddetails', {})
-            order = salereturn.objects.create(**validated_data,voucherno=billno2)
+            order = salereturn.objects.create(**validated_data,voucherno=billno2,invoicenumber=number)
 
             paydtls_data = adddetails_data.get('paydtls')
             refdtls_data = adddetails_data.get('refdtls')
@@ -5527,8 +5760,41 @@ class salesreturnSerializer(serializers.ModelSerializer):
                 for otherchargedetail in otherchargesdetail:
                     detail2 = salereturnothercharges.objects.create(salesreturnorderdetail = detail,**otherchargedetail)
                     stk.createothertransactiondetails(detail=detail2,stocktype='P')
+
+
+            einvoice_data = SalereturnFullSerializer(order).data
+            json_data = json.dumps(einvoice_data, indent=4, default=str)
+
+            print(json_data)
+
+
+            gst_response = gstinvoice(order, json_data)
+            print(gst_response)
+            if gst_response.get("status_cd") == "1":
+                data = gst_response["data"]
+                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
+                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+
+                EInvoiceDetails.objects.update_or_create(
+                    content_type=ContentType.objects.get_for_model(order),
+                    object_id=order.id,
+                    defaults={
+                        "irn": data["Irn"],
+                        "ack_no": data["AckNo"],
+                        "ack_date": ack_dt,
+                        "signed_invoice": data["SignedInvoice"],
+                        "signed_qr_code": data["SignedQRCode"],
+                        "status": data.get("Status", "ACT"),
+                        "ewb_no": data.get("EwbNo"),
+                        "ewb_date": ewb_dt,
+                        "ewb_valid_till": ewb_valid_till,
+                        "remarks": data.get("Remarks"),
+                    }
+                )
             
-            
+            settings.current_number += 1
+            settings.save()
             stk.createtransaction()
         return order
 
@@ -6599,6 +6865,643 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     #         "CntryCd": exp.CntryCd,
     #         "ExpDuty": "Y" if exp.ExpDuty else "N"
     #     }
+
+
+class PurchasereturnItemSerializer(serializers.ModelSerializer):
+    SlNo = serializers.SerializerMethodField()
+    IsServc = serializers.SerializerMethodField()
+    PrdDesc = serializers.SerializerMethodField()
+    HsnCd = serializers.SerializerMethodField()
+    Qty = serializers.SerializerMethodField()
+    Unit = serializers.SerializerMethodField()
+    UnitPrice = serializers.SerializerMethodField()
+    TotAmt = serializers.SerializerMethodField()
+    Discount = serializers.SerializerMethodField()
+    PreTaxVal = serializers.SerializerMethodField()
+    AssAmt = serializers.SerializerMethodField()
+    GstRt = serializers.SerializerMethodField()
+    SgstAmt = serializers.SerializerMethodField()
+    IgstAmt = serializers.SerializerMethodField()
+    CgstAmt = serializers.SerializerMethodField()
+    CesAmt = serializers.SerializerMethodField()
+    TotItemVal = serializers.SerializerMethodField()
+    OrdLineRef = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Purchasereturndetails
+        fields = [
+            "SlNo", "IsServc", "PrdDesc", "HsnCd", "Qty", "Unit", "UnitPrice",
+            "TotAmt", "Discount", "PreTaxVal", "AssAmt", "GstRt", "SgstAmt", "IgstAmt", "CgstAmt",
+            "CesAmt", "TotItemVal", "OrdLineRef"
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        optional_fields = {
+            "BchDtls": self.get_BchDtls(instance),
+            "AttribDtls": self.get_AttribDtls(instance),
+            "Barcde": instance.barcode if hasattr(instance, 'barcode') else None,
+            "OrgCntry": instance.org_country if hasattr(instance, 'org_country') else None,
+            "PrdSlNo": instance.product_serial_no if hasattr(instance, 'product_serial_no') else None,
+        }
+        for key, value in optional_fields.items():
+            if value is not None:
+                data[key] = value
+
+        return data
+
+    def get_BchDtls(self, obj):
+        if hasattr(obj, 'batch') and obj.batch:
+            return {
+                "Nm": obj.batch.batchcode,
+                "Expdt": obj.batch.expirydate.strftime("%d/%m/%Y") if obj.batch.expirydate else None,
+                "wrDt": obj.batch.warehousedate.strftime("%d/%m/%Y") if obj.batch.warehousedate else None
+            }
+        return None
+
+    def get_AttribDtls(self, obj):
+        if hasattr(obj, 'attributes') and obj.attributes.exists():
+            return [{"Nm": attr.name, "Val": attr.value} for attr in obj.attributes.all()]
+        return None
+
+    def get_SlNo(self, obj):
+        return str(self.context.get('slno', 1))
+
+    def get_IsServc(self, obj):
+        return "N"
+
+    def get_PrdDesc(self, obj):
+        return obj.productdesc
+
+    def get_HsnCd(self, obj):
+        return obj.product.hsn.hsnCode if obj.product and obj.product.hsn else None
+
+    def get_Qty(self, obj):
+        return "{0:.2f}".format(float(obj.orderqty or 0))
+
+    def get_Unit(self, obj):
+        return obj.product.unitofmeasurement.unitcode if obj.product and obj.product.unitofmeasurement else None
+
+    def get_UnitPrice(self, obj):
+        return "{0:.2f}".format(float(obj.rate or 0))
+
+    def get_TotAmt(self, obj):
+        qty = float(obj.orderqty or 0)
+        rate = float(obj.rate or 0)
+        tot_amt = round(qty * rate, 2)
+        return "{0:.2f}".format(tot_amt)
+
+    def get_Discount(self, obj):
+        return "0.00"
+
+    def get_PreTaxVal(self, obj):
+        return self.get_AssAmt(obj)
+
+    def get_AssAmt(self, obj):
+        qty = float(obj.orderqty or 0)
+        rate = float(obj.rate or 0)
+        ass_amt = round(qty * rate, 2)  # No discount, so ass_amt = tot_amt
+        return "{0:.2f}".format(ass_amt)
+
+    def get_GstRt(self, obj):
+        return "{0:.2f}".format(float(obj.igstpercent if obj.isigst else (obj.cgstpercent or 0) + (obj.sgstpercent or 0)))
+
+    def get_SgstAmt(self, obj):
+        return "{0:.2f}".format(float(obj.sgst or 0))
+
+    def get_IgstAmt(self, obj):
+        return "{0:.2f}".format(float(obj.igst or 0))
+
+    def get_CgstAmt(self, obj):
+        return "{0:.2f}".format(float(obj.cgst or 0))
+
+    def get_CesAmt(self, obj):
+        return "{0:.2f}".format(float(obj.cess or 0))
+
+    def get_TotItemVal(self, obj):
+        return "{0:.2f}".format(float(obj.linetotal or 0))
+
+    def get_OrdLineRef(self, obj):
+        return str(obj.id or "")
+
+
+    
+
+# Sales Order Full Serializer (Including Seller, Buyer & Items)
+class PurchasereturnFullSerializer(serializers.ModelSerializer):
+    TranDtls = serializers.SerializerMethodField()
+    DocDtls = serializers.SerializerMethodField()
+    SellerDtls = serializers.SerializerMethodField()
+    BuyerDtls = serializers.SerializerMethodField()
+    DispDtls = serializers.SerializerMethodField()
+    ShipDtls = serializers.SerializerMethodField()
+    ItemList = serializers.SerializerMethodField()
+    ValDtls = serializers.SerializerMethodField()
+    PayDtls = serializers.SerializerMethodField()
+    RefDtls = serializers.SerializerMethodField()
+    AddlDocDtls = serializers.SerializerMethodField()
+    EwbDtls = serializers.SerializerMethodField()
+  #  ExpDtls = serializers.SerializerMethodField()
+
+
+    class Meta:
+        model = PurchaseReturn
+        fields = [
+            "TranDtls", "DocDtls", "SellerDtls", "BuyerDtls",
+            "DispDtls", "ShipDtls", "ItemList", "ValDtls",
+            "PayDtls", "RefDtls", "AddlDocDtls", "EwbDtls"
+        ]
+
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        # Remove all keys where the value is None
+        data = {k: v for k, v in data.items() if v is not None}
+
+        # Insert "Version" at the top of the dictionary
+        return {
+            "Version": "1.1",
+            **data
+        }
+
+
+
+    def get_TranDtls(self, obj):
+        return {
+            "TaxSch": "GST",
+            "SupTyp": obj.invoicetype.invoicetypecode if obj.invoicetype else None,
+            "RegRev": "Y" if obj.reversecharge else "N",
+            "EcmGstin": obj.ecom.gstno if obj.ecom else None,
+            "IgstOnIntra": "N"
+        }
+
+
+    def get_DocDtls(self, obj):
+        return {
+            "Typ": "CRN",
+            "No": obj.invoicenumber,
+            "Dt": obj.sorderdate.strftime("%d/%m/%Y") if obj.sorderdate else None
+        }
+
+   
+    def get_SellerDtls(self, obj):
+        entity = obj.entity
+        return {
+            "Gstin": entity.gstno,
+            "LglNm": entity.legalname,
+            "TrdNm": entity.entityname,
+            "Addr1": entity.address,
+            "Addr2": entity.address2,
+            "Loc": entity.city.cityname if entity.city else None,
+            "Pin": int(entity.city.pincode) if entity.city and entity.city.pincode else None,
+            "Stcd": entity.state.statecode if entity.state else None,
+            "Ph": entity.phoneoffice,
+            "Em": entity.email
+        }
+
+    
+    def get_BuyerDtls(self, obj):
+        account = obj.accountid
+        return {
+            "Gstin": account.gstno,
+            "LglNm": account.accountname,
+            "TrdNm": account.accountname,
+            "Pos": account.state.statecode if account.state else None,
+            "Addr1": account.address1,
+            "Addr2": account.address2,
+            "Loc": account.city.cityname if account.city else None,
+            "Pin": int(account.city.pincode) if account.city and account.city.pincode else None,
+            "Stcd": account.state.statecode if account.state else None,
+            "Ph": getattr(account, "phoneno", None),
+            "Em": getattr(account, "emailid", None)
+        }
+    
+    def get_DispDtls(self, obj):
+        dispatch = obj.subentity
+        return {
+            "Nm": dispatch.subentityname if dispatch else None,
+            "Addr1": dispatch.address if dispatch else None,
+            "Addr2": dispatch.address if dispatch else None,
+            "Loc": dispatch.city.cityname if dispatch and dispatch.city else None,
+            "Pin": int(dispatch.pincode) if dispatch and dispatch.pincode else None,
+            "Stcd": dispatch.state.statecode if dispatch and dispatch.state else None
+        }
+    
+    def get_ShipDtls(self, obj):
+        ShippingDetails = obj.shippedto
+        return {
+            "Gstin": ShippingDetails.gstno if ShippingDetails else None,
+            "LglNm": ShippingDetails.full_name if ShippingDetails else None,
+            "TrdNm": ShippingDetails.full_name if ShippingDetails else None,
+            "Addr1": ShippingDetails.address1 if ShippingDetails else None,
+            "Addr2": ShippingDetails.address2 if ShippingDetails else None,
+            "Loc": ShippingDetails.city.cityname if ShippingDetails and ShippingDetails.city else None,
+            "Pin": int(ShippingDetails.pincode) if ShippingDetails and ShippingDetails.pincode else None,
+            "Stcd": ShippingDetails.state.statecode if ShippingDetails and ShippingDetails.state else None
+        }
+    
+    def get_ItemList(self, obj):
+        return [
+            PurchasereturnItemSerializer(item, context={'slno': idx + 1}).data
+            for idx, item in enumerate(obj.purchasereturndetails.all())
+        ]
+    
+    def get_ValDtls(self, obj):
+        def format_amount(value, allow_negative=False):
+            try:
+                val = float(value or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if allow_negative:
+                return "{0:.2f}".format(val)
+            return "{0:.2f}".format(abs(val))
+
+        val = {
+            "AssVal": format_amount(obj.subtotal),
+            "CgstVal": format_amount(obj.cgst),
+            "SgstVal": format_amount(obj.sgst),
+            "IgstVal": format_amount(obj.igst),
+            "CesVal": format_amount(obj.cess),
+            "StCesVal": format_amount(0),
+            "Discount": format_amount(0),
+            "OthChrg": format_amount(obj.expenses),
+            "RndOffAmt": format_amount(obj.roundOff, allow_negative=True),
+            "TotInvVal": format_amount(obj.gtotal),
+            "TotInvValFc": format_amount(obj.gtotal),
+        }
+        return val
+
+    
+    def get_PayDtls(self, obj):
+        pay = getattr(obj, 'paydtls', None)
+        if not pay:
+            return None
+        return {
+            "Nm": pay.Nm,
+            "FinInsBr": pay.FinInsBr,
+            "PayTerm": pay.PayTerm,
+            "PayInstr": pay.PayInstr,
+            "CrTrn": pay.CrTrn,
+            "DirDr": pay.DirDr,
+            "CrDay": pay.CrDay,
+            "PaidAmt": float(pay.PaidAmt) if pay.PaidAmt else None,
+            "PayRefNo": pay.PayRefNo
+        }
+
+    def get_RefDtls(self, obj):
+        ref = getattr(obj, 'refdtls', None)
+        if not ref:
+            return None
+        return {
+            "InvRm": ref.InvRm,
+            "PrecDocDtls": [{
+                "InvNo": ref.PrecDocNo,
+                "InvDt": ref.PrecDocDt.strftime("%d/%m/%Y") if ref.PrecDocDt else None
+            }] if ref.PrecDocNo else [],
+            "ContrRefr": ref.ContrRefr
+        }
+
+    def get_AddlDocDtls(self, obj):
+        docs = obj.addldocdtls.all()
+        if not docs:
+            return None
+        return [{"Url": d.Url, "Docs": d.Docs, "Info": d.Info} for d in docs]
+
+    def get_EwbDtls(self, obj):
+        ewb = getattr(obj, 'ewbdtls', None)
+        if not ewb:
+            return None
+        return {
+            "TransId": ewb.TransId,
+            "TransName": ewb.TransName,
+            "Distance": int(ewb.Distance),
+            "TransDocNo": ewb.TransDocNo,
+            "TransMode": ewb.TransMode,
+            "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
+            "VehNo": ewb.VehNo,
+            "VehType": ewb.VehType
+        }
+    
+
+class SalereturnItemSerializer(serializers.ModelSerializer):
+    SlNo = serializers.SerializerMethodField()
+    IsServc = serializers.SerializerMethodField()
+    PrdDesc = serializers.SerializerMethodField()
+    HsnCd = serializers.SerializerMethodField()
+    Qty = serializers.SerializerMethodField()
+    Unit = serializers.SerializerMethodField()
+    UnitPrice = serializers.SerializerMethodField()
+    TotAmt = serializers.SerializerMethodField()
+    Discount = serializers.SerializerMethodField()
+    PreTaxVal = serializers.SerializerMethodField()
+    AssAmt = serializers.SerializerMethodField()
+    GstRt = serializers.SerializerMethodField()
+    SgstAmt = serializers.SerializerMethodField()
+    IgstAmt = serializers.SerializerMethodField()
+    CgstAmt = serializers.SerializerMethodField()
+    CesAmt = serializers.SerializerMethodField()
+    TotItemVal = serializers.SerializerMethodField()
+    OrdLineRef = serializers.SerializerMethodField()
+
+    class Meta:
+        model = salereturnDetails
+        fields = [
+            "SlNo", "IsServc", "PrdDesc", "HsnCd", "Qty", "Unit", "UnitPrice",
+            "TotAmt", "Discount", "PreTaxVal", "AssAmt", "GstRt", "SgstAmt", "IgstAmt", "CgstAmt",
+            "CesAmt", "TotItemVal", "OrdLineRef"
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        optional_fields = {
+            "BchDtls": self.get_BchDtls(instance),
+            "AttribDtls": self.get_AttribDtls(instance),
+            "Barcde": instance.barcode if hasattr(instance, 'barcode') else None,
+            "OrgCntry": instance.org_country if hasattr(instance, 'org_country') else None,
+            "PrdSlNo": instance.product_serial_no if hasattr(instance, 'product_serial_no') else None,
+        }
+        for key, value in optional_fields.items():
+            if value is not None:
+                data[key] = value
+
+        return data
+
+    def get_BchDtls(self, obj):
+        if hasattr(obj, 'batch') and obj.batch:
+            return {
+                "Nm": obj.batch.batchcode,
+                "Expdt": obj.batch.expirydate.strftime("%d/%m/%Y") if obj.batch.expirydate else None,
+                "wrDt": obj.batch.warehousedate.strftime("%d/%m/%Y") if obj.batch.warehousedate else None
+            }
+        return None
+
+    def get_AttribDtls(self, obj):
+        if hasattr(obj, 'attributes') and obj.attributes.exists():
+            return [{"Nm": attr.name, "Val": attr.value} for attr in obj.attributes.all()]
+        return None
+
+    def get_SlNo(self, obj):
+        return str(self.context.get('slno', 1))
+
+    def get_IsServc(self, obj):
+        return "N"
+
+    def get_PrdDesc(self, obj):
+        return obj.productdesc
+
+    def get_HsnCd(self, obj):
+        return obj.product.hsn.hsnCode if obj.product and obj.product.hsn else None
+
+    def get_Qty(self, obj):
+        return "{0:.2f}".format(float(obj.orderqty or 0))
+
+    def get_Unit(self, obj):
+        return obj.product.unitofmeasurement.unitcode if obj.product and obj.product.unitofmeasurement else None
+
+    def get_UnitPrice(self, obj):
+        return "{0:.2f}".format(float(obj.rate or 0))
+
+    def get_TotAmt(self, obj):
+        qty = float(obj.orderqty or 0)
+        rate = float(obj.rate or 0)
+        tot_amt = round(qty * rate, 2)
+        return "{0:.2f}".format(tot_amt)
+
+    def get_Discount(self, obj):
+        return "0.00"
+
+    def get_PreTaxVal(self, obj):
+        return self.get_AssAmt(obj)
+
+    def get_AssAmt(self, obj):
+        qty = float(obj.orderqty or 0)
+        rate = float(obj.rate or 0)
+        ass_amt = round(qty * rate, 2)  # No discount, so ass_amt = tot_amt
+        return "{0:.2f}".format(ass_amt)
+
+    def get_GstRt(self, obj):
+        return "{0:.2f}".format(float(obj.igstpercent if obj.isigst else (obj.cgstpercent or 0) + (obj.sgstpercent or 0)))
+
+    def get_SgstAmt(self, obj):
+        return "{0:.2f}".format(float(obj.sgst or 0))
+
+    def get_IgstAmt(self, obj):
+        return "{0:.2f}".format(float(obj.igst or 0))
+
+    def get_CgstAmt(self, obj):
+        return "{0:.2f}".format(float(obj.cgst or 0))
+
+    def get_CesAmt(self, obj):
+        return "{0:.2f}".format(float(obj.cess or 0))
+
+    def get_TotItemVal(self, obj):
+        return "{0:.2f}".format(float(obj.linetotal or 0))
+
+    def get_OrdLineRef(self, obj):
+        return str(obj.id or "")
+
+
+    
+
+# Sales Order Full Serializer (Including Seller, Buyer & Items)
+class SalereturnFullSerializer(serializers.ModelSerializer):
+    TranDtls = serializers.SerializerMethodField()
+    DocDtls = serializers.SerializerMethodField()
+    SellerDtls = serializers.SerializerMethodField()
+    BuyerDtls = serializers.SerializerMethodField()
+    DispDtls = serializers.SerializerMethodField()
+   # ShipDtls = serializers.SerializerMethodField()
+    ItemList = serializers.SerializerMethodField()
+    ValDtls = serializers.SerializerMethodField()
+    PayDtls = serializers.SerializerMethodField()
+    RefDtls = serializers.SerializerMethodField()
+    AddlDocDtls = serializers.SerializerMethodField()
+    EwbDtls = serializers.SerializerMethodField()
+  #  ExpDtls = serializers.SerializerMethodField()
+
+
+    class Meta:
+        model = salereturn
+        fields = [
+            "TranDtls", "DocDtls", "SellerDtls", "BuyerDtls",
+            "DispDtls", "ItemList", "ValDtls",
+            "PayDtls", "RefDtls", "AddlDocDtls", "EwbDtls"
+        ]
+
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        # Remove all keys where the value is None
+        data = {k: v for k, v in data.items() if v is not None}
+
+        # Insert "Version" at the top of the dictionary
+        return {
+            "Version": "1.1",
+            **data
+        }
+
+
+
+    def get_TranDtls(self, obj):
+        return {
+            "TaxSch": "GST",
+            "SupTyp": obj.invoicetype.invoicetypecode if obj.invoicetype else None,
+            "RegRev": "Y" if obj.reversecharge else "N",
+            "EcmGstin": obj.ecom.gstno if obj.ecom else None,
+            "IgstOnIntra": "N"
+        }
+
+
+    def get_DocDtls(self, obj):
+        return {
+            "Typ": "DBN",
+            "No": obj.invoicenumber,
+            "Dt": obj.voucherdate.strftime("%d/%m/%Y") if obj.voucherdate else None
+        }
+
+   
+    def get_SellerDtls(self, obj):
+        entity = obj.entity
+        return {
+            "Gstin": entity.gstno,
+            "LglNm": entity.legalname,
+            "TrdNm": entity.entityname,
+            "Addr1": entity.address,
+            "Addr2": entity.address2,
+            "Loc": entity.city.cityname if entity.city else None,
+            "Pin": int(entity.city.pincode) if entity.city and entity.city.pincode else None,
+            "Stcd": entity.state.statecode if entity.state else None,
+            "Ph": entity.phoneoffice,
+            "Em": entity.email
+        }
+
+    
+    def get_BuyerDtls(self, obj):
+        account = obj.account
+        return {
+            "Gstin": account.gstno,
+            "LglNm": account.accountname,
+            "TrdNm": account.accountname,
+            "Pos": account.state.statecode if account.state else None,
+            "Addr1": account.address1,
+            "Addr2": account.address2,
+            "Loc": account.city.cityname if account.city else None,
+            "Pin": int(account.city.pincode) if account.city and account.city.pincode else None,
+            "Stcd": account.state.statecode if account.state else None,
+            "Ph": getattr(account, "phoneno", None),
+            "Em": getattr(account, "emailid", None)
+        }
+    
+    def get_DispDtls(self, obj):
+        dispatch = obj.subentity
+        return {
+            "Nm": dispatch.subentityname if dispatch else None,
+            "Addr1": dispatch.address if dispatch else None,
+            "Addr2": dispatch.address if dispatch else None,
+            "Loc": dispatch.city.cityname if dispatch and dispatch.city else None,
+            "Pin": int(dispatch.pincode) if dispatch and dispatch.pincode else None,
+            "Stcd": dispatch.state.statecode if dispatch and dispatch.state else None
+        }
+    
+    # def get_ShipDtls(self, obj):
+    #     ShippingDetails = obj.subentity
+    #     return {
+    #         "Gstin": ShippingDetails.gstno if ShippingDetails else None,
+    #         "LglNm": ShippingDetails.full_name if ShippingDetails else None,
+    #         "TrdNm": ShippingDetails.full_name if ShippingDetails else None,
+    #         "Addr1": ShippingDetails.address1 if ShippingDetails else None,
+    #         "Addr2": ShippingDetails.address2 if ShippingDetails else None,
+    #         "Loc": ShippingDetails.city.cityname if ShippingDetails and ShippingDetails.city else None,
+    #         "Pin": int(ShippingDetails.pincode) if ShippingDetails and ShippingDetails.pincode else None,
+    #         "Stcd": ShippingDetails.state.statecode if ShippingDetails and ShippingDetails.state else None
+    #     }
+    
+    def get_ItemList(self, obj):
+        return [
+            SalereturnItemSerializer(item, context={'slno': idx + 1}).data
+            for idx, item in enumerate(obj.salereturndetails.all())
+        ]
+    
+    def get_ValDtls(self, obj):
+        def format_amount(value, allow_negative=False):
+            try:
+                val = float(value or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if allow_negative:
+                return "{0:.2f}".format(val)
+            return "{0:.2f}".format(abs(val))
+
+        val = {
+            "AssVal": format_amount(obj.subtotal),
+            "CgstVal": format_amount(obj.cgst),
+            "SgstVal": format_amount(obj.sgst),
+            "IgstVal": format_amount(obj.igst),
+            "CesVal": format_amount(obj.cess),
+            "StCesVal": format_amount(0),
+            "Discount": format_amount(0),
+            "OthChrg": format_amount(obj.expenses),
+            "RndOffAmt": format_amount(obj.roundOff, allow_negative=True),
+            "TotInvVal": format_amount(obj.gtotal),
+            "TotInvValFc": format_amount(obj.gtotal),
+        }
+        return val
+
+    
+    def get_PayDtls(self, obj):
+        pay = getattr(obj, 'paydtls', None)
+        if not pay:
+            return None
+        return {
+            "Nm": pay.Nm,
+            "FinInsBr": pay.FinInsBr,
+            "PayTerm": pay.PayTerm,
+            "PayInstr": pay.PayInstr,
+            "CrTrn": pay.CrTrn,
+            "DirDr": pay.DirDr,
+            "CrDay": pay.CrDay,
+            "PaidAmt": float(pay.PaidAmt) if pay.PaidAmt else None,
+            "PayRefNo": pay.PayRefNo
+        }
+
+    def get_RefDtls(self, obj):
+        ref = getattr(obj, 'refdtls', None)
+        if not ref:
+            return None
+        return {
+            "InvRm": ref.InvRm,
+            "PrecDocDtls": [{
+                "InvNo": ref.PrecDocNo,
+                "InvDt": ref.PrecDocDt.strftime("%d/%m/%Y") if ref.PrecDocDt else None
+            }] if ref.PrecDocNo else [],
+            "ContrRefr": ref.ContrRefr
+        }
+
+    def get_AddlDocDtls(self, obj):
+        docs = obj.addldocdtls.all()
+        if not docs:
+            return None
+        return [{"Url": d.Url, "Docs": d.Docs, "Info": d.Info} for d in docs]
+
+    def get_EwbDtls(self, obj):
+        ewb = getattr(obj, 'ewbdtls', None)
+        if not ewb:
+            return None
+        return {
+            "TransId": ewb.TransId,
+            "TransName": ewb.TransName,
+            "Distance": int(ewb.Distance),
+            "TransDocNo": ewb.TransDocNo,
+            "TransMode": ewb.TransMode,
+            "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
+            "VehNo": ewb.VehNo,
+            "VehType": ewb.VehType
+        }
+
 
 
     
