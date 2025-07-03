@@ -487,6 +487,7 @@ class PurchaseReturn(TrackingModel):
     #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
     sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)
     billno = models.IntegerField(verbose_name='Bill No')
+    invoicenumber = models.CharField(max_length=50, null=True,verbose_name='Invoice Number')
     accountid = models.ForeignKey(to = account, on_delete=models.CASCADE,blank=True)
     latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
     grno = models.CharField(max_length=50,verbose_name='GR No',null=True)
@@ -953,6 +954,7 @@ class newPurchaseOrderDetails(models.Model):
 class salereturn(TrackingModel):
     voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
     voucherno = models.IntegerField(verbose_name='Voucher No')
+    invoicenumber = models.CharField(max_length=50, null=True,verbose_name='Invoice Number')
     account = models.ForeignKey(to = account, on_delete=models.CASCADE,null=True,blank=True)
     billno = models.IntegerField(verbose_name='Bill No')
     billdate = models.DateTimeField(verbose_name='Bill Date',null = True)
