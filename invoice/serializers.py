@@ -6911,7 +6911,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     
     def get_ValDtls(self, obj):
         val = {
-            "AssVal": obj.subtotal,
+            "AssVal": obj.stbefdiscount,
             "CgstVal": obj.cgst,
             "SgstVal": obj.sgst,
             "IgstVal": obj.igst,
