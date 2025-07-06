@@ -637,41 +637,81 @@ class UpdateAddDetailsAPIView(APIView):
     def put(self, request, pk):
         sales_order = get_object_or_404(SalesOderHeader, pk=pk)
 
-        paydtls_data = request.data.get("paydtls")
-        refdtls_data = request.data.get("refdtls")
-        ewbdtls_data = request.data.get("ewbdtls")
-        expdtls_data = request.data.get("expdtls")
+        paydtls_data = request.data.get("paydtls", None)
+        refdtls_data = request.data.get("refdtls", None)
+        ewbdtls_data = request.data.get("ewbdtls", None)
+        expdtls_data = request.data.get("expdtls", None)
         addldocdtls_data = request.data.get("addldocdtls", [])
 
         try:
             with transaction.atomic():
-                # 1️⃣ PayDtls
-                if paydtls_data and paydtls_data.get("id", 0) != 0:
-                    PayDtls.objects.filter(id=paydtls_data["id"], invoice=sales_order).update(**paydtls_data)
+                
+                # 1️⃣ PayDtls - OneToOne Upsert
+                if paydtls_data:
+                    cleaned_data = {k: v for k, v in paydtls_data.items() if k != "id"}
+                    obj, created = PayDtls.objects.get_or_create(invoice=sales_order, defaults=cleaned_data)
+                    if not created:
+                        for field, value in cleaned_data.items():
+                            setattr(obj, field, value)
+                        obj.save()
 
-                # 2️⃣ RefDtls
-                if refdtls_data and refdtls_data.get("id", 0) != 0:
-                    RefDtls.objects.filter(id=refdtls_data["id"], invoice=sales_order).update(**refdtls_data)
+                # 2️⃣ RefDtls - OneToOne Upsert
+                if refdtls_data:
+                    cleaned_data = {k: v for k, v in refdtls_data.items() if k != "id"}
+                    if "PrecDocDt" in cleaned_data and cleaned_data["PrecDocDt"]:
+                        cleaned_data["PrecDocDt"] = datetime.fromisoformat(cleaned_data["PrecDocDt"].replace("Z", "+00:00"))
 
-                # 3️⃣ EwbDtls
-                if ewbdtls_data and ewbdtls_data.get("id", 0) != 0:
-                    EwbDtls.objects.filter(id=ewbdtls_data["id"], invoice=sales_order).update(**ewbdtls_data)
+                    obj, created = RefDtls.objects.get_or_create(invoice=sales_order, defaults=cleaned_data)
+                    if not created:
+                        for field, value in cleaned_data.items():
+                            setattr(obj, field, value)
+                        obj.save()
 
-                # 4️⃣ ExpDtls
-                if expdtls_data and expdtls_data.get("id", 0) != 0:
-                    ExpDtls.objects.filter(id=expdtls_data["id"], invoice=sales_order).update(**expdtls_data)
+                # 3️⃣ EwbDtls - OneToOne Upsert
+                if ewbdtls_data:
+                    cleaned_data = {k: v for k, v in ewbdtls_data.items() if k != "id"}
+                    if "TransDocDt" in cleaned_data and cleaned_data["TransDocDt"]:
+                        cleaned_data["TransDocDt"] = datetime.fromisoformat(cleaned_data["TransDocDt"].replace("Z", "+00:00"))
 
-                # 5️⃣ AddlDocDtls
+                    obj, created = EwbDtls.objects.get_or_create(invoice=sales_order, defaults=cleaned_data)
+                    if not created:
+                        for field, value in cleaned_data.items():
+                            setattr(obj, field, value)
+                        obj.save()
+
+                # 4️⃣ ExpDtls - OneToOne Upsert
+                if expdtls_data:
+                    cleaned_data = {k: v for k, v in expdtls_data.items() if k != "id"}
+                    if "ShipBDt" in cleaned_data and cleaned_data["ShipBDt"]:
+                        cleaned_data["ShipBDt"] = datetime.fromisoformat(cleaned_data["ShipBDt"].replace("Z", "+00:00"))
+
+                    obj, created = ExpDtls.objects.get_or_create(invoice=sales_order, defaults=cleaned_data)
+                    if not created:
+                        for field, value in cleaned_data.items():
+                            setattr(obj, field, value)
+                        obj.save()
+
+                # 5️⃣ AddlDocDtls - List, multiple allowed
                 for doc in addldocdtls_data:
-                    if doc.get("id", 0) != 0:
-                        AddlDocDtls.objects.filter(id=doc["id"], invoice=sales_order).update(**doc)
+                    doc_id = doc.get("id", 0)
+                    cleaned_data = {k: v for k, v in doc.items() if k != "id"}
 
-            # ✅ Serialize and return updated SalesOderHeader
+                    if doc_id and AddlDocDtls.objects.filter(id=doc_id, invoice=sales_order).exists():
+                        obj = AddlDocDtls.objects.get(id=doc_id, invoice=sales_order)
+                        for field, value in cleaned_data.items():
+                            setattr(obj, field, value)
+                        obj.save()
+                    else:
+                        AddlDocDtls.objects.create(invoice=sales_order, **cleaned_data)
+
+            # ✅ Return updated Sales Order
             serializer = SalesOderHeaderSerializer(sales_order)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 
 

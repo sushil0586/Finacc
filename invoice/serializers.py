@@ -6905,13 +6905,14 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     
     def get_ItemList(self, obj):
         return [
+            
             SalesOrderItemSerializer(item, context={'slno': idx + 1}).data
             for idx, item in enumerate(obj.saleInvoiceDetails.all())
         ]
     
     def get_ValDtls(self, obj):
         val = {
-            "AssVal": obj.subtotal,
+            "AssVal": obj.stbefdiscount,
             "CgstVal": obj.cgst,
             "SgstVal": obj.sgst,
             "IgstVal": obj.igst,
