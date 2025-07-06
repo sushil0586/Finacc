@@ -113,7 +113,7 @@ class TdsmaincancelSerializer(BaseCancelSerializer):
 class SaleinvoicecancelSerializer(BaseCancelSerializer):
     class Meta:
         model = SalesOderHeader
-        fields = ('isactive',)
+        fields = ('isactive','cancelreason',)
 
     def update(self, instance, validated_data):
         super().update(instance, validated_data)
@@ -6905,7 +6905,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     
     def get_ItemList(self, obj):
         return [
-            
+
             SalesOrderItemSerializer(item, context={'slno': idx + 1}).data
             for idx, item in enumerate(obj.saleInvoiceDetails.all())
         ]
