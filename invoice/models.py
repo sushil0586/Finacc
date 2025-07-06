@@ -270,6 +270,7 @@ class SalesOderHeader(TrackingModel):
     shippedto =  models.ForeignKey(to = ShippingDetails, on_delete=models.CASCADE,null=True,related_name='shippedto')
     ecom =  models.ForeignKey(to = 'financial.account', on_delete=models.CASCADE,null=True,related_name='ecommerce4')
     remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
+    cancelreason = models.CharField(max_length=500, null=True,verbose_name= 'Cancelreason')
     transport =  models.ForeignKey(account, on_delete=models.CASCADE,null=True,related_name='sotransport')
     broker =  models.ForeignKey(account, on_delete=models.CASCADE,null=True,related_name='sobroker')
     taxid = models.IntegerField(verbose_name='Terms',default = 0)
