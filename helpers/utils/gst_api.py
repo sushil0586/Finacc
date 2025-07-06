@@ -1,5 +1,9 @@
 import requests
 from entity.models import Mastergstdetails
+from Crypto.Cipher import AES
+import base64
+import json
+import hashlib
 
 
 def authenticate_gst(gst_details):
@@ -117,6 +121,8 @@ def gstinvoice(order, json_data):
         response = requests.post(url, headers=headers, params=params, data=json_data)
         response_data = response.json()
 
+        print
+
         # 4. Update Order if successful
         if response_data.get("status_cd") == "1" and "Irn" in response_data.get("data", {}):
             data = response_data["data"]
@@ -131,3 +137,84 @@ def gstinvoice(order, json_data):
 
     except Exception as e:
         return {"error": "Exception occurred during e-invoice generation", "details": str(e)}
+    
+
+
+
+def pad(text):
+    """
+    PKCS7 Padding
+    """
+    pad_len = 16 - len(text) % 16
+    return text + chr(pad_len) * pad_len
+
+def encrypt_payload(json_string, client_secret):
+    """
+    Encrypt payload using AES-256 ECB with SHA-256 derived key.
+    """
+    key = hashlib.sha256(client_secret.encode('utf-8')).digest()  # 32-byte key
+    cipher = AES.new(key, AES.MODE_ECB)
+    padded_data = pad(json_string)
+    encrypted_bytes = cipher.encrypt(padded_data.encode('utf-8'))
+    encrypted_base64 = base64.b64encode(encrypted_bytes).decode('utf-8')
+    return encrypted_base64
+
+    
+
+
+
+def gst_ewaybill(order, json_data):
+
+
+    print(json_data)
+    """
+    Generic E-Way Bill function for MasterGST.
+    Pass pre-serialized JSON (`json_data`) as payload.
+    """
+    try:
+        gst_details = Mastergstdetails.objects.first()
+        if not gst_details:
+            return {"error": "GST configuration not found."}
+
+        # 1. Authenticate
+        auth_token = authenticate_gst(gst_details)
+        if isinstance(auth_token, dict) and auth_token.get("error"):
+            return {"error": "Authentication failed", "details": auth_token}
+
+        # 2. Encrypt Payload
+        encrypted_text = encrypt_payload(json_data, gst_details.client_secret)
+        final_payload = json.dumps({"data": encrypted_text})
+
+        # 3. Prepare Headers & API Request
+        url = "https://api.mastergst.com/einvoice/type/GENERATE_EWAYBILL/version/V1_03"
+        headers = {
+            "accept": "*/*",
+            "Content-Type": "application/json",
+            "ip_address": "49.43.101.20",
+            "client_id": gst_details.client_id,
+            "client_secret": gst_details.client_secret,
+            "username": gst_details.username,
+            "auth-token": auth_token,
+            "gstin": gst_details.gstin
+        }
+        params = {"email": gst_details.email}
+
+
+        print(final_payload)
+
+        # 4. Call API
+        response = requests.post(url, headers=headers, params=params, data=final_payload)
+        response_data = response.json()
+
+        # 5. Update Order if successful
+        if response_data.get("status_cd") == "1" and "EwbNo" in response_data.get("data", {}):
+            data = response_data["data"]
+            order.ewaybill_no = data.get("EwbNo")
+            order.ewaybill_date = data.get("EwbDt")
+            order.valid_upto = data.get("ValidUpto")
+            order.save()
+
+        return response_data
+
+    except Exception as e:
+        return {"error": "Exception occurred during E-Way Bill generation", "details": str(e)}

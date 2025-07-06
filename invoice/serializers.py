@@ -31,7 +31,7 @@ from helpers.utils.document_number import reset_counter_if_needed, build_documen
 from django.db import models
 from helpers.utils.pdf import render_to_pdf
 from helpers.utils.email import send_invoice_email
-from helpers.utils.gst_api import gstinvoice
+from helpers.utils.gst_api import gstinvoice,gst_ewaybill
 from django.contrib.contenttypes.models import ContentType
 import base64
 import qrcode
@@ -2017,6 +2017,7 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
     billno = serializers.CharField(source= 'invoicenumber', read_only=True)
     gst_summary = serializers.SerializerMethodField()
     einvoice_details = serializers.SerializerMethodField()
+    doctype = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseReturn
@@ -2029,7 +2030,7 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
             'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'subtotal',
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby',  'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details'
+            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details','doctype'
         )
 
     def get_einvoice_details(self, obj):
@@ -2056,6 +2057,10 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
             "ewb_date": einv.ewb_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_date else None,
             "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None
         }
+
+
+    def get_doctype(self, obj):
+        return "Credit Note"
 
    
 
@@ -2127,6 +2132,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     billno = serializers.CharField(source= 'invoicenumber', read_only=True)
     gst_summary = serializers.SerializerMethodField()
     einvoice_details = serializers.SerializerMethodField()
+    doctype = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOderHeader
@@ -2140,7 +2146,7 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
             'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
             'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details'
+            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details','doctype'
         )
 
 
@@ -2168,6 +2174,9 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             "ewb_date": einv.ewb_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_date else None,
             "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None
         }
+
+    def get_doctype(self, obj):
+        return "Tax Invoice"
 
 
    
@@ -2731,36 +2740,63 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             # context = {'saleInvoice': full_order_data}
             # pdf_content = render_to_pdf('sales_invoice_template.html', context)
 
-            einvoice_data = SalesOrderFullSerializer(order).data
-            json_data = json.dumps(einvoice_data, indent=4, default=str)
 
-            print(json_data)
+            mode = "none"
+
+            if order.einvoicepluseway:
+                mode = "both"
+            elif order.einvoice:
+                mode = "einvoice"
+            elif order.eway:
+                mode = "eway"
+
+            
+            if mode == 'eway':
+                # 2. Fetch IRN from EInvoiceDetails
+                content_type = ContentType.objects.get_for_model(order)
+                einv = EInvoiceDetails.objects.filter(content_type=content_type, object_id=order.id).first()
+
+                if not einv or not einv.irn:
+                    return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
+                
+                
 
 
-            gst_response = gstinvoice(order, json_data)
-            print(gst_response)
-            if gst_response.get("status_cd") == "1":
-                data = gst_response["data"]
-                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
 
-                EInvoiceDetails.objects.update_or_create(
-                    content_type=ContentType.objects.get_for_model(order),
-                    object_id=order.id,
-                    defaults={
-                        "irn": data["Irn"],
-                        "ack_no": data["AckNo"],
-                        "ack_date": ack_dt,
-                        "signed_invoice": data["SignedInvoice"],
-                        "signed_qr_code": data["SignedQRCode"],
-                        "status": data.get("Status", "ACT"),
-                        "ewb_no": data.get("EwbNo"),
-                        "ewb_date": ewb_dt,
-                        "ewb_valid_till": ewb_valid_till,
-                        "remarks": data.get("Remarks"),
-                    }
-                )
+
+
+            
+            if mode !="none":
+                einvoice_data = SalesOrderFullSerializer(order,context={"mode": mode}).data
+                json_data = json.dumps(einvoice_data, indent=4, default=str)
+
+                print(json_data)
+
+
+                gst_response = gstinvoice(order, json_data)
+                print(gst_response)
+                if gst_response.get("status_cd") == "1":
+                    data = gst_response["data"]
+                    ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
+                    ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                    ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+
+                    EInvoiceDetails.objects.update_or_create(
+                        content_type=ContentType.objects.get_for_model(order),
+                        object_id=order.id,
+                        defaults={
+                            "irn": data["Irn"],
+                            "ack_no": data["AckNo"],
+                            "ack_date": ack_dt,
+                            "signed_invoice": data["SignedInvoice"],
+                            "signed_qr_code": data["SignedQRCode"],
+                            "status": data.get("Status", "ACT"),
+                            "ewb_no": data.get("EwbNo"),
+                            "ewb_date": ewb_dt,
+                            "ewb_valid_till": ewb_valid_till,
+                            "remarks": data.get("Remarks"),
+                        }
+                    )
 
             return order
 
@@ -2856,38 +2892,112 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             if ids_to_delete:
                 salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()
 
-            # # 7️⃣ Handle E-Invoice if not already generated
-            # content_type = ContentType.objects.get_for_model(instance)
-            # existing_irn = EInvoiceDetails.objects.filter(content_type=content_type, object_id=instance.id).first()
-            # if existing_irn and existing_irn.irn:
-            #     return instance  # Skip IRN generation if already exists
+            mode = "none"
 
-            # 8️⃣ Generate E-Invoice
-            # json_data = SalesOrderFullSerializer(instance).data
-            # gst_response = gstinvoice(instance, json.dumps(json_data, indent=4, default=str))
+            if instance.einvoicepluseway:
+                mode = "both"
+            elif instance.einvoice:
+                mode = "einvoice"
+            elif instance.eway:
+                mode = "eway"
 
-            # if gst_response.get("status_cd") == "1":
-            #     data = gst_response["data"]
-            #     ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-            #     ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-            #     ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+            if mode == 'eway':
+                # 2. Fetch IRN from EInvoiceDetails
+                # 1. Fetch IRN from EInvoiceDetails
+                content_type = ContentType.objects.get_for_model(instance)
+                einv = EInvoiceDetails.objects.filter(content_type=content_type, object_id=instance.id).first()
 
-            #     EInvoiceDetails.objects.update_or_create(
-            #         content_type=content_type,
-            #         object_id=instance.id,
-            #         defaults={
-            #             "irn": data["Irn"],
-            #             "ack_no": data["AckNo"],
-            #             "ack_date": ack_dt,
-            #             "signed_invoice": data["SignedInvoice"],
-            #             "signed_qr_code": data["SignedQRCode"],
-            #             "status": data.get("Status", "ACT"),
-            #             "ewb_no": data.get("EwbNo"),
-            #             "ewb_date": ewb_dt,
-            #             "ewb_valid_till": ewb_valid_till,
-            #             "remarks": data.get("Remarks"),
-            #         }
-            #     )
+                if not einv or not einv.irn:
+                    return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
+
+                # 2. Fetch EwbDtls
+                ewb = EwbDtls.objects.filter(invoice=instance.id).first()
+                if not ewb:
+                    return {"error": "E-Way Bill details not found for this order."}
+
+                # 3. Prepare JSON payload using EwbDtls
+                json_data = {
+                    "Irn": einv.irn,
+                    "Distance": int(ewb.Distance),
+                    "TransMode": ewb.TransMode,
+                    "TransId": ewb.TransId,
+                    "TransName": ewb.TransName,
+                    "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
+                    "TransDocNo": ewb.TransDocNo,
+                    "VehNo": ewb.VehNo,
+                    "VehType": ewb.VehType
+                }
+
+                # # Optional: Add Dispatch details if available
+                # if ewb.DispNm and ewb.DispAddr1 and ewb.DispLoc and ewb.DispPin and ewb.DispStcd:
+                #     json_data["DispDtls"] = {
+                #         "Nm": ewb.DispNm,
+                #         "Addr1": ewb.DispAddr1,
+                #         "Addr2": ewb.DispAddr2 or "",
+                #         "Loc": ewb.DispLoc,
+                #         "Pin": int(ewb.DispPin),
+                #         "Stcd": ewb.DispStcd
+                #     }
+
+                # 4. Call gstinvoice with JSON payload
+                gst_response =  gst_ewaybill(instance, json.dumps(json_data, indent=4, default=str))
+
+                print(gst_response)
+
+                if gst_response.get("status_cd") == "1":
+                    data = gst_response["data"]
+                    
+                    ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                    ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+
+                    EInvoiceDetails.objects.update_or_create(
+                        content_type=content_type,
+                        object_id=instance.id,
+                        defaults={
+                            "ewb_no": data.get("EwbNo"),
+                            "ewb_date": ewb_dt,
+                            "ewb_valid_till": ewb_valid_till,
+                            "remarks": data.get("Remarks"),
+                        }
+                    )
+
+
+
+
+            if mode != "none":
+                # 7️⃣ Handle E-Invoice if not already generated
+                content_type = ContentType.objects.get_for_model(instance)
+                existing_irn = EInvoiceDetails.objects.filter(content_type=content_type, object_id=instance.id).first()
+                if existing_irn and existing_irn.irn:
+                    return instance  # Skip IRN generation if already exists
+
+                # 8️⃣ Generate E-Invoice
+                json_data = SalesOrderFullSerializer(instance).data
+                gst_response = gstinvoice(instance, json.dumps(json_data, indent=4, default=str))
+
+                if gst_response.get("status_cd") == "1":
+                    data = gst_response["data"]
+                    ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
+                    ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                    ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+
+                    EInvoiceDetails.objects.update_or_create(
+                        content_type=content_type,
+                        object_id=instance.id,
+                        defaults={
+                            "irn": data["Irn"],
+                            "ack_no": data["AckNo"],
+                            "ack_date": ack_dt,
+                            "signed_invoice": data["SignedInvoice"],
+                            "signed_qr_code": data["SignedQRCode"],
+                            "status": data.get("Status", "ACT"),
+                            "ewb_no": data.get("EwbNo"),
+                            "ewb_date": ewb_dt,
+                            "ewb_valid_till": ewb_valid_till,
+                            "remarks": data.get("Remarks"),
+                        }
+                    )           
+
 
             return instance
 
@@ -6695,14 +6805,27 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # Remove all keys where the value is None
+        # Remove keys with None values
         data = {k: v for k, v in data.items() if v is not None}
 
-        # Insert "Version" at the top of the dictionary
-        return {
-            "Version": "1.1",
-            **data
-        }
+        final_data = {"Version": "1.1", **data}
+
+        mode = self.context.get("mode", "both")
+
+        if mode == "einvoice":
+            final_data.pop("EwbDtls", None)
+        elif mode == "eway":
+            # Keep only EwbDtls and Version
+            ewb = final_data.get("EwbDtls")
+            final_data = {"Version": "1.1"}
+            if ewb:
+                final_data["EwbDtls"] = ewb
+        elif mode == "none":
+            # Only Version at top
+            final_data = {"Version": "1.1"}
+
+        return final_data
+
 
 
 

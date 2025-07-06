@@ -305,7 +305,7 @@ class SalesOderHeader(TrackingModel):
     einvoicepluseway =   models.BooleanField(default=False)
     isammended =   models.BooleanField(default=False)
     isadditionaldetail = models.BooleanField(default=False,verbose_name= 'Is Additional details')
-    originalinvoice = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name='Orinial invoice',blank=True)
+    originalinvoice = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name='Orinial invoice')
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
     history = HistoricalRecords()
    
@@ -1529,8 +1529,8 @@ class AddlDocDtls(models.Model):
 
 class EwbDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE,null=True, blank=True, related_name='ewbdtls')
-    sales_return = models.OneToOneField('salereturn', on_delete=models.CASCADE, null=True, blank=True, related_name='ewbdtls')
-    purchase_return = models.OneToOneField('PurchaseReturn', on_delete=models.CASCADE, null=True, blank=True, related_name='ewbdtls')
+    sales_return = models.OneToOneField('salereturn', on_delete=models.CASCADE, null=True, blank=True, related_name='ewbdtls1')
+    purchase_return = models.OneToOneField('PurchaseReturn', on_delete=models.CASCADE, null=True, blank=True, related_name='ewbdtls2')
     TransId = models.CharField(max_length=20,null=True, blank=True)
     TransName = models.CharField(max_length=100,null=True, blank=True)
     Distance = models.DecimalField(max_digits=8, decimal_places=2,null=True, blank=True)
