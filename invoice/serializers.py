@@ -6905,6 +6905,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     
     def get_ItemList(self, obj):
         return [
+            
             SalesOrderItemSerializer(item, context={'slno': idx + 1}).data
             for idx, item in enumerate(obj.saleInvoiceDetails.all())
         ]
