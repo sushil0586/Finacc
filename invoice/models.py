@@ -375,6 +375,7 @@ class EInvoiceDetails(models.Model):
     ewb_date = models.DateTimeField(null=True, blank=True)
     ewb_valid_till = models.DateTimeField(null=True, blank=True)
     remarks = models.TextField(null=True, blank=True)
+    cancelleddate =  models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

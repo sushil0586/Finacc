@@ -31,7 +31,7 @@ from helpers.utils.document_number import reset_counter_if_needed, build_documen
 from django.db import models
 from helpers.utils.pdf import render_to_pdf
 from helpers.utils.email import send_invoice_email
-from helpers.utils.gst_api import gstinvoice,gst_ewaybill
+from helpers.utils.gst_api import gstinvoice,gst_ewaybill,cancel_gst_invoice
 from django.contrib.contenttypes.models import ContentType
 import base64
 import qrcode
@@ -113,10 +113,46 @@ class TdsmaincancelSerializer(BaseCancelSerializer):
 class SaleinvoicecancelSerializer(BaseCancelSerializer):
     class Meta:
         model = SalesOderHeader
-        fields = ('isactive','cancelreason',)
+        fields = ('isactive', 'cancelreason',)
 
     def update(self, instance, validated_data):
-        super().update(instance, validated_data)
+        instance.isactive = validated_data.get('isactive', instance.isactive)
+        instance.cancelreason = validated_data.get('cancelreason', instance.cancelreason)
+        instance.save()
+        content_type = ContentType.objects.get_for_model(instance)
+        einv = EInvoiceDetails.objects.filter(content_type=content_type, object_id=instance.id).first()
+
+        print(einv)
+        if einv:
+            cancel_reason_code = "1"  # Adjust as needed
+            cancel_remark = instance.cancelreason or "Cancelled by user"
+
+            gst_response = cancel_gst_invoice(einv.irn, cancel_reason_code, cancel_remark)
+
+            print(gst_response)
+
+            if gst_response.get("status_cd") != "1":
+                raise serializers.ValidationError({"gst_error": gst_response})
+
+            # Extract cancellation date
+            cancel_date_str = gst_response.get("data", {}).get("CancelDate")
+            cancel_date = None
+            if cancel_date_str:
+                try:
+                    cancel_date = datetime.strptime(cancel_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    cancel_date = None  # Invalid date format safeguard     
+
+            # Update EInvoiceDetails with cancelleddate and status
+            EInvoiceDetails.objects.update_or_create(
+                content_type=ContentType.objects.get_for_model(instance),
+                object_id=instance.id,
+                defaults={
+                    "cancelleddate": cancel_date,
+                    "status": "CNL"  # Assuming 'CNL' is the status for Cancelled in your system
+                }
+            )
+
 
         # Update stock transactions
         StockTransactions.objects.filter(
@@ -126,6 +162,7 @@ class SaleinvoicecancelSerializer(BaseCancelSerializer):
         ).update(isactive=instance.isactive)
 
         return instance
+
     
 class BaseCancelSerializer1(serializers.ModelSerializer):
     fields_to_update = ('isactive',)
@@ -2743,7 +2780,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
             mode = "none"
 
-            if order.einvoicepluseway:
+            if str(order.einvoice).lower() == "true" and str(order.eway).lower() == "true":
                 mode = "both"
             elif order.einvoice:
                 mode = "einvoice"
@@ -2894,7 +2931,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
             mode = "none"
 
-            if instance.einvoicepluseway:
+            if str(instance.einvoice).lower() == "true" and str(instance.eway).lower() == "true":
                 mode = "both"
             elif instance.einvoice:
                 mode = "einvoice"
