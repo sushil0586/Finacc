@@ -218,3 +218,57 @@ def gst_ewaybill(order, json_data):
 
     except Exception as e:
         return {"error": "Exception occurred during E-Way Bill generation", "details": str(e)}
+
+
+
+def cancel_gst_invoice(irn, cancel_reason_code, cancel_remark):
+    """
+    Cancel E-Invoice via MasterGST API using IRN directly.
+    
+    :param irn: The IRN (Invoice Reference Number) to cancel
+    :param cancel_reason_code: Cancellation Reason Code (as per MasterGST spec)
+    :param cancel_remark: Cancellation Remarks
+    :return: API Response dict
+    """
+    try:
+        if not irn:
+            return {"error": "IRN is required to cancel E-Invoice."}
+
+        gst_details = Mastergstdetails.objects.first()
+        if not gst_details:
+            return {"error": "GST configuration not found."}
+
+        # 1. Authenticate
+        auth_token = authenticate_gst(gst_details)
+        if isinstance(auth_token, dict) and auth_token.get("error"):
+            return {"error": "Authentication failed", "details": auth_token}
+
+        # 2. Prepare Headers & API Request
+        url = "https://api.mastergst.com/einvoice/type/CANCEL/version/V1_03"
+        headers = {
+            "accept": "*/*",
+            "Content-Type": "application/json",
+            "ip_address": "49.43.101.20",  # Replace with dynamic if needed
+            "client_id": gst_details.client_id,
+            "client_secret": gst_details.client_secret,
+            "username": gst_details.username,
+            "auth-token": auth_token,
+            "gstin": gst_details.gstin
+        }
+        params = {"email": gst_details.email}
+
+        payload = {
+            "Irn": irn,
+            "CnlRsn": str(cancel_reason_code),
+            "CnlRem": cancel_remark
+        }
+
+        # 3. Call API
+        response = requests.post(url, headers=headers, params=params, json=payload)
+        response_data = response.json()
+
+        return response_data
+
+    except Exception as e:
+        return {"error": "Exception occurred during e-invoice cancellation", "details": str(e)}
+
