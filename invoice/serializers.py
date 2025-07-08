@@ -132,7 +132,23 @@ class SaleinvoicecancelSerializer(BaseCancelSerializer):
             print(gst_response)
 
             if gst_response.get("status_cd") != "1":
-                raise serializers.ValidationError({"gst_error": gst_response})
+                # Try to extract the actual error message from status_desc
+                status_desc = gst_response.get("status_desc", "")
+
+                try:
+                    # Try to parse it if it's a JSON string like '[{"ErrorCode":"9999","ErrorMessage":"Invoice is not active"}]'
+                    import json
+                    parsed_desc = json.loads(status_desc)
+                    if isinstance(parsed_desc, list) and parsed_desc:
+                        error_message = parsed_desc[0].get("ErrorMessage", "Unknown error")
+                    else:
+                        error_message = status_desc
+                except (json.JSONDecodeError, TypeError):
+                    # Fallback if not JSON formatted
+                    error_message = status_desc or "E-Invoice cancellation failed"
+
+                raise serializers.ValidationError({"error": error_message})
+                #return Response({"detail": "Missing required parameters: accounttype and entityid"}, status=status.HTTP_400_BAD_REQUEST)
 
             # Extract cancellation date
             cancel_date_str = gst_response.get("data", {}).get("CancelDate")
