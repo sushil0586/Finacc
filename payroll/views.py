@@ -5,12 +5,16 @@ import json
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from asteval import Interpreter
+from django.utils.dateparse import parse_date
+from django.db import models
+from .services import apply_structure_to_entity
+#from rest_framework import 
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from rest_framework import permissions,status
+from rest_framework import permissions,status,generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeesalaryserializer,designationserializer,departmentserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer,CalculationTypeSerializer,BonusFrequencySerializer,CalculationValueSerializer,ComponentTypeSerializer,PayrollComponentSerializer
-from payroll.models import salarycomponent,employeesalary,designation,department,EntityPayrollComponentConfig,employeenew,CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent
+from payroll.serializers import salarycomponentserializer,employeesalaryserializer,designationserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer,CalculationTypeSerializer,BonusFrequencySerializer,CalculationValueSerializer,ComponentTypeSerializer,PayrollComponentSerializer,EntityPayrollComponentSerializer,PayStructureListReadSerializer,PayStructureReadSerializer,PayStructureComponentReadSerializer,PayStructureSerializer, PayStructureComponentSerializer,PayStructureNestedCreateSerializer
+from payroll.models import salarycomponent,employeesalary,designation,EntityPayrollComponentConfig,employeenew,CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent,EntityPayrollComponent,PayStructure, PayStructureComponent
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
 from django.db.models import Sum,OuterRef,Subquery,F
@@ -33,6 +37,31 @@ from datetime import timedelta,date,datetime
 from django_pivot.pivot import pivot
 from Authentication.models import User
 from payroll.utils.payroll import calculate_salary_components
+from payroll.api.filters import EntityPayrollComponentFilter
+from rest_framework.permissions import IsAuthenticated
+
+
+from payroll.models import (
+    OptionSet, Option,
+    BusinessUnit, Department, Location, CostCenter,
+)
+from .serializers import (
+    OptionSetSerializer, OptionSerializer,
+    BusinessUnitSerializer, DepartmentSerializer, LocationSerializer, CostCenterSerializer,
+)
+
+from payroll.models import (
+Employee,
+EmploymentAssignment,
+EmployeeBankAccount,
+EmployeeDocument,
+EmployeeStatutoryIN,
+EmployeeCompensation
+)
+
+from rest_framework import generics as _g, permissions as _p
+
+
 
 
 
@@ -146,18 +175,7 @@ class designationApiView(ListAPIView):
     
 
 
-class departmentApiView(ListAPIView):
 
-    serializer_class = departmentserializer
-    permission_classes = (permissions.IsAuthenticated,)
-
-    filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['tdsreturn']
-
-      
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return department.objects.filter(entity = entity)
     
 
 
@@ -254,12 +272,12 @@ class CalculateSalaryComponentsView(APIView):
 
 class ActivePayrollComponentsByEntity(APIView):
     def get(self, request, entity_id):
-        configs = EntityPayrollComponentConfig.objects.filter(
+        payroll_configs = EntityPayrollComponentConfig.objects.filter(
             entity_id=entity_id,
             is_active=True
         ).select_related('component')
 
-        serializer = EntityPayrollComponentConfigSerializer(configs, many=True)
+        serializer = EntityPayrollComponentConfigSerializer(payroll_configs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
     
 class CalculationTypeListAPIView(ListAPIView):
@@ -449,3 +467,385 @@ class CalculatePayrollFromCTCAPIView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+        
+
+class EntityPayrollComponentListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /api/entity-components/?entity_id=&entity_code=&family_code=&active_on=&as_of=
+    POST /api/entity-components/
+    """
+    queryset = (
+        EntityPayrollComponent.objects
+        .select_related("entity", "family", "component", "component__slab_group")
+        .order_by("entity_id", "family__code", "effective_from")
+    )
+    serializer_class = EntityPayrollComponentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = EntityPayrollComponentFilter
+    search_fields = ["family__code", "entity__name", "entity__code"]  # adjust if your Entity has different fields
+    ordering_fields = ["entity_id", "entity__code", "family__code", "effective_from", "enabled", "updated_at"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # Helpful when many rows pin to a specific version (avoids N+1 on caps)
+        return qs.prefetch_related("component__caps")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        as_of = self.request.query_params.get("as_of")
+        dt = parse_date(as_of) if as_of else None
+        if dt:
+            ctx["as_of_date"] = dt
+        return ctx
+
+
+class EntityPayrollComponentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET/PUT/PATCH/DELETE /api/entity-components/{id}/?as_of=YYYY-MM-DD
+    """
+    queryset = (
+        EntityPayrollComponent.objects
+        .select_related("entity", "family", "component", "component__slab_group")
+        .prefetch_related("component__caps")
+        .order_by("entity_id", "family__code", "effective_from")
+    )
+    serializer_class = EntityPayrollComponentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        as_of = self.request.query_params.get("as_of")
+        dt = parse_date(as_of) if as_of else None
+        if dt:
+            ctx["as_of_date"] = dt
+        return ctx
+    
+
+# ---------------------------
+# PayStructure list/create
+# ---------------------------
+class PayStructureListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = PayStructure.objects.all().order_by("code", "entity", "effective_from")
+        entity_id = self.request.query_params.get("entity_id")
+        code = self.request.query_params.get("code")
+        status_q = self.request.query_params.get("status")
+        on = self.request.query_params.get("on")  # YYYY-MM-DD filter active on date
+
+        if entity_id == "null":
+            qs = qs.filter(entity__isnull=True)
+        elif entity_id:
+            qs = qs.filter(entity_id=entity_id)
+
+        if code:
+            qs = qs.filter(code__iexact=code)
+
+        if status_q:
+            qs = qs.filter(status=status_q)
+
+        if on:
+            d = parse_date(on)
+            if d:
+                qs = qs.filter(effective_from__lte=d).filter(
+                    models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=d)
+                )
+        return qs
+
+    # read on GET (list), write on POST (create)
+    def get_serializer_class(self):
+        return PayStructureListReadSerializer if self.request.method == "GET" else PayStructureSerializer
+
+
+# ---------------------------
+# PayStructure detail
+# ---------------------------
+class PayStructureDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = PayStructure.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        # GET detail = rich read with nested items; write = basic writer
+        if self.request.method == "GET":
+            return PayStructureReadSerializer
+        return PayStructureSerializer
+
+    # allow ?as_of=YYYY-MM-DD to control resolved_global in nested items
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        if self.request.method == "GET":
+            as_of_param = self.request.query_params.get("as_of")
+            if as_of_param:
+                d = parse_date(as_of_param)
+                if d:
+                    ctx = {**ctx, "as_of": d}
+        return ctx
+
+
+# ---------------------------
+# PayStructure nested-create (header + items in one POST)
+# ---------------------------
+class PayStructureNestedCreateView(generics.CreateAPIView):
+    serializer_class = PayStructureNestedCreateSerializer
+    permission_classes = [IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        # Let serializer.create() do atomic creation + validation
+        return super().create(request, *args, **kwargs)
+
+
+# ---------------------------
+# PayStructureComponent list/create
+# ---------------------------
+class PayStructureComponentListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = (PayStructureComponent.objects
+              .select_related("template", "family", "pinned_global_component")
+              .order_by("template", "priority", "id"))
+        template_id = self.request.query_params.get("template_id")
+        family_code = self.request.query_params.get("family_code")
+
+        if template_id:
+            qs = qs.filter(template_id=template_id)
+        if family_code:
+            qs = qs.filter(family__code__iexact=family_code)
+        return qs
+
+    def get_serializer_class(self):
+        return PayStructureComponentReadSerializer if self.request.method == "GET" else PayStructureComponentSerializer
+
+    # allow ?as_of=YYYY-MM-DD to resolve globals in list read
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        if self.request.method == "GET":
+            as_of_param = self.request.query_params.get("as_of")
+            if as_of_param:
+                d = parse_date(as_of_param)
+                if d:
+                    ctx = {**ctx, "as_of": d}
+        return ctx
+
+
+# ---------------------------
+# PayStructureComponent detail
+# ---------------------------
+class PayStructureComponentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = (PayStructureComponent.objects
+                .select_related("template", "family", "pinned_global_component")
+                .all())
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        return PayStructureComponentReadSerializer if self.request.method == "GET" else PayStructureComponentSerializer
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        if self.request.method == "GET":
+            as_of_param = self.request.query_params.get("as_of")
+            if as_of_param:
+                d = parse_date(as_of_param)
+                if d:
+                    ctx = {**ctx, "as_of": d}
+        return ctx
+
+
+# ---------------------------
+# Read-only resolve preview (no writes) — generic view
+# ---------------------------
+class PayStructureResolveView(generics.GenericAPIView):
+    """
+    GET /api/pay-structures/resolve/?on=YYYY-MM-DD&entity_id=<id>&code=<optional>
+    Returns the active structure (preferring entity-scoped, else global) and
+    each item augmented with its resolved global (as_of=on).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        on_str = request.query_params.get("on")
+        if not on_str:
+            return Response({"detail": "Query param 'on' (YYYY-MM-DD) is required."}, status=400)
+        on = parse_date(on_str)
+        if not on:
+            return Response({"detail": "Invalid 'on' date."}, status=400)
+
+        entity_id = request.query_params.get("entity_id")
+        code = request.query_params.get("code")
+
+        qs = (PayStructure.objects
+              .filter(status=PayStructure.Status.ACTIVE)
+              .filter(effective_from__lte=on)
+              .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=on)))
+        if code:
+            qs = qs.filter(code__iexact=code)
+
+        if entity_id:
+            s = (qs.filter(entity_id=entity_id).order_by("-effective_from").first()
+                 or qs.filter(entity__isnull=True).order_by("-effective_from").first())
+        else:
+            s = qs.filter(entity__isnull=True).order_by("-effective_from").first()
+
+        if not s:
+            return Response({"detail": "No active PayStructure found for given filters."}, status=404)
+
+        # Serialize header + items with as_of=on so item.read serializer resolves globals at that date
+        ser = PayStructureReadSerializer(s, context={**self.get_serializer_context(), "as_of": on})
+        return Response(ser.data, status=200)
+
+
+# ---------------------------
+# Apply structure to an entity (Option A) — generic view
+# ---------------------------
+class ApplyStructureToEntityView(generics.GenericAPIView):
+    """
+    POST /api/pay-structures/<pk>/apply/
+    Body:
+    {
+      "entity_id": 101,
+      "effective_from": "2025-09-01",   // default = structure.effective_from
+      "effective_to": null,             // optional
+      "replace": true,                  // default true
+      "dry_run": false                  // true = preview only
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk: int):
+        try:
+            structure = PayStructure.objects.get(pk=pk)
+        except PayStructure.DoesNotExist:
+            return Response({"detail": "PayStructure not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        entity_id = request.data.get("entity_id")
+        if not entity_id:
+            return Response({"detail": "entity_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        eff_from = parse_date(request.data.get("effective_from") or str(structure.effective_from))
+        if not eff_from:
+            return Response({"detail": "Invalid effective_from date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        eff_to = parse_date(request.data.get("effective_to")) if request.data.get("effective_to") else None
+        replace = bool(request.data.get("replace", True))
+        dry_run = bool(request.data.get("dry_run", False))
+
+        result = apply_structure_to_entity(
+            structure=structure,
+            entity_id=int(entity_id),
+            eff_from=eff_from,
+            eff_to=eff_to,
+            replace=replace,
+            dry_run=dry_run,
+        )
+        return Response(result, status=status.HTTP_200_OK)
+    
+
+
+# --- Mixin: filter list by ?entity=<id> and auto-attach entity on POST
+class EntityScopedListCreateMixin:
+    entity_field = "entity"  # change if your FK is named differently
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        entity_id = self.request.query_params.get("entity")
+        if entity_id:
+            qs = qs.filter(**{f"{self.entity_field}_id": entity_id})
+        return qs
+
+    def perform_create(self, serializer):
+        entity_id = self.request.query_params.get("entity") or self.request.data.get(self.entity_field)
+        if entity_id and not self.request.data.get(self.entity_field):
+            serializer.save(**{f"{self.entity_field}_id": entity_id})
+        else:
+            serializer.save()
+
+# ---------- Options (list/create only)
+class OptionSetListCreateAPIView(generics.ListCreateAPIView):
+    queryset = OptionSet.objects.all().order_by("id")
+    serializer_class = OptionSetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    #filterset_fields = ["id", "key", "code", "slug", "name", "is_active"]
+    search_fields = ["^key", "^code", "^slug", "name"]
+    ordering_fields = ["name", "key", "code", "id"]
+
+class OptionListCreateAPIView(generics.ListCreateAPIView):
+    queryset = Option.objects.select_related("set").all().order_by("id")
+    serializer_class = OptionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["id", "set", "set__key", "set__code", "set__slug", "set__name", "code", "is_active"]
+    search_fields = ["label", "name"]
+    ordering_fields = ["id"]
+
+# ---------- Business structure (entity-scoped, list/create only)
+class BusinessUnitListCreateAPIView(EntityScopedListCreateMixin, generics.ListCreateAPIView):
+    queryset = BusinessUnit.objects.select_related("entity").all().order_by("id")
+    serializer_class = BusinessUnitSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["id", "entity","name"]
+    search_fields = ["name"]
+    ordering_fields = ["name", "id"]
+
+class DepartmentListCreateAPIView(EntityScopedListCreateMixin, generics.ListCreateAPIView):
+    queryset = Department.objects.select_related("entity").all().order_by("id")
+    serializer_class = DepartmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["id", "entity","name"]
+    search_fields = [ "name"]
+    ordering_fields = ["name", "id"]
+
+class LocationListCreateAPIView(EntityScopedListCreateMixin, generics.ListCreateAPIView):
+    queryset = Location.objects.select_related("entity").all().order_by("id")
+    serializer_class = LocationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["id", "entity","name"]
+    search_fields = ["name"]
+    ordering_fields = ["name", "id"]
+
+class CostCenterListCreateAPIView(EntityScopedListCreateMixin, generics.ListCreateAPIView):
+    queryset = CostCenter.objects.select_related("entity").all().order_by("id")
+    serializer_class = CostCenterSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ["id", "entity","name"]
+    search_fields = ["name"]
+    ordering_fields = ["name", "id"]
+
+
+# EA_FK, EA_REL = fk_names(EmploymentAssignment, Employee)
+# BA_FK, BA_REL = fk_names(EmployeeBankAccount,   Employee)
+# DOC_FK, DOC_REL = fk_names(EmployeeDocument,    Employee)
+# SI_FK,  SI_REL  = fk_names(EmployeeStatutoryIN, Employee)
+
+class EmployeeListCreateAPIView(_g.ListCreateAPIView):
+    serializer_class = EmployeeSerializer
+    permission_classes = [_p.IsAuthenticated]
+    pagination_class = None  # optional: plain arrays
+
+    def get_queryset(self):
+        return (
+            Employee.objects
+            .select_related("statutory_in")  # OneToOne -> select_related
+            .prefetch_related(
+                Prefetch("assignments",   queryset=EmploymentAssignment.objects.all()),
+                Prefetch("bank_accounts", queryset=EmployeeBankAccount.objects.all()),
+                Prefetch("documents",     queryset=EmployeeDocument.objects.all()),
+                Prefetch("compensations", queryset=EmployeeCompensation.objects.all()),
+            )
+            .order_by("id")
+        )
+
+class EmployeeDetailAPIView(_g.RetrieveUpdateDestroyAPIView):
+    serializer_class = EmployeeSerializer
+    permission_classes = [_p.IsAuthenticated]
+
+    def get_queryset(self):
+        # same prefetch as list for consistent nested output
+        return EmployeeListCreateAPIView().get_queryset()
+

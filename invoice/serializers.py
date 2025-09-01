@@ -2808,9 +2808,15 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                 # 2. Fetch IRN from EInvoiceDetails
                 content_type = ContentType.objects.get_for_model(order)
                 einv = EInvoiceDetails.objects.filter(content_type=content_type, object_id=order.id).first()
+                serializer = EwaybillFullSerializer(order)
+                json_data = json.dumps(serializer.data['ewaybill_payload'], indent=4, default=str)
+                print(json_data)
 
-                if not einv or not einv.irn:
-                    return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
+                # if not einv or not einv.irn:
+                #     serializer = EwaybillFullSerializer(order)
+                #     json_data = json.dumps(serializer.data['ewaybill_payload'], indent=4, default=str)
+                #     print(json_data)
+                #     return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
                 
                 
 
@@ -2819,7 +2825,8 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
 
             
-            if mode !="none":
+            elif mode !="none":
+                
                 einvoice_data = SalesOrderFullSerializer(order,context={"mode": mode}).data
                 json_data = json.dumps(einvoice_data, indent=4, default=str)
 
@@ -6681,6 +6688,107 @@ class SalesOrdereinvoiceSerializer(serializers.ModelSerializer):
 
 
     # Sales Order Item Serializer
+
+
+class EWayBillItemSerializer(serializers.Serializer):
+    productName = serializers.CharField(source='productdesc')
+    productDesc = serializers.CharField(source='productdesc')
+    hsnCode = serializers.SerializerMethodField()
+    quantity = serializers.DecimalField(source='orderqty', max_digits=14, decimal_places=4)
+    qtyUnit = serializers.SerializerMethodField()
+    taxableAmount = serializers.DecimalField(source='amount', max_digits=14, decimal_places=2)
+    sgstRate = serializers.DecimalField(source='sgstpercent', max_digits=14, decimal_places=2)
+    cgstRate = serializers.DecimalField(source='cgstpercent', max_digits=14, decimal_places=2)
+    igstRate = serializers.DecimalField(source='igstpercent', max_digits=14, decimal_places=2)
+    cessRate = serializers.DecimalField(source='cess', max_digits=14, decimal_places=2)
+
+    def get_hsnCode(self, obj):
+        return int(obj.product.hsn.hsnCode) if obj.product and obj.product.hsn else None
+
+    def get_qtyUnit(self, obj):
+        return obj.product.unitofmeasurement.unitcode if obj.product and obj.product.unitofmeasurement else None
+
+
+class EwaybillFullSerializer(serializers.ModelSerializer):
+    ewaybill_payload = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesOderHeader
+        fields = [
+            # Add any other fields as needed
+            'ewaybill_payload',
+        ]
+
+    def get_ewaybill_payload(self, obj):
+        entity = obj.entity
+        account = obj.accountid
+        dispatch = obj.subentity
+        ship = obj.shippedto
+        ewbdtls = getattr(obj, 'ewbdtls', None)
+        items = obj.saleInvoiceDetails.all()
+
+        payload = {
+            "supplyType": "O",
+            "subSupplyType": "1",
+            "subSupplyDesc": " ",
+            "docType": "INV",
+            "docNo": obj.invoicenumber,
+            "docDate": obj.sorderdate.strftime("%d/%m/%Y") if obj.sorderdate else None,
+
+            # FROM party
+            "fromGstin": entity.gstno,
+            "fromTrdName": entity.entityname,
+            "fromAddr1": entity.address,
+            "fromAddr2": entity.address2,
+            "fromPlace": entity.city.cityname if entity.city else None,
+            "fromPincode": int(entity.city.pincode) if entity.city and entity.city.pincode else None,
+            "fromStateCode": int(entity.state.statecode) if entity.state and entity.state.statecode else None,
+            "actFromStateCode": int(entity.state.statecode) if entity.state and entity.state.statecode else None,
+
+            # TO party
+            "toGstin": account.gstno,
+            "toTrdName": account.accountname,
+            "toAddr1": account.address1,
+            "toAddr2": account.address2,
+            "toPlace": account.city.cityname if account.city else None,
+            "toPincode": int(account.city.pincode) if account.city and account.city.pincode else None,
+            "toStateCode": int(account.state.statecode) if account.state and account.state.statecode else None,
+            "actToStateCode": int(account.state.statecode) if account.state and account.state.statecode else None,
+            "transactionType": 1,
+
+            # Dispatch / Ship
+            # "dispatchFromGSTIN": dispatch.gstno if dispatch else entity.gstno,
+            # "dispatchFromTradeName": dispatch.subentityname if dispatch else entity.entityname,
+            # "shipToGSTIN": ship.gstno if ship else account.gstno,
+            # "shipToTradeName": ship.full_name if ship else account.accountname,
+
+            # Totals
+            "totalValue": float(obj.stbefdiscount or 0),
+            "cgstValue": float(obj.cgst or 0),
+            "sgstValue": float(obj.sgst or 0),
+            "igstValue": float(obj.igst or 0),
+            "cessValue": float(obj.cess or 0),
+            "cessNonAdvolValue": 0,
+            "totInvValue": float(obj.gtotal or 0),
+
+            # Transport
+            "transMode": ewbdtls.TransMode if ewbdtls else "1",
+            "transDistance": str(ewbdtls.Distance if ewbdtls else 1),
+            "transporterId": ewbdtls.TransId if ewbdtls else "",
+            "transporterName": ewbdtls.TransName if ewbdtls else "",
+            "transDocNo": ewbdtls.TransDocNo if ewbdtls else "",
+            "transDocDate": ewbdtls.TransDocDt.strftime("%d/%m/%Y") if ewbdtls and ewbdtls.TransDocDt else "",
+            "vehicleNo": ewbdtls.VehNo if ewbdtls else "",
+            "vehicleType": ewbdtls.VehType if ewbdtls else "R",
+
+            # Items
+            "itemList": EWayBillItemSerializer(items, many=True).data
+        }
+
+        return payload
+
+
+
 class SalesOrderItemSerializer(serializers.ModelSerializer):
     SlNo = serializers.SerializerMethodField()
     IsServc = serializers.SerializerMethodField()
@@ -6863,7 +6971,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
 
         final_data = {"Version": "1.1", **data}
 
-        mode = self.context.get("mode", "both")
+        mode = self.context.get("mode", "both") 
 
         if mode == "einvoice":
             final_data.pop("EwbDtls", None)

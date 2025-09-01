@@ -26,6 +26,9 @@ class OwnerShipTypesAdmin(ImportExportMixin,admin.ModelAdmin):
 class EntityAdmin(admin.ModelAdmin):
     list_display = ['entityname', 'address']
     search_fields = ['entityname', 'address']
+    # search_fields = ("entityname")   # <-- REQUIRED for autocomplete_fields to work
+    # list_display  = ("entityname")
+    ordering      = ["entityname"]
     list_per_page = 50
 
 class SubEntityAdmin(admin.ModelAdmin):
