@@ -10,10 +10,17 @@ class BusinessUnit(TimeStampedModel):
     def __str__(self): return f"{self.entity.entityname}:{self.name}"
 
 class Department(TimeStampedModel):
-    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="departments",null = True)
-    name = models.CharField(max_length=128,null=True, blank=True)
-    class Meta: unique_together = [("entity", "name")]
-    def __str__(self): return f"{self.entity.entityname}:{self.name}"
+    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="departments", null=True)
+    name   = models.CharField(max_length=128, null=True, blank=True)
+
+    class Meta:
+        # temporarily remove unique_together to break the bad op chain
+        # unique_together = [("entity", "name")]
+        pass
+
+    def __str__(self):
+        return f"{self.entity.entityname}:{self.name}"
+
 
 class Location(TimeStampedModel):
     entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="locations")
