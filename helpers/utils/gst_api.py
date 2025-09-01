@@ -34,6 +34,49 @@ def authenticate_gst(gst_details):
             return {"error": response_data.get("status_desc", "Authentication failed")}
     except requests.RequestException as e:
         return {"error": str(e)}
+    
+
+
+
+def authenticate_ewaybill(gst_details):
+    """
+    Authenticate with the e-Way Bill API and retrieve required headers if successful.
+    """
+    url = "https://api.mastergst.com/ewaybillapi/v1.03/authenticate"
+
+    headers = {
+        "accept": "application/json",
+        "ip_address": "10.178.787.78",
+        "client_id": gst_details.client_id,
+        "client_secret": gst_details.client_secret,
+        "gstin": gst_details.gstin,
+    }
+
+    params = {
+        "email": gst_details.email,
+        "username": gst_details.username,
+        "password": gst_details.password,
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response_data = response.json()
+
+        if response_data.get("status_cd") == "1":
+            return response_data.get("header")  # You can extract needed fields from this
+        else:
+            return {
+                "error": response_data.get("status_desc", "Authentication failed"),
+                "details": response_data
+            }
+
+    except requests.RequestException as e:
+        return {"error": str(e)}
+
+    
+
+
+
 
 def get_gst_details(entitygst):
     """
@@ -137,6 +180,61 @@ def gstinvoice(order, json_data):
 
     except Exception as e:
         return {"error": "Exception occurred during e-invoice generation", "details": str(e)}
+    
+
+
+
+import requests
+
+def create_ewaybill(order, json_data):
+    """
+    Create an e-Way Bill using the MasterGST API.
+    Expects `json_data` as a valid serialized JSON string.
+    """
+    try:
+        # 1. Get GST details
+        gst_details = Mastergstdetails.objects.first()
+        if not gst_details:
+            return {"error": "GST configuration not found."}
+
+        # 2. Authenticate for e-Way Bill (not e-Invoice)
+        auth_token = authenticate_ewaybill(gst_details)
+        if isinstance(auth_token, dict) and auth_token.get("error"):
+            return {"error": "Authentication failed", "details": auth_token}
+
+        # 3. Prepare headers and URL
+        url = "https://api.mastergst.com/ewaybillapi/v1.03/ewayapi/genewaybill"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "ip_address": "10.178.787.78",  # Static or make dynamic
+            "client_id": gst_details.client_id,
+            "client_secret": gst_details.client_secret,
+            "gstin": gst_details.gstin,
+            "username": gst_details.username,
+            "auth-token": auth_token
+        }
+        params = {"email": gst_details.email}
+
+        # 4. Call API
+        response = requests.post(url, headers=headers, params=params, data=json_data)
+        response_data = response.json()
+
+        # 5. Handle success
+        if response_data.get("status_cd") == "1" and "ewayBillNo" in response_data.get("data", {}):
+            data = response_data["data"]
+            order.ewaybill_no = data.get("ewayBillNo")
+            order.ewaybill_date = data.get("ewayBillDate")
+            order.valid_upto = data.get("validUpto")
+            order.qr_code = data.get("qrCode")
+            order.save()
+
+        return response_data
+
+    except Exception as e:
+        return {"error": "Exception occurred during e-Way Bill generation", "details": str(e)}
+
+
     
 
 
