@@ -721,16 +721,16 @@ class CostCenterSerializer(serializers.ModelSerializer):
 class GradeBandSerializer(serializers.ModelSerializer):
     class Meta:
         model = GradeBand
-        fields = ["id", "entity", "code", "name", "level", "min_ctc", "max_ctc", "created", "modified"]
-        read_only_fields = ["id", "created", "modified"]
+        fields = ["id", "entity", "code", "name", "level", "min_ctc", "max_ctc"]
+        read_only_fields = ["id"]
 
 class DesignationSerializer(serializers.ModelSerializer):
     grade_band_code = serializers.CharField(source="grade_band.code", read_only=True)
 
     class Meta:
         model = Designation
-        fields = ["id", "entity", "name", "grade_band", "grade_band_code", "parent", "created", "modified"]
-        read_only_fields = ["id", "created", "modified"]
+        fields = ["id", "entity", "name", "grade_band", "grade_band_code", "parent"]
+        read_only_fields = ["id"]
 
     def validate(self, attrs):
         entity = attrs.get("entity") or (self.instance.entity if self.instance else None)
