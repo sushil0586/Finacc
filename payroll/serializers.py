@@ -732,12 +732,27 @@ class PayStructureNestedCreateSerializer(serializers.ModelSerializer):
 class OptionSetSerializer(serializers.ModelSerializer):
     class Meta:
         model = OptionSet
-        fields = "__all__"
+        fields = ["id", "key", "entity"]  # add created/modified if you want
 
 class OptionSerializer(serializers.ModelSerializer):
+    # expose related info read-only
+    set_key = serializers.CharField(source="set.key", read_only=True)
+    set_entity = serializers.IntegerField(source="set.entity_id", read_only=True)
+
     class Meta:
         model = Option
-        fields = "__all__"
+        fields = [
+            "id",
+            # "set",         # PK of OptionSet (writable)
+            "set_key",     # read-only
+            "set_entity",  # read-only
+            "code",
+            "label",
+            # "sort_order",
+            # "is_active",
+            # "extra",
+        ]
+        read_only_fields = ["id"]
 
 class BusinessUnitSerializer(serializers.ModelSerializer):
     class Meta:

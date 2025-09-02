@@ -767,18 +767,27 @@ class OptionSetListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = OptionSetSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    #filterset_fields = ["id", "key", "code", "slug", "name", "is_active"]
-    search_fields = ["^key", "^code", "^slug", "name"]
-    ordering_fields = ["name", "key", "code", "id"]
+    filterset_fields = {"key": ["exact", "icontains"], "entity": ["exact", "isnull"]}
+    search_fields = ["key"]
+    ordering_fields = ["id", "key"]
+    ordering = ["id"]
 
 class OptionListCreateAPIView(generics.ListCreateAPIView):
     queryset = Option.objects.select_related("set").all().order_by("id")
     serializer_class = OptionSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["id", "set", "set__key", "set__code", "set__slug", "set__name", "code", "is_active"]
-    search_fields = ["label", "name"]
-    ordering_fields = ["id"]
+    filterset_fields = {
+        "set": ["exact"],                 # by set id
+        "set__key": ["exact", "icontains"],
+        "set__entity": ["exact", "isnull"],
+        "code": ["exact", "icontains"],
+        "is_active": ["exact"],
+        "label": ["icontains"],
+    }
+    search_fields = ["label", "code", "set__key"]
+    ordering_fields = ["sort_order", "label", "code", "id"]
+    ordering = ["sort_order", "id"]
 
 # ---------- Business structure (entity-scoped, list/create only)
 class BusinessUnitListCreateAPIView(EntityScopedListCreateMixin, generics.ListCreateAPIView):
