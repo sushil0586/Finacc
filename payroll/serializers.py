@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from payroll.models import salarycomponent,employeesalary,salarytrans,designation,EmployeePayrollComponent,EntityPayrollComponentConfig,employeenew, CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent
+from payroll.models import salarycomponent,employeesalary,salarytrans,EmployeePayrollComponent,EntityPayrollComponentConfig,employeenew, CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent
 from Authentication.serializers import Registerserializers
 from Authentication.models import User
 from django.contrib.auth.hashers import make_password
@@ -13,7 +13,7 @@ from django.db import transaction
 from django.apps import apps
 from payroll.models import (
     OptionSet, Option,
-    BusinessUnit, Department, Location, CostCenter,
+    BusinessUnit, Department, Location, CostCenter,GradeBand, Designation
 )
 
 from rest_framework import serializers as _s
@@ -121,11 +121,7 @@ class salarytransserializer(serializers.ModelSerializer):
         model = salarytrans
         fields = ('id','salaryamountexpected','salaryamountactual','percentageofctc','salaryvalue','entity','createdby','isactive',)
 
-class designationserializer(serializers.ModelSerializer):
-    #id = serializers.IntegerField()
-    class Meta:
-        model = designation
-        fields = ('id','designationname','designationcode',)
+
 
 
 
@@ -194,60 +190,7 @@ class EmployeePayrollComponentSerializer(serializers.ModelSerializer):
             'overridden_value', 'final_value'
         ]
 
-class EmployeeSerializer(serializers.ModelSerializer):
-    payroll_components = EmployeePayrollComponentSerializer(
-        many=True,
-        source='employeepayrollcomponent_set',
-        required=False
-    )
 
-    class Meta:
-        model = employeenew
-        fields = ['firstname','lastname','middlename','email','password','employeeid','is_active','role','username',
-            'tax_regime', 'dateofjoining', 'department', 'designation',
-            'reportingmanager', 'bankname', 'bankaccountno', 'pan', 'address1', 'address2',
-            'country', 'state', 'district', 'city', 'entity', 'createdby','id',
-            'payroll_components'
-        ]
-
-    def create(self, validated_data):
-        payroll_data = validated_data.pop('employeepayrollcomponent_set', [])
-        emp = employeenew.objects.create(**validated_data)
-
-        for component_data in payroll_data:
-            EmployeePayrollComponent.objects.create(employee=emp, **component_data)
-        return emp
-
-    def update(self, instance, validated_data):
-        payroll_data = validated_data.pop('employeepayrollcomponent_set', [])
-
-        # Update employee fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        # Update payroll components (upsert logic)
-        existing_ids = [item.id for item in instance.employeepayrollcomponent_set.all()]
-        sent_ids = []
-
-        for comp_data in payroll_data:
-            comp_id = comp_data.get('id', None)
-            if comp_id and comp_id in existing_ids:
-                # Update existing component
-                epc = EmployeePayrollComponent.objects.get(id=comp_id, employee=instance)
-                for attr, value in comp_data.items():
-                    setattr(epc, attr, value)
-                epc.save()
-                sent_ids.append(comp_id)
-            else:
-                # Create new component
-                epc = EmployeePayrollComponent.objects.create(employee=instance, **comp_data)
-                sent_ids.append(epc.id)
-
-        # Optionally delete components not sent in update
-        EmployeePayrollComponent.objects.filter(employee=instance).exclude(id__in=sent_ids).delete()
-
-        return instance
     
 
 class EntityPayrollComponentConfigSerializer(serializers.ModelSerializer):
@@ -775,6 +718,28 @@ class CostCenterSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "entity"]
 
 
+class GradeBandSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GradeBand
+        fields = ["id", "entity", "code", "name", "level", "min_ctc", "max_ctc", "created", "modified"]
+        read_only_fields = ["id", "created", "modified"]
+
+class DesignationSerializer(serializers.ModelSerializer):
+    grade_band_code = serializers.CharField(source="grade_band.code", read_only=True)
+
+    class Meta:
+        model = Designation
+        fields = ["id", "entity", "name", "grade_band", "grade_band_code", "parent", "created", "modified"]
+        read_only_fields = ["id", "created", "modified"]
+
+    def validate(self, attrs):
+        entity = attrs.get("entity") or (self.instance.entity if self.instance else None)
+        gb = attrs.get("grade_band") or (self.instance.grade_band if self.instance else None)
+        if gb and entity and gb.entity_id != entity.id:
+            raise serializers.ValidationError("grade_band.entity must match designation.entity")
+        return attrs
+
+
 # ---- child serializers ----
 class EmploymentAssignmentSerializer(_s.ModelSerializer):
     id = _s.IntegerField(required=False)
@@ -928,5 +893,14 @@ class EmployeeSerializer(_s.ModelSerializer):
             self._upsert_one(parent=instance, item=statutory_in, attr_name="statutory_in",
                             serializer_class=EmployeeStatutoryINSerializer, fk_name="employee", partial=partial)
         return instance
+    
+
+class ManagerListItemSerializer(serializers.ModelSerializer):
+    
+
+    class Meta:
+        model = Employee
+        fields = ["id", "full_name", "display_name", "code"]
+        read_only_fields = fields
 
 
