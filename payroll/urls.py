@@ -5,7 +5,9 @@ from .views import (
     OptionSetListCreateAPIView, OptionListCreateAPIView,
     BusinessUnitListCreateAPIView, DepartmentListCreateAPIView,
     LocationListCreateAPIView, CostCenterListCreateAPIView,
-    EmployeeListCreateAPIView, EmployeeDetailAPIView
+    EmployeeListCreateAPIView, EmployeeDetailAPIView,
+    GradeBandListCreateAPIView, GradeBandRetrieveUpdateDestroyAPIView,
+    DesignationListCreateAPIView, DesignationRetrieveUpdateDestroyAPIView,ManagersListView,
 )
 
 
@@ -19,7 +21,6 @@ urlpatterns  = [
     # path('employee',views.employeeApiView.as_view(),name = 'salarycomponent'),
     # path('employee/<int:employee>',views.employeeupdatedelview.as_view(),name = 'salarycomponent'),
     path('employeesalary',views.employeesalaryApiView.as_view(),name = 'salarycomponent'),
-    path('designation',views.designationApiView.as_view(),name = 'salarycomponent'),
     path('getsalarystructure',views.getsalarystructure.as_view(),name = 'salarycomponent'),
     path('employee/<int:id>/', views.EmployeePayrollAPIView.as_view(), name='employee-detail'),
     path('employee/', views.EmployeePayrollAPIView.as_view(), name='employee-create'),
@@ -58,4 +59,9 @@ urlpatterns  = [
     path("cost-centers/", CostCenterListCreateAPIView.as_view(), name="costcenter-list-create"),
     path("employees/", EmployeeListCreateAPIView.as_view(), name="employee-list-create"),
     path("employees/<int:pk>/", EmployeeDetailAPIView.as_view(), name="employee-detail"),
+    path("grade-bands/",     GradeBandListCreateAPIView.as_view(), name="gradeband-list-create"),
+    path("grade-bands/<int:pk>/", GradeBandRetrieveUpdateDestroyAPIView.as_view(), name="gradeband-detail"),
+    path("designations/",    DesignationListCreateAPIView.as_view(), name="designation-list-create"),
+    path("designations/<int:pk>/", DesignationRetrieveUpdateDestroyAPIView.as_view(), name="designation-detail"),
+    path("managers/", ManagersListView.as_view(), name="managers-list"),
 ]

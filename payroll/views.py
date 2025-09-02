@@ -13,11 +13,11 @@ from .services import apply_structure_to_entity
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status,generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
-from payroll.serializers import salarycomponentserializer,employeesalaryserializer,designationserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer,CalculationTypeSerializer,BonusFrequencySerializer,CalculationValueSerializer,ComponentTypeSerializer,PayrollComponentSerializer,EntityPayrollComponentSerializer,PayStructureListReadSerializer,PayStructureReadSerializer,PayStructureComponentReadSerializer,PayStructureSerializer, PayStructureComponentSerializer,PayStructureNestedCreateSerializer
-from payroll.models import salarycomponent,employeesalary,designation,EntityPayrollComponentConfig,employeenew,CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent,EntityPayrollComponent,PayStructure, PayStructureComponent
+from payroll.serializers import salarycomponentserializer,employeesalaryserializer,reportingmanagerserializer,EmployeeSerializer,EntityPayrollComponentConfigSerializer,CalculationTypeSerializer,BonusFrequencySerializer,CalculationValueSerializer,ComponentTypeSerializer,PayrollComponentSerializer,EntityPayrollComponentSerializer,PayStructureListReadSerializer,PayStructureReadSerializer,PayStructureComponentReadSerializer,PayStructureSerializer, PayStructureComponentSerializer,PayStructureNestedCreateSerializer
+from payroll.models import salarycomponent,employeesalary,EntityPayrollComponentConfig,employeenew,CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent,EntityPayrollComponent,PayStructure, PayStructureComponent
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
-from django.db.models import Sum,OuterRef,Subquery,F
+from django.db.models import Sum,OuterRef,Subquery,F,Count,IntegerField
 from django.db.models import Prefetch
 from financial.models import account
 from inventory.models import Product
@@ -39,15 +39,17 @@ from Authentication.models import User
 from payroll.utils.payroll import calculate_salary_components
 from payroll.api.filters import EntityPayrollComponentFilter
 from rest_framework.permissions import IsAuthenticated
+from django.db.models.functions import Coalesce
 
 
 from payroll.models import (
     OptionSet, Option,
-    BusinessUnit, Department, Location, CostCenter,
+    BusinessUnit, Department, Location, CostCenter,GradeBand, Designation,
 )
 from .serializers import (
     OptionSetSerializer, OptionSerializer,
     BusinessUnitSerializer, DepartmentSerializer, LocationSerializer, CostCenterSerializer,
+     GradeBandSerializer, DesignationSerializer,ManagerListItemSerializer,
 )
 
 from payroll.models import (
@@ -60,6 +62,48 @@ EmployeeCompensation
 )
 
 from rest_framework import generics as _g, permissions as _p
+
+
+
+class GradeBandListCreateAPIView(generics.ListCreateAPIView):
+    queryset = GradeBand.objects.select_related("entity").all().order_by("entity_id", "level", "code")
+    serializer_class = GradeBandSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = {
+        "entity": ["exact"],
+        "code": ["exact", "icontains"],
+        "name": ["icontains"],
+        "level": ["exact", "gte", "lte"],
+    }
+    search_fields = ["code", "name"]
+    ordering_fields = ["entity", "level", "code", "name", "id"]
+    ordering = ["entity", "level", "code"]
+
+class GradeBandRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = GradeBand.objects.all()
+    serializer_class = GradeBandSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class DesignationListCreateAPIView(generics.ListCreateAPIView):
+    queryset = Designation.objects.select_related("entity", "grade_band").all().order_by("entity_id", "name")
+    serializer_class = DesignationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = {
+        "entity": ["exact"],
+        "name": ["icontains"],
+        "grade_band": ["exact"],
+        "grade_band__code": ["exact", "icontains"],
+    }
+    search_fields = ["name", "grade_band__code"]
+    ordering_fields = ["entity", "name", "grade_band", "id"]
+    ordering = ["entity", "name"]
+
+class DesignationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Designation.objects.all()
+    serializer_class = DesignationSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
 
 
@@ -160,18 +204,7 @@ class employeesalaryApiView(ListCreateAPIView):
 
         return query
     
-class designationApiView(ListAPIView):
 
-    serializer_class = designationserializer
-    permission_classes = (permissions.IsAuthenticated,)
-
-    filter_backends = [DjangoFilterBackend]
-   # filterset_fields = ['tdsreturn']
-
-      
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return designation.objects.filter(entity = entity)
     
 
 
@@ -857,4 +890,57 @@ class EmployeeDetailAPIView(_g.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         # same prefetch as list for consistent nested output
         return EmployeeListCreateAPIView().get_queryset()
+    
+
+def _active_on(queryset, on):
+    return queryset.filter(
+        effective_from__lte=on
+    ).filter(
+        Q(effective_to__isnull=True) | Q(effective_to__gte=on)
+    )
+
+class ManagersListView(generics.ListAPIView):
+    """
+    GET /api/payroll/managers/?on=YYYY-MM-DD&entity=<id>
+    - on (optional): date to evaluate active assignments (default: today)
+    - entity (optional): limit to employees within this entity
+    Returns unique employees who are managers on that date, with direct_reports_count.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ManagerListItemSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["full_name", "display_name", "code"]
+    ordering_fields = ["full_name", "display_name", "id"]
+    ordering = ["full_name", "display_name"]
+
+    def get_queryset(self):
+        on_str = self.request.query_params.get("on")
+        on = parse_date(on_str) if on_str else date.today()
+
+        active = _active_on(EmploymentAssignment.objects.all(), on)
+
+        # Optional: restrict by entity (based on the employee’s entity)
+        entity_id = self.request.query_params.get("entity")
+        if entity_id:
+            active = active.filter(employee__entity_id=entity_id)
+
+        # Distinct manager ids with at least one active report
+        manager_ids = active.filter(manager_employee__isnull=False)\
+                            .values_list("manager_employee_id", flat=True)\
+                            .distinct()
+
+        # Annotate each manager with a count of direct reports on 'on'
+        reports_subq = active.filter(manager_employee_id=OuterRef("pk"))\
+                             .values("manager_employee_id")\
+                             .annotate(c=Count("id"))\
+                             .values("c")[:1]
+
+        qs = Employee.objects.filter(id__in=manager_ids)\
+                             .annotate(
+                                 direct_reports_count=Coalesce(
+                                     Subquery(reports_subq, output_field=IntegerField()), 0
+                                 )
+                             )
+
+        return qs
 

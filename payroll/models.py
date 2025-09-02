@@ -9,7 +9,7 @@ from financial.models import account,accountHead
 from inventory.models import Product
 from entity.models import Entity,Role
 from inventory.models import Product
-from django.db.models import Sum 
+from django.db.models import Sum
 import datetime
 from geography.models import Country,State,District,City
 from .base import TimeStampedModel, EffectiveDatedModel
@@ -93,18 +93,9 @@ class Option(TimeStampedModel):
 
 
 
-    
-
-class designation(TrackingModel):
-
-    designationname = models.CharField(max_length= 200,verbose_name= 'designation name')
-    designationcode = models.CharField(max_length= 200,verbose_name= 'designation code')
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
-    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True)
 
 
-    def __str__(self):
-        return f'{self.designationname}'
+
 
 
 class TaxRegime(models.Model):
@@ -137,7 +128,7 @@ class CalculationType(models.Model):
 class BonusFrequency(models.Model):
     name = models.CharField(max_length=50)  # e.g., Monthly, Quarterly, Yearly, Adhoc
 
-  
+
     def __str__(self):
         return self.name
 
@@ -147,7 +138,7 @@ class CalculationValue(models.Model):
 
     def __str__(self):
         return f'{self.value} - {self.description}'
-    
+
 
 
 
@@ -197,7 +188,7 @@ class EntityPayrollComponentConfig(models.Model):
 
 
 
-    
+
 
 class salarycomponent(TrackingModel):
 
@@ -213,13 +204,13 @@ class salarycomponent(TrackingModel):
 
     def __str__(self):
         return f'{self.salarycomponentname}'
-    
+
 
 # class employee(TrackingModel):
 
 #     employee = models.OneToOneField(to= User, on_delete= models.CASCADE,primary_key=True)
-   
-   
+
+
 #     tax_regime = models.ForeignKey(TaxRegime, on_delete=models.SET_NULL, null=True)
 #     firstname = models.CharField(max_length= 200,verbose_name= 'firstname',null=True)
 #     lastname = models.CharField(max_length= 200,verbose_name= 'lastname',null=True)
@@ -245,7 +236,7 @@ class salarycomponent(TrackingModel):
 
 #     def __str__(self):
 #         return f'{self.employeeid}'
-    
+
 
 class employeenew(TrackingModel):
 
@@ -271,7 +262,7 @@ class employeenew(TrackingModel):
     employeeid = models.CharField(max_length= 200,verbose_name= 'employee id',null = True)
     dateofjoining = models.DateTimeField(verbose_name='Date Of Joining',auto_now_add=True, blank=True)
    # department = models.ForeignKey(Department,on_delete=models.CASCADE,verbose_name= 'department',null= True)
-    designation = models.ForeignKey(designation,on_delete=models.CASCADE,verbose_name= 'designation',null= True)
+   # designation = models.ForeignKey(designation,on_delete=models.CASCADE,verbose_name= 'designation',null= True)
     reportingmanager = models.ForeignKey("self", on_delete= models.CASCADE,null=True,blank = True,verbose_name='Reporting Manager',related_name='rmanager')
     bankname = models.CharField(max_length= 50,verbose_name= 'Bank Name',blank = True,null=True)
     bankaccountno = models.CharField(max_length= 20,verbose_name= 'Bank Account No',blank = True,null=True)
@@ -302,11 +293,11 @@ class EmployeePayrollComponent(models.Model):
     updated_on = models.DateTimeField(auto_now=True)
 
 
-    
+
 class employeesalary(TrackingModel):
 
     employee = models.ForeignKey(to= employeenew, on_delete= models.CASCADE,null=True)
-    
+
     scomponent = models.ForeignKey(to= salarycomponent, on_delete= models.CASCADE,null=True)
     percentageofctc =  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'percentage of ctc')
     salaryvalue=  models.DecimalField(max_digits=10, decimal_places=2,default=0,verbose_name= 'Component value')
@@ -743,8 +734,8 @@ class ComponentFamily(TimeStampedModel):
 
 class PayrollComponentGlobal(TimeStampedModel, EffectiveDatedModel):
     family = models.ForeignKey("ComponentFamily", related_name="versions",
-                               on_delete=models.PROTECT,null = True,blank = True)  
-    
+                               on_delete=models.PROTECT,null = True,blank = True)
+
     entity = models.ForeignKey(
         Entity, null=True, blank=True, on_delete=models.PROTECT,
         related_name="payroll_component_versions"
@@ -878,7 +869,7 @@ class PayrollComponentGlobal(TimeStampedModel, EffectiveDatedModel):
 
         if self.code in {"PF_EMP", "PF_EMPR"} and self.pf_include:
             raise ValidationError("PF components should not include themselves in PF base (pf_include must be False).")
-        
+
     @classmethod
     def resolve_for(cls, family, as_of, entity=None):
         base = (cls.objects
@@ -925,7 +916,7 @@ class PayrollComponentCap(TimeStampedModel):
             if op not in dict(ConditionOp.choices):
                 raise ValidationError(f"Invalid condition op: {op}.")
 
-            
+
 
 class EntityPayrollComponent(TimeStampedModel, EffectiveDatedModel):
     # Required: every row belongs to an Entity
@@ -1097,7 +1088,7 @@ class EntityPayrollComponent(TimeStampedModel, EffectiveDatedModel):
             if g.policy_band_max_percent is not None and self.emp_max_percent is not None:
                 if self.emp_max_percent > g.policy_band_max_percent:
                     raise ValidationError(f"emp_max_percent {self.emp_max_percent}% exceeds Global max {g.policy_band_max_percent}%.")
-                
+
 
 class PayStructure(TimeStampedModel, EffectiveDatedModel):
     """
@@ -1347,7 +1338,7 @@ class PayStructureComponent(TimeStampedModel):
                     raise ValidationError(
                         f"emp_max_percent {self.emp_max_percent}% exceeds Global max {g.policy_band_max_percent}%."
                     )
-                
+
 
 # Very-stable global choices can stay as TextChoices
 class EmployeeStatus(models.TextChoices):
@@ -1364,6 +1355,63 @@ IFSC_RE = RegexValidator(r"^[A-Z]{4}0[A-Z0-9]{6}$", "Enter a valid IFSC")
 def limit_to(set_key):
     """Use in ForeignKey(limit_choices_to=...) to scope Option FKs by set key."""
     return {"set__key": set_key}
+
+
+class GradeBand(TimeStampedModel):
+    """
+    Pay grade/band per entity. Code is compact and stable; name is display.
+    Optional numeric level for sorting, and optional min/max CTC for reference.
+    """
+    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="grade_bands",null=True)
+    code   = models.CharField(max_length=32,null=True, blank=True)   # e.g. L1, L2, M1, SM2
+    name   = models.CharField(max_length=128,null=True, blank=True)  # e.g. "Junior", "Associate", "Manager"
+    level  = models.PositiveIntegerField(default=0)  # for ordering (0..n, lower means junior)
+    min_ctc = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+    max_ctc = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+
+    class Meta:
+        ordering = ["entity_id", "level", "code"]
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "code"], name="uniq_gradeband_entity_code"),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "level"], name="idx_gradeband_entity_level"),
+        ]
+
+    def __str__(self):
+        return f"{self.entity_id}:{self.code} — {self.name}"
+
+class Designation(TimeStampedModel):
+    """
+    Job title per entity. Usually mapped to a GradeBand.
+    """
+    entity     = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="designations",null=True)
+    name       = models.CharField(max_length=128,null=True, blank=True)  # e.g. "Software Engineer", "Senior Accountant"
+    grade_band = models.ForeignKey(
+        GradeBand, on_delete=models.PROTECT, related_name="designations", null=True, blank=True
+    )
+    # optional hierarchy
+    parent     = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="children"
+    )
+
+    class Meta:
+        ordering = ["entity_id", "name"]
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "name"], name="uniq_designation_entity_name"),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "name"], name="idx_designation_entity_name"),
+        ]
+
+    def clean(self):
+        # enforce entity consistency between designation and its grade_band
+        if self.grade_band_id and self.grade_band.entity_id != self.entity_id:
+            raise ValidationError("grade_band.entity must match designation.entity")
+
+    def __str__(self):
+        gb = f" [{self.grade_band.code}]" if self.grade_band_id else ""
+        return f"{self.entity_id}:{self.name}{gb}"
 
 # -------------------------
 # Basics
@@ -1414,8 +1462,9 @@ class EmploymentAssignment(TimeStampedModel, EffectiveDatedModel):
     location = models.ForeignKey(Location, on_delete=models.PROTECT, null=True, blank=True)
     cost_center = models.ForeignKey(CostCenter, on_delete=models.PROTECT, null=True, blank=True)
 
-    grade_band = models.CharField(max_length=64, blank=True, default="")
-    designation = models.CharField(max_length=128, blank=True, default="")
+    grade_band = models.ForeignKey(GradeBand, on_delete=models.PROTECT, null=True, blank=True, related_name="assignments")
+    designation = models.ForeignKey(Designation, on_delete=models.PROTECT, null=True, blank=True, related_name="assignments")
+
 
     # Reporting (kept on the dated slice to preserve history)
     manager_employee = models.ForeignKey(
@@ -1540,11 +1589,11 @@ class EmployeeDocument(TimeStampedModel):
     note = models.CharField(max_length=200, blank=True, default="")
     def __str__(self): return f"{self.employee} — {self.title}"
 
-    
 
 
 
-    
+
+
 
 
 

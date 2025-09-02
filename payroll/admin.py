@@ -3,7 +3,7 @@ from simple_history.admin import SimpleHistoryAdmin
 from django.forms.models import BaseInlineFormSet
 
 from .models import (
-     designation, TaxRegime, InvestmentSection,
+     TaxRegime, InvestmentSection,
     CalculationType, BonusFrequency, CalculationValue, ComponentType,
     PayrollComponent, EntityPayrollComponentConfig, salarycomponent,
     employeenew, EmployeePayrollComponent, employeesalary,
@@ -12,7 +12,7 @@ from .models import (
     BusinessUnit, Department, Location, CostCenter,
     OptionSet, Option,
     Employee, EmploymentAssignment, EmployeeCompensation,
-    EmployeeStatutoryIN, EmployeeBankAccount, EmployeeDocument,
+    EmployeeStatutoryIN, EmployeeBankAccount, EmployeeDocument,GradeBand, Designation,
 )
 from entity.models import Entity
 
@@ -47,7 +47,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 
-admin.site.register(designation)
 admin.site.register(TaxRegime)
 admin.site.register(InvestmentSection)
 admin.site.register(CalculationType)
@@ -610,6 +609,36 @@ class PayStructureComponentAdmin(admin.ModelAdmin):
 # =====================================================================
 # Inlines
 # =====================================================================
+
+
+TS_CREATED_CANDIDATES = ("created", "created_at", "created_on")
+TS_MODIFIED_CANDIDATES = ("modified", "modified_at", "updated_at", "updated_on")
+
+def _pick_ts(obj, candidates):
+    for name in candidates:
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return None
+
+@admin.register(GradeBand)
+class GradeBandAdmin(admin.ModelAdmin):
+    list_display = ("entity", "code", "name", "level", "min_ctc", "max_ctc", "created_col", "modified_col")
+
+    def created_col(self, obj): return _pick_ts(obj, TS_CREATED_CANDIDATES) or "-"
+    created_col.short_description = "Created"
+
+    def modified_col(self, obj): return _pick_ts(obj, TS_MODIFIED_CANDIDATES) or "-"
+    modified_col.short_description = "Modified"
+
+@admin.register(Designation)
+class DesignationAdmin(admin.ModelAdmin):
+    list_display = ("entity", "name", "grade_band", "parent", "created_col", "modified_col")
+
+    def created_col(self, obj): return _pick_ts(obj, TS_CREATED_CANDIDATES) or "-"
+    created_col.short_description = "Created"
+
+    def modified_col(self, obj): return _pick_ts(obj, TS_MODIFIED_CANDIDATES) or "-"
+    modified_col.short_description = "Modified"
 
 class EmploymentAssignmentInline(admin.StackedInline):
     model = EmploymentAssignment
