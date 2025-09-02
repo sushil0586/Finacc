@@ -1414,8 +1414,8 @@ class EmploymentAssignment(TimeStampedModel, EffectiveDatedModel):
     location = models.ForeignKey(Location, on_delete=models.PROTECT, null=True, blank=True)
     cost_center = models.ForeignKey(CostCenter, on_delete=models.PROTECT, null=True, blank=True)
 
-    grade_band = models.CharField(max_length=64, blank=True, default="")
-    designation = models.CharField(max_length=128, blank=True, default="")
+   # grade_band = models.CharField(max_length=64, blank=True, default="")
+   # designation = models.CharField(max_length=128, blank=True, default="")
 
     # Reporting (kept on the dated slice to preserve history)
     manager_employee = models.ForeignKey(
