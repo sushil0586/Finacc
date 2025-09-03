@@ -1419,9 +1419,15 @@ class Designation(TimeStampedModel):
 class Employee(TimeStampedModel):
     entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="employees")
     code = models.CharField(max_length=32, db_index=True)
+    username = models.CharField(max_length=200,null=True)
+    first_name = models.CharField(max_length=200,null=True)
+    last_name = models.CharField(max_length=200, null=True)
     full_name = models.CharField(max_length=200)
     display_name = models.CharField(max_length=200, blank=True, default="")
-    #status = models.CharField(max_length=16, choices=EmployeeStatus.choices, default=EmployeeStatus.ACTIVE)
+    status = models.ForeignKey(
+        Option, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="status_employees", limit_choices_to=limit_to("employee_status")
+    )
 
     work_email = models.EmailField(blank=True, default="", db_index=True)
     personal_email = models.EmailField(blank=True, default="")
@@ -1438,7 +1444,10 @@ class Employee(TimeStampedModel):
     )
 
     dob = models.DateField(null=True, blank=True)
-    #blood_group = models.CharField(max_length=8, blank=True, default="")
+    blood_group = models.ForeignKey(
+        Option, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="blood_group_employees", limit_choices_to=limit_to("blood_group")
+    )
     addr_current = models.TextField(blank=True, default="")
     addr_permanent = models.TextField(blank=True, default="")
     emergency_contact = models.CharField(max_length=200, blank=True, default="")  # "Name - Phone"
@@ -1448,7 +1457,7 @@ class Employee(TimeStampedModel):
 
     class Meta:
         unique_together = [("entity", "code")]
-       # indexes = [models.Index(fields=["entity", "status"])]
+        indexes = [models.Index(fields=["entity", "status"])]
 
     def __str__(self): return f"{self.entity.entityname}:{self.code} — {self.display_name or self.full_name}"
 
@@ -1512,9 +1521,15 @@ class EmployeeCompensation(TimeStampedModel, EffectiveDatedModel):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="compensations")
     ctc_annual = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     pay_structure_code = models.CharField(max_length=64, blank=True, default="")
-   # pay_cycle = models.CharField(max_length=16, choices=PayCycle.choices, default=PayCycle.MONTHLY)
+    pay_cycle = models.ForeignKey(
+        Option, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="pay_cycle_assignments", limit_choices_to=limit_to("pay_cycle")
+    )
     pay_group = models.CharField(max_length=64, blank=True, default="")
-   # work_calendar = models.CharField(max_length=64, blank=True, default="")
+    work_calendar = models.ForeignKey(
+        Option, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="work_calendar_assignments", limit_choices_to=limit_to("work_calendar")
+    )
     weekly_off_pattern = models.CharField(max_length=64, blank=True, default="")
 
     class Meta:
@@ -1533,8 +1548,8 @@ class EmployeeStatutoryIN(TimeStampedModel):
     uan = models.CharField(max_length=20, blank=True, default="")
     pf_number = models.CharField(max_length=32, blank=True, default="")
     esic_number = models.CharField(max_length=32, blank=True, default="")
-   # pt_state = models.CharField(max_length=64, blank=True, default="")
-    #lwf_state = models.CharField(max_length=64, blank=True, default="")
+    pt_state = models.CharField(max_length=64, blank=True, default="")
+    lwf_state = models.CharField(max_length=64, blank=True, default="")
     tax_regime = models.ForeignKey(
         Option, on_delete=models.PROTECT, null=True, blank=True,
         related_name="tax_regime_employees", limit_choices_to=limit_to("tax_regime")
