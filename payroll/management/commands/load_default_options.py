@@ -130,6 +130,7 @@ DEFAULT_DATA: Dict[str, List[Tuple[str, str]]] = {
 }
 
 
+
 def _choices_from_textchoices(tc) -> List[Tuple[str, str]]:
     """Convert a Django TextChoices class into [(value, label), ...]."""
     return [(value, label) for value, label in getattr(tc, "choices", [])]

@@ -1589,6 +1589,7 @@ class EmployeeBankAccount(TimeStampedModel):
 
 # -------------------------
 # Documents
+
 # -------------------------
 def employee_doc_path(instance, filename):
     return f"employee_docs/{instance.employee.entity.entityname}/{instance.employee.code}/{filename}"
