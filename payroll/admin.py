@@ -640,6 +640,136 @@ class DesignationAdmin(admin.ModelAdmin):
     def modified_col(self, obj): return _pick_ts(obj, TS_MODIFIED_CANDIDATES) or "-"
     modified_col.short_description = "Modified"
 
+class EmploymentAssignmentInline(admin.StackedInline):
+    model = EmploymentAssignment
+    fk_name = 'employee'
+    extra = 1
+    show_change_link = True
+    autocomplete_fields = ["business_unit", "department", "location", "cost_center", "manager_employee"]
+    fieldsets = (
+        ("Effective Dates", {
+            "fields": ("effective_from", "effective_to"),
+        }),
+        ("Org / Role", {
+            "fields": ("business_unit", "department", "location", "cost_center",
+                       "grade_band", "designation", "manager_employee", "hrbp"),
+        }),
+        ("Employment", {
+            "fields": ("employment_type", "work_type", "date_of_joining",
+                       "probation_end", "confirmation_date"),
+        }),
+        ("Separation (if applicable)", {
+            "classes": ("collapse",),
+            "fields": ("last_working_day", "separation_reason", "exit_status"),
+        }),
+    )
+    readonly_fields = ()
+    ordering = ("-effective_from",)
+
+
+class EmployeeCompensationInline(admin.StackedInline):
+    model = EmployeeCompensation
+    extra = 1
+    show_change_link = True
+    fieldsets = (
+        ("Effective Dates", {"fields": ("effective_from", "effective_to")}),
+        ("Compensation", {
+            "fields": ("ctc_annual", "pay_structure_code", "pay_cycle", "pay_group",
+                       "work_calendar", "weekly_off_pattern"),
+        }),
+    )
+    ordering = ("-effective_from",)
+
+
+# Enforce a single primary bank account per employee
+class _SinglePrimaryBankFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        primary_count = 0
+        for form in self.forms:
+            if not hasattr(form, "cleaned_data"):
+                continue
+            if form.cleaned_data.get("DELETE"):
+                continue
+            if form.cleaned_data.get("is_primary"):
+                primary_count += 1
+        if primary_count > 1:
+            raise ValidationError("Only one bank account can be marked as primary for an employee.")
+
+
+class EmployeeBankAccountInline(admin.TabularInline):
+    model = EmployeeBankAccount
+    formset = _SinglePrimaryBankFormSet
+    extra = 1
+    fields = ("bank_name", "ifsc", "account_masked", "account_type",
+              "upi_id", "payment_preference", "is_primary")
+    autocomplete_fields = ("account_type", "payment_preference")
+    show_change_link = True
+
+
+class EmployeeDocumentInline(admin.TabularInline):
+    model = EmployeeDocument
+    extra = 0
+    fields = ("title", "file", "category", "note", "created_at")
+    readonly_fields = ("created_at",)
+    autocomplete_fields = ("category",)
+    show_change_link = True
+
+
+# One-to-one inline for Statutory (show one form if missing)
+class EmployeeStatutoryINInline(admin.StackedInline):
+    model = EmployeeStatutoryIN
+    extra = 0
+    max_num = 1
+    fields = ("pan", "aadhaar_masked", "uan", "pf_number", "esic_number",
+              "pt_state", "lwf_state", "tax_regime", "regime_effective")
+    autocomplete_fields = ("tax_regime",)
+
+    def get_extra(self, request, obj=None, **kwargs):
+        # If employee has no statutory record yet, show one empty form
+        if obj and not hasattr(obj, "statutory_in"):
+            return 1
+        return 0
+
+
+# =====================================================================
+# Employee Admin
+# =====================================================================
+
+@admin.register(Employee)
+class EmployeeAdmin(admin.ModelAdmin):
+    list_display = ("entity", "code", "full_name", "display_name", "status", "work_email", "mobile")
+    list_filter = ("entity", "status", "gender", "marital_status")
+    search_fields = ("code", "full_name", "display_name", "work_email", "personal_email", "mobile")
+    ordering = ("entity", "code")
+    list_select_related = ("entity",)
+    list_per_page = 50
+    autocomplete_fields = ("entity", "gender", "marital_status")
+    readonly_fields = ("created_at", "updated_at") if hasattr(Employee, "created_at") else ()
+
+    fieldsets = (
+        ("Identity", {
+            "fields": ("entity", "code", "full_name", "display_name", "status", "photo"),
+        }),
+        ("Contact", {
+            "fields": ("work_email", "personal_email", "mobile"),
+        }),
+        ("Personal", {
+            "fields": ("gender", "dob", "blood_group", "marital_status"),
+        }),
+        ("Address & Emergency", {
+            "fields": ("addr_current", "addr_permanent", "emergency_contact"),
+        }),
+        ("Notes", {"fields": ("notes",)}),
+    )
+
+    inlines = [
+        EmployeeStatutoryINInline,
+        EmploymentAssignmentInline,
+        EmployeeCompensationInline,
+        EmployeeBankAccountInline,
+        EmployeeDocumentInline,
+    ]
 
 
 # =====================================================================
