@@ -1448,7 +1448,7 @@ class Employee(TimeStampedModel):
 
     class Meta:
         unique_together = [("entity", "code")]
-        indexes = [models.Index(fields=["entity", "status"])]
+       # indexes = [models.Index(fields=["entity", "status"])]
 
     def __str__(self): return f"{self.entity.entityname}:{self.code} — {self.display_name or self.full_name}"
 
