@@ -1421,7 +1421,7 @@ class Employee(TimeStampedModel):
     code = models.CharField(max_length=32, db_index=True)
     full_name = models.CharField(max_length=200)
     display_name = models.CharField(max_length=200, blank=True, default="")
-    status = models.CharField(max_length=16, choices=EmployeeStatus.choices, default=EmployeeStatus.ACTIVE)
+    #status = models.CharField(max_length=16, choices=EmployeeStatus.choices, default=EmployeeStatus.ACTIVE)
 
     work_email = models.EmailField(blank=True, default="", db_index=True)
     personal_email = models.EmailField(blank=True, default="")
@@ -1438,7 +1438,7 @@ class Employee(TimeStampedModel):
     )
 
     dob = models.DateField(null=True, blank=True)
-    blood_group = models.CharField(max_length=8, blank=True, default="")
+    #blood_group = models.CharField(max_length=8, blank=True, default="")
     addr_current = models.TextField(blank=True, default="")
     addr_permanent = models.TextField(blank=True, default="")
     emergency_contact = models.CharField(max_length=200, blank=True, default="")  # "Name - Phone"
@@ -1512,9 +1512,9 @@ class EmployeeCompensation(TimeStampedModel, EffectiveDatedModel):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="compensations")
     ctc_annual = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     pay_structure_code = models.CharField(max_length=64, blank=True, default="")
-    pay_cycle = models.CharField(max_length=16, choices=PayCycle.choices, default=PayCycle.MONTHLY)
+   # pay_cycle = models.CharField(max_length=16, choices=PayCycle.choices, default=PayCycle.MONTHLY)
     pay_group = models.CharField(max_length=64, blank=True, default="")
-    work_calendar = models.CharField(max_length=64, blank=True, default="")
+   # work_calendar = models.CharField(max_length=64, blank=True, default="")
     weekly_off_pattern = models.CharField(max_length=64, blank=True, default="")
 
     class Meta:
@@ -1533,8 +1533,8 @@ class EmployeeStatutoryIN(TimeStampedModel):
     uan = models.CharField(max_length=20, blank=True, default="")
     pf_number = models.CharField(max_length=32, blank=True, default="")
     esic_number = models.CharField(max_length=32, blank=True, default="")
-    pt_state = models.CharField(max_length=64, blank=True, default="")
-    lwf_state = models.CharField(max_length=64, blank=True, default="")
+   # pt_state = models.CharField(max_length=64, blank=True, default="")
+    #lwf_state = models.CharField(max_length=64, blank=True, default="")
     tax_regime = models.ForeignKey(
         Option, on_delete=models.PROTECT, null=True, blank=True,
         related_name="tax_regime_employees", limit_choices_to=limit_to("tax_regime")
