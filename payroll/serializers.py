@@ -904,3 +904,16 @@ class ManagerListItemSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class EmployeeSummarySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    code = serializers.CharField()
+    full_name = serializers.CharField()
+    status_name = serializers.CharField(allow_null=True)
+    work_email = serializers.EmailField(allow_blank=True)
+    mobile = serializers.CharField(allow_blank=True)
+    department = serializers.CharField(allow_null=True)
+    designation = serializers.CharField(allow_null=True)
+    manager = serializers.CharField(allow_null=True)
+    date_of_joining = serializers.DateTimeField(allow_null=True)
+
+
