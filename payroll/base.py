@@ -8,8 +8,8 @@ class TimeStampedModel(models.Model):
         abstract = True
 
 class EffectiveDatedModel(models.Model):
-    effective_from = models.DateField(db_index=True)
-    effective_to = models.DateField(null=True, blank=True, db_index=True)
+    effective_from = models.DateTimeField(db_index=True)
+    effective_to = models.DateTimeField(null=True, blank=True, db_index=True)
     class Meta:
         abstract = True
     @property

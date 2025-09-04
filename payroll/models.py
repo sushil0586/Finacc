@@ -334,7 +334,7 @@ class EmployeeInvestment(models.Model):
     section = models.ForeignKey(InvestmentSection, on_delete=models.CASCADE)
     sub_category = models.CharField(max_length=100, null=True, blank=True)
     amount = models.FloatField()
-    declared_on = models.DateField(auto_now_add=True)
+    declared_on = models.DateTimeField(auto_now_add=True)
     document = models.FileField(upload_to='investment_proofs/', null=True, blank=True)
     proof_status = models.CharField(
         max_length=20,
@@ -1443,7 +1443,7 @@ class Employee(TimeStampedModel):
         related_name="marital_status_employees", limit_choices_to=limit_to("marital_status")
     )
 
-    dob = models.DateField(null=True, blank=True)
+    dob = models.DateTimeField(null=True, blank=True)
     blood_group = models.ForeignKey(
         Option, on_delete=models.PROTECT, null=True, blank=True,
         related_name="blood_group_employees", limit_choices_to=limit_to("blood_group")
@@ -1491,12 +1491,12 @@ class EmploymentAssignment(TimeStampedModel, EffectiveDatedModel):
         related_name="work_type_assignments", limit_choices_to=limit_to("work_type")
     )
 
-    date_of_joining = models.DateField(null=True, blank=True)
-    probation_end = models.DateField(null=True, blank=True)
-    confirmation_date = models.DateField(null=True, blank=True)
+    date_of_joining = models.DateTimeField(null=True, blank=True)
+    probation_end = models.DateTimeField(null=True, blank=True)
+    confirmation_date = models.DateTimeField(null=True, blank=True)
 
     # Separation captured on the slice it applies to
-    last_working_day = models.DateField(null=True, blank=True)
+    last_working_day = models.DateTimeField(null=True, blank=True)
     separation_reason = models.CharField(max_length=200, blank=True, default="")
     exit_status = models.ForeignKey(
         Option, on_delete=models.PROTECT, null=True, blank=True,
@@ -1554,7 +1554,7 @@ class EmployeeStatutoryIN(TimeStampedModel):
         Option, on_delete=models.PROTECT, null=True, blank=True,
         related_name="tax_regime_employees", limit_choices_to=limit_to("tax_regime")
     )
-    regime_effective = models.DateField(null=True, blank=True)
+    regime_effective = models.DateTimeField(null=True, blank=True)
     def __str__(self): return f"StatutoryIN<{self.employee}>"
 
 # -------------------------
