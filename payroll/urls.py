@@ -7,7 +7,7 @@ from .views import (
     LocationListCreateAPIView, CostCenterListCreateAPIView,
     EmployeeListCreateAPIView, EmployeeDetailAPIView,
     GradeBandListCreateAPIView, GradeBandRetrieveUpdateDestroyAPIView,
-    DesignationListCreateAPIView, DesignationRetrieveUpdateDestroyAPIView,ManagersListView,
+    DesignationListCreateAPIView, DesignationRetrieveUpdateDestroyAPIView,ManagersListView,EmployeeSummaryView,
 )
 
 
@@ -64,4 +64,5 @@ urlpatterns  = [
     path("designations/",    DesignationListCreateAPIView.as_view(), name="designation-list-create"),
     path("designations/<int:pk>/", DesignationRetrieveUpdateDestroyAPIView.as_view(), name="designation-detail"),
     path("managers/", ManagersListView.as_view(), name="managers-list"),
+    path("employees/summary", EmployeeSummaryView.as_view(), name="employee-summary"),
 ]

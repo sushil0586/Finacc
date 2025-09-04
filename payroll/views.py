@@ -10,6 +10,8 @@ from django.db import models
 from .services import apply_structure_to_entity
 #from rest_framework import 
 
+from django.utils.timezone import now
+
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status,generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
@@ -49,7 +51,7 @@ from payroll.models import (
 from .serializers import (
     OptionSetSerializer, OptionSerializer,
     BusinessUnitSerializer, DepartmentSerializer, LocationSerializer, CostCenterSerializer,
-     GradeBandSerializer, DesignationSerializer,ManagerListItemSerializer,
+     GradeBandSerializer, DesignationSerializer,ManagerListItemSerializer,EmployeeSummarySerializer
 )
 
 from payroll.models import (
@@ -943,4 +945,42 @@ class ManagersListView(generics.ListAPIView):
                              )
 
         return qs
+
+
+class EmployeeSummaryView(APIView):
+    """
+    GET /api/employees/summary?entity_id=123
+    Returns all employees for a given entity with only 10 important columns.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get("entity_id")
+        if not entity_id:
+            return Response({"detail": "Query parameter 'entity_id' is required."}, status=400)
+
+        ts = now()
+
+        current_assignment = (
+            EmploymentAssignment.objects
+            .filter(employee=OuterRef("pk"), effective_from__lte=ts)
+            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=ts))
+            .order_by("-effective_from")
+        )
+
+        qs = (
+            Employee.objects.filter(entity_id=entity_id)
+            .annotate(
+                # FIX: Option model uses `label`, not `name`
+                status_name=F("status__label"),
+                department=Subquery(current_assignment.values("department__name")[:1]),
+                designation=Subquery(current_assignment.values("designation__name")[:1]),
+                manager=Subquery(current_assignment.values("manager_employee__full_name")[:1]),
+                date_of_joining=Subquery(current_assignment.values("date_of_joining")[:1]),
+            )
+            .order_by("code")
+        )
+
+        serializer = EmployeeSummarySerializer(qs, many=True)
+        return Response(serializer.data, status=200)
 
