@@ -949,10 +949,6 @@ class ManagersListView(generics.ListAPIView):
 
 
 class EmployeeSummaryView(APIView):
-    """
-    GET /api/payroll/employees/summary?entity_id=123
-    Returns all employees for a given entity with only 10 important columns.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
@@ -960,44 +956,61 @@ class EmployeeSummaryView(APIView):
         if not entity_id:
             return Response({"detail": "Query parameter 'entity_id' is required."}, status=400)
 
-        now = timezone.now()  # AWARE datetime for DateTimeField comparisons
+        now = timezone.now()  # aware datetime for DateTimeField comparisons
 
-        # Active assignment as of 'now'
         active_assign = (
             EmploymentAssignment.objects
             .filter(employee=OuterRef("pk"), effective_from__lte=now)
             .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=now))
             .order_by("-effective_from")
         )
-
-        # Fallback to latest slice if nothing is active *right now*
         latest_assign = (
             EmploymentAssignment.objects
             .filter(employee=OuterRef("pk"))
             .order_by("-effective_from")
         )
 
+        # Department name (FK -> name)
         department_name = Coalesce(
             Subquery(active_assign.values("department__name")[:1]),
             Subquery(latest_assign.values("department__name")[:1]),
         )
-        designation = Coalesce(
-            Subquery(active_assign.values("designation")[:1]),         # CharField
-            Subquery(latest_assign.values("designation")[:1]),
-        )
+
+        # ---- Designation: handle FK (Option/Designation) vs CharField ----
+        desig_field = EmploymentAssignment._meta.get_field("designation")
+        if isinstance(desig_field, models.ForeignKey):
+            rel_model = desig_field.remote_field.model
+            rel_names = {f.name for f in rel_model._meta.get_fields()}
+            # Prefer 'label' (your Option model), else 'name', else pk (last resort)
+            rel_attr = "label" if "label" in rel_names else ("name" if "name" in rel_names else "pk")
+            desig_path = f"designation__{rel_attr}"
+            designation = Coalesce(
+                Subquery(active_assign.values(desig_path)[:1]),
+                Subquery(latest_assign.values(desig_path)[:1]),
+            )
+        else:
+            # Plain CharField
+            designation = Coalesce(
+                Subquery(active_assign.values("designation")[:1]),
+                Subquery(latest_assign.values("designation")[:1]),
+            )
+
+        # Manager full name (FK -> full_name)
         manager_full_name = Coalesce(
             Subquery(active_assign.values("manager_employee__full_name")[:1]),
             Subquery(latest_assign.values("manager_employee__full_name")[:1]),
         )
-        date_of_joining = Coalesce(                                   # DateTimeField now
+
+        # DateTime field
+        date_of_joining = Coalesce(
             Subquery(active_assign.values("date_of_joining")[:1]),
             Subquery(latest_assign.values("date_of_joining")[:1]),
         )
 
-        # Status label: handle FK-to-Option vs TextChoices CharField
+        # Status label: FK-to-Option vs TextChoices
         status_field = Employee._meta.get_field("status")
         if isinstance(status_field, models.ForeignKey):
-            status_label_expr = F("status__label")   # Option(label)
+            status_label_expr = F("status__label")
         else:
             status_label_expr = Case(
                 When(status="active", then=Value("Active")),
@@ -1010,9 +1023,9 @@ class EmployeeSummaryView(APIView):
             Employee.objects.filter(entity_id=entity_id)
             .annotate(
                 department=department_name,
-                designation=designation,
+                designation=designation,             # <— will be label/name, not id
                 manager_full_name=manager_full_name,
-                date_of_joining=date_of_joining,  # DateTime output
+                date_of_joining=date_of_joining,
                 status_label=status_label_expr,
             )
             .order_by("code")
