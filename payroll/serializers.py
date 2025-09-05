@@ -904,16 +904,20 @@ class ManagerListItemSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class EmployeeSummarySerializer(serializers.Serializer):
-    id = serializers.IntegerField()
-    code = serializers.CharField()
-    full_name = serializers.CharField()
-    status_name = serializers.CharField(allow_null=True)
-    work_email = serializers.EmailField(allow_blank=True)
-    mobile = serializers.CharField(allow_blank=True)
-    department = serializers.CharField(allow_null=True)
-    designation = serializers.CharField(allow_null=True)
-    manager = serializers.CharField(allow_null=True)
-    date_of_joining = serializers.DateTimeField(allow_null=True)
+class EmployeeSummarySerializer(serializers.ModelSerializer):
+    department = serializers.CharField(read_only=True)
+    designation = serializers.CharField(read_only=True)
+    manager_full_name = serializers.CharField(read_only=True)
+    date_of_joining = serializers.DateTimeField(read_only=True)   # <-- DateTime now
+    status_label = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Employee
+        fields = (
+            "id", "code", "full_name", "display_name",
+            "status", "status_label",
+            "department", "designation", "manager_full_name", "date_of_joining",
+            # add "work_email", "mobile" here if you want them in the 10 fields
+        )
 
 

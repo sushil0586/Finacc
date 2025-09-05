@@ -9,6 +9,7 @@ from django.utils.dateparse import parse_date
 from django.db import models
 from .services import apply_structure_to_entity
 #from rest_framework import 
+from django.utils import timezone
 
 from django.utils.timezone import now
 
@@ -19,7 +20,7 @@ from payroll.serializers import salarycomponentserializer,employeesalaryserializ
 from payroll.models import salarycomponent,employeesalary,EntityPayrollComponentConfig,employeenew,CalculationType, BonusFrequency, CalculationValue, ComponentType,PayrollComponent,EntityPayrollComponent,PayStructure, PayStructureComponent
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
-from django.db.models import Sum,OuterRef,Subquery,F,Count,IntegerField
+from django.db.models import Sum,OuterRef,Subquery,F,Count,IntegerField,Case, When,Value, CharField
 from django.db.models import Prefetch
 from financial.models import account
 from inventory.models import Product
@@ -949,7 +950,7 @@ class ManagersListView(generics.ListAPIView):
 
 class EmployeeSummaryView(APIView):
     """
-    GET /api/employees/summary?entity_id=123
+    GET /api/payroll/employees/summary?entity_id=123
     Returns all employees for a given entity with only 10 important columns.
     """
     permission_classes = [IsAuthenticated]
@@ -959,24 +960,60 @@ class EmployeeSummaryView(APIView):
         if not entity_id:
             return Response({"detail": "Query parameter 'entity_id' is required."}, status=400)
 
-        ts = now()
+        now = timezone.now()  # AWARE datetime for DateTimeField comparisons
 
-        current_assignment = (
+        # Active assignment as of 'now'
+        active_assign = (
             EmploymentAssignment.objects
-            .filter(employee=OuterRef("pk"), effective_from__lte=ts)
-            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=ts))
+            .filter(employee=OuterRef("pk"), effective_from__lte=now)
+            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=now))
             .order_by("-effective_from")
         )
+
+        # Fallback to latest slice if nothing is active *right now*
+        latest_assign = (
+            EmploymentAssignment.objects
+            .filter(employee=OuterRef("pk"))
+            .order_by("-effective_from")
+        )
+
+        department_name = Coalesce(
+            Subquery(active_assign.values("department__name")[:1]),
+            Subquery(latest_assign.values("department__name")[:1]),
+        )
+        designation = Coalesce(
+            Subquery(active_assign.values("designation")[:1]),         # CharField
+            Subquery(latest_assign.values("designation")[:1]),
+        )
+        manager_full_name = Coalesce(
+            Subquery(active_assign.values("manager_employee__full_name")[:1]),
+            Subquery(latest_assign.values("manager_employee__full_name")[:1]),
+        )
+        date_of_joining = Coalesce(                                   # DateTimeField now
+            Subquery(active_assign.values("date_of_joining")[:1]),
+            Subquery(latest_assign.values("date_of_joining")[:1]),
+        )
+
+        # Status label: handle FK-to-Option vs TextChoices CharField
+        status_field = Employee._meta.get_field("status")
+        if isinstance(status_field, models.ForeignKey):
+            status_label_expr = F("status__label")   # Option(label)
+        else:
+            status_label_expr = Case(
+                When(status="active", then=Value("Active")),
+                When(status="inactive", then=Value("Inactive")),
+                default=F("status"),
+                output_field=CharField(),
+            )
 
         qs = (
             Employee.objects.filter(entity_id=entity_id)
             .annotate(
-                # FIX: Option model uses `label`, not `name`
-                status_name=F("status__label"),
-                department=Subquery(current_assignment.values("department__name")[:1]),
-                designation=Subquery(current_assignment.values("designation__name")[:1]),
-                manager=Subquery(current_assignment.values("manager_employee__full_name")[:1]),
-                date_of_joining=Subquery(current_assignment.values("date_of_joining")[:1]),
+                department=department_name,
+                designation=designation,
+                manager_full_name=manager_full_name,
+                date_of_joining=date_of_joining,  # DateTime output
+                status_label=status_label_expr,
             )
             .order_by("code")
         )
