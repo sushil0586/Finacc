@@ -881,7 +881,7 @@ class EmployeeListCreateAPIView(_g.ListCreateAPIView):
                 Prefetch("assignments",   queryset=EmploymentAssignment.objects.all()),
                 Prefetch("bank_accounts", queryset=EmployeeBankAccount.objects.all()),
                 Prefetch("documents",     queryset=EmployeeDocument.objects.all()),
-                Prefetch("compensations", queryset=EmployeeCompensation.objects.all()),
+                # NOTE: compensations prefetch removed
             )
             .order_by("id")
         )

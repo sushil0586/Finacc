@@ -790,33 +790,33 @@ class EmployeeSerializer(_s.ModelSerializer):
     assignments   = EmploymentAssignmentSerializer(many=True, required=False)
     bank_accounts = EmployeeBankAccountSerializer(many=True, required=False)
     documents     = EmployeeDocumentSerializer(many=True, required=False)
-    compensations = EmployeeCompensationSerializer(many=True, required=False)
+    # NOTE: compensations field removed
     statutory_in  = EmployeeStatutoryINSerializer(required=False, allow_null=True)
 
     class Meta:
         model = Employee
         fields = "__all__"
 
-    # helpers
+    # helpers (unchanged)
     def _upsert_many(self, *, parent, items, qs, serializer_class, fk_name="employee", partial=False):
         existing = {obj.id: obj for obj in qs}
         seen = set()
         for item in (items or []):
-            _coerce_pks_in_item(item)              # normalize other FKs
-            item.pop(fk_name, None)                # <-- don't let incoming data carry 'employee'
+            _coerce_pks_in_item(item)
+            item.pop(fk_name, None)
             item_id = item.get("id")
 
             if item_id and item_id in existing:
                 inst = existing[item_id]
                 ser = serializer_class(inst, data=item, partial=partial)
                 ser.is_valid(raise_exception=True)
-                ser.save(**{fk_name: parent})      # <-- attach FK here
+                ser.save(**{fk_name: parent})
                 seen.add(item_id)
             else:
                 item.pop("id", None)
                 ser = serializer_class(data=item)
                 ser.is_valid(raise_exception=True)
-                ser.save(**{fk_name: parent})      # <-- attach FK here
+                ser.save(**{fk_name: parent})
 
         if not partial:
             for cid, inst in existing.items():
@@ -828,9 +828,8 @@ class EmployeeSerializer(_s.ModelSerializer):
         if item is None:
             return
         _coerce_pks_in_item(item)
-        item.pop(fk_name, None)                     # incoming data must not carry 'employee'
+        item.pop(fk_name, None)
 
-        # read existing O2O instance if present
         try:
             inst = getattr(parent, attr_name)
         except serializer_class.Meta.model.DoesNotExist:
@@ -841,28 +840,25 @@ class EmployeeSerializer(_s.ModelSerializer):
         else:
             ser = serializer_class(data=item)
         ser.is_valid(raise_exception=True)
-        ser.save(**{fk_name: parent})               # <-- attach FK here
+        ser.save(**{fk_name: parent})
 
-    # create / update
+    # create / update (compensation pieces removed)
     def create(self, validated_data):
         assignments   = validated_data.pop("assignments",   [])
         bank_accounts = validated_data.pop("bank_accounts", [])
         documents     = validated_data.pop("documents",     [])
-        compensations = validated_data.pop("compensations", [])
         statutory_in  = validated_data.pop("statutory_in",  None)
 
         emp = Employee.objects.create(**validated_data)
 
         self._upsert_many(parent=emp, items=assignments,   qs=emp.assignments.all(),
-                        serializer_class=EmploymentAssignmentSerializer, fk_name="employee")
+                          serializer_class=EmploymentAssignmentSerializer, fk_name="employee")
         self._upsert_many(parent=emp, items=bank_accounts, qs=emp.bank_accounts.all(),
-                        serializer_class=EmployeeBankAccountSerializer, fk_name="employee")
+                          serializer_class=EmployeeBankAccountSerializer, fk_name="employee")
         self._upsert_many(parent=emp, items=documents,     qs=emp.documents.all(),
-                        serializer_class=EmployeeDocumentSerializer, fk_name="employee")
-        self._upsert_many(parent=emp, items=compensations, qs=emp.compensations.all(),
-                        serializer_class=EmployeeCompensationSerializer, fk_name="employee")
+                          serializer_class=EmployeeDocumentSerializer, fk_name="employee")
         self._upsert_one (parent=emp, item=statutory_in,   attr_name="statutory_in",
-                        serializer_class=EmployeeStatutoryINSerializer, fk_name="employee")
+                          serializer_class=EmployeeStatutoryINSerializer, fk_name="employee")
         return emp
 
     def update(self, instance, validated_data):
@@ -870,7 +866,6 @@ class EmployeeSerializer(_s.ModelSerializer):
         assignments   = validated_data.pop("assignments",   None)
         bank_accounts = validated_data.pop("bank_accounts", None)
         documents     = validated_data.pop("documents",     None)
-        compensations = validated_data.pop("compensations", None)
         statutory_in  = validated_data.pop("statutory_in",  None)
 
         for k, v in validated_data.items():
@@ -879,19 +874,16 @@ class EmployeeSerializer(_s.ModelSerializer):
 
         if assignments is not None:
             self._upsert_many(parent=instance, items=assignments, qs=instance.assignments.all(),
-                            serializer_class=EmploymentAssignmentSerializer, fk_name="employee", partial=partial)
+                              serializer_class=EmploymentAssignmentSerializer, fk_name="employee", partial=partial)
         if bank_accounts is not None:
             self._upsert_many(parent=instance, items=bank_accounts, qs=instance.bank_accounts.all(),
-                            serializer_class=EmployeeBankAccountSerializer, fk_name="employee", partial=partial)
+                              serializer_class=EmployeeBankAccountSerializer, fk_name="employee", partial=partial)
         if documents is not None:
             self._upsert_many(parent=instance, items=documents, qs=instance.documents.all(),
-                            serializer_class=EmployeeDocumentSerializer, fk_name="employee", partial=partial)
-        if compensations is not None:
-            self._upsert_many(parent=instance, items=compensations, qs=instance.compensations.all(),
-                            serializer_class=EmployeeCompensationSerializer, fk_name="employee", partial=partial)
+                              serializer_class=EmployeeDocumentSerializer, fk_name="employee", partial=partial)
         if statutory_in is not None:
             self._upsert_one(parent=instance, item=statutory_in, attr_name="statutory_in",
-                            serializer_class=EmployeeStatutoryINSerializer, fk_name="employee", partial=partial)
+                             serializer_class=EmployeeStatutoryINSerializer, fk_name="employee", partial=partial)
         return instance
     
 

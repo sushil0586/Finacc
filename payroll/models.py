@@ -13,6 +13,7 @@ from django.db.models import Sum
 import datetime
 from geography.models import Country,State,District,City
 from .base import TimeStampedModel, EffectiveDatedModel
+from django.conf import settings
 
 #from __future__ import annotations
 
@@ -1604,6 +1605,138 @@ class EmployeeDocument(TimeStampedModel):
     )
     note = models.CharField(max_length=200, blank=True, default="")
     def __str__(self): return f"{self.employee} — {self.title}"
+
+
+
+
+
+
+class ComponentCategory(models.TextChoices):
+    EARNING = "EARNING", "Earning"
+    DEDUCTION = "DEDUCTION", "Deduction"
+    EMPLOYER = "EMPLOYER", "Employer Cost"   # for transparency on CTC-inclusive
+
+class PackageStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", "Active"
+    INACTIVE = "INACTIVE", "Inactive"
+    DRAFT = "DRAFT", "Draft"
+
+class EmployeeSalaryPackage(models.Model):
+    """
+    A versioned, effective-dated salary package (CTC split) for one employee.
+    """
+    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="salary_packages")
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="salary_packages")
+    pay_structure = models.ForeignKey("payroll.PayStructure", on_delete=models.PROTECT, related_name="applied_packages")
+
+    # Effective dating - you asked to use datetime (timezone-aware)
+    effective_from = models.DateTimeField()  # ISO 8601 with tz offset required
+
+    # Inputs used
+    ctc_annual = models.DecimalField(max_digits=14, decimal_places=2)
+    ctc_inclusive = models.BooleanField(default=True)
+    pay_cycle = models.CharField(max_length=16, choices=PayCycle.choices, default=PayCycle.MONTHLY)
+
+    # Snapshots for audit/debug
+    context_json = models.JSONField(default=dict, blank=True)        # grade, city, is_metro, etc.
+    employer_costs_json = models.JSONField(default=dict, blank=True) # pf_employer, esi_employer, gratuity...
+    preview_payload = models.JSONField(default=dict, blank=True)     # full preview returned at time of apply
+
+    # Derived top-level figures for quick reporting
+    gross_month = models.DecimalField(max_digits=12, decimal_places=2)
+    net_pay_month = models.DecimalField(max_digits=12, decimal_places=2)
+
+    status = models.CharField(max_length=12, choices=PackageStatus.choices, default=PackageStatus.ACTIVE)
+    is_active = models.BooleanField(default=True)  # convenience flag
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["employee", "effective_from"]),
+            models.Index(fields=["entity", "status"]),
+        ]
+        constraints = [
+            # Optional: ensure only one ACTIVE package per employee at a given instant
+            # models.UniqueConstraint(fields=["employee", "effective_from", "status"], name="uniq_emp_pkg_ver")
+        ]
+
+    def __str__(self):
+        return f"Pkg[{self.id}] Emp={self.employee_id} Eff={self.effective_from.isoformat()} Active={self.is_active}"
+
+
+class EmployeeSalaryComponent(models.Model):
+    """
+    Materialized components for a given package – both earnings and deductions.
+    We store 'monthly' and 'annual' for fast reporting and lock the exact values.
+    """
+    package = models.ForeignKey(EmployeeSalaryPackage, on_delete=models.CASCADE, related_name="components")
+    code = models.CharField(max_length=64)                      # BASIC, HRA, SPECIAL, PF_EMP, etc.
+    name = models.CharField(max_length=128, blank=True, default="")
+    category = models.CharField(max_length=12, choices=ComponentCategory.choices)
+
+    monthly_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    annual_amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    # Provenance/meta
+    priority = models.PositiveIntegerField(default=0)
+    base_used = models.CharField(max_length=32, blank=True, default="")      # GROSS/BASIC/CTC or FORMULA
+    cap_applied = models.CharField(max_length=128, blank=True, default="")   # human-readable cap info
+    rounding_rule = models.CharField(max_length=16, blank=True, default="")
+    is_balancer = models.BooleanField(default=False)  # True for SPECIAL rows auto-balanced by engine
+    extra_meta = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["package", "code"]),
+            models.Index(fields=["code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.code} @{self.package_id}: {self.monthly_amount}"
+
+
+class OverrideMode(models.TextChoices):
+    AMOUNT = "amount", "Fixed Amount (monthly)"
+    PERCENT = "percent", "Percent (contextual)"
+
+class EmployeeComponentOverride(models.Model):
+    """
+    Stores employee-specific override rules effective from a date.
+    These are inputs to the engine during preview and are persisted on Apply.
+    """
+    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="employee_overrides")
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="component_overrides")
+    code = models.CharField(max_length=64)              # e.g., BASIC, HRA
+    effective_from = models.DateTimeField()             # tz-aware
+
+    mode = models.CharField(max_length=16, choices=OverrideMode.choices)
+    value_decimal = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # If mode=percent, store 0..100 in value_decimal (you can also add a separate value_percent if you prefer)
+
+    # Control & validation
+    allowed = models.BooleanField(default=True)         # resolved from structure policy at save time
+    min_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    max_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    notes = models.CharField(max_length=256, blank=True, default="")
+
+    # Lifecycle
+    expires_at = models.DateTimeField(null=True, blank=True)  # optional
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["employee", "code", "effective_from"]),
+        ]
+
+    def __str__(self):
+        return f"Override[{self.code}] Emp={self.employee_id} {self.mode}={self.value_decimal} eff={self.effective_from.isoformat()}"
 
 
 
