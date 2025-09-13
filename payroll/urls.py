@@ -8,6 +8,13 @@ from .views import (
     EmployeeListCreateAPIView, EmployeeDetailAPIView,
     GradeBandListCreateAPIView, GradeBandRetrieveUpdateDestroyAPIView,
     DesignationListCreateAPIView, DesignationRetrieveUpdateDestroyAPIView,ManagersListView,EmployeeSummaryView,
+    CompensationPreviewAPIView,
+    CompensationOverrideAPIView,
+    CompensationRecalculateAPIView,
+    CompensationApplyAPIView,
+    PayStructureDropdownAPIView,
+    PayStructureListAPIView,
+    PayStructureMetaAPIView,
 )
 
 
@@ -65,4 +72,11 @@ urlpatterns  = [
     path("designations/<int:pk>/", DesignationRetrieveUpdateDestroyAPIView.as_view(), name="designation-detail"),
     path("managers/", ManagersListView.as_view(), name="managers-list"),
     path("employees/summary", EmployeeSummaryView.as_view(), name="employee-summary"),
+    path("comp/preview/", CompensationPreviewAPIView.as_view(), name="payroll-comp-preview"),
+    path("comp/<int:pk>/override/", CompensationOverrideAPIView.as_view(), name="payroll-comp-override"),
+    path("comp/<int:pk>/recalculate/", CompensationRecalculateAPIView.as_view(), name="payroll-comp-recalculate"),
+    path("comp/<int:pk>/apply/", CompensationApplyAPIView.as_view(), name="payroll-comp-apply"),
+    path("paystructures/dropdown", PayStructureDropdownAPIView.as_view(), name="paystructure-dropdown"),
+    path("paystructures",           PayStructureListAPIView.as_view(),     name="paystructure-list"),
+    path("paystructures/meta",      PayStructureMetaAPIView.as_view(),     name="paystructure-meta"),
 ]

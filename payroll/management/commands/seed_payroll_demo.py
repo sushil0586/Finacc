@@ -16,7 +16,7 @@ from payroll.models import (
 )
 from payroll.services import apply_structure_to_entity
 
-# ---- constants (must match your enums) ----
+# ---- constants (match your enums) ----
 RATE_AMOUNT = "amount"
 RATE_PERCENT = "percent"
 CYCLE_MONTHLY = "monthly"; CYCLE_YEARLY = "yearly"; CYCLE_HALF_YEARLY = "half_yearly"
@@ -36,7 +36,6 @@ def aware(dt_or_date):
     return timezone.make_aware(dt_or_date, timezone.get_current_timezone()) if timezone.is_naive(dt_or_date) else dt_or_date
 
 def ef(model_cls, d: date | datetime) -> date | datetime:
-    """Return aware datetime if model.effective_from is DateTimeField; else the input date."""
     f = model_cls._meta.get_field("effective_from")
     return aware(d) if isinstance(f, models.DateTimeField) else d
 
@@ -46,23 +45,20 @@ def et(model_cls, d: Optional[date | datetime]) -> Optional[date | datetime]:
     return aware(d) if isinstance(f, models.DateTimeField) else d
 
 def choice(model_cls, field_name: str, *labels: str) -> str:
-    """Map human labels like 'custom', 'professional_tax' to the model's actual choice key."""
     field = model_cls._meta.get_field(field_name)
     keys = [c[0] for c in field.choices]
     def norm(x): return str(x).strip().lower().replace("-", "_")
-    wants = [*labels]
-    for want in wants:
+    for want in labels:
         for k in keys:
             if norm(k) == norm(want):
                 return k
-    # try looser aliases
     alias_map = {
         "custom": ("other","misc","custom"),
         "professional_tax": ("professional_tax","pt"),
         "labour_welfare_tax": ("labour_welfare_tax","lwf"),
         "bonus": ("bonus",),
     }
-    for want in wants:
+    for want in labels:
         for alias in alias_map.get(norm(want), ()):
             for k in keys:
                 if norm(k) == norm(alias):
@@ -93,7 +89,6 @@ def ensure_city_categories():
         field = CityCategory._meta.get_field("category")
         for k,_ in field.choices:
             if str(k).lower().replace("-","_")==str(lbl).lower().replace("-","_"): return k
-        # common aliases
         for k,_ in field.choices:
             if str(lbl).upper()=="METRO" and str(k).lower() in {"metro","m"}: return k
             if str(lbl).upper() in {"NON_METRO","NONMETRO"} and str(k).lower() in {"non_metro","non-metro","nonmetro","n"}: return k
@@ -116,12 +111,11 @@ def ensure_entities(*, a_id: int, b_id: Optional[int]):
     return org_a, org_b
 
 def ensure_slab_groups_and_slabs():
-    # resolve SlabGroup.type safely
+    # SlabGroup.type and Slab.cycle values
     sg_type_custom = choice(SlabGroup, "type", "custom")
     sg_type_pt = choice(SlabGroup, "type", "professional_tax")
     sg_type_lwf = choice(SlabGroup, "type", "labour_welfare_tax")
     sg_type_bonus = choice(SlabGroup, "type", "bonus")
-
 
     cy_monthly = choice(Slab, "cycle", "monthly", "MONTHLY")
     cy_yearly  = choice(Slab, "cycle", "yearly", "annual", "annually")
@@ -131,6 +125,7 @@ def ensure_slab_groups_and_slabs():
         "semi-annual", "biannual", "bi-annual", "half_yeraly", "half-yeraly"
     )
 
+    # ---------- Earnings/allowance slabs ----------
     g_basic, _ = upsert(
         SlabGroup,
         {"group_key": "BASIC_BY_CTC_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
@@ -212,6 +207,33 @@ def ensure_slab_groups_and_slabs():
         "rate_type": RATE_AMOUNT, "scope_json": {},
     }, {"value": Decimal("300.00"), "cycle": cy_monthly})
 
+    g_fuel, _ = upsert(
+        SlabGroup,
+        {"group_key": "FUEL_BY_GRADE_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "Fuel / Car Allowance by Grade (2025)", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    for grades, val in [(["G1","G2"], Decimal("2500.00")), (["G3","G4"], Decimal("3500.00"))]:
+        upsert(Slab, {
+            "group": g_fuel, "effective_from": ef(Slab, EFFECTIVE_START),
+            "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT,
+            "scope_json": {"emp_grade_in": grades},
+        }, {"value": val, "cycle": cy_monthly, "months": ""})
+    upsert(Slab, {
+        "group": g_fuel, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("1500.00"), "cycle": cy_monthly, "months": ""})
+
+    g_bonus, _ = upsert(
+        SlabGroup,
+        {"group_key": "BONUS_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "Bonus 2025", "type": sg_type_bonus, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": g_bonus, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_PERCENT, "scope_json": {},
+    }, {"value": Decimal("8.33"), "percent_of": "GROSS", "cycle": cy_yearly, "months": "Dec"})
+
+    # ---------- PT slabs (combined + per state for engine) ----------
     g_pt, _ = upsert(
         SlabGroup,
         {"group_key": "PT_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
@@ -231,6 +253,37 @@ def ensure_slab_groups_and_slabs():
             "scope_json": {"state_in":[state]},
         }, {"value": val, "cycle": cy_monthly})
 
+    pt_ka, _ = upsert(
+        SlabGroup,
+        {"group_key": "PT_KA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "PT Karnataka", "type": sg_type_pt, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    for frm, to, val in [
+        (0, Decimal("12500.00"), Decimal("0.00")),
+        (Decimal("12500.01"), Decimal("20000.00"), Decimal("200.00")),
+        (Decimal("20000.01"), None, Decimal("300.00")),
+    ]:
+        upsert(Slab, {
+            "group": pt_ka, "effective_from": ef(Slab, EFFECTIVE_START),
+            "from_amount": Decimal(str(frm)), "to_amount": to, "rate_type": RATE_AMOUNT, "scope_json": {},
+        }, {"value": val, "cycle": cy_monthly})
+
+    pt_mh, _ = upsert(
+        SlabGroup,
+        {"group_key": "PT_MH", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "PT Maharashtra", "type": sg_type_pt, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    for frm, to, val in [
+        (0, Decimal("10000.00"), Decimal("0.00")),
+        (Decimal("10000.01"), Decimal("20000.00"), Decimal("175.00")),
+        (Decimal("20000.01"), None, Decimal("300.00")),
+    ]:
+        upsert(Slab, {
+            "group": pt_mh, "effective_from": ef(Slab, EFFECTIVE_START),
+            "from_amount": Decimal(str(frm)), "to_amount": to, "rate_type": RATE_AMOUNT, "scope_json": {},
+        }, {"value": val, "cycle": cy_monthly})
+
+    # ---------- LWF (combined for UI + per-state split, no JSON) ----------
     g_lwf, _ = upsert(
         SlabGroup,
         {"group_key": "LWF_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
@@ -247,36 +300,124 @@ def ensure_slab_groups_and_slabs():
         "scope_json": {"state_in":["MH"]},
     }, {"value": Decimal("12.00"), "cycle": cy_half, "months": "Jun, Dec"})
 
-    g_bonus, _ = upsert(
+    # Employee/company split groups (read by PolicyRepo)
+    lwf_emp_ka, _ = upsert(
         SlabGroup,
-        {"group_key": "BONUS_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "Bonus 2025", "type": sg_type_bonus, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+        {"group_key": "LWF_EMP_KA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "LWF Employee (KA)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
     )
     upsert(Slab, {
-        "group": g_bonus, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_PERCENT, "scope_json": {},
-    }, {"value": Decimal("8.33"), "percent_of": "GROSS", "cycle": cy_yearly, "months": "Dec"})
-
-    g_fuel, _ = upsert(
-        SlabGroup,
-        {"group_key": "FUEL_BY_GRADE_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "Fuel / Car Allowance by Grade (2025)", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    for grades, val in [(["G1","G2"], Decimal("2500.00")), (["G3","G4"], Decimal("3500.00"))]:
-        upsert(Slab, {
-            "group": g_fuel, "effective_from": ef(Slab, EFFECTIVE_START),
-            "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT,
-            "scope_json": {"emp_grade_in": grades},
-        }, {"value": val, "cycle": cy_monthly, "months": ""})
-    upsert(Slab, {
-        "group": g_fuel, "effective_from": ef(Slab, EFFECTIVE_START),
+        "group": lwf_emp_ka, "effective_from": ef(Slab, EFFECTIVE_START),
         "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("1500.00"), "cycle": cy_monthly, "months": ""})
+    }, {"value": Decimal("20.00"), "cycle": cy_half, "months": "Jun, Dec"})
+
+    lwf_comp_ka, _ = upsert(
+        SlabGroup,
+        {"group_key": "LWF_COMP_KA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "LWF Company (KA)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": lwf_comp_ka, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("0.00"), "cycle": cy_half, "months": "Jun, Dec"})
+
+    lwf_emp_mh, _ = upsert(
+        SlabGroup,
+        {"group_key": "LWF_EMP_MH", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "LWF Employee (MH)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": lwf_emp_mh, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("12.00"), "cycle": cy_half, "months": "Jun, Dec"})
+
+    lwf_comp_mh, _ = upsert(
+        SlabGroup,
+        {"group_key": "LWF_COMP_MH", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "LWF Company (MH)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": lwf_comp_mh, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("36.00"), "cycle": cy_half, "months": "Jun, Dec"})
+
+    # ---------- Policy/config groups (numeric slabs; no FormulaConfig) ----------
+    def upsert_cfg_decimal(key: str, val: Decimal):
+        grp, _ = upsert(
+            SlabGroup,
+            {"group_key": key, "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+            {"name": key.replace("_"," ").title(), "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+        )
+        upsert(Slab, {
+            "group": grp, "effective_from": ef(Slab, EFFECTIVE_START),
+            "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+        }, {"value": val, "cycle": cy_monthly})
+        return grp
+
+    cfg_pf_empr = upsert_cfg_decimal("PF_RATE_EMPLOYER", Decimal("12"))
+    cfg_pf_emp  = upsert_cfg_decimal("PF_RATE_EMPLOYEE", Decimal("12"))
+    cfg_pf_cap  = upsert_cfg_decimal("PF_BASE_CAP", Decimal("15000"))
+    cfg_grat    = upsert_cfg_decimal("GRATUITY_RATE", Decimal("4.83"))  # % of BASIC if you use it
+    cfg_insur   = upsert_cfg_decimal("INSURANCE_RATE", Decimal("0"))     # % of GROSS
+
+    # HRA CAP: 50% METRO, 40% NON_METRO (percent of BASIC)
+    cap_hra, _ = upsert(
+        SlabGroup,
+        {"group_key": "CAP_HRA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "HRA Cap Percent", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": cap_hra, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT,
+        "scope_json": {"city_category": "METRO"},
+    }, {"value": Decimal("50.0"), "cycle": cy_monthly})
+    upsert(Slab, {
+        "group": cap_hra, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("40.0"), "cycle": cy_monthly})
+
+    # ESI config (numeric groups instead of JSON)
+    esi_threshold, _ = upsert(
+        SlabGroup,
+        {"group_key": "ESI_THRESHOLD", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "ESI Threshold", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": esi_threshold, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("21000"), "cycle": cy_monthly})
+
+    esi_rate_emp, _ = upsert(
+        SlabGroup,
+        {"group_key": "ESI_RATE_EMPLOYEE", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "ESI Employee %", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": esi_rate_emp, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("0.75"), "cycle": cy_monthly})
+
+    esi_rate_empr, _ = upsert(
+        SlabGroup,
+        {"group_key": "ESI_RATE_EMPLOYER", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "ESI Employer %", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+    )
+    upsert(Slab, {
+        "group": esi_rate_empr, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
+    }, {"value": Decimal("3.25"), "cycle": cy_monthly})
 
     return {
-        "BASIC_BY_CTC_2025": g_basic, "HRA_BY_CITY_2025": g_hra,
-        "CONV_BY_GRADE_CTC_2025": g_conv, "PHONE_BY_STATE_RANK_2025": g_phone,
-        "PT_2025": g_pt, "LWF_2025": g_lwf, "BONUS_2025": g_bonus, "FUEL_BY_GRADE_2025": g_fuel,
+        # used by PCGs/UI
+        "BASIC_BY_CTC_2025": g_basic, "HRA_BY_CITY_2025": g_hra, "CONV_BY_GRADE_CTC_2025": g_conv,
+        "PHONE_BY_STATE_RANK_2025": g_phone, "BONUS_2025": g_bonus, "FUEL_BY_GRADE_2025": g_fuel,
+        "PT_2025": g_pt, "PT_KA": pt_ka, "PT_MH": pt_mh,
+        "LWF_2025": g_lwf, "LWF_EMP_KA": lwf_emp_ka, "LWF_COMP_KA": lwf_comp_ka,
+        "LWF_EMP_MH": lwf_emp_mh, "LWF_COMP_MH": lwf_comp_mh,
+        # policy/config keys for PolicyRepo
+        "PF_RATE_EMPLOYER": cfg_pf_empr, "PF_RATE_EMPLOYEE": cfg_pf_emp, "PF_BASE_CAP": cfg_pf_cap,
+        "GRATUITY_RATE": cfg_grat, "INSURANCE_RATE": cfg_insur, "CAP_HRA": cap_hra,
+        "ESI_THRESHOLD": esi_threshold, "ESI_RATE_EMPLOYEE": esi_rate_emp, "ESI_RATE_EMPLOYER": esi_rate_empr,
     }
 
 def ensure_families_and_pcg(groups: Dict[str, SlabGroup], org_b):
@@ -296,10 +437,12 @@ def ensure_families_and_pcg(groups: Dict[str, SlabGroup], org_b):
             {k:v for k,v in kwargs.items() if k!="lookup"}
         )
 
+    # BASIC is PF-base -> pf_include=True
     pcg(BASIC, name="Basic by CTC & Grade", type=TYPE_EARNING, calc_method=CALC_SLAB,
         frequency=FREQ_MONTHLY, rounding=ROUND_NEAREST, priority=10, is_proratable=True, taxability=TAX_TAXABLE,
         slab_group=groups["BASIC_BY_CTC_2025"], slab_base="CTC_MONTHLY", slab_percent_basis="CTC_MONTHLY",
-        slab_scope_field="entity.state_code", payslip_group=PAYSLIP_EARN, display_order=10, show_on_payslip=True)
+        slab_scope_field="entity.state_code", payslip_group=PAYSLIP_EARN, display_order=10, show_on_payslip=True,
+        pf_include=True)
 
     pcg(HRA, name="HRA by city category", type=TYPE_EARNING, calc_method=CALC_SLAB,
         frequency=FREQ_MONTHLY, rounding=ROUND_NEAREST, priority=20,
@@ -387,6 +530,24 @@ def ensure_families_and_pcg(groups: Dict[str, SlabGroup], org_b):
             "SPECIAL":SPECIAL,"GRATUITY_ACCR":GRATUITY,"FUEL":FUEL}
 
 def ensure_pay_structure(families: Dict[str, ComponentFamily]):
+
+    ps, _ = upsert(
+        PayStructure,
+        {"code": "STD_STAFF_2025_10", "entity": None, "effective_from": ef(PayStructure, EFFECTIVE_START)},
+        {
+            "name": "Standard Staff (2025 Oct)",
+            "status": "active",
+            "rounding": ROUND_NEAREST,
+            "proration_method": "calendar_days",
+            "notes": "Demo template",
+            "effective_to": et(PayStructure, EFFECTIVE_END),
+            "config_json": {                     # <— add this block
+                "balancer_code": "SPECIAL",
+                "balancer_allow_negative": False,
+                "ctc_includes": ["PF_EMPR", "GRATUITY_ACCR", "FUEL"]
+            },
+        }
+    )
     ps, _ = upsert(
         PayStructure,
         {"code": "STD_STAFF_2025_10", "entity": None, "effective_from": ef(PayStructure, EFFECTIVE_START)},

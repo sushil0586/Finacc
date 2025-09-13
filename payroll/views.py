@@ -47,12 +47,14 @@ from django.db.models.functions import Coalesce
 
 from payroll.models import (
     OptionSet, Option,
-    BusinessUnit, Department, Location, CostCenter,GradeBand, Designation,
+    BusinessUnit, Department, Location, CostCenter,GradeBand, Designation,CompensationDraft,
 )
 from .serializers import (
     OptionSetSerializer, OptionSerializer,
     BusinessUnitSerializer, DepartmentSerializer, LocationSerializer, CostCenterSerializer,
-     GradeBandSerializer, DesignationSerializer,ManagerListItemSerializer,EmployeeSummarySerializer
+    GradeBandSerializer, DesignationSerializer,ManagerListItemSerializer,EmployeeSummarySerializer,
+    CompensationCalculateSerializer, CompensationDraftOut,
+    CompensationOverrideSerializer, CompensationApplySerializer, CompensationRecalcSerializer,PayStructureLiteSerializer,
 )
 
 from payroll.models import (
@@ -65,6 +67,8 @@ EmployeeCompensation
 )
 
 from rest_framework import generics as _g, permissions as _p
+from payroll.compensation_engine import CompensationEngine
+
 
 
 
@@ -1033,4 +1037,288 @@ class EmployeeSummaryView(APIView):
 
         serializer = EmployeeSummarySerializer(qs, many=True)
         return Response(serializer.data, status=200)
+    
+class CompensationPreviewAPIView(APIView):
+    """
+    POST /api/payroll/comp/preview/
+    Body: CompensationCalculateSerializer
+    Creates/updates a draft and returns a calculated breakdown.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        s = CompensationCalculateSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        draft, _ = CompensationDraft.objects.get_or_create(
+            employee_id=data["employee_id"],
+            entity_id=data["entity_id"],
+            pay_structure=data["pay_structure"],
+            effective_from=data["effective_from"],
+            status="draft",
+            defaults={
+                "ctc_annual": data["ctc_annual"],
+                "context": data.get("context") or {},
+                "created_by": request.user,
+            },
+        )
+        # sync changes (ctc/context) if any
+        changed = False
+        if draft.ctc_annual != data["ctc_annual"]:
+            draft.ctc_annual = data["ctc_annual"]; changed = True
+        new_ctx = data.get("context") or {}
+        if (draft.context or {}) != new_ctx:
+            draft.context = new_ctx; changed = True
+        if changed:
+            draft.save()
+
+        engine = CompensationEngine()
+        engine.calculate(draft, overrides=data.get("overrides"))
+        return Response(CompensationDraftOut(draft).data, status=status.HTTP_200_OK)
+
+
+class CompensationOverrideAPIView(APIView):
+    """
+    PATCH /api/payroll/comp/<int:pk>/override/
+    Body: CompensationOverrideSerializer
+    Applies incoming overrides and recalculates.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def patch(self, request, pk: int, *args, **kwargs):
+        draft = get_object_or_404(CompensationDraft, pk=pk, status="draft")
+        s = CompensationOverrideSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        engine = CompensationEngine()
+        engine.calculate(draft, overrides=s.validated_data["overrides"] or {})
+        return Response(CompensationDraftOut(draft).data, status=status.HTTP_200_OK)
+
+
+class CompensationRecalculateAPIView(APIView):
+    """
+    POST /api/payroll/comp/<int:pk>/recalculate/
+    Body: CompensationRecalcSerializer
+    Recomputes using stored overrides (optionally clearing/merging).
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int, *args, **kwargs):
+        draft = get_object_or_404(CompensationDraft, pk=pk, status="draft")
+        s = CompensationRecalcSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        clear = s.validated_data.get("clear_overrides", False)
+        incoming = s.validated_data.get("overrides") or {}
+
+        base = {}
+        if not clear:
+            base = {
+                ln.code: ln.override_amount
+                for ln in draft.lines.all()
+                if ln.override_amount is not None
+            }
+
+        merged = {**base, **incoming}
+
+        engine = CompensationEngine()
+        engine.calculate(draft, overrides=merged)
+        return Response(CompensationDraftOut(draft).data, status=status.HTTP_200_OK)
+
+
+class CompensationApplyAPIView(APIView):
+    """
+    POST /api/payroll/comp/<int:pk>/apply/
+    Body: CompensationApplySerializer
+    Freezes the draft into a snapshot and marks draft as applied.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int, *args, **kwargs):
+        draft = get_object_or_404(CompensationDraft, pk=pk, status="draft")
+        s = CompensationApplySerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        if not s.validated_data.get("confirm"):
+            return Response({"detail": "Confirmation required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        engine = CompensationEngine()
+        snap = engine.apply(draft)
+        return Response({"snapshot_id": snap.id}, status=status.HTTP_201_CREATED)
+    
+
+# ---------- Helper: parse booleans safely ----------
+def _b(val: str | None, default: bool = False) -> bool:
+    if val is None:
+        return default
+    return str(val).lower() in {"1", "true", "yes", "y", "on"}
+
+# ---------- 1) “Current & Active” dropdown ----------
+class PayStructureDropdownAPIView(generics.ListAPIView):
+    """
+    Lightweight endpoint for filling dropdowns.
+
+    Query params:
+      - entity: int (filter to an entity)
+      - include_global: bool (default true) → include templates with entity IS NULL
+      - on: ISO date/datetime (default = now) → effective window selection
+      - active_only: bool (default true)
+      - distinct_latest: bool (default true) → pick latest row per (code, entity)
+      - q: search by code/name (icontains)
+      - limit: int (default 50)
+    """
+    serializer_class = PayStructureLiteSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        entity = params.get("entity")
+        include_global = _b(params.get("include_global"), True)
+        active_only = _b(params.get("active_only"), True)
+        distinct_latest = _b(params.get("distinct_latest"), True)
+        q = params.get("q")
+
+        # “on” = selection date (effective window). Defaults to now()
+        on = params.get("on")
+        if on:
+            # DRF already ensures tz-aware request if USE_TZ on; fallback safely
+            try:
+                from django.utils.dateparse import parse_datetime, parse_date
+                dt = parse_datetime(on)
+                if dt is None:
+                    d = parse_date(on)
+                    dt = timezone.make_aware(timezone.datetime(d.year, d.month, d.day))
+                on_dt = dt
+            except Exception:
+                on_dt = timezone.now()
+        else:
+            on_dt = timezone.now()
+
+        qs = PayStructure.objects.all()
+
+        # Filter by entity / global
+        if entity:
+            qs = qs.filter(entity_id=entity)
+            if include_global:
+                qs = PayStructure.objects.filter(Q(entity_id=entity) | Q(entity__isnull=True))
+        else:
+            # No entity filter; optionally exclude global if requested
+            if not include_global:
+                qs = qs.filter(entity__isnull=False)
+
+        # Effective window @ on_dt
+        qs = qs.filter(
+            Q(effective_from__lte=on_dt) &
+            (Q(effective_to__isnull=True) | Q(effective_to__gte=on_dt))
+        )
+
+        # Status
+        if active_only:
+            qs = qs.filter(status=PayStructure.Status.ACTIVE)
+
+        # Search
+        if q:
+            qs = qs.filter(Q(code__icontains=q) | Q(name__icontains=q))
+
+        # Latest per (code, entity): requires PostgreSQL for distinct-on
+        if distinct_latest:
+            qs = (
+                qs.order_by("code", "entity_id", "-effective_from", "-id")
+                  .distinct("code", "entity_id")
+            )
+        else:
+            qs = qs.order_by("code", "entity_id", "-effective_from", "-id")
+
+        # Small, snappy list for dropdowns
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        limit = request.query_params.get("limit")
+        try:
+            limit = int(limit) if limit is not None else 50
+        except ValueError:
+            limit = 50
+        self.pagination_class = None  # explicit: dropdowns shouldn’t paginate
+        qs = self.get_queryset()[: max(1, min(limit, 200))]
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+
+# ---------- 2) General list (search + pagination) ----------
+class PayStructureListAPIView(generics.ListAPIView):
+    """
+    Broader listing with pagination.
+    Useful for admin tables instead of dropdowns.
+
+    Query params:
+      - entity, include_global, on, status, q (like above)
+      - ordering: e.g. "code", "-effective_from"
+    """
+    serializer_class = PayStructureLiteSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        entity = params.get("entity")
+        include_global = _b(params.get("include_global"), True)
+        status = params.get("status")  # draft/active/retired or comma list
+        q = params.get("q")
+        on = params.get("on")
+
+        if on:
+            from django.utils.dateparse import parse_datetime, parse_date
+            dt = parse_datetime(on)
+            if dt is None:
+                d = parse_date(on)
+                dt = timezone.make_aware(timezone.datetime(d.year, d.month, d.day))
+            on_dt = dt
+        else:
+            on_dt = None
+
+        qs = PayStructure.objects.all()
+
+        if entity:
+            qs = qs.filter(entity_id=entity)
+            if include_global:
+                qs = PayStructure.objects.filter(Q(entity_id=entity) | Q(entity__isnull=True))
+        else:
+            if not include_global:
+                qs = qs.filter(entity__isnull=False)
+
+        if on_dt:
+            qs = qs.filter(
+                Q(effective_from__lte=on_dt) &
+                (Q(effective_to__isnull=True) | Q(effective_to__gte=on_dt))
+            )
+
+        if status:
+            statuses = [s.strip().lower() for s in status.split(",")]
+            qs = qs.filter(status__in=statuses)
+
+        if q:
+            qs = qs.filter(Q(code__icontains=q) | Q(name__icontains=q))
+
+        ordering = params.get("ordering") or "code,entity_id,effective_from"
+        # allow comma-separated list
+        ordering_fields = [f.strip() for f in ordering.split(",") if f.strip()]
+        return qs.order_by(*ordering_fields)
+
+
+# ---------- 3) Meta endpoint for enum choices ----------
+class PayStructureMetaAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        def _choices(enum):
+            return [{"value": c.value, "label": c.label} for c in enum]
+
+        return Response({
+            "status": _choices(PayStructure.Status),
+            "rounding": _choices(PayStructure.RoundingRule),
+            "proration_method": _choices(PayStructure.ProrationMethod),
+        })
 
