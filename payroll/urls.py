@@ -78,5 +78,5 @@ urlpatterns  = [
     path("comp/<int:pk>/apply/", CompensationApplyAPIView.as_view(), name="payroll-comp-apply"),
     path("paystructures/dropdown", PayStructureDropdownAPIView.as_view(), name="paystructure-dropdown"),
     path("paystructures",           PayStructureListAPIView.as_view(),     name="paystructure-list"),
-    path("paystructures/meta",      PayStructureMetaAPIView.as_view(),     name="paystructure-meta"),
+    path("paystructures/meta",     PayStructureMetaAPIView.as_view(),     name="paystructure-meta"),
 ]
