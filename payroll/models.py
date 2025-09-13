@@ -14,6 +14,7 @@ import datetime
 from geography.models import Country,State,District,City
 from .base import TimeStampedModel, EffectiveDatedModel
 from django.conf import settings
+from django.utils import timezone
 
 #from __future__ import annotations
 
@@ -1127,6 +1128,7 @@ class PayStructure(TimeStampedModel, EffectiveDatedModel):
     proration_method = models.CharField(max_length=16, choices=ProrationMethod.choices, default=ProrationMethod.CALENDAR_DAYS)
 
     notes = models.CharField(max_length=255, blank=True, default="")
+    config_json = models.JSONField(default=dict, blank=True) 
     history = HistoricalRecords()
 
     class Meta:
@@ -1222,6 +1224,8 @@ class PayStructureComponent(TimeStampedModel):
     display_order = models.PositiveIntegerField(null=True, blank=True)
 
     notes = models.CharField(max_length=255, blank=True, default="")
+    effective_from = models.DateTimeField(null=True, blank=True, db_index=True)
+    effective_to   = models.DateTimeField(null=True, blank=True, db_index=True)
     history = HistoricalRecords()
 
     class Meta:
@@ -1627,7 +1631,7 @@ class EmployeeSalaryPackage(models.Model):
     """
     entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="salary_packages")
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="salary_packages")
-    pay_structure = models.ForeignKey("payroll.PayStructure", on_delete=models.PROTECT, related_name="applied_packages")
+    pay_structure = models.ForeignKey(PayStructure, on_delete=models.PROTECT, related_name="applied_packages")
 
     # Effective dating - you asked to use datetime (timezone-aware)
     effective_from = models.DateTimeField()  # ISO 8601 with tz offset required
@@ -1737,6 +1741,69 @@ class EmployeeComponentOverride(models.Model):
 
     def __str__(self):
         return f"Override[{self.code}] Emp={self.employee_id} {self.mode}={self.value_decimal} eff={self.effective_from.isoformat()}"
+
+
+
+
+class CompensationDraft(models.Model):
+    STATUS_CHOICES = (("draft","Draft"),("applied","Applied"),("void","Void"))
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="comp_drafts")
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name="comp_drafts",null=True, blank=True)
+    pay_structure = models.ForeignKey(PayStructure, on_delete=models.PROTECT, related_name="comp_drafts")
+    ctc_annual = models.DecimalField(max_digits=12, decimal_places=2)
+    effective_from = models.DateField()
+    context = models.JSONField(default=dict, blank=True)  # e.g. {"state":"KA","city_category":"METRO","emp_grade":"G2","emp_rank":"M1","is_metro":true}
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="draft")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["employee","status"])]
+
+    @property
+    def ctc_monthly(self) -> Decimal:
+        return (self.ctc_annual or Decimal("0")) / Decimal("12.0")
+
+class CompensationDraftLine(models.Model):
+    draft = models.ForeignKey(CompensationDraft, on_delete=models.CASCADE, related_name="lines")
+    family = models.ForeignKey(ComponentFamily, on_delete=models.PROTECT)
+    code = models.CharField(max_length=40)          # e.g. BASIC/HRA/...
+    name = models.CharField(max_length=120)
+    component_type = models.CharField(max_length=20, default="earning")  # earning/deduction
+    calc_method = models.CharField(max_length=20, default="flat")        # slab/percent/formula/flat
+    priority = models.IntegerField(default=100)
+
+    calc_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    override_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    final_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    metadata = models.JSONField(default=dict, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        unique_together = (("draft","family"),)
+        ordering = ["priority","id"]
+
+class EmployeeCompensationfinal(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="comp_snapshots")
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name="comp_snapshots")
+    pay_structure = models.ForeignKey(PayStructure, on_delete=models.PROTECT, related_name="comp_snapshots")
+    ctc_annual = models.DecimalField(max_digits=12, decimal_places=2)
+    effective_from = models.DateField()
+    created_at = models.DateTimeField(default=timezone.now)
+
+class EmployeeCompensationLine(models.Model):
+    snapshot = models.ForeignKey(EmployeeCompensationfinal, on_delete=models.CASCADE, related_name="lines")
+    family = models.ForeignKey(ComponentFamily, on_delete=models.PROTECT)
+    code = models.CharField(max_length=40)
+    name = models.CharField(max_length=120)
+    component_type = models.CharField(max_length=20, default="earning")
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    priority = models.IntegerField(default=100)
+
+    class Meta:
+        ordering = ["priority","id"]
 
 
 

@@ -13,7 +13,8 @@ from django.db import transaction
 from django.apps import apps
 from payroll.models import (
     OptionSet, Option,
-    BusinessUnit, Department, Location, CostCenter,GradeBand, Designation
+    BusinessUnit, Department, Location, CostCenter,GradeBand, Designation,
+    CompensationDraft, CompensationDraftLine, PayStructure
 )
 
 from rest_framework import serializers as _s
@@ -27,6 +28,40 @@ EmployeeCompensation
 )
 
 from django.db.models import Model
+from decimal import Decimal
+
+
+ALLOWED_BASIS = {"CTC_MONTHLY","GROSS","BASIC","HRA","CONV","PHONE","LTA","FUEL","GRATUITY_ACCR","PF_EMP","PF_EMPR"}  # extend as needed
+
+class OverridesField(serializers.DictField):
+    """
+    Input:
+      { "BASIC": "31000.00", "HRA": {"type":"percent","value":"45","percent_of":"BASIC"} }
+    Output (normalized for engine):
+      { "BASIC": {"mode":"amount","value":Decimal("31000.00")},
+        "HRA":   {"mode":"percent","value":Decimal("45"),"basis":"BASIC"} }
+    """
+    child = serializers.JSONField()
+
+    def to_internal_value(self, data):
+        out = {}
+        for code, raw in (data or {}).items():
+            if isinstance(raw, (str, int, float, Decimal)):
+                out[code] = {"mode": "amount", "value": Decimal(str(raw))}
+                continue
+            if isinstance(raw, dict):
+                t = str(raw.get("type","")).lower()
+                if t == "percent":
+                    val = Decimal(str(raw.get("value","0")))
+                    basis = raw.get("percent_of") or raw.get("basis")
+                    if basis and basis not in ALLOWED_BASIS:
+                        raise serializers.ValidationError({code: f"percent_of must be one of {sorted(ALLOWED_BASIS)}"})
+                    out[code] = {"mode":"percent","value":val,"basis": basis}
+                else:
+                    raise serializers.ValidationError({code: "Unknown override type. Use amount or {type:'percent',...}."})
+            else:
+                raise serializers.ValidationError({code: "Invalid override payload."})
+        return out
 
 
 class salarycomponentserializer(serializers.ModelSerializer):
@@ -912,4 +947,79 @@ class EmployeeSummarySerializer(serializers.ModelSerializer):
             # add "work_email", "mobile" here if you want them in the 10 fields
         )
 
+
+class CompensationCalculateSerializer(serializers.Serializer):
+    employee_id = serializers.IntegerField()
+    entity_id = serializers.IntegerField()
+    pay_structure_code = serializers.CharField()
+    ctc_annual = serializers.DecimalField(max_digits=12, decimal_places=2)
+    effective_from = serializers.DateField()
+    context = serializers.DictField(required=False)
+    overrides = OverridesField(required=False)  # <-- keep only this
+
+    def validate(self, data):
+        ps = PayStructure.objects.filter(code=data["pay_structure_code"]).first()
+        if not ps:
+            raise serializers.ValidationError({"pay_structure_code": "Unknown pay structure"})
+        data["pay_structure"] = ps
+
+        # Optional but recommended: ensure structure is effective on this date
+        eff = data["effective_from"]
+        ef = getattr(ps, "effective_from", None)
+        et = getattr(ps, "effective_to", None)
+        # normalize datetimes to dates if needed
+        if hasattr(ef, "date"):
+            ef = ef.date()
+        if hasattr(et, "date"):
+            et = et.date()
+        if ef and eff < ef:
+            raise serializers.ValidationError({"effective_from": "Pay structure not yet effective on this date."})
+        if et and eff >= et:
+            raise serializers.ValidationError({"effective_from": "Pay structure expired for this date."})
+
+        return data
+
+class CompensationDraftLineOut(serializers.ModelSerializer):
+    class Meta:
+        model = CompensationDraftLine
+        fields = ("id","code","name","component_type","calc_method","priority","calc_amount","override_amount","final_amount","metadata")
+
+class CompensationDraftOut(serializers.ModelSerializer):
+    lines = CompensationDraftLineOut(many=True)
+    class Meta:
+        model = CompensationDraft
+        fields = ("id","employee_id","entity_id","pay_structure_id","ctc_annual","effective_from","context","status","lines")
+
+class CompensationOverrideSerializer(serializers.Serializer):
+    overrides = OverridesField(required=False)  # <-- keep only this
+
+class CompensationApplySerializer(serializers.Serializer):
+    confirm = serializers.BooleanField()
+
+class CompensationRecalcSerializer(serializers.Serializer):
+    clear_overrides = serializers.BooleanField(required=False, default=False)
+    overrides = OverridesField(required=False)  # <-- keep only this
+
+
+class PayStructureLiteSerializer(serializers.ModelSerializer):
+    # Handy fields for dropdowns
+    value = serializers.IntegerField(source="id", read_only=True)
+    label = serializers.SerializerMethodField()
+    scope = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PayStructure
+        fields = (
+            "id", "value", "label",
+            "code", "name", "entity_id", "scope",
+            "status", "rounding", "proration_method",
+            "effective_from", "effective_to",
+        )
+
+    def get_label(self, obj: PayStructure) -> str:
+        scope = "GLOBAL" if obj.entity_id is None else f"ENT:{obj.entity_id}"
+        return f"{obj.code} — {obj.name} ({scope})"
+
+    def get_scope(self, obj: PayStructure) -> str:
+        return "global" if obj.entity_id is None else "entity"
 
