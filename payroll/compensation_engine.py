@@ -1,7 +1,7 @@
 # payroll/compensation_engine.py
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Tuple, Iterable, Optional
 
@@ -17,7 +17,7 @@ from payroll.models import (
     CompensationDraftLine,
 )
 
-# ---- optional safety if repo not wired yet ----
+# ---- repositories (policy is data-driven) ----
 try:
     from payroll.repositories import PolicyRepo, RepoCtx
 except Exception:  # pragma: no cover
@@ -29,10 +29,7 @@ except Exception:  # pragma: no cover
         emp_grade: Optional[str] = None
         emp_rank: Optional[str] = None
         month: Optional[int] = None
-
     class PolicyRepo:
-        def percent_for(self, *a, default: Decimal = Decimal("0"), **kw) -> Decimal: return default
-        def basis_cap_for(self, *a, default=None, **kw): return default
         def cap_for(self, *a, **kw): return None
         def should_zero(self, *a, **kw): return (False, None)
 
@@ -90,10 +87,9 @@ def _occurrences_per_year(pcg, slab) -> int:
     if cyc in {"half_yearly","HALF_YEARLY","semi_annual","SEMI_ANNUAL"}: return 2
     return 12
 
-# extremely small, safe expression evaluator for formulas like "max(0, CTC_MONTHLY - (BASIC + HRA))"
+# very small safe eval for formulas like "max(0, CTC_MONTHLY - (BASIC + HRA))"
 def _safe_eval(expr: str, vars_map: Dict[str, Decimal]) -> Decimal:
     allowed_names = {"min": min, "max": max, "Decimal": Decimal}
-    # build local namespace with numbers (as Decimal) only
     local = {k: Decimal(str(v)) for k, v in vars_map.items()}
     return Decimal(str(eval(expr, {"__builtins__": {}}, {**allowed_names, **local})))  # noqa: S307
 
@@ -107,32 +103,55 @@ def _pcg_for(family, entity_id: int, eff: datetime) -> PayrollComponentGlobal:
 
 def _scope_match(scope: dict, ctx: Ctx, ctc_annual: Decimal) -> bool:
     if not scope: return True
-    # common keys used in seed: city_category, emp_grade_in/not_in, state_in, emp_rank_in, ctc_annual_min/max
-    if "city_category" in scope and scope["city_category"]:
-        if str(scope["city_category"]).upper() != str(ctx.city_category).upper(): return False
-    if "emp_grade_in" in scope and scope["emp_grade_in"]:
-        if str(ctx.emp_grade) not in scope["emp_grade_in"]: return False
-    if "emp_grade_not_in" in scope and scope["emp_grade_not_in"]:
-        if str(ctx.emp_grade) in scope["emp_grade_not_in"]: return False
-    if "emp_rank_in" in scope and scope["emp_rank_in"]:
-        if str(ctx.emp_rank) not in scope["emp_rank_in"]: return False
-    if "state_in" in scope and scope["state_in"]:
-        if str(ctx.state) not in scope["state_in"]: return False
-    if "ctc_annual_min" in scope and scope["ctc_annual_min"]:
-        if Decimal(str(ctc_annual)) < Decimal(str(scope["ctc_annual_min"])): return False
-    if "ctc_annual_max" in scope and scope["ctc_annual_max"]:
-        if Decimal(str(ctc_annual)) > Decimal(str(scope["ctc_annual_max"])): return False
+    def S(x): return ("" if x is None else str(x))
+    if scope.get("city_category") and S(scope["city_category"]).upper() != S(ctx.city_category).upper(): return False
+    if scope.get("emp_grade_in") and S(ctx.emp_grade) not in {S(x) for x in scope["emp_grade_in"]}: return False
+    if scope.get("emp_grade_not_in") and S(ctx.emp_grade) in {S(x) for x in scope["emp_grade_not_in"]}: return False
+    if scope.get("emp_rank_in") and S(ctx.emp_rank) not in {S(x) for x in scope["emp_rank_in"]}: return False
+    if scope.get("emp_rank_not_in") and S(ctx.emp_rank) in {S(x) for x in scope["emp_rank_not_in"]}: return False
+    if scope.get("state_in") and S(ctx.state) not in {S(x) for x in scope["state_in"]}: return False
+    if scope.get("state_not_in") and S(ctx.state) in {S(x) for x in scope["state_not_in"]}: return False
+    if "ctc_annual_min" in scope and Decimal(str(ctc_annual)) < Decimal(str(scope["ctc_annual_min"])): return False
+    if "ctc_annual_max" in scope and Decimal(str(ctc_annual)) > Decimal(str(scope["ctc_annual_max"])): return False
     return True
 
-def _pick_slab(slab_group, ctc_annual: Decimal, ctx: Ctx) -> Optional[Slab]:
-    """Pick first effective slab whose scope_json matches."""
-    slabs = (_effective_qs(Slab, ctx.eff)
-             .filter(group=slab_group)
-             .order_by("id"))
+def _pick_slab(group, ctc_annual: Decimal, ctx: Ctx, band_base_value: Decimal) -> Optional[Slab]:
+    """
+    Pick first effective slab whose scope_json matches and whose [from_amount, to_amount]
+    includes the provided band_base_value.
+    """
+    slabs = (_effective_qs(Slab, ctx.eff).filter(group=group).order_by("id"))
     for s in slabs:
-        if _scope_match(getattr(s, "scope_json", {}) or {}, ctx, ctc_annual):
-            return s
+        if not _scope_match(getattr(s, "scope_json", {}) or {}, ctx, ctc_annual):
+            continue
+        lo = Decimal(str(getattr(s, "from_amount", 0) or 0))
+        hi = getattr(s, "to_amount", None)
+        if hi is None:
+            if band_base_value >= lo: return s
+        else:
+            if lo <= band_base_value <= Decimal(str(hi)): return s
     return None
+
+# ---------- inclusion helper (CTC composition) ----------
+def _flag_include_in_ctc(ps: PayStructure, line: CompensationDraftLine, pcg: PayrollComponentGlobal) -> bool:
+    """
+    Resolution order:
+      1) PayStructureComponent.include_in_ctc if set
+      2) PCG.include_in_ctc if set
+      3) config_json.ctc_includes / ctc_excludes
+      4) default: include earnings, exclude deductions
+    """
+    psc = PayStructureComponent.objects.filter(template=ps, family=line.family_id).only("include_in_ctc").first()
+    if psc and psc.include_in_ctc is not None:
+        return bool(psc.include_in_ctc)
+    if getattr(pcg, "include_in_ctc", None) is not None:
+        return bool(pcg.include_in_ctc)
+    cfg = (getattr(ps, "config_json", None) or {})
+    inc = set(cfg.get("ctc_includes") or [])
+    exc = set(cfg.get("ctc_excludes") or [])
+    if line.code in inc: return True
+    if line.code in exc: return False
+    return line.component_type == "earning"
 
 # ----------------- ENGINE -----------------
 class CompensationEngine:
@@ -198,10 +217,12 @@ class CompensationEngine:
 
             # ---------- compute by method ----------
             if calc_method == "slab" and getattr(pcg, "slab_group_id", None):
-                sg = pcg.slab_group
-                slab = _pick_slab(sg, draft.ctc_annual, ctx)
+                # choose base for band/range selection (even for flat slabs like PT)
+                select_label = getattr(pcg, "slab_percent_basis", None) or getattr(pcg, "slab_base", None) or "GROSS"
+                band_base = basis_value(select_label)
+
+                slab = _pick_slab(pcg.slab_group, draft.ctc_annual, ctx, band_base)
                 if slab:
-                    # value when active (store before month gating)
                     if slab.rate_type == "percent":
                         base_label = getattr(pcg, "slab_percent_basis", None) or getattr(pcg, "slab_base", None) or "GROSS"
                         base = basis_value(base_label)
@@ -220,26 +241,14 @@ class CompensationEngine:
                         meta["off_cycle"] = "true"
 
             elif calc_method == "percent":
-                pct = getattr(sc, "default_percent", None)
-                if pct is None:
-                    if code == "PF_EMP":
-                        pct = policy.percent_for("PF_RATE_EMPLOYEE", eff_dt, draft.ctc_annual, repo_ctx, default=Decimal("12"))
-                    elif code == "PF_EMPR":
-                        pct = policy.percent_for("PF_RATE_EMPLOYER", eff_dt, draft.ctc_annual, repo_ctx, default=Decimal("12"))
-                    elif code == "ESI_EMP":
-                        pct = policy.percent_for("ESI_RATE_EMPLOYEE", eff_dt, draft.ctc_annual, repo_ctx, default=Decimal("0.75"))
-                    elif code == "ESI_EMPR":
-                        pct = policy.percent_for("ESI_RATE_EMPLOYER", eff_dt, draft.ctc_annual, repo_ctx, default=Decimal("3.25"))
-                    else:
-                        pct = Decimal("0")
-
+                # fully seed-driven: use SC default_percent (or 0)
+                pct = getattr(sc, "default_percent", None) or Decimal("0")
                 base_label = getattr(pcg, "percent_basis", None) or getattr(sc, "percent_basis", None) or "GROSS"
                 base = basis_value(base_label)
 
-                # PF basis cap should apply only to PF (or if pcg explicitly flags)
-                cap = getattr(pcg, "basis_cap_amount", None) or policy.basis_cap_for("PF_BASE_CAP", eff_dt, draft.ctc_annual, repo_ctx, default=None)
-                apply_pf_cap = (code in {"PF_EMP", "PF_EMPR"}) or getattr(pcg, "pf_include", False)
-                if apply_pf_cap and cap and base_label in {"BASIC", "DA", "PF_WAGE"}:
+                # apply basis cap if present on PCG (e.g., PF @ 15k)
+                cap = getattr(pcg, "basis_cap_amount", None)
+                if cap and base_label in {"BASIC", "DA", "PF_WAGE"}:
                     base = min(base, Decimal(cap))
                     meta["basis_cap"] = str(cap)
 
@@ -247,7 +256,7 @@ class CompensationEngine:
                 meta.update({"percent": str(pct), "percent_of": base_label})
                 meta["raw_amount"] = str(amount)
 
-                # month gating via pcg.payout_months
+                # optional month gating via pcg.payout_months
                 pm = _parse_months_str(getattr(pcg, "payout_months", "") or "")
                 if pm and (ctx.month not in pm):
                     amount = Decimal("0.00")
@@ -290,13 +299,13 @@ class CompensationEngine:
 
             provisional = override_amount if ov else amount
 
-            # policy-driven caps / zeroing
-            cap_amt = policy.cap_for(code, repo_ctx.eff, draft.ctc_annual, repo_ctx, vars)
+            # policy-driven caps / zeroing from config_json + metric slabs
+            cap_amt = policy.cap_for(code, ps, repo_ctx, draft.ctc_annual, vars)
             if cap_amt is not None and provisional > cap_amt:
                 provisional = cap_amt
                 meta["capped_at"] = str(cap_amt)
 
-            must_zero, reason = policy.should_zero(code, repo_ctx.eff, draft.ctc_annual, repo_ctx, vars)
+            must_zero, reason = policy.should_zero(code, ps, repo_ctx, draft.ctc_annual, vars)
             if must_zero:
                 provisional = Decimal("0.00")
                 if reason: meta["skipped_by_policy"] = reason
@@ -315,26 +324,28 @@ class CompensationEngine:
             line.save()
 
             out_lines.append(line)
-            vars[code] = provisional  # downstream references use final numbers
+            vars[code] = provisional  # downstream formulas use final numbers
 
-        # ---------- CTC reconciliation (config-driven) ----------
-        cfg = (getattr(draft.pay_structure, "config_json", None) or {})
+        # ---------- CTC reconciliation (config + flags) ----------
+        cfg = (getattr(ps, "config_json", None) or {})
         balancer_code = cfg.get("balancer_code") or "SPECIAL"
-        include_codes = set(cfg.get("ctc_includes") or [])
         allow_neg = bool(cfg.get("balancer_allow_negative", False))
 
         bal_line = draft.lines.filter(code=balancer_code).first()
         if bal_line:
-            earn_lines = [l for l in draft.lines.all() if l.component_type == "earning" and l.code != balancer_code]
-            earn_codes = {l.code for l in earn_lines}
+            lines_now = list(draft.lines.all())
 
-            sum_earn = sum(l.final_amount for l in earn_lines)
-            # only add extras that are NOT already earnings (avoid double count)
-            sum_extra = sum(l.final_amount for l in draft.lines.all()
-                            if l.code in include_codes and l.code not in earn_codes)
+            # include lines per flags, but NEVER include the balancer in pre-sum
+            included_inputs = []
+            for l in lines_now:
+                if l.code == balancer_code:  # avoid circular math
+                    continue
+                pcg_l = _pcg_for(l.family, ctx.entity_id, ctx.eff)
+                if _flag_include_in_ctc(ps, l, pcg_l):
+                    included_inputs.append(l)
 
-            target = draft.ctc_monthly
-            residual = (target - (sum_earn + sum_extra)).quantize(Decimal("0.01"))
+            sum_inputs = sum(l.final_amount for l in included_inputs)
+            residual = (draft.ctc_monthly - sum_inputs).quantize(Decimal("0.01"))
             if not allow_neg and residual < Decimal("0.00"):
                 residual = Decimal("0.00")
 
@@ -344,7 +355,6 @@ class CompensationEngine:
 
             meta = bal_line.metadata or {}
             meta["reconciled"] = str(residual)
-            meta["ctc_includes"] = ",".join(sorted(include_codes)) if include_codes else ""
             bal_line.metadata = meta
             bal_line.save()
             vars[balancer_code] = bal_line.final_amount
@@ -352,24 +362,18 @@ class CompensationEngine:
         # ---------- Annualization (optional, helps CTC view) ----------
         if (cfg.get("enable_annual_summary", True)):
             lines_now = list(draft.lines.all())
-            include_codes = set(cfg.get("ctc_includes") or [])
-            balancer_code = cfg.get("balancer_code") or "SPECIAL"
-
-            earnings = [l for l in lines_now if l.component_type == "earning"]
-            earn_codes = {l.code for l in earnings}
-
             annual_totals: Dict[str, Decimal] = {}
             offcycle_earn_annual = Decimal("0.00")
 
             for l in lines_now:
-                pcg = _pcg_for(l.family, draft.entity_id, ctx.eff)
+                pcg_l = _pcg_for(l.family, ctx.entity_id, ctx.eff)
                 slab = None
                 slab_id = (l.metadata or {}).get("slab_id")
                 if slab_id:
                     try: slab = Slab.objects.get(id=slab_id)
                     except Exception: slab = None
 
-                occ = _occurrences_per_year(pcg, slab)
+                occ = _occurrences_per_year(pcg_l, slab)
                 try:
                     unit_amt = Decimal((l.metadata or {}).get("raw_amount", str(l.final_amount)))
                 except Exception:
@@ -384,7 +388,7 @@ class CompensationEngine:
                 l.save(update_fields=["metadata"])
                 annual_totals[l.code] = annual_amt
 
-                has_months = bool((slab and getattr(slab, "months", None)) or getattr(pcg, "payout_months", None))
+                has_months = bool((slab and getattr(slab, "months", None)) or getattr(pcg_l, "payout_months", None))
                 if l.component_type == "earning" and has_months and l.code != balancer_code:
                     offcycle_earn_annual += annual_amt
 
@@ -400,15 +404,16 @@ class CompensationEngine:
                 bal_line.save(update_fields=["metadata"])
                 annual_totals[balancer_code] = special_annual
 
-            extra_included = sum(annual_totals.get(code, Decimal("0.00"))
-                                 for code in include_codes if code not in earn_codes)
-            annual_ctc_from_breakup = (sum(annual_totals.get(c, Decimal("0.00")) for c in earn_codes)
-                                       + extra_included).quantize(Decimal("0.01"))
+            # Build annual CTC = sum of lines included in CTC (using same flag logic)
+            annual_ctc_from_breakup = Decimal("0.00")
+            for l in lines_now:
+                pcg_l = _pcg_for(l.family, ctx.entity_id, ctx.eff)
+                if _flag_include_in_ctc(ps, l, pcg_l):
+                    annual_ctc_from_breakup += annual_totals.get(l.code, Decimal("0.00"))
 
-            # stash a small summary in draft.context (no schema change)
             ctx_json = draft.context or {}
             ctx_json["__annual_summary__"] = {
-                "annual_from_breakup": str(annual_ctc_from_breakup),
+                "annual_from_breakup": str(annual_ctc_from_breakup.quantize(Decimal("0.01"))),
                 "ctc_annual_input": str(draft.ctc_annual),
                 "delta": str((Decimal(str(draft.ctc_annual)) - annual_ctc_from_breakup).quantize(Decimal("0.01")))
             }

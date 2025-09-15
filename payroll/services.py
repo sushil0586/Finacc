@@ -10,6 +10,9 @@ from django.db.models import Q
 from .models import SlabGroup, Slab
 from decimal import Decimal, InvalidOperation
 from .models import RateType, SlabCycle  # adjust import paths if different
+from django.utils import timezone
+from payroll.models import EntityPayStructure
+from uuid import uuid4
 
 
 @dataclass
@@ -103,23 +106,59 @@ def diff_structure_for_entity(*, structure, entity_id: int, eff_from: date, eff_
                                  old_id=current.id if current else None, new_payload=payload))
     return diffs
 
+def _model_has_field(model, field_name: str) -> bool:
+    return any(f.name == field_name for f in model._meta.get_fields())
+
 @transaction.atomic
 def apply_structure_to_entity(
     *, structure, entity_id: int, eff_from: date, eff_to: Optional[date] = None,
     replace: bool = True, dry_run: bool = False
 ) -> Dict[str, Any]:
-    EPC = apps.get_model(structure._meta.app_label, "EntityPayrollComponent")
+    """
+    Materialize PayStructure into EntityPayrollComponent from eff_from.
 
+    Key changes to avoid join errors:
+      - Resolve PayStructureComponent (PSC) ids for this structure up front.
+      - Scope end-dating and lookups with component_id__in=<PSC ids> instead of joins.
+      - Ensure payload has component_id for linkage.
+      - Stamp applied_at / applied_run_id if those fields exist.
+    """
+    app_label = structure._meta.app_label
+    EPC = apps.get_model(app_label, "EntityPayrollComponent")
+    PSC = apps.get_model(app_label, "PayStructureComponent")
+
+    # Compute the diffs
     diffs = diff_structure_for_entity(structure=structure, entity_id=entity_id, eff_from=eff_from, eff_to=eff_to)
     if dry_run:
         return {"dry_run": True, "diff": [d.__dict__ for d in diffs]}
 
+    # Run metadata
+    run_id = uuid4().hex[:12]
+    now = timezone.now()
+    has_applied_at = _model_has_field(EPC, "applied_at")
+    has_applied_run_id = _model_has_field(EPC, "applied_run_id")
+
     created_ids: List[int] = []
+    updated_ids: List[int] = []
+
+    # Families that will have rows at eff_from
     affected_family_ids = {d.family_id for d in diffs if d.action in ("create", "noop")}
 
-    if replace and affected_family_ids:
+    # Map family_id -> PSC.id for this structure (no joins later)
+    psc_qs = PSC.objects.filter(template_id=getattr(structure, "id"))
+    if affected_family_ids:
+        psc_qs = psc_qs.filter(family_id__in=list(affected_family_ids))
+    psc_by_family: Dict[int, int] = dict(psc_qs.values_list("family_id", "id"))
+    psc_ids: List[int] = list(psc_by_family.values())
+
+    # End-date open rows from THIS structure only (via PSC ids)
+    if replace and psc_ids:
         (EPC.objects
-            .filter(entity_id=entity_id, family_id__in=list(affected_family_ids), effective_to__isnull=True)
+            .filter(
+                entity_id=entity_id,
+                component_id__in=psc_ids,
+                effective_to__isnull=True,
+            )
             .update(effective_to=eff_from))
 
     for d in diffs:
@@ -127,11 +166,47 @@ def apply_structure_to_entity(
             continue
 
         payload = d.new_payload.copy()
-        existing_same_day = (EPC.objects
-                             .filter(entity_id=entity_id, family_id=d.family_id, effective_from=eff_from)
-                             .order_by("-id")
-                             .first())
+        payload.setdefault("entity_id", entity_id)
+
+        # Ensure component_id present for the EPC row linkage
+        psc_id = psc_by_family.get(d.family_id)
+        if psc_id and "component_id" not in payload and "component" not in payload:
+            payload["component_id"] = psc_id
+
+        # Stamp run metadata if columns exist
+        if has_applied_at:
+            payload["applied_at"] = now
+        if has_applied_run_id:
+            payload["applied_run_id"] = run_id
+
+        # Same-day row produced by THIS structure (filter by component_id if available)
+        same_day_filter = {
+            "entity_id": entity_id,
+            "family_id": d.family_id,
+            "effective_from": eff_from,
+        }
+        if psc_id:
+            same_day_filter["component_id"] = psc_id
+
+        existing_same_day = (
+            EPC.objects
+            .filter(**same_day_filter)
+            .order_by("-id")
+            .first()
+        )
+
         if existing_same_day and _same_config(existing_same_day, payload):
+            touched = False
+            if has_applied_at and getattr(existing_same_day, "applied_at", None) != now:
+                existing_same_day.applied_at = now; touched = True
+            if has_applied_run_id and getattr(existing_same_day, "applied_run_id", None) != run_id:
+                existing_same_day.applied_run_id = run_id; touched = True
+            if touched:
+                existing_same_day.save(update_fields=[
+                    *(["applied_at"] if has_applied_at else []),
+                    *(["applied_run_id"] if has_applied_run_id else []),
+                ])
+                updated_ids.append(existing_same_day.id)
             continue
 
         if existing_same_day:
@@ -139,13 +214,48 @@ def apply_structure_to_entity(
                 setattr(existing_same_day, k, v)
             existing_same_day.save()
             created_ids.append(existing_same_day.id)
+            updated_ids.append(existing_same_day.id)
             continue
 
         obj = EPC.objects.create(**payload)
         created_ids.append(obj.id)
 
-    return {"dry_run": False, "created_epc_ids": created_ids, "diff": [d.__dict__ for d in diffs]}
+    return {
+        "dry_run": False,
+        "applied_run_id": run_id,
+        "created_epc_ids": created_ids,
+        "updated_epc_ids": updated_ids,
+        "diff": [d.__dict__ for d in diffs],
+    }
 
+def record_pay_structure_assignment(*, entity_id: int, pay_structure, eff_from, status: str = "active", note: str = ""):
+    """
+    Create or update an assignment row for reporting/discovery.
+    eff_from can be date or aware datetime; store as aware datetime.
+    """
+    from datetime import datetime, time
+    from django.db import models as djm
+
+    # Normalize to aware datetime
+    if isinstance(eff_from, datetime):
+        eff = eff_from
+    else:
+        eff = timezone.make_aware(datetime.combine(eff_from, time.min), timezone.get_current_timezone())
+
+    obj, created = EntityPayStructure.objects.get_or_create(
+        entity_id=entity_id,
+        pay_structure=pay_structure,
+        effective_from=eff,
+        defaults={"status": status, "note": note},
+    )
+    if not created:
+        changed = False
+        if obj.status != status:
+            obj.status = status; changed = True
+        if note and obj.note != note:
+            obj.note = note; changed = True
+        if changed: obj.save(update_fields=["status", "note"])
+    return obj
 
 @dataclass
 class SlabResolution:

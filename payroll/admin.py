@@ -1,6 +1,7 @@
 from django.contrib import admin,messages
 from simple_history.admin import SimpleHistoryAdmin
 from django.forms.models import BaseInlineFormSet
+from django.db.models import Q
 
 from .models import (
      TaxRegime, InvestmentSection,
@@ -342,64 +343,134 @@ def duplicate_as_new_version(modeladmin, request, queryset):
 # ---------- ModelAdmins ----------
 
 # === Main admin for the versioned global component ===
-@admin.register(PayrollComponentGlobal)
-class PayrollComponentGlobalAdmin(EntityScopedAdminMixin,SimpleHistoryAdmin):
-    form = PayrollComponentGlobalAdminForm
+def _model_has_field(model, name: str) -> bool:
+    try:
+        model._meta.get_field(name)
+        return True
+    except Exception:
+        return False
 
-    # remove the first list_display (you had it twice); keep only this one:
-    list_display = (
-        "family", "code", "name", "entity", "type", "calc_method",
-        "effective_from", "effective_to", "priority", "frequency", "rounding",
-    )
-    list_filter  = ("entity", "family", "type", "calc_method", "frequency", "rounding")
-    search_fields = ("code", "name", "family__code", "entity__entityname")  # adjust field to your Entity model
-    autocomplete_fields = ("family", "slab_group", "entity")
+@admin.register(PayrollComponentGlobal)
+class PayrollComponentGlobalAdmin(EntityScopedAdminMixin, SimpleHistoryAdmin):
+    form = PayrollComponentGlobalAdminForm
     inlines = [PayrollComponentCapInline]
 
-    fieldsets = (
-        ("Identity & Versioning", {
-            "fields": (
-                ("family", "entity"),          # <-- add entity here
-                ("code", "name"),
-                ("type", "calc_method", "priority"),
-                ("effective_from", "effective_to"),
-            )
-        }),
-        ("Behavior", {
-            "fields": (("frequency", "rounding", "is_proratable"),)
-        }),
-        ("Flags & Tax", {
-            "fields": (("taxability", "pf_include", "esi_include", "pt_include", "lwf_include"),)
-        }),
-        ("Percent Settings (method = percent)", {
-            "classes": ("collapse",),
-            "fields": (("percent_basis", "basis_cap_amount", "basis_cap_periodicity"),)
-        }),
-        ("Slab Settings (method = slab)", {
-            "classes": ("collapse",),
-            "fields": (("slab_group", "slab_base", "slab_percent_basis", "slab_scope_field"),)
-        }),
-        ("Formula Settings (method = formula)", {
-            "classes": ("collapse",),
-            "fields": ("formula_text", "default_params", "required_vars")
-        }),
-        ("Governance & Eligibility", {
-            "classes": ("collapse",),
-            "fields": (("policy_band_min_percent", "policy_band_max_percent"), "eligibility")
-        }),
-        ("Payout & Proration", {
-            "classes": ("collapse",),
-            "fields": ("proration_method", "payout_policy", "payout_months", "allow_negative")
-        }),
-        ("Payslip Presentation", {
-            "classes": ("collapse",),
-            "fields": ("payslip_group", "display_order", "show_on_payslip")
-        }),
-    )
+    # ----- columns -----
+    def get_list_display(self, request):
+        base = [
+            "family", "code", "name", "entity", "type", "calc_method",
+            "effective_from", "effective_to", "priority", "frequency", "rounding",
+        ]
+        # show include flag if present
+        if _model_has_field(PayrollComponentGlobal, "include_in_ctc"):
+            base.append("include_in_ctc")
+        # always show resolved boolean
+        base.append("resolved_in_ctc")
+        return tuple(base)
 
-    actions = ["duplicate_as_new_version"]
+    def get_list_filter(self, request):
+        base = ["entity", "family", "type", "calc_method", "frequency", "rounding"]
+        if _model_has_field(PayrollComponentGlobal, "include_in_ctc"):
+            base.append("include_in_ctc")
+        return tuple(base)
 
+    search_fields = ("code", "name", "family__code", "entity__entityname")
+    autocomplete_fields = ("family", "slab_group", "entity")
+    readonly_fields = ("resolved_in_ctc",)
 
+    # ----- layout -----
+    def get_fieldsets(self, request, obj=None):
+        fieldsets = [
+            ("Identity & Versioning", {
+                "fields": (
+                    ("family", "entity"),
+                    ("code", "name"),
+                    ("type", "calc_method", "priority"),
+                    ("effective_from", "effective_to"),
+                )
+            }),
+            ("Behavior", {
+                "fields": (("frequency", "rounding", "is_proratable"),)
+            }),
+            ("CTC Membership", {
+                "fields": tuple(
+                    (["include_in_ctc"] if _model_has_field(PayrollComponentGlobal, "include_in_ctc") else [])
+                    + ["resolved_in_ctc"]
+                )
+            }),
+            ("Flags & Tax", {
+                "fields": (("taxability", "pf_include", "esi_include", "pt_include", "lwf_include"),)
+            }),
+            ("Percent Settings (method = percent)", {
+                "classes": ("collapse",),
+                "fields": (("percent_basis", "basis_cap_amount", "basis_cap_periodicity"),)
+            }),
+            ("Slab Settings (method = slab)", {
+                "classes": ("collapse",),
+                "fields": (("slab_group", "slab_base", "slab_percent_basis", "slab_scope_field"),)
+            }),
+            ("Formula Settings (method = formula)", {
+                "classes": ("collapse",),
+                "fields": ("formula_text", "default_params", "required_vars")
+            }),
+            ("Governance & Eligibility", {
+                "classes": ("collapse",),
+                "fields": (("policy_band_min_percent", "policy_band_max_percent"), "eligibility")
+            }),
+            ("Payout & Proration", {
+                "classes": ("collapse",),
+                "fields": ("proration_method", "payout_policy", "payout_months", "allow_negative")
+            }),
+            ("Payslip Presentation", {
+                "classes": ("collapse",),
+                "fields": ("payslip_group", "display_order", "show_on_payslip")
+            }),
+        ]
+        return fieldsets
+
+    # ----- computed boolean -----
+    @admin.display(boolean=True, description="Included in CTC?")
+    def resolved_in_ctc(self, obj: PayrollComponentGlobal) -> bool:
+        """
+        Final CTC membership at the PCG level:
+          - if include_in_ctc is set, honor it
+          - else default to earnings included, deductions excluded
+        (Structure-level config may still override at runtime.)
+        """
+        val = getattr(obj, "include_in_ctc", None)
+        if val is not None:
+            return bool(val)
+        # default behavior (same as engine's fallback for PCG-level)
+        return (str(getattr(obj, "type", "earning")).lower() == "earning")
+
+    # ----- actions -----
+    actions = ["mark_ctc_include", "mark_ctc_exclude", "clear_ctc_flag", "duplicate_as_new_version"]
+
+    def mark_ctc_include(self, request, queryset):
+        if not _model_has_field(PayrollComponentGlobal, "include_in_ctc"):
+            self.message_user(request, "Field include_in_ctc not present on model.", level=messages.ERROR)
+            return
+        updated = queryset.update(include_in_ctc=True)
+        self.message_user(request, f"Marked {updated} component(s) as INCLUDED in CTC.", level=messages.SUCCESS)
+    mark_ctc_include.short_description = "CTC: Include selected"
+
+    def mark_ctc_exclude(self, request, queryset):
+        if not _model_has_field(PayrollComponentGlobal, "include_in_ctc"):
+            self.message_user(request, "Field include_in_ctc not present on model.", level=messages.ERROR)
+            return
+        updated = queryset.update(include_in_ctc=False)
+        self.message_user(request, f"Marked {updated} component(s) as EXCLUDED from CTC.", level=messages.SUCCESS)
+    mark_ctc_exclude.short_description = "CTC: Exclude selected"
+
+    def clear_ctc_flag(self, request, queryset):
+        if not _model_has_field(PayrollComponentGlobal, "include_in_ctc"):
+            self.message_user(request, "Field include_in_ctc not present on model.", level=messages.ERROR)
+            return
+        updated = queryset.update(include_in_ctc=None)
+        self.message_user(request, f"Cleared CTC flag on {updated} component(s). (Will fall back to defaults.)", level=messages.INFO)
+    clear_ctc_flag.short_description = "CTC: Clear flag (fallback to defaults)"
+
+    # (keep your existing duplicate action)
     def duplicate_as_new_version(self, request, queryset):
         from datetime import timedelta
         from django.utils import timezone
@@ -416,7 +487,6 @@ class PayrollComponentGlobalAdmin(EntityScopedAdminMixin,SimpleHistoryAdmin):
             count += 1
         self.message_user(request, f"Created {count} new version(s) effective {tomorrow}.")
     duplicate_as_new_version.short_description = "Duplicate as new version (effective tomorrow)"
-
     
 @admin.register(PayrollComponentCap)
 class PayrollComponentCapAdmin(admin.ModelAdmin):
@@ -519,32 +589,98 @@ class ApplyActionForm(ActionForm):
     )
 
 
+def _effective_qs(model, eff):
+    names = {f.name for f in model._meta.get_fields()}
+    qs = model.objects.all()
+    if "effective_from" in names:
+        qs = qs.filter(effective_from__lte=eff)
+    if "effective_to" in names:
+        qs = qs.filter(Q(effective_to__isnull=True) | Q(effective_to__gt=eff))
+    return qs
+
+def _model_has_field(model, name: str) -> bool:
+    try:
+        model._meta.get_field(name)
+        return True
+    except Exception:
+        return False
+
+# ---------- inline with computed "is_included" ----------
+class PayStructureComponentInline(admin.TabularInline):
+    model = PayStructureComponent
+    extra = 0
+    show_change_link = True
+    readonly_fields = ("is_included",)
+
+    def get_fields(self, request, obj=None):
+        fields = ["family", "priority", "enabled"]
+        if _model_has_field(PayStructureComponent, "include_in_ctc"):
+            fields.append("include_in_ctc")
+        fields.append("is_included")  # computed
+        # show defaults only if they exist on your model
+        if _model_has_field(PayStructureComponent, "default_percent"):
+            fields.append("default_percent")
+        if _model_has_field(PayStructureComponent, "default_amount"):
+            fields.append("default_amount")
+        # DO NOT include "calc_method" here; it's not a PSC field in your schema
+        return fields
+
+    @admin.display(boolean=True, description="Included in CTC?")
+    def is_included(self, obj: PayStructureComponent) -> bool:
+        # 1) PSC override
+        if getattr(obj, "include_in_ctc", None) is not None:
+            return bool(obj.include_in_ctc)
+
+        ps = obj.template
+        eff = getattr(ps, "effective_from", None) or getattr(ps, "created_at", None)
+        code = obj.family.code
+        entity = getattr(ps, "entity", None)
+
+        # 2) PCG flag (prefer entity over global, effective-dated)
+        pcg = (
+            _effective_qs(PayrollComponentGlobal, eff)
+            .filter(family=obj.family)
+            .filter(Q(entity=entity) | Q(entity__isnull=True))
+            .order_by("-entity_id", "priority", "id")
+            .first()
+        )
+        if pcg and pcg.include_in_ctc is not None:
+            return bool(pcg.include_in_ctc)
+
+        # 3) PayStructure config (include wins)
+        cfg = (ps.config_json or {})
+        inc = set(cfg.get("ctc_includes") or [])
+        exc = set(cfg.get("ctc_excludes") or [])
+        if code in inc:
+            return True
+        if code in exc:
+            return False
+
+        # 4) default by component type (fall back to PCG.type if available)
+        ctype = getattr(pcg, "type", "earning") if pcg else "earning"
+        return ctype == "earning"
+
+
 @admin.register(PayStructure)
-class PayStructureAdmin(EntityScopedAdminMixin, SimpleHistoryAdmin):
+class PayStructureAdmin(admin.ModelAdmin):  # keep your mixins (EntityScopedAdminMixin, SimpleHistoryAdmin) if needed
     list_display = ("code", "name", "entity", "status", "effective_from", "effective_to",
                     "rounding", "proration_method", "updated_at")
     list_filter = ("status", "entity", "rounding", "proration_method")
     search_fields = ("code", "name", "notes")
-    inlines = ()  # or your PayStructureComponentInline
+    inlines = (PayStructureComponentInline,)
     action_form = ApplyActionForm
     actions = ("apply_to_entity_dry_run", "apply_to_entity_real")
 
-    # (optional) restrict Entity choices per user
     def get_action_form(self, request, *args, **kwargs):
         form = super().get_action_form(request, *args, **kwargs)
         if not request.user.is_superuser:
             try:
-                # narrow to the user’s entity, adjust to your profile path
                 form.base_fields["entity"].queryset = Entity.objects.filter(pk=request.user.profile.entity_id)
             except Exception:
                 pass
         return form
 
     def _get_apply_params(self, request):
-        """
-        Read from POST (action form) first; fall back to GET querystring.
-        Always return (entity_id, date or None).
-        """
         entity_id = (
             request.POST.get("entity")
             or request.POST.get("entity_id")
@@ -555,7 +691,6 @@ class PayStructureAdmin(EntityScopedAdminMixin, SimpleHistoryAdmin):
         eff_date = parse_date(eff_str) if eff_str else None
         return entity_id, eff_date
 
-    # ---- DRY-RUN (preview; no writes) ----
     def apply_to_entity_dry_run(self, request, queryset):
         entity_id, eff_date = self._get_apply_params(request)
         if not entity_id or not eff_date:
@@ -563,18 +698,12 @@ class PayStructureAdmin(EntityScopedAdminMixin, SimpleHistoryAdmin):
             return
         for ps in queryset:
             try:
-                res = apply_structure_to_entity(
-                    structure=ps,                      # <-- here
-                    entity_id=int(entity_id),
-                    eff_from=eff_date,
-                    dry_run=True,
-                )
+                res = apply_structure_to_entity(structure=ps, entity_id=int(entity_id), eff_from=eff_date, dry_run=True)
                 self.message_user(request, f"{ps.code}: {res}", level=messages.INFO)
             except Exception as e:
                 self.message_user(request, f"{ps.code}: {e}", level=messages.ERROR)
     apply_to_entity_dry_run.short_description = "Dry-run apply to entity"
 
-    # ---- REAL APPLY (writes EPC rows) ----
     def apply_to_entity_real(self, request, queryset):
         entity_id, eff_date = self._get_apply_params(request)
         if not entity_id or not eff_date:
@@ -582,18 +711,13 @@ class PayStructureAdmin(EntityScopedAdminMixin, SimpleHistoryAdmin):
             return
         for ps in queryset:
             try:
-                res = apply_structure_to_entity(
-                    structure=ps,                      # <-- and here
-                    entity_id=int(entity_id),
-                    eff_from=eff_date,
-                    dry_run=False,
-                )
+                res = apply_structure_to_entity(structure=ps, entity_id=int(entity_id), eff_from=eff_date, dry_run=False)
                 self.message_user(request, f"{ps.code}: {res}", level=messages.SUCCESS)
             except Exception as e:
                 self.message_user(request, f"{ps.code}: {e}", level=messages.ERROR)
     apply_to_entity_real.short_description = "Apply to entity (WRITE EPC rows)"
 
-    
+
 @admin.register(PayStructureComponent)
 class PayStructureComponentAdmin(admin.ModelAdmin):
     form = PayStructureComponentAdminForm

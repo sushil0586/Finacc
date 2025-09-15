@@ -15,6 +15,7 @@ from geography.models import Country,State,District,City
 from .base import TimeStampedModel, EffectiveDatedModel
 from django.conf import settings
 from django.utils import timezone
+from geography.models import Country,State,District,City
 
 #from __future__ import annotations
 
@@ -747,6 +748,11 @@ class PayrollComponentGlobal(TimeStampedModel, EffectiveDatedModel):
     type = models.CharField(max_length=24, choices=ComponentTypeGlobal.choices)
     calc_method = models.CharField(max_length=12, choices=CalcMethod.choices)
 
+    include_in_ctc = models.BooleanField(
+        null=True, blank=True,
+        help_text="Tri-state. Default CTC membership for this family at this scope (entity/global)."
+    )
+
     # Behavior
     frequency = models.CharField(max_length=12, choices=Frequency.choices, default=Frequency.MONTHLY)
     rounding = models.CharField(max_length=12, choices=RoundingRule.choices, default=RoundingRule.NEAREST)
@@ -959,6 +965,10 @@ class EntityPayrollComponent(TimeStampedModel, EffectiveDatedModel):
     )
 
     notes = models.CharField(max_length=255, blank=True, default="")
+
+    applied_at = models.DateTimeField(null=True, blank=True)
+    applied_run_id = models.CharField(max_length=64, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)  # if not present
     history = HistoricalRecords()
 
     class Meta:
@@ -1223,6 +1233,11 @@ class PayStructureComponent(TimeStampedModel):
     show_on_payslip = models.BooleanField(null=True, blank=True)
     display_order = models.PositiveIntegerField(null=True, blank=True)
 
+    include_in_ctc = models.BooleanField(
+        null=True, blank=True,
+        help_text="Tri-state. If set, overrides CTC membership for this structure/family. If NULL, falls back to PCG/config/default."
+    )
+
     notes = models.CharField(max_length=255, blank=True, default="")
     effective_from = models.DateTimeField(null=True, blank=True, db_index=True)
     effective_to   = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -1459,6 +1474,12 @@ class Employee(TimeStampedModel):
 
     photo = models.ImageField(upload_to="employee_photos/", null=True, blank=True)
     notes = models.TextField(blank=True, default="")
+    country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
+    state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
+    district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
+    city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
+
+
 
     class Meta:
         unique_together = [("entity", "code")]
@@ -1804,6 +1825,35 @@ class EmployeeCompensationLine(models.Model):
 
     class Meta:
         ordering = ["priority","id"]
+
+
+class EntityPayStructure(models.Model):
+    STATUS_CHOICES = (
+        ("active", "Active"),
+        ("inactive", "Inactive"),
+        ("archived", "Archived"),
+    )
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="paystructure_assignments")
+    pay_structure = models.ForeignKey("payroll.PayStructure", on_delete=models.CASCADE, related_name="assignments")
+
+    # Use DateTimeField so it aligns with other effective-dated rows (like EntityPayrollComponent)
+    effective_from = models.DateTimeField(db_index=True)
+    effective_to = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="active", db_index=True)
+    note = models.CharField(max_length=255, blank=True, default="")
+    applied_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "effective_from"]),
+        ]
+        unique_together = [("entity", "pay_structure", "effective_from")]
+
+    def __str__(self):
+        return f"{self.entity_id} -> {self.pay_structure.code} @ {self.effective_from:%Y-%m-%d}"
 
 
 
