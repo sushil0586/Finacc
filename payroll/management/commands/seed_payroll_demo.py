@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
@@ -15,6 +15,7 @@ from payroll.models import (
     PayStructure, PayStructureComponent, EntityPayrollComponent,
 )
 from payroll.services import apply_structure_to_entity
+from payroll.services import record_pay_structure_assignment
 
 # ---- constants (match your enums) ----
 RATE_AMOUNT = "amount"
@@ -28,6 +29,17 @@ PAYSLIP_EARN = "earnings"; PAYSLIP_DED = "deductions"
 
 EFFECTIVE_START = date(2025, 10, 1)
 EFFECTIVE_END: Optional[date] = None
+
+# --- CTC include/exclude defaults (edit to your policy) ---
+DEFAULT_CTC_INCLUDE = [
+    "BASIC", "HRA", "FUEL", "CONVEYANCE", "SPECIAL",  # earnings (+ SPECIAL for annual parity)
+    "PF_EMPR", "GRATUITY_ACCR",                       # employer costs
+    # "ESI_EMPR",                                     # uncomment if employer ESI counts in CTC
+]
+DEFAULT_CTC_EXCLUDE = [
+    "PF_EMP", "ESI_EMP", "PT", "LWF", "IT_TAX",
+    # "ESI_EMPR",                                     # keep excluded if not counted in CTC
+]
 
 # ---------- helpers ----------
 def aware(dt_or_date):
@@ -110,7 +122,7 @@ def ensure_entities(*, a_id: int, b_id: Optional[int]):
         except Entity.DoesNotExist: raise CommandError(f"Entity id={b_id} not found.")
     return org_a, org_b
 
-def ensure_slab_groups_and_slabs():
+def ensure_slab_groups_and_slabs() -> Dict[str, SlabGroup]:
     # SlabGroup.type and Slab.cycle values
     sg_type_custom = choice(SlabGroup, "type", "custom")
     sg_type_pt = choice(SlabGroup, "type", "professional_tax")
@@ -223,6 +235,10 @@ def ensure_slab_groups_and_slabs():
         "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
     }, {"value": Decimal("1500.00"), "cycle": cy_monthly, "months": ""})
 
+    # ---------- BONUS: % of ANNUAL gross, paid once (Dec) ----------
+    ANNUAL_BONUS_PCT = Decimal("8.33")  # change to Decimal("10.00") if you want 10%
+    bonus_monthly_equivalent_pct = (ANNUAL_BONUS_PCT * Decimal("12")).quantize(Decimal("0.01"))
+
     g_bonus, _ = upsert(
         SlabGroup,
         {"group_key": "BONUS_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
@@ -231,9 +247,9 @@ def ensure_slab_groups_and_slabs():
     upsert(Slab, {
         "group": g_bonus, "effective_from": ef(Slab, EFFECTIVE_START),
         "from_amount": 0, "to_amount": None, "rate_type": RATE_PERCENT, "scope_json": {},
-    }, {"value": Decimal("8.33"), "percent_of": "GROSS", "cycle": cy_yearly, "months": "Dec"})
+    }, {"value": bonus_monthly_equivalent_pct, "percent_of": "GROSS", "cycle": cy_yearly, "months": "Dec"})
 
-    # ---------- PT slabs (combined + per state for engine) ----------
+    # ---------- PT slabs ----------
     g_pt, _ = upsert(
         SlabGroup,
         {"group_key": "PT_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
@@ -253,37 +269,7 @@ def ensure_slab_groups_and_slabs():
             "scope_json": {"state_in":[state]},
         }, {"value": val, "cycle": cy_monthly})
 
-    pt_ka, _ = upsert(
-        SlabGroup,
-        {"group_key": "PT_KA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "PT Karnataka", "type": sg_type_pt, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    for frm, to, val in [
-        (0, Decimal("12500.00"), Decimal("0.00")),
-        (Decimal("12500.01"), Decimal("20000.00"), Decimal("200.00")),
-        (Decimal("20000.01"), None, Decimal("300.00")),
-    ]:
-        upsert(Slab, {
-            "group": pt_ka, "effective_from": ef(Slab, EFFECTIVE_START),
-            "from_amount": Decimal(str(frm)), "to_amount": to, "rate_type": RATE_AMOUNT, "scope_json": {},
-        }, {"value": val, "cycle": cy_monthly})
-
-    pt_mh, _ = upsert(
-        SlabGroup,
-        {"group_key": "PT_MH", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "PT Maharashtra", "type": sg_type_pt, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    for frm, to, val in [
-        (0, Decimal("10000.00"), Decimal("0.00")),
-        (Decimal("10000.01"), Decimal("20000.00"), Decimal("175.00")),
-        (Decimal("20000.01"), None, Decimal("300.00")),
-    ]:
-        upsert(Slab, {
-            "group": pt_mh, "effective_from": ef(Slab, EFFECTIVE_START),
-            "from_amount": Decimal(str(frm)), "to_amount": to, "rate_type": RATE_AMOUNT, "scope_json": {},
-        }, {"value": val, "cycle": cy_monthly})
-
-    # ---------- LWF (combined for UI + per-state split, no JSON) ----------
+    # ---------- LWF ----------
     g_lwf, _ = upsert(
         SlabGroup,
         {"group_key": "LWF_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
@@ -300,124 +286,45 @@ def ensure_slab_groups_and_slabs():
         "scope_json": {"state_in":["MH"]},
     }, {"value": Decimal("12.00"), "cycle": cy_half, "months": "Jun, Dec"})
 
-    # Employee/company split groups (read by PolicyRepo)
-    lwf_emp_ka, _ = upsert(
+    # ---------- Policy/config metrics (for METRIC('KEY') usage) ----------
+    # ESI threshold by state/year
+    g_esi_thr, _ = upsert(
         SlabGroup,
-        {"group_key": "LWF_EMP_KA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "LWF Employee (KA)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+        {"group_key": "ESI_THRESHOLD_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "ESI Eligibility Threshold (Monthly GROSS)", "type": sg_type_custom,
+         "effective_to": et(SlabGroup, EFFECTIVE_END)}
     )
     upsert(Slab, {
-        "group": lwf_emp_ka, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("20.00"), "cycle": cy_half, "months": "Jun, Dec"})
+        "group": g_esi_thr, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT,
+        "scope_json": {"state_in": ["KA"]},
+    }, {"value": Decimal("21000.00"), "cycle": cy_monthly})
 
-    lwf_comp_ka, _ = upsert(
+    # HRA cap %
+    g_hra_cap, _ = upsert(
         SlabGroup,
-        {"group_key": "LWF_COMP_KA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "LWF Company (KA)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
+        {"group_key": "HRA_CAP_PERCENT_2025", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
+        {"name": "HRA CAP % by City Category", "type": sg_type_custom,
+         "effective_to": et(SlabGroup, EFFECTIVE_END)}
     )
     upsert(Slab, {
-        "group": lwf_comp_ka, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("0.00"), "cycle": cy_half, "months": "Jun, Dec"})
-
-    lwf_emp_mh, _ = upsert(
-        SlabGroup,
-        {"group_key": "LWF_EMP_MH", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "LWF Employee (MH)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    upsert(Slab, {
-        "group": lwf_emp_mh, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("12.00"), "cycle": cy_half, "months": "Jun, Dec"})
-
-    lwf_comp_mh, _ = upsert(
-        SlabGroup,
-        {"group_key": "LWF_COMP_MH", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "LWF Company (MH)", "type": sg_type_lwf, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    upsert(Slab, {
-        "group": lwf_comp_mh, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("36.00"), "cycle": cy_half, "months": "Jun, Dec"})
-
-    # ---------- Policy/config groups (numeric slabs; no FormulaConfig) ----------
-    def upsert_cfg_decimal(key: str, val: Decimal):
-        grp, _ = upsert(
-            SlabGroup,
-            {"group_key": key, "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-            {"name": key.replace("_"," ").title(), "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-        )
-        upsert(Slab, {
-            "group": grp, "effective_from": ef(Slab, EFFECTIVE_START),
-            "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-        }, {"value": val, "cycle": cy_monthly})
-        return grp
-
-    cfg_pf_empr = upsert_cfg_decimal("PF_RATE_EMPLOYER", Decimal("12"))
-    cfg_pf_emp  = upsert_cfg_decimal("PF_RATE_EMPLOYEE", Decimal("12"))
-    cfg_pf_cap  = upsert_cfg_decimal("PF_BASE_CAP", Decimal("15000"))
-    cfg_grat    = upsert_cfg_decimal("GRATUITY_RATE", Decimal("4.83"))  # % of BASIC if you use it
-    cfg_insur   = upsert_cfg_decimal("INSURANCE_RATE", Decimal("0"))     # % of GROSS
-
-    # HRA CAP: 50% METRO, 40% NON_METRO (percent of BASIC)
-    cap_hra, _ = upsert(
-        SlabGroup,
-        {"group_key": "CAP_HRA", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "HRA Cap Percent", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    upsert(Slab, {
-        "group": cap_hra, "effective_from": ef(Slab, EFFECTIVE_START),
+        "group": g_hra_cap, "effective_from": ef(Slab, EFFECTIVE_START),
         "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT,
         "scope_json": {"city_category": "METRO"},
-    }, {"value": Decimal("50.0"), "cycle": cy_monthly})
+    }, {"value": Decimal("50.00"), "cycle": cy_monthly})
     upsert(Slab, {
-        "group": cap_hra, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("40.0"), "cycle": cy_monthly})
-
-    # ESI config (numeric groups instead of JSON)
-    esi_threshold, _ = upsert(
-        SlabGroup,
-        {"group_key": "ESI_THRESHOLD", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "ESI Threshold", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    upsert(Slab, {
-        "group": esi_threshold, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("21000"), "cycle": cy_monthly})
-
-    esi_rate_emp, _ = upsert(
-        SlabGroup,
-        {"group_key": "ESI_RATE_EMPLOYEE", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "ESI Employee %", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    upsert(Slab, {
-        "group": esi_rate_emp, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("0.75"), "cycle": cy_monthly})
-
-    esi_rate_empr, _ = upsert(
-        SlabGroup,
-        {"group_key": "ESI_RATE_EMPLOYER", "effective_from": ef(SlabGroup, EFFECTIVE_START)},
-        {"name": "ESI Employer %", "type": sg_type_custom, "effective_to": et(SlabGroup, EFFECTIVE_END)},
-    )
-    upsert(Slab, {
-        "group": esi_rate_empr, "effective_from": ef(Slab, EFFECTIVE_START),
-        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT, "scope_json": {},
-    }, {"value": Decimal("3.25"), "cycle": cy_monthly})
+        "group": g_hra_cap, "effective_from": ef(Slab, EFFECTIVE_START),
+        "from_amount": 0, "to_amount": None, "rate_type": RATE_AMOUNT,
+        "scope_json": {},
+    }, {"value": Decimal("40.00"), "cycle": cy_monthly})
 
     return {
-        # used by PCGs/UI
-        "BASIC_BY_CTC_2025": g_basic, "HRA_BY_CITY_2025": g_hra, "CONV_BY_GRADE_CTC_2025": g_conv,
-        "PHONE_BY_STATE_RANK_2025": g_phone, "BONUS_2025": g_bonus, "FUEL_BY_GRADE_2025": g_fuel,
-        "PT_2025": g_pt, "PT_KA": pt_ka, "PT_MH": pt_mh,
-        "LWF_2025": g_lwf, "LWF_EMP_KA": lwf_emp_ka, "LWF_COMP_KA": lwf_comp_ka,
-        "LWF_EMP_MH": lwf_emp_mh, "LWF_COMP_MH": lwf_comp_mh,
-        # policy/config keys for PolicyRepo
-        "PF_RATE_EMPLOYER": cfg_pf_empr, "PF_RATE_EMPLOYEE": cfg_pf_emp, "PF_BASE_CAP": cfg_pf_cap,
-        "GRATUITY_RATE": cfg_grat, "INSURANCE_RATE": cfg_insur, "CAP_HRA": cap_hra,
-        "ESI_THRESHOLD": esi_threshold, "ESI_RATE_EMPLOYEE": esi_rate_emp, "ESI_RATE_EMPLOYER": esi_rate_empr,
+        "BASIC_BY_CTC_2025": g_basic, "HRA_BY_CITY_2025": g_hra,
+        "CONV_BY_GRADE_CTC_2025": g_conv, "PHONE_BY_STATE_RANK_2025": g_phone,
+        "BONUS_2025": g_bonus, "FUEL_BY_GRADE_2025": g_fuel,
+        "PT_2025": g_pt, "LWF_2025": g_lwf,
+        # metrics used by PolicyRepo via METRIC('KEY')
+        "ESI_THRESHOLD_2025": g_esi_thr, "HRA_CAP_PERCENT_2025": g_hra_cap,
     }
 
 def ensure_families_and_pcg(groups: Dict[str, SlabGroup], org_b):
@@ -529,8 +436,48 @@ def ensure_families_and_pcg(groups: Dict[str, SlabGroup], org_b):
             "ESI_EMP":ESI_EMP,"ESI_EMPR":ESI_EMPR,"PT":PT,"LWF":LWF,"BONUS":BONUS,"LTA":LTA,
             "SPECIAL":SPECIAL,"GRATUITY_ACCR":GRATUITY,"FUEL":FUEL}
 
-def ensure_pay_structure(families: Dict[str, ComponentFamily]):
+# ---- CTC helpers (merge lists + seed PCG flags) ----
+def _merge_ctc_lists(cfg: dict, includes: List[str], excludes: List[str]) -> dict:
+    """Include wins. Also ensures balancer is included."""
+    cfg = (cfg or {}).copy()
+    inc = set(cfg.get("ctc_includes") or [])
+    exc = set(cfg.get("ctc_excludes") or [])
+    want_inc = set(includes or [])
+    want_exc = set(excludes or [])
+    inc |= want_inc
+    exc = (exc | want_exc) - inc  # include wins
+    bal = cfg.get("balancer_code") or "SPECIAL"
+    cfg["balancer_code"] = bal
+    inc.add(bal)
+    cfg["ctc_includes"] = sorted(inc)
+    cfg["ctc_excludes"] = sorted(exc)
+    cfg.setdefault("enable_annual_summary", True)
+    return cfg
 
+def _seed_ctc_flags_for_scope(*, entity_id: Optional[int], includes: List[str], excludes: List[str], overwrite: bool=False) -> Tuple[int,int]:
+    """
+    Set PayrollComponentGlobal.include_in_ctc for the scope (GLOBAL if entity_id=None).
+    Returns (updated_includes, updated_excludes).
+    """
+    qs = PayrollComponentGlobal.objects.filter(entity__isnull=True) if entity_id is None \
+         else PayrollComponentGlobal.objects.filter(entity_id=entity_id)
+
+    inc_set = set(includes or [])
+    exc_set = set(excludes or []) - inc_set  # include wins
+
+    inc_qs = qs.filter(family__code__in=list(inc_set))
+    exc_qs = qs.filter(family__code__in=list(exc_set))
+
+    if overwrite:
+        u1 = inc_qs.update(include_in_ctc=True)
+        u2 = exc_qs.update(include_in_ctc=False)
+    else:
+        u1 = inc_qs.filter(include_in_ctc__isnull=True).update(include_in_ctc=True)
+        u2 = exc_qs.filter(include_in_ctc__isnull=True).update(include_in_ctc=False)
+    return u1, u2
+
+def ensure_pay_structure(families: Dict[str, ComponentFamily], *,
+                         ctc_includes: List[str], ctc_excludes: List[str]):
     ps, _ = upsert(
         PayStructure,
         {"code": "STD_STAFF_2025_10", "entity": None, "effective_from": ef(PayStructure, EFFECTIVE_START)},
@@ -541,51 +488,89 @@ def ensure_pay_structure(families: Dict[str, ComponentFamily]):
             "proration_method": "calendar_days",
             "notes": "Demo template",
             "effective_to": et(PayStructure, EFFECTIVE_END),
-            "config_json": {                     # <— add this block
+            "config_json": _merge_ctc_lists({
                 "balancer_code": "SPECIAL",
                 "balancer_allow_negative": False,
-                "ctc_includes": ["PF_EMPR", "GRATUITY_ACCR", "FUEL"]
-            },
+
+                # Baseline config (will be merged with call-time lists)
+                "ctc_includes": ["PF_EMPR", "GRATUITY_ACCR", "FUEL"],
+                "ctc_excludes": [],
+
+                # Zero-out rules (evaluated by PolicyRepo with METRIC())
+                "zero_if": {
+                    "ESI_EMP":  "GROSS > METRIC('ESI_THRESHOLD_2025')",
+                    "ESI_EMPR": "GROSS > METRIC('ESI_THRESHOLD_2025')"
+                },
+
+                # Caps (evaluated by PolicyRepo)
+                "caps": {"HRA": "BASIC * METRIC('HRA_CAP_PERCENT_2025') / 100"},
+
+                "enable_annual_summary": True
+            }, ctc_includes, ctc_excludes),
         }
     )
-    ps, _ = upsert(
-        PayStructure,
-        {"code": "STD_STAFF_2025_10", "entity": None, "effective_from": ef(PayStructure, EFFECTIVE_START)},
-        {"name": "Standard Staff (2025 Oct)", "status": "active", "rounding": ROUND_NEAREST,
-         "proration_method": "calendar_days", "notes": "Demo template",
-         "effective_to": et(PayStructure, EFFECTIVE_END)}
-    )
+
     def add(fam, **kw):
         upsert(PayStructureComponent, {"template": ps, "family": fam}, {"priority": 50, "enabled": True, **kw})
-    add(families["BASIC"], priority=10); add(families["HRA"], priority=20)
-    add(families["CONV"], priority=30); add(families["PHONE"], priority=40); add(families["FUEL"], priority=35)
+
+    add(families["BASIC"], priority=10)
+    add(families["HRA"], priority=20)
+    add(families["CONV"], priority=30)
+    add(families["PHONE"], priority=40)
+    add(families["FUEL"], priority=35)
+
+    # LTA sample percent
     add(families["LTA"], priority=50, default_percent=Decimal("8.330"))
-    add(families["SPECIAL"], priority=80); add(families["GRATUITY_ACCR"], priority=85, default_percent=Decimal("4.810"))
+
+    add(families["SPECIAL"], priority=80)
+    add(families["GRATUITY_ACCR"], priority=85, default_percent=Decimal("4.810"))
     add(families["PF_EMP"], priority=90, default_percent=Decimal("12.000"))
     add(families["PF_EMPR"], priority=91, default_percent=Decimal("12.000"))
     add(families["ESI_EMP"], priority=95, default_percent=Decimal("0.750"))
     add(families["ESI_EMPR"], priority=96, default_percent=Decimal("3.250"))
-    add(families["PT"], priority=110); add(families["LWF"], priority=111); add(families["BONUS"], priority=200)
+    add(families["PT"], priority=110)
+    add(families["LWF"], priority=111)
+    add(families["BONUS"], priority=200)
     return ps
 
 def apply_to_entities(ps: PayStructure, org_a, org_b):
+    """
+    Apply the pay structure to Org A (and Org B if provided),
+    and persist an EntityPayStructure assignment row for discovery APIs.
+    """
     eff = ef(EntityPayrollComponent, EFFECTIVE_START)
+
+    # Optional dry runs
     _ = apply_structure_to_entity(structure=ps, entity_id=org_a.id, eff_from=eff, dry_run=True)
-    if org_b: _ = apply_structure_to_entity(structure=ps, entity_id=org_b.id, eff_from=eff, dry_run=True)
+    if org_b:
+        _ = apply_structure_to_entity(structure=ps, entity_id=org_b.id, eff_from=eff, dry_run=True)
+
+    # Apply for real
     res_a = apply_structure_to_entity(structure=ps, entity_id=org_a.id, eff_from=eff, dry_run=False)
+    record_pay_structure_assignment(
+        entity_id=org_a.id,
+        pay_structure=ps,
+        eff_from=eff,
+        status="active",
+        note="Seeded"
+    )
+
     res_b = None
     if org_b:
         res_b = apply_structure_to_entity(structure=ps, entity_id=org_b.id, eff_from=eff, dry_run=False)
-        hra = (EntityPayrollComponent.objects
-               .filter(entity=org_b, family__code="HRA", effective_from=eff)
-               .order_by("-id").first())
-        if hra and hra.default_amount is None:
-            hra.default_amount = Decimal("12000.00"); hra.save()
+        record_pay_structure_assignment(
+            entity_id=org_b.id,
+            pay_structure=ps,
+            eff_from=eff,
+            status="active",
+            note="Seeded (Org B)"
+        )
+
     return res_a, res_b
 
 # ---------- command ----------
 class Command(BaseCommand):
-    help = "Seed a rich, India-style payroll demo: families, PCGs, slabs, template, and EPCs."
+    help = "Seed a rich, India-style payroll demo: families, PCGs, slabs, template, EPCs, and CTC flags."
 
     def add_arguments(self, parser):
         parser.add_argument("--entity-id", dest="entity_id", type=int, required=True,
@@ -593,19 +578,58 @@ class Command(BaseCommand):
         parser.add_argument("--entity-b-id", dest="entity_b_id", type=int, default=None,
                             help="Optional second Entity ID (Org B) to demo entity overrides.")
 
+        # CTC membership policy
+        parser.add_argument("--ctc-include", nargs="*", default=None,
+                            help="Component codes to force-include in CTC (include wins). Defaults applied if omitted.")
+        parser.add_argument("--ctc-exclude", nargs="*", default=None,
+                            help="Component codes to force-exclude from CTC.")
+        parser.add_argument("--ctc-overwrite", action="store_true",
+                            help="Overwrite existing PCG.include_in_ctc flags (otherwise only fill NULLs).")
+
     @transaction.atomic
     def handle(self, *args, **opts):
         self.stdout.write(self.style.MIGRATE_HEADING("Seeding payroll demo data..."))
+
+        # Entities
         org_a, org_b = ensure_entities(a_id=opts["entity_id"], b_id=opts.get("entity_b_id"))
+
+        # Decide policy lists (dedupe + precedence: include wins)
+        includes = opts.get("ctc_include") or DEFAULT_CTC_INCLUDE
+        excludes = opts.get("ctc_exclude") or DEFAULT_CTC_EXCLUDE
+        includes = list(dict.fromkeys(includes))
+        excludes = [c for c in (excludes or []) if c not in set(includes)]
+
+        # Static data
         ensure_city_categories()
         groups = ensure_slab_groups_and_slabs()
         self.stdout.write(self.style.SUCCESS(f"Slab groups ready: {', '.join(groups.keys())}"))
+
+        # Catalog
         fams = ensure_families_and_pcg(groups, org_b)
         self.stdout.write(self.style.SUCCESS("Families & PCGs ready."))
-        ps = ensure_pay_structure(fams)
+
+        # Seed CTC flags at GLOBAL + entity scopes
+        u_g_inc, u_g_exc = _seed_ctc_flags_for_scope(entity_id=None, includes=includes, excludes=excludes,
+                                                     overwrite=bool(opts.get("ctc_overwrite")))
+        self.stdout.write(self.style.SUCCESS(f"CTC flags (GLOBAL): +{u_g_inc} includes, +{u_g_exc} excludes"))
+
+        u_a_inc, u_a_exc = _seed_ctc_flags_for_scope(entity_id=org_a.id, includes=includes, excludes=excludes,
+                                                     overwrite=bool(opts.get("ctc_overwrite")))
+        self.stdout.write(self.style.SUCCESS(f"CTC flags (Entity {org_a.id}): +{u_a_inc} includes, +{u_a_exc} excludes"))
+
+        if org_b:
+            u_b_inc, u_b_exc = _seed_ctc_flags_for_scope(entity_id=org_b.id, includes=includes, excludes=excludes,
+                                                         overwrite=bool(opts.get("ctc_overwrite")))
+            self.stdout.write(self.style.SUCCESS(f"CTC flags (Entity {org_b.id}): +{u_b_inc} includes, +{u_b_exc} excludes"))
+
+        # Template with merged config_json (include wins, balancer ensured)
+        ps = ensure_pay_structure(fams, ctc_includes=includes, ctc_excludes=excludes)
         self.stdout.write(self.style.SUCCESS(f"PayStructure ready: {ps.code}"))
+
+        # Materialize to EPC + record assignment(s)
         res_a, res_b = apply_to_entities(ps, org_a, org_b)
         self.stdout.write(self.style.HTTP_INFO(f"Applied to Org A: {res_a}"))
         if res_b is not None:
             self.stdout.write(self.style.HTTP_INFO(f"Applied to Org B: {res_b}"))
+
         self.stdout.write(self.style.SUCCESS("✅ Payroll demo seeded successfully."))

@@ -1,160 +1,170 @@
 # payroll/repositories.py
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional, Tuple
+from decimal import Decimal, InvalidOperation
+from typing import Optional, Dict, Any
+import re
 
 from django.db.models import Q
 
-from payroll.models import SlabGroup, Slab
+from payroll.models import (
+    SlabGroup, Slab,
+    ComponentFamily, PayrollComponentGlobal, PayStructureComponent, PayStructure
+)
 
-ROUND = lambda x: Decimal(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
+# ---------- runtime context ----------
 @dataclass
 class RepoCtx:
-    """
-    Context used by PolicyRepo. You can pass values from your draft/context.
-    """
-    eff: datetime
+    eff: any                 # aware datetime
+    entity_id: Optional[int] = None
     state: Optional[str] = None
-    city_category: Optional[str] = None  # e.g., "METRO"/"NON_METRO"
+    city_category: Optional[str] = None
     emp_grade: Optional[str] = None
     emp_rank: Optional[str] = None
     month: Optional[int] = None
 
+# ---------- helpers ----------
+def _effective_qs(model, eff):
+    """
+    Effective-dated filter if fields exist; otherwise return all().
+    Works for SlabGroup/Slab/PCG and any model with effective_* fields.
+    """
+    field_names = {f.name for f in model._meta.get_fields()}
+    qs = model.objects.all()
+    if "effective_from" in field_names:
+        qs = qs.filter(effective_from__lte=eff)
+    if "effective_to" in field_names:
+        qs = qs.filter(Q(effective_to__isnull=True) | Q(effective_to__gte=eff))
+    return qs
 
+def _scope_match(scope: Dict[str, Any], ctx: RepoCtx, ctc_annual: Decimal) -> bool:
+    if not scope: return True
+    def S(x): return "" if x is None else str(x)
+    def _in(v, arr): return v is not None and S(v) in {S(x) for x in arr}
+
+    if "state_in" in scope and not _in(ctx.state, scope["state_in"]): return False
+    if "state_not_in" in scope and _in(ctx.state, scope["state_not_in"]): return False
+    if "city_category" in scope and S(scope["city_category"]) != S(ctx.city_category): return False
+    if "emp_grade_in" in scope and not _in(ctx.emp_grade, scope["emp_grade_in"]): return False
+    if "emp_grade_not_in" in scope and _in(ctx.emp_grade, scope["emp_grade_not_in"]): return False
+    if "emp_rank_in" in scope and not _in(ctx.emp_rank, scope["emp_rank_in"]): return False
+    if "emp_rank_not_in" in scope and _in(ctx.emp_rank, scope["emp_rank_not_in"]): return False
+    if "ctc_annual_min" in scope and Decimal(str(ctc_annual)) < Decimal(str(scope["ctc_annual_min"])): return False
+    if "ctc_annual_max" in scope and Decimal(str(ctc_annual)) > Decimal(str(scope["ctc_annual_max"])): return False
+    return True
+
+def _pick_slab(group: SlabGroup, ctx: RepoCtx, ctc_annual: Decimal, base_value: Decimal) -> Optional[Slab]:
+    """
+    Pick the first effective slab whose scope matches and for which
+    base_value lies in [from_amount, to_amount] (to_amount may be NULL = open-ended).
+    """
+    slabs = _effective_qs(Slab, ctx.eff).filter(group=group).order_by("id")
+    for s in slabs:
+        if not _scope_match(getattr(s, "scope_json", {}) or {}, ctx, ctc_annual):
+            continue
+        lo = Decimal(str(getattr(s, "from_amount", 0) or 0))
+        hi = getattr(s, "to_amount", None)
+        if hi is None:
+            if base_value >= lo:
+                return s
+        else:
+            if lo <= base_value <= Decimal(str(hi)):
+                return s
+    return None
+
+# ---------- safe expression ----------
+_ALLOWED_NAMES = {"min": min, "max": max, "Decimal": Decimal}
+_METRIC_RE = re.compile(r"METRIC\(\s*'([^']+)'\s*\)")
+
+def _eval_policy_expr(expr: str, variables: Dict[str, Decimal]) -> Decimal | bool:
+    """
+    Evaluate a tiny expression language over current variables.
+    SECURITY: __builtins__ disabled; only min/max/Decimal + numeric variables allowed.
+    Return type depends on expression (bool for zero_if rules, Decimal for caps).
+    """
+    code = compile(expr, "<policy-expr>", "eval")
+    return eval(code, {"__builtins__": {}}, {**_ALLOWED_NAMES, **variables})
+
+# ---------- repository ----------
 class PolicyRepo:
     """
-    Central policy access. All numbers/rates come from slabs you seeded.
-    No hardcoded amounts inside the engine.
+    Reads all policy knobs from:
+      • SlabGroup/Slab (“metrics”) seeded by admin (e.g., ESI thresholds, HRA cap %)
+      • PayStructure.config_json (caps & zero_if expressions, CTC includes/excludes)
+      • PCG/PSC (include_in_ctc flags, basis caps, etc.)
+    No thresholds or rates are hardcoded here.
     """
 
-    # ---------- effective-dated helpers ----------
-    def _effective_qs(self, model, eff: datetime):
-        return model.objects.filter(
-            Q(effective_from__lte=eff) &
-            (Q(effective_to__isnull=True) | Q(effective_to__gt=eff))
-        )
-
-    # ---------- scope/range matching (same semantics as engine) ----------
-    def _scope_matches(self, scope: dict, ctc_annual: Decimal, ctx: RepoCtx) -> bool:
-        if not scope:
-            return True
-        st = (ctx.state or "").upper()
-        cat = (ctx.city_category or "").upper()
-        grade = (ctx.emp_grade or "").upper()
-        rank = (ctx.emp_rank or "").upper()
-
-        if "state_in" in scope and st not in [str(x).upper() for x in scope["state_in"]]:
-            return False
-        if "emp_grade_in" in scope and grade not in [str(x).upper() for x in scope["emp_grade_in"]]:
-            return False
-        if "emp_rank_in" in scope and rank not in [str(x).upper() for x in scope["emp_rank_in"]]:
-            return False
-        if "city_category" in scope and cat != str(scope["city_category"]).upper():
-            return False
-        if "emp_grade_not_in" in scope and grade in [str(x).upper() for x in scope["emp_grade_not_in"]]:
-            return False
-        if "emp_rank_not_in" in scope and rank in [str(x).upper() for x in scope["emp_rank_not_in"]]:
-            return False
-        if "ctc_annual_min" in scope and Decimal(str(ctc_annual)) < Decimal(str(scope["ctc_annual_min"])):
-            return False
-        if "ctc_annual_max" in scope and Decimal(str(ctc_annual)) > Decimal(str(scope["ctc_annual_max"])):
-            return False
-        return True
-
-    def _pick_slab(self, group_key: str, eff: datetime, ctc_annual: Decimal, ctx: RepoCtx) -> Optional[Slab]:
-        sg = (self._effective_qs(SlabGroup, eff)
-              .filter(group_key=group_key)
-              .order_by("-effective_from")
-              .first())
-        if not sg:
+    # ---- METRIC('KEY') support (values from SlabGroup.group_key == KEY) ----
+    def metric(self, key: str, ctx: RepoCtx, ctc_annual: Decimal, base_value: Decimal = Decimal("0")) -> Optional[Decimal]:
+        """
+        Resolve a numeric metric via slabs. E.g., METRIC('ESI_THRESHOLD_2025').
+        Scope and bands (from/to) are honored against ctx and base_value.
+        """
+        g = _effective_qs(SlabGroup, ctx.eff).filter(group_key=key).order_by("-effective_from").first()
+        if not g: return None
+        s = _pick_slab(g, ctx, ctc_annual, base_value)
+        if not s: return None
+        try:
+            return Decimal(str(s.value))
+        except InvalidOperation:
             return None
 
-        slabs = (self._effective_qs(Slab, eff)
-                 .filter(group=sg)
-                 .order_by("from_amount", "id"))
-
-        for s in slabs:
-            scope = getattr(s, "scope_json", {}) or {}
-            if not self._scope_matches(scope, ctc_annual, ctx):
-                continue
-            fa = s.from_amount or Decimal("0")
-            ta = s.to_amount
-            if ta is None or (ctc_annual >= fa and ctc_annual <= ta):
-                return s
-        return None
-
-    # ---------- generic readers ----------
-    def read_decimal(
-        self,
-        group_key: str,
-        eff: datetime,
-        ctc_annual: Decimal,
-        ctx: RepoCtx,
-        default: Decimal = Decimal("0")
-    ) -> Decimal:
-        """Return slab.value for the effective slab in group_key (or default)."""
-        s = self._pick_slab(group_key, eff, ctc_annual, ctx)
-        return Decimal(s.value) if s else default
-
-    # ---------- public hooks used by the engine ----------
-    def cap_for(
-        self,
-        code: str,
-        eff: datetime,
-        ctc_annual: Decimal,
-        ctx: RepoCtx,
-        variables: dict
-    ) -> Optional[Decimal]:
+    def replace_metrics(self, expr: str, ctx: RepoCtx, ctc_annual: Decimal, vars_for_pick: Dict[str, Decimal]) -> str:
         """
-        Return an absolute cap amount for a component (None if no cap applies).
-        Example implemented: HRA cap via CAP_HRA slabs → (basis * pct).
+        Replace METRIC('KEY') with numeric literals looked up from metrics().
+        Uses vars_for_pick['GROSS'] as the band base by default (sensible for PT/thresholds).
         """
-        if code.upper() == "HRA":
-            slab = self._pick_slab("CAP_HRA", eff, ctc_annual, ctx)
-            if not slab:
-                return None
-            pct = Decimal(slab.value)  # 50/40 etc from data
-            # If your Slab model has 'percent_of' populated, you can honor it; fallback to BASIC
-            basis_code = getattr(slab, "percent_of", None) or "BASIC"
-            basis = Decimal(variables.get(basis_code, 0))
-            return ROUND(basis * pct / Decimal(100))
-        return None
+        def repl(m):
+            key = m.group(1)
+            base = vars_for_pick.get("GROSS", Decimal("0")) or Decimal("0")
+            val = self.metric(key, ctx, ctc_annual, base_value=base)
+            return str(val if val is not None else "0")
+        return _METRIC_RE.sub(repl, expr)
 
-    def should_zero(
-        self,
-        code: str,
-        eff: datetime,
-        ctc_annual: Decimal,
-        ctx: RepoCtx,
-        variables: dict
-    ) -> Tuple[bool, Optional[str]]:
+    # ---- Policy: caps & zero rules (read from PayStructure.config_json) ----
+    def cap_for(self, code: str, ps: PayStructure, ctx: RepoCtx,
+                ctc_annual: Decimal, variables: Dict[str, Decimal]) -> Optional[Decimal]:
         """
-        Return (True, reason) when a component must be zeroed by policy.
-        Example implemented: ESI zero when GROSS > ESI_THRESHOLD (from slab).
+        ps.config_json['caps'][CODE] => expression returning a Decimal cap.
+        Expression may reference variables (BASIC/GROSS/…) and METRIC('KEY').
         """
-        if code.upper() in {"ESI_EMP", "ESI_EMPR"}:
-            thr = self.read_decimal("ESI_THRESHOLD", eff, ctc_annual, ctx, default=Decimal("21000"))
-            gross = Decimal(variables.get("GROSS", 0))
-            if gross > thr:
-                return True, f"gross>{thr}"
-        return False, None
+        cfg = (getattr(ps, "config_json", None) or {})
+        caps = cfg.get("caps") or {}
+        expr = caps.get(code)
+        if not expr: return None
+        expr2 = self.replace_metrics(expr, ctx, ctc_annual, variables)
+        try:
+            val = _eval_policy_expr(expr2, variables)
+            return Decimal(str(val))
+        except Exception:
+            return None
 
-    # ---------- optional helpers (for future use) ----------
-    def percent_for(self, key, eff, ctc_annual, ctx: RepoCtx, default: Decimal) -> Decimal:
-        # look up slab groups for rates (PF/ESI) by key; else return default
-        return default
+    def should_zero(self, code: str, ps: PayStructure, ctx: RepoCtx,
+                    ctc_annual: Decimal, variables: Dict[str, Decimal]) -> tuple[bool, Optional[str]]:
+        """
+        ps.config_json['zero_if'][CODE] => boolean expression.
+        If True, the component is zeroed out (reason is returned for metadata).
+        """
+        cfg = (getattr(ps, "config_json", None) or {})
+        zmap = cfg.get("zero_if") or {}
+        expr = zmap.get(code)
+        if not expr: return (False, None)
+        expr2 = self.replace_metrics(expr, ctx, ctc_annual, variables)
+        try:
+            ok = bool(_eval_policy_expr(expr2, variables))
+            return (ok, expr2 if ok else None)
+        except Exception:
+            return (False, None)
 
-    def basis_cap_for(self, key, eff, ctc_annual, ctx: RepoCtx, default=None):
-        return default
+    # ---- Resolution helpers (used by engine for flags & defaults) ----
+    def pcg_for(self, family, entity_id: Optional[int], eff):
+        """Resolve PCG by family/entity/effective date (entity override preferred)."""
+        qs = (_effective_qs(PayrollComponentGlobal, eff)
+              .filter(family=family)
+              .filter(Q(entity_id=entity_id) | Q(entity__isnull=True)))
+        return qs.order_by("-entity_id", "priority", "id").first()
 
-    def cap_for(self, code, eff, ctc_annual, ctx: RepoCtx, variables: dict):
-        # HRA cap, etc. Return Decimal or None
-        return None
-
-    def should_zero(self, code, eff, ctc_annual, ctx: RepoCtx, variables: dict):
-        # ESI threshold, month rules, etc. -> (True/False, reason)
-        return (False, None)
+    def psc_for(self, ps: PayStructure, family):
+        """Fetch structure line (PSC) for flags like include_in_ctc, default_percent, etc."""
+        return PayStructureComponent.objects.filter(template=ps, family=family).first()

@@ -15,6 +15,7 @@ from .views import (
     PayStructureDropdownAPIView,
     PayStructureListAPIView,
     PayStructureMetaAPIView,
+    AppliedPayStructuresAPIView,
 )
 
 
@@ -76,7 +77,8 @@ urlpatterns  = [
     path("comp/<int:pk>/override/", CompensationOverrideAPIView.as_view(), name="payroll-comp-override"),
     path("comp/<int:pk>/recalculate/", CompensationRecalculateAPIView.as_view(), name="payroll-comp-recalculate"),
     path("comp/<int:pk>/apply/", CompensationApplyAPIView.as_view(), name="payroll-comp-apply"),
-    path("paystructures/dropdown", PayStructureDropdownAPIView.as_view(), name="paystructure-dropdown"),
+    path("paystructures/dropdown/", PayStructureDropdownAPIView.as_view(),name="paystructure-dropdown"),
     path("paystructures",           PayStructureListAPIView.as_view(),     name="paystructure-list"),
     path("paystructures/meta",     PayStructureMetaAPIView.as_view(),     name="paystructure-meta"),
+    path("paystructures/applied/", AppliedPayStructuresAPIView.as_view(), name="paystructure-applied-list"),
 ]

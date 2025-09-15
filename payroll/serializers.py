@@ -24,7 +24,8 @@ EmploymentAssignment,
 EmployeeBankAccount,
 EmployeeDocument,
 EmployeeStatutoryIN,
-EmployeeCompensation
+EmployeeCompensation,
+EntityPayStructure
 )
 
 from django.db.models import Model
@@ -1022,4 +1023,72 @@ class PayStructureLiteSerializer(serializers.ModelSerializer):
 
     def get_scope(self, obj: PayStructure) -> str:
         return "global" if obj.entity_id is None else "entity"
+    
+
+
+class PayStructureOptionSerializer(serializers.ModelSerializer):
+    value = serializers.IntegerField(source="id", read_only=True)
+    label = serializers.SerializerMethodField()
+    scope = serializers.SerializerMethodField()           # "entity" or "global"
+    entity_name = serializers.SerializerMethodField()
+    effective_from = serializers.SerializerMethodField()
+    effective_to = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PayStructure
+        fields = [
+            "value", "label",
+            "code", "name", "status",
+            "scope", "entity", "entity_name",
+            "effective_from", "effective_to",
+        ]
+
+    def get_label(self, obj: PayStructure) -> str:
+        # e.g. "Standard Staff (2025 Oct) — STD_STAFF_2025_10 [Global]"
+        scope = "Global" if obj.entity_id is None else f"Entity #{obj.entity_id}"
+        eff_from = obj.effective_from.date() if hasattr(obj.effective_from, "date") else obj.effective_from
+        return f"{obj.name} — {obj.code} [{scope}] (from {eff_from})"
+
+    def get_scope(self, obj: PayStructure) -> str:
+        return "global" if obj.entity_id is None else "entity"
+
+    def get_entity_name(self, obj: PayStructure) -> str | None:
+        # Avoid extra queries if you don’t have a FK to a rich Entity model
+        try:
+            return getattr(obj.entity, "name", None)
+        except Exception:
+            return None
+
+    def get_effective_from(self, obj: PayStructure):
+        # Always return ISO date string
+        v = obj.effective_from
+        return (v.date() if hasattr(v, "date") else v)
+
+    def get_effective_to(self, obj: PayStructure):
+        v = obj.effective_to
+        if v is None:
+            return None
+        return (v.date() if hasattr(v, "date") else v)
+    
+
+
+class EntityPayStructureOptionSerializer(serializers.ModelSerializer):
+    value = serializers.IntegerField(source="id", read_only=True)
+    label = serializers.SerializerMethodField()
+    code = serializers.CharField(source="pay_structure.code", read_only=True)
+    name = serializers.CharField(source="pay_structure.name", read_only=True)
+    pay_structure_id = serializers.IntegerField(source="pay_structure.id", read_only=True)
+
+    class Meta:
+        model = EntityPayStructure
+        fields = [
+            "value", "label",
+            "entity", "pay_structure_id", "code", "name",
+            "status", "effective_from", "effective_to",
+        ]
+
+    def get_label(self, obj: EntityPayStructure) -> str:
+        scope = "Entity"
+        eff = obj.effective_from.date() if hasattr(obj.effective_from, "date") else obj.effective_from
+        return f"{obj.pay_structure.name} — {obj.pay_structure.code} [{scope}] (from {eff})"
 

@@ -1,6 +1,7 @@
 from itertools import product
 from django.http import request,JsonResponse
 from django.shortcuts import render
+from datetime import datetime, time
 import json
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
@@ -10,8 +11,10 @@ from django.db import models
 from .services import apply_structure_to_entity
 #from rest_framework import 
 from django.utils import timezone
+from typing import Optional
 
 from django.utils.timezone import now
+from django.utils.dateparse import parse_datetime, parse_date
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from rest_framework import permissions,status,generics, permissions, filters
@@ -55,6 +58,7 @@ from .serializers import (
     GradeBandSerializer, DesignationSerializer,ManagerListItemSerializer,EmployeeSummarySerializer,
     CompensationCalculateSerializer, CompensationDraftOut,
     CompensationOverrideSerializer, CompensationApplySerializer, CompensationRecalcSerializer,PayStructureLiteSerializer,
+    PayStructureOptionSerializer,EntityPayStructureOptionSerializer,
 )
 
 from payroll.models import (
@@ -63,7 +67,8 @@ EmploymentAssignment,
 EmployeeBankAccount,
 EmployeeDocument,
 EmployeeStatutoryIN,
-EmployeeCompensation
+EmployeeCompensation,
+EntityPayStructure
 )
 
 from rest_framework import generics as _g, permissions as _p
@@ -1158,94 +1163,29 @@ def _b(val: str | None, default: bool = False) -> bool:
     return str(val).lower() in {"1", "true", "yes", "y", "on"}
 
 # ---------- 1) “Current & Active” dropdown ----------
-class PayStructureDropdownAPIView(generics.ListAPIView):
+def _parse_on(param: str | None) -> datetime:
     """
-    Lightweight endpoint for filling dropdowns.
-
-    Query params:
-      - entity: int (filter to an entity)
-      - include_global: bool (default true) → include templates with entity IS NULL
-      - on: ISO date/datetime (default = now) → effective window selection
-      - active_only: bool (default true)
-      - distinct_latest: bool (default true) → pick latest row per (code, entity)
-      - q: search by code/name (icontains)
-      - limit: int (default 50)
+    Parse ?on=... into a tz-aware datetime.
+    - If full datetime: use it (make aware if needed)
+    - If date-only: interpret as end-of-day (23:59:59.999999) local tz
+    - Fallback: timezone.now()
     """
-    serializer_class = PayStructureLiteSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    if not param:
+        return timezone.now()
 
-    def get_queryset(self):
-        params = self.request.query_params
-        entity = params.get("entity")
-        include_global = _b(params.get("include_global"), True)
-        active_only = _b(params.get("active_only"), True)
-        distinct_latest = _b(params.get("distinct_latest"), True)
-        q = params.get("q")
+    dt = parse_datetime(param)
+    if dt:
+        return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
 
-        # “on” = selection date (effective window). Defaults to now()
-        on = params.get("on")
-        if on:
-            # DRF already ensures tz-aware request if USE_TZ on; fallback safely
-            try:
-                from django.utils.dateparse import parse_datetime, parse_date
-                dt = parse_datetime(on)
-                if dt is None:
-                    d = parse_date(on)
-                    dt = timezone.make_aware(timezone.datetime(d.year, d.month, d.day))
-                on_dt = dt
-            except Exception:
-                on_dt = timezone.now()
-        else:
-            on_dt = timezone.now()
+    d = parse_date(param)
+    if d:
+        naive_eod = datetime.combine(d, time(23, 59, 59, 999999))
+        return timezone.make_aware(naive_eod)
 
-        qs = PayStructure.objects.all()
+    return timezone.now()
 
-        # Filter by entity / global
-        if entity:
-            qs = qs.filter(entity_id=entity)
-            if include_global:
-                qs = PayStructure.objects.filter(Q(entity_id=entity) | Q(entity__isnull=True))
-        else:
-            # No entity filter; optionally exclude global if requested
-            if not include_global:
-                qs = qs.filter(entity__isnull=False)
 
-        # Effective window @ on_dt
-        qs = qs.filter(
-            Q(effective_from__lte=on_dt) &
-            (Q(effective_to__isnull=True) | Q(effective_to__gte=on_dt))
-        )
 
-        # Status
-        if active_only:
-            qs = qs.filter(status=PayStructure.Status.ACTIVE)
-
-        # Search
-        if q:
-            qs = qs.filter(Q(code__icontains=q) | Q(name__icontains=q))
-
-        # Latest per (code, entity): requires PostgreSQL for distinct-on
-        if distinct_latest:
-            qs = (
-                qs.order_by("code", "entity_id", "-effective_from", "-id")
-                  .distinct("code", "entity_id")
-            )
-        else:
-            qs = qs.order_by("code", "entity_id", "-effective_from", "-id")
-
-        # Small, snappy list for dropdowns
-        return qs
-
-    def list(self, request, *args, **kwargs):
-        limit = request.query_params.get("limit")
-        try:
-            limit = int(limit) if limit is not None else 50
-        except ValueError:
-            limit = 50
-        self.pagination_class = None  # explicit: dropdowns shouldn’t paginate
-        qs = self.get_queryset()[: max(1, min(limit, 200))]
-        serializer = self.get_serializer(qs, many=True)
-        return Response(serializer.data)
 
 
 # ---------- 2) General list (search + pagination) ----------
@@ -1321,4 +1261,147 @@ class PayStructureMetaAPIView(APIView):
             "rounding": _choices(PayStructure.RoundingRule),
             "proration_method": _choices(PayStructure.ProrationMethod),
         })
+    
+
+def _parse_bool(qs_val: Optional[str], default: bool) -> bool:
+    if qs_val is None:
+        return default
+    return str(qs_val).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+def _parse_date(val: Optional[str]) -> Optional[date]:
+    if not val:
+        return None
+    try:
+        return datetime.strptime(val, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+def _eff_filter(model, eff_dt_or_date):
+    """
+    Return a Q() applying effective_from/ effective_to if the model has those fields.
+    Handles both Date and DateTime effective fields.
+    """
+    names = {f.name for f in model._meta.get_fields()}
+    q = Q()
+    if "effective_from" in names:
+        q &= Q(effective_from__lte=eff_dt_or_date)
+    if "effective_to" in names:
+        q &= (Q(effective_to__isnull=True) | Q(effective_to__gt=eff_dt_or_date))
+    return q
+
+def _to_eff_value(model, d: date):
+    """
+    If model.effective_from is DateTimeField, convert `d` to aware midnight.
+    Otherwise return the date as-is.
+    """
+    from django.db import models as djm
+    f = model._meta.get_field("effective_from")
+    if isinstance(f, djm.DateTimeField):
+        dt = datetime.combine(d, time.min)
+        return timezone.make_aware(dt, timezone.get_current_timezone())
+    return d
+
+class PayStructureDropdownAPIView(generics.ListAPIView):
+    """
+    GET /api/payroll/paystructures/dropdown/?entity_id=50&effective_on=2025-10-01&status=active&include_global=1&search=staff&limit=30
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PayStructureOptionSerializer
+    pagination_class = None  # dropdown usually wants a small list, we’ll use ?limit
+
+    def get_queryset(self):
+        qs = PayStructure.objects.all()
+
+        # --- filters ---
+        entity_id = self.request.query_params.get("entity_id")
+        include_global = _parse_bool(self.request.query_params.get("include_global"), True)
+        statuses = self.request.query_params.getlist("status") or self.request.query_params.get("status")
+        search = self.request.query_params.get("search")
+        effective_on = _parse_date(self.request.query_params.get("effective_on")) or timezone.localdate()
+
+        # entity/global selection
+        if entity_id:
+            if include_global:
+                qs = qs.filter(Q(entity_id=entity_id) | Q(entity__isnull=True))
+            else:
+                qs = qs.filter(entity_id=entity_id)
+        else:
+            # if no entity filter and include_global=0, return only entity-bound structures (rare)
+            if not include_global:
+                qs = qs.exclude(entity__isnull=True)
+
+        # status filter (default: active only)
+        if statuses:
+            if isinstance(statuses, str):
+                statuses = [s.strip() for s in statuses.split(",") if s.strip()]
+            qs = qs.filter(status__in=statuses)
+        else:
+            qs = qs.filter(status="active")
+
+        # effective date filter
+        eff_value = _to_eff_value(PayStructure, effective_on)
+        qs = qs.filter(_eff_filter(PayStructure, eff_value))
+
+        # search by code/name
+        if search:
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+
+        # order most-recent first, then name
+        qs = qs.order_by("-effective_from", "name", "code")
+
+        # limit for dropdown
+        try:
+            limit = int(self.request.query_params.get("limit", "30"))
+        except ValueError:
+            limit = 30
+        return qs[: max(1, min(limit, 100))]
+
+
+
+
+
+
+def _eff_q(eff_dt):
+    return Q(effective_from__lte=eff_dt) & (Q(effective_to__isnull=True) | Q(effective_to__gt=eff_dt))
+
+def _to_aware(dt_or_date):
+    if isinstance(dt_or_date, datetime):
+        return dt_or_date if timezone.is_aware(dt_or_date) else timezone.make_aware(dt_or_date, timezone.get_current_timezone())
+    return timezone.make_aware(datetime.combine(dt_or_date, time.min), timezone.get_current_timezone())
+
+class AppliedPayStructuresAPIView(generics.ListAPIView):
+    """
+    GET /api/payroll/paystructures/applied/?entity_id=50&on=2025-10-01&status=active&current_only=1
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EntityPayStructureOptionSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get("entity_id")
+        on_date = _parse_date(self.request.query_params.get("on")) or timezone.localdate()
+        statuses = self.request.query_params.getlist("status") or self.request.query_params.get("status")
+        current_only = str(self.request.query_params.get("current_only", "1")).lower() in {"1","true","t","yes","y"}
+
+        if not entity_id:
+            return EntityPayStructure.objects.none()
+
+        eff = _to_aware(on_date)
+        qs = EntityPayStructure.objects.filter(entity_id=entity_id)
+
+        if statuses:
+            if isinstance(statuses, str):
+                statuses = [s.strip() for s in statuses.split(",") if s.strip()]
+            qs = qs.filter(status__in=statuses)
+        else:
+            qs = qs.filter(status="active")
+
+        qs = qs.filter(_eff_q(eff)).select_related("pay_structure").order_by("-effective_from", "-id")
+
+        if current_only:
+            # only the most-recent current assignment
+            return qs[:1]
+        # otherwise return all current (or history if you add a different filter)
+        limit = int(self.request.query_params.get("limit", "50"))
+        return qs[: max(1, min(limit, 200))]
 
