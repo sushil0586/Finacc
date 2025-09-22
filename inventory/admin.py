@@ -14,6 +14,7 @@ class HSNAdmin(ImportExportMixin,admin.ModelAdmin):
 
 class prductAdmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ('productname',)
+    search_fields = ("name", "code", "hsn_sac")
    
 
 # admin.site.register(Album)
