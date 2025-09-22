@@ -6,11 +6,36 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,ReceiptVoucherInvoiceAllocation,ReceiptVoucher,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,ReceiptVoucherInvoiceAllocation,ReceiptVoucher,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls,JournalLine, InventoryMove, TxnType,SalesQuotationDetail,SalesQuotationHeader
 )
 from django.utils.translation import gettext_lazy as _
 from import_export.admin import ImportExportMixin
 from simple_history.admin import SimpleHistoryAdmin
+from decimal import Decimal
+from django.http import HttpResponse
+from django.db.models import Q, Sum
+import csv
+
+
+from financial.models import account
+from inventory.models import Product
+from financial.models import ShippingDetails
+from entity.models import Entity, subentity, entityfinancialyear
+
+# Helper to (re)register with search_fields
+def ensure_admin_with_search(model, admin_class, **kwargs):
+    try:
+        admin.site.unregister(model)
+    except admin.sites.NotRegistered:
+        pass
+    admin.site.register(model, admin_class)
+
+# ---- Account admin ----
+# ---- Product admin ----
+
+
+
+
 
 
 
@@ -355,6 +380,303 @@ admin.site.register(RefDtls)
 admin.site.register(AddlDocDtls)
 admin.site.register(EwbDtls)
 admin.site.register(ExpDtls)
+
+ZERO2 = Decimal("0.00")
+
+
+# --- Filters ---------------------------------------------------------
+
+class SideFilter(admin.SimpleListFilter):
+    title = "side"
+    parameter_name = "side"
+
+    def lookups(self, request, model_admin):
+        return (("dr", "Debit"), ("cr", "Credit"))
+
+    def queryset(self, request, queryset):
+        if self.value() == "dr":
+            return queryset.filter(drcr=True)
+        if self.value() == "cr":
+            return queryset.filter(drcr=False)
+        return queryset
+
+
+# --- Actions ---------------------------------------------------------
+
+def export_as_csv(modeladmin, request, queryset):
+    meta = modeladmin.model._meta
+    field_names = [f.name for f in meta.fields]
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = f'attachment; filename="{meta.model_name}.csv"'
+    writer = csv.writer(response)
+    writer.writerow(field_names)
+    for obj in queryset:
+        writer.writerow([getattr(obj, f) for f in field_names])
+    return response
+export_as_csv.short_description = "Export selected rows to CSV"
+
+def show_totals(modeladmin, request, queryset):
+    sums = queryset.aggregate(
+        debit=Sum("amount", filter=Q(drcr=True)),
+        credit=Sum("amount", filter=Q(drcr=False)),
+    )
+    modeladmin.message_user(
+        request,
+        f"Totals — Debit: {sums['debit'] or ZERO2} | Credit: {sums['credit'] or ZERO2}"
+    )
+show_totals.short_description = "Show DR/CR totals for selection"
+
+
+@admin.register(JournalLine)
+class JournalLineAdmin(admin.ModelAdmin):
+    date_hierarchy = "entrydate"
+    list_per_page = 50
+    preserve_filters = True
+
+    list_display = (
+        "id", "entrydate", "voucherno", "transactiontype",
+        "entity", "account", "accounthead",
+        "side", "debit", "credit",
+        "amount", "desc",
+        "transactionid", "detailid", "createdby", "entry",
+    )
+    list_filter = ("transactiontype", "entity", "entrydate", "createdby")
+    search_fields = ("id", "voucherno", "desc", "transactionid", "detailid")
+    ordering = ("-entrydate", "-id")
+    list_select_related = ("entity", "account", "accounthead", "entry", "createdby")
+
+    # FIX: use raw_id_fields instead of autocomplete_fields
+    raw_id_fields = ("entity", "account", "accounthead", "entry", "createdby")
+
+    actions = [export_as_csv, show_totals]
+
+    def side(self, obj): return "Debit" if obj.drcr else "Credit"
+    def debit(self, obj): return obj.amount if obj.drcr else ZERO2
+    def credit(self, obj): return obj.amount if not obj.drcr else ZERO2
+
+
+@admin.register(InventoryMove)
+class InventoryMoveAdmin(admin.ModelAdmin):
+    date_hierarchy = "entrydate"
+    list_per_page = 50
+    preserve_filters = True
+
+    list_display = (
+        "id", "entrydate", "voucherno", "transactiontype",
+        "entity", "product", "qty", "unit_cost", "ext_cost",
+        "move_type", "transactionid", "detailid",
+        "location", "uom", "createdby", "entry",
+    )
+    list_filter = ("transactiontype", "entity", "move_type", "entrydate", "product", "location")
+    search_fields = ("id", "voucherno", "transactionid", "detailid")
+    ordering = ("-entrydate", "-id")
+    list_select_related = ("entity", "product", "entry", "createdby")  # keep only real FKs here
+
+    # ✅ Only include actual FK/M2M fields:
+    raw_id_fields = ("entity", "product", "entry", "createdby")
+
+
+
+
+from decimal import Decimal
+from django.contrib import admin, messages
+from django.db import transaction
+from django.utils.html import format_html
+from django.urls import reverse
+from django.utils.safestring import mark_safe
+
+# from .models import SalesQuotationHeader, SalesQuotationDetail
+# from invoice.services import convert_quotation_to_invoice  # import your service
+
+try:
+    from simple_history.admin import SimpleHistoryAdmin
+    _BaseAdmin = SimpleHistoryAdmin
+except Exception:
+    _BaseAdmin = admin.ModelAdmin
+
+
+# ------------
+# Inline (Lines)
+# ------------
+class SalesQuotationLineInline(admin.TabularInline):
+    model = SalesQuotationDetail
+    extra = 1
+    fields = (
+        "product", "productdesc", "qty", "pieces",
+        "ratebefdiscount", "line_discount", "rate", "amount",
+        "cgstpercent", "sgstpercent", "igstpercent",
+        "tax_amount_est", "linetotal", "is_service",
+    )
+    autocomplete_fields = ("product",)
+
+
+# --------------
+# Header Admin
+# --------------
+@admin.register(SalesQuotationHeader)
+class SalesQuotationHeaderAdmin(_BaseAdmin):
+    inlines = [SalesQuotationLineInline]
+
+    list_display = (
+        "quote_no", "quote_date", "account", "status", "valid_until",
+        "subtotal", "tax_estimate", "gtotal", "intend_igst",
+        "entity", "version", "_convert_btn"
+    )
+    list_filter = (
+        "status", "intend_igst", "entity", "subentity", "entityfinid",
+        ("quote_date", admin.DateFieldListFilter), ("valid_until", admin.DateFieldListFilter)
+    )
+    search_fields = (
+        "quote_no", "contact_name", "contact_email",
+        "account__accountname",  # adjust to your account model field
+    )
+    ordering = ("-quote_date", "-id")
+  #  autocomplete_fields = ("account", "shippedto", "entity", "subentity", "entityfinid")
+
+    fieldsets = (
+        ("Quotation", {
+            "fields": ("quote_no", "quote_date", "version", "status", "valid_until")
+        }),
+        ("Party & Ship To", {
+            "fields": ("account", "contact_name", "contact_email", "shippedto")
+        }),
+        ("Commercials", {
+            "fields": ("price_list", "currency", "remarks", "intend_igst")
+        }),
+        ("Totals", {
+            "fields": ("stbefdiscount", "discount", "subtotal", "addless", "tax_estimate", "gtotal")
+        }),
+        ("Scope", {
+            "fields": ("entity", "subentity", "entityfinid", "createdby")
+        }),
+    )
+
+    actions = [
+        "action_mark_sent", "action_mark_accepted", "action_mark_rejected", "action_mark_expired",
+        "action_convert_to_invoice",
+    ]
+
+    readonly_when_final = ("version",)
+
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(super().get_readonly_fields(request, obj))
+        if obj:
+            # Freeze some fields after acceptance/rejection
+            if obj.status in (SalesQuotationHeader.Status.ACCEPTED, SalesQuotationHeader.Status.REJECTED, SalesQuotationHeader.Status.EXPIRED):
+                ro += [
+                    "quote_no", "quote_date", "account", "shippedto", "valid_until",
+                    "price_list", "currency", "remarks", "intend_igst",
+                    "stbefdiscount", "discount", "subtotal", "addless", "tax_estimate", "gtotal",
+                    "entity", "subentity", "entityfinid", "createdby",
+                ]
+            # Always keep version read-only
+            ro += list(self.readonly_when_final)
+        return tuple(dict.fromkeys(ro))
+
+    @transaction.atomic
+    def save_model(self, request, obj, form, change):
+        # Auto-increment version if significant header fields changed (optional)
+        if change and form.changed_data:
+            significant = {"price_list", "currency", "account", "valid_until", "remarks"}
+            if significant.intersection(set(form.changed_data)):
+                obj.version = (obj.version or 1) + 1
+        super().save_model(request, obj, form, change)
+
+    @transaction.atomic
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        # Recalculate totals based on current lines
+        hdr: SalesQuotationHeader = form.instance
+        qs = hdr.lines.all()
+        stbef = sum((ln.ratebefdiscount or Decimal("0")) * (ln.qty or Decimal("0")) for ln in qs)
+        amount_sum = sum((ln.amount or Decimal("0")) for ln in qs)
+        tax_est = sum((ln.tax_amount_est or Decimal("0")) for ln in qs)  # ← add “for ln in qs”
+        hdr.stbefdiscount = stbef
+        hdr.subtotal = amount_sum
+        hdr.tax_estimate = tax_est
+        hdr.gtotal = amount_sum + (hdr.addless or 0) - (hdr.discount or 0) + tax_est
+        hdr.save(update_fields=["stbefdiscount", "subtotal", "tax_estimate", "gtotal"])
+
+    # ---------
+    # Buttons & actions
+    # ---------
+    @admin.display(description="Convert")
+    def _convert_btn(self, obj: "SalesQuotationHeader"):
+        if obj.status == SalesQuotationHeader.Status.ACCEPTED:
+            url = reverse("admin:salesquotation_convert", args=[obj.id])  # wire via custom admin view (see below)
+            return format_html('<a class="button" href="{}">Convert</a>', url)
+        return mark_safe("—")
+
+    @admin.action(description="Mark as Sent")
+    def action_mark_sent(self, request, queryset):
+        updated = queryset.update(status=SalesQuotationHeader.Status.SENT)
+        self.message_user(request, f"{updated} quotation(s) marked as Sent", level=messages.SUCCESS)
+
+    @admin.action(description="Mark as Accepted")
+    def action_mark_accepted(self, request, queryset):
+        updated = queryset.update(status=SalesQuotationHeader.Status.ACCEPTED)
+        self.message_user(request, f"{updated} quotation(s) marked as Accepted", level=messages.SUCCESS)
+
+    @admin.action(description="Mark as Rejected")
+    def action_mark_rejected(self, request, queryset):
+        updated = queryset.update(status=SalesQuotationHeader.Status.REJECTED)
+        self.message_user(request, f"{updated} quotation(s) marked as Rejected", level=messages.WARNING)
+
+    @admin.action(description="Mark as Expired")
+    def action_mark_expired(self, request, queryset):
+        updated = queryset.update(status=SalesQuotationHeader.Status.EXPIRED)
+        self.message_user(request, f"{updated} quotation(s) marked as Expired", level=messages.INFO)
+
+#     @admin.action(description="Convert to Invoice…")
+#     def action_convert_to_invoice(self, request, queryset):
+#         """Bulk convert accepted quotations. Uses a default pattern; customize as needed."""
+#         count = 0
+#         for q in queryset.select_related("entity", "entityfinid").prefetch_related("lines"):
+#             if q.status != SalesQuotationHeader.Status.ACCEPTED:
+#                 continue
+#             # You may derive invoice_no/bill_no from sequences; here placeholders:
+#             invoice_no = f"INV/{q.entity_id or 'X'}/{q.id}"
+#             bill_no = q.id  # replace with your sequence
+#             hdr = convert_quotation_to_invoice(q, invoice_no=invoice_no, bill_no=bill_no, tax_is_igst=bool(q.intend_igst))
+#             count += 1
+#         if count:
+#             self.message_user(request, f"Converted {count} quotation(s) to invoice(s)", level=messages.SUCCESS)
+#         else:
+#             self.message_user(request, "No accepted quotations selected for conversion", level=messages.WARNING)
+
+
+# # -------------------------
+# # Optional: Custom admin view for single-click Convert button
+# # -------------------------
+# from django.urls import path
+# from django.http import HttpResponseRedirect
+
+# class SalesQuotationAdminUrls:
+#     def get_urls(self):
+#         urls = super().get_urls()
+#         custom = [
+#             path(
+#                 "<int:qid>/convert/",
+#                 self.admin_site.admin_view(self.convert_view),
+#                 name="salesquotation_convert",
+#             ),
+#         ]
+#         return custom + urls
+
+#     @transaction.atomic
+#     def convert_view(self, request, qid: int):
+#         obj = SalesQuotationHeader.objects.prefetch_related("lines").get(id=qid)
+#         if obj.status != SalesQuotationHeader.Status.ACCEPTED:
+#             self.message_user(request, "Quotation must be Accepted before conversion", level=messages.ERROR)
+#             return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/admin/"))
+#         invoice_no = f"INV/{obj.entity_id or 'X'}/{obj.id}"
+#         bill_no = obj.id
+#         hdr = convert_quotation_to_invoice(obj, invoice_no=invoice_no, bill_no=bill_no, tax_is_igst=bool(obj.intend_igst))
+#         self.message_user(request, f"Invoice #{hdr.invoicenumber} created (bill {hdr.billno})", level=messages.SUCCESS)
+#         return HttpResponseRedirect(reverse("admin:%s_%s_change" % (hdr._meta.app_label, hdr._meta.model_name), args=[hdr.id]))
+
+# # Mix the custom URLs into the admin class
+# SalesQuotationHeaderAdmin.__bases__ = (SalesQuotationAdminUrls, ) + SalesQuotationHeaderAdmin.__bases__
 
 
 

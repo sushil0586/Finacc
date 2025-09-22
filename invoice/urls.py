@@ -1,6 +1,6 @@
 from django.urls import path
 from invoice import views
-from .views import PurchaseOrderAttachmentAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView
+from .views import PurchaseOrderAttachmentAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView
 
 
 app_name = 'invoice'
@@ -181,7 +181,10 @@ urlpatterns  = [
     path('purchasereturn/get-adddetails/<int:pk>/', views.GetAddDetailsAPIViewPR.as_view(), name='get-adddetails'),
     path('purchasereturnpdf/<int:id>',views.purchaseRerurnpdfview.as_view(), name = 'salesorder'),
     path('salereturnpdf/<int:id>',views.Salereturnpdfview.as_view(), name = 'salesorder'),
-
+    path("sales/quotations", SalesQuotationListCreateAPIView.as_view(), name="quotation-list"),
+    path("sales/quotations/<int:id>", SalesQuotationRetrieveUpdateDestroyAPIView.as_view(), name="quotation-detail"),
+    path("sales/quotations/<int:id>/status", SalesQuotationStatusAPIView.as_view(), name="quotation-status"),
+    path("sales/quotations/<int:id>/convert", SalesQuotationConvertAPIView.as_view(), name="quotation-convert"),
     
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),

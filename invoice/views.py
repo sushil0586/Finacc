@@ -9,6 +9,8 @@ import calendar
 from rest_framework.exceptions import ValidationError
 from rest_framework.exceptions import NotFound
 from helpers.utils.pdf import render_to_pdf
+from django.utils.functional import cached_property
+from rest_framework.filters import OrderingFilter
 
 import json
 
@@ -17,8 +19,8 @@ from invoice.models import (
     salesOrderdetails, SalesOder, SalesOderHeader, purchaseorder, PurchaseOrderDetails,
     journal, salereturn, salereturnDetails, PurchaseReturn, Purchasereturndetails,
     StockTransactions, journalmain, entry, stockdetails, stockmain, goodstransaction,
-    purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,
-    jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,
+    purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,SalesQuotationHeader,
+    jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,SalesQuotationDetail,
     newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
     SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls
 )
@@ -51,7 +53,7 @@ from invoice.serializers import (
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
-    PurchaseSettingsSerializer,ReceiptVoucherPdfSerializer,
+    PurchaseSettingsSerializer,ReceiptVoucherPdfSerializer,SalesQuotationHeaderSerializer,
     ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer,SaleReturnPDFSerializer
 )
 from django.http import FileResponse
@@ -890,24 +892,57 @@ class GetAddDetailsAPIViewPR(APIView):
 
 
 class SalesOderHeaderApiView(ListCreateAPIView):
-
     serializer_class = SalesOderHeaderSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['billno','sorderdate','entityfinid']
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['billno', 'sorderdate', 'entityfinid']
+    ordering_fields = ['sorderdate', 'billno', 'id']  # optional; lets clients sort
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
+    @cached_property
+    def _entity_id(self):
+        """Return entity id as int or None; avoids repeated parsing."""
+        raw = self.request.query_params.get('entity')
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
+        """
+        - Filter by ?entity=<id> if present; otherwise return empty list (safer than dumping all entities).
+        - Optimize nested serialization access with select_related/prefetch_related.
+        """
+        if self._entity_id is None:
+            # no entity specified → return nothing (or change to .all() if you really want global listing)
+            return SalesOderHeader.objects.none()
 
-     
-     
+        # Base queryset with the entity filter
+        qs = (SalesOderHeader.objects
+              .filter(entity_id=self._entity_id)
+              .select_related(
+                  'accountid', 'invoicetypeid', 'invoicetype',
+                  'state', 'district', 'city',
+                  'subentity', 'entity', 'entityfinid',
+                  'shippedto', 'shippedto__state',
+                  'createdby'
+              )
+              .prefetch_related(
+                  Prefetch(
+                      'saleInvoiceDetails',
+                      queryset=(salesOrderdetails.objects
+                               .select_related('product', 'product__hsn', 'entity', 'subentity', 'createdby')
+                               .prefetch_related('otherchargesdetail'))
+                  ),
+                  # If you add related_name on these models, you can prefetch them too:
+                  # 'paydtls_set', 'refdtls_set', 'ewbdtls_set', 'expdtls_set', 'addldocdtls_set'
+              ))
 
-
-        return SalesOderHeader.objects.filter(entity = entity)
+        return qs
 
 
 class SalesOrderPDFViewlatest(APIView):
@@ -6178,6 +6213,202 @@ class ReceiptVoucherLookupAPIView(APIView):
         data["lastnumber"] = lastnumber
 
         return Response(data)
+    
+
+
+class SalesQuotationListCreateAPIView(ListCreateAPIView):
+    """
+    GET: list quotations (filter by entity, status, search by quote_no/account/contact)
+    POST: create quotation with nested lines
+    Query params:
+      - entity: int
+      - status: comma separated statuses
+      - q: search text
+      - ordering: quote_date,-quote_date, quote_no, -valid_until, etc.
+    """
+    serializer_class = SalesQuotationHeaderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = (
+            SalesQuotationHeader.objects
+            .select_related("account", "entity", "entityfinid", "subentity")
+            .prefetch_related(Prefetch("lines", queryset=SalesQuotationDetail.objects.select_related("product")))
+            .order_by("-quote_date", "-id")
+        )
+        entity_id = self.request.query_params.get("entity")
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            st = [s.strip() for s in status_param.split(",") if s.strip()]
+            qs = qs.filter(status__in=st)
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(
+                Q(quote_no__icontains=q) | Q(contact_name__icontains=q) | Q(contact_email__icontains=q) |
+                Q(account__accountname__icontains=q)  # adjust field name to your account model
+            )
+        ordering = self.request.query_params.get("ordering")
+        if ordering:
+            qs = qs.order_by(*[s.strip() for s in ordering.split(",") if s.strip()])
+        return qs
+
+
+class SalesQuotationRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
+    serializer_class = SalesQuotationHeaderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        return (
+            SalesQuotationHeader.objects
+            .select_related("account", "entity", "entityfinid", "subentity")
+            .prefetch_related(Prefetch("lines", queryset=SalesQuotationDetail.objects.select_related("product")))
+        )
+
+    def perform_destroy(self, instance):
+        if instance.status in (SalesQuotationHeader.Status.ACCEPTED, SalesQuotationHeader.Status.REJECTED):
+            raise ValidationError("Cannot delete a quotation that is accepted/rejected. Use cancel/expire if needed.")
+        return super().perform_destroy(instance)
+
+
+class SalesQuotationStatusAPIView(UpdateAPIView):
+    """PATCH {"status": "sent" | "accepted" | "rejected" | "expired"}
+    Optionally accept {"valid_until": "YYYY-MM-DD"} when marking as sent.
+    """
+    serializer_class = SalesQuotationHeaderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        return SalesQuotationHeader.objects.all()
+
+    def patch(self, request, *args, **kwargs):
+        instance = self.get_object()
+        new_status = request.data.get("status")
+        valid_until = request.data.get("valid_until")
+        if new_status not in SalesQuotationHeader.Status.values:
+            raise ValidationError({"status": "Invalid status"})
+        # simple transition rules
+        if instance.status == SalesQuotationHeader.Status.REJECTED:
+            raise ValidationError("Rejected quotations cannot transition further.")
+        if new_status == SalesQuotationHeader.Status.SENT and not valid_until and not instance.valid_until:
+            raise ValidationError({"valid_until": "valid_until is required when sending a quotation"})
+        if valid_until:
+            instance.valid_until = valid_until
+        instance.status = new_status
+        instance.save(update_fields=["status", "valid_until"])
+        return Response(self.get_serializer(instance).data)
+    
+
+def convert_quotation_to_invoice(quote: SalesQuotationHeader, invoice_no: str, bill_no: int, *,
+                                 tax_is_igst: bool) -> SalesOderHeader:
+    if quote.status != SalesQuotationHeader.Status.ACCEPTED:
+        raise ValueError("Only accepted quotations can be converted.")
+
+    with transaction.atomic():
+        hdr = SalesOderHeader.objects.create(
+            sorderdate=quote.quote_date,
+            billno=bill_no,
+            invoicenumber=invoice_no,
+            accountid=quote.account,
+            # copy ship-to if you want:
+            shippedto=quote.shippedto,
+            # tax regime now enforced:
+            isigst=tax_is_igst,
+            cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"),
+            stbefdiscount=quote.stbefdiscount,
+            discount=quote.discount,
+            subtotal=quote.subtotal,
+            addless=quote.addless,
+            totalgst=Decimal("0.00"),  # recompute below
+            gtotal=Decimal("0.00"),    # recompute below
+            subentity=quote.subentity, entity=quote.entity, entityfinid=quote.entityfinid,
+            createdby=quote.createdby,
+        )
+
+        total_tax = Decimal("0.00")
+        for ln in quote.lines.all():
+            # decide tax % from snapshot or your product tax logic:
+            cgstp = ln.cgstpercent or Decimal("0.00")
+            sgstp = ln.sgstpercent or Decimal("0.00")
+            igstp = ln.igstpercent or Decimal("0.00")
+
+            cgst = sgst = igst = Decimal("0.00")
+            if tax_is_igst:
+                igst = (ln.amount * igstp) / Decimal("100")
+            else:
+                cgst = (ln.amount * cgstp) / Decimal("100")
+                sgst = (ln.amount * sgstp) / Decimal("100")
+
+            linetotal = ln.amount + cgst + sgst + igst
+
+            salesOrderdetails.objects.create(
+                salesorderheader=hdr,
+                product=ln.product,
+                productdesc=ln.productdesc,
+                orderqty=ln.qty,
+                pieces=ln.pieces,
+                ratebefdiscount=ln.ratebefdiscount,
+                orderDiscount=ln.line_discount,
+                rate=ln.rate,
+                amount=ln.amount,
+                cgst=cgst, sgst=sgst, igst=igst, isigst=tax_is_igst,
+                cgstpercent=cgstp, sgstpercent=sgstp, igstpercent=igstp,
+                linetotal=linetotal,
+                isService=ln.is_service,
+                subentity=hdr.subentity, entity=hdr.entity, createdby=hdr.createdby,
+            )
+            total_tax += (cgst + sgst + igst)
+
+        hdr.totalgst = total_tax
+        hdr.gtotal   = hdr.subtotal + hdr.addless + total_tax
+        hdr.save(update_fields=["totalgst", "gtotal"])
+        return hdr
+
+
+class SalesQuotationConvertAPIView(APIView):
+    """
+    POST to convert an ACCEPTED quotation into an invoice.
+    Body:
+      {
+        "invoice_no": "INV/24-25/0001",
+        "bill_no": 1,
+        "tax_is_igst": true
+      }
+    Returns the created SalesOderHeader id.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, id: int):
+        try:
+            quote = (
+                SalesQuotationHeader.objects
+                .prefetch_related("lines")
+                .get(id=id)
+            )
+        except SalesQuotationHeader.DoesNotExist:
+            return Response({"detail": "Quotation not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if quote.status != SalesQuotationHeader.Status.ACCEPTED:
+            raise ValidationError("Only accepted quotations can be converted.")
+
+        invoice_no = request.data.get("invoice_no")
+        bill_no = request.data.get("bill_no")
+        tax_is_igst = bool(request.data.get("tax_is_igst"))
+        if not invoice_no or bill_no is None:
+            raise ValidationError({"invoice_no": "required", "bill_no": "required"})
+
+        # Use your existing conversion service
+        hdr = convert_quotation_to_invoice(
+            quote=quote,
+            invoice_no=invoice_no,
+            bill_no=bill_no,
+            tax_is_igst=tax_is_igst,
+        )
+        return Response({"invoice_id": hdr.id, "billno": hdr.billno, "invoicenumber": hdr.invoicenumber}, status=200)
+
 
 
 
