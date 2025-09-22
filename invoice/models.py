@@ -8,7 +8,7 @@ from financial.models import account,accountHead,ShippingDetails,accounttype
 from inventory.models import Product
 from entity.models import Entity,entityfinancialyear,subentity
 from inventory.models import Product
-from django.db.models import Sum 
+from django.db.models import Sum,Q, CheckConstraint, UniqueConstraint
 import datetime
 from django.core.exceptions import ValidationError
 from django.db.models import Index, Func, DateField, F
@@ -17,6 +17,9 @@ from geography.models import Country,State,District,City
 from simple_history.models import HistoricalRecords
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
+from decimal import Decimal
+ZERO2 = Decimal("0.00")
+ZERO4 = Decimal("0.0000")
 
 
 # Create your models here.
@@ -246,111 +249,207 @@ class gstorderservicesAttachment(models.Model):
 
 
 
-class SalesOderHeader(TrackingModel):
-    #RevisonNumber =models.IntegerFieldverbose_name=_('Main category'))
-    sorderdate = models.DateTimeField(verbose_name='Sales Order date',null = True)
-    billno = models.IntegerField(verbose_name='Bill No')
-    invoicenumber = models.CharField(max_length=50, null=True,verbose_name='Invoice Number')
-    accountid = models.ForeignKey(to = account, on_delete=models.CASCADE,blank=True)
-    invoicetypeid = models.ForeignKey(to = invoicetypes, on_delete=models.CASCADE,blank=True,null = True)
-    latepaymentalert = models.BooleanField(verbose_name='Late Payment Alert',default = True,null = True)
-    grno = models.CharField(max_length=50,verbose_name='GR No',null=True)
-    terms = models.IntegerField(verbose_name='Terms')
-    vehicle = models.CharField(max_length=50, null=True,verbose_name='Vehicle')
-    taxtype = models.IntegerField(verbose_name='Tax Type')
-    billcash = models.IntegerField(verbose_name='Bill/Cash')
-    supply = models.IntegerField(verbose_name='Supply')
-    state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
-    district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
-    city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
-    pincode = models.CharField(max_length=50,verbose_name='pincode',null=True)
-    totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
-    totalquanity =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
-    advance =  models.DecimalField(max_digits=14, decimal_places=2,default=0 ,blank = True,verbose_name= 'advance')
-    shippedto =  models.ForeignKey(to = ShippingDetails, on_delete=models.CASCADE,null=True,related_name='shippedto')
-    ecom =  models.ForeignKey(to = 'financial.account', on_delete=models.CASCADE,null=True,related_name='ecommerce4')
-    remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
-    cancelreason = models.CharField(max_length=500, null=True,verbose_name= 'Cancelreason')
-    transport =  models.ForeignKey(account, on_delete=models.CASCADE,null=True,related_name='sotransport')
-    broker =  models.ForeignKey(account, on_delete=models.CASCADE,null=True,related_name='sobroker')
-    taxid = models.IntegerField(verbose_name='Terms',default = 0)
-    tds194q =  models.DecimalField(max_digits=14, decimal_places=2,default=0, verbose_name= 'TDS 194 @')
-    tds194q1 =  models.DecimalField(max_digits=14, decimal_places=2,default=0, verbose_name= 'TDS 194 @')
-    tcs206c1ch1 =  models.DecimalField(max_digits=14, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C1cH1')
-    tcs206c1ch2 =  models.DecimalField(max_digits=14, decimal_places=2,default=0, verbose_name= 'Tcs 206C1cH2')
-    tcs206c1ch3 =  models.DecimalField(max_digits=14, decimal_places=2,default=0, verbose_name= 'Tcs tcs206c1ch3')
-    tcs206C1 =  models.DecimalField(max_digits=14, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C1')
-    tcs206C2 =  models.DecimalField(max_digits=14, decimal_places=2,default=0 ,verbose_name= 'Tcs 206C2')
-    duedate = models.DateField(verbose_name='Due Date',null = True)
-    totalgst =  models.DecimalField(max_digits=14,null = True,decimal_places=2,verbose_name= 'totalgst')
-    stbefdiscount = models.DecimalField(max_digits=14,null=True,decimal_places=2,default=0,verbose_name= 'Sub Total before Discount')
-    discount = models.DecimalField(max_digits=14,null=True, decimal_places=2,default=0, verbose_name= 'Discount')
-    subtotal =  models.DecimalField(max_digits=14, decimal_places=2,default=0,verbose_name= 'Sub Total')
-    addless =  models.DecimalField(max_digits=14, decimal_places=2,default=0,verbose_name= 'Add/Less')
-    apptaxrate =  models.DecimalField(max_digits=4, decimal_places=2,default=0,verbose_name= 'app tax rate')
-    cgst =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'C.GST')
-    sgst =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'S.GST')
-    igst =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'I.GST')
-    isigst =   models.BooleanField(default=False,verbose_name= 'IsIgst')
-    invoicetype = models.ForeignKey(InvoiceType,on_delete=models.CASCADE,verbose_name= 'Invoice Type',null= True)
-    reversecharge =   models.BooleanField(default=False,verbose_name= 'Reverse charge')
-    cess = models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'Cess',default=0)
-    expenses =  models.DecimalField(max_digits=14, decimal_places=2,default=0,verbose_name= 'EXpenses')
-    gtotal =  models.DecimalField(max_digits=14, decimal_places=2,default=0,verbose_name= 'Grand Total')
-    roundOff =  models.DecimalField(max_digits=14, decimal_places=2,default=0,verbose_name= 'Raw Grand Total')
-    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
-    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
-    eway =   models.BooleanField(default=False)
-    einvoice =   models.BooleanField(default=False)
-    einvoicepluseway =   models.BooleanField(default=False)
-    isammended =   models.BooleanField(default=False)
-    isadditionaldetail = models.BooleanField(default=False,verbose_name= 'Is Additional details')
-    originalinvoice = models.ForeignKey("self",null=True,on_delete=models.CASCADE,verbose_name='Orinial invoice')
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+class SalesOderHeader(TrackingModel):  # keep your base class if TrackingModel; changed to models.Model for snippet only
+    # --- Choices for clarity (optional but recommended) ---
+    # class TaxType(models.IntegerChoices):
+    #     INTRA = 1, "Intra-state (CGST+SGST)"
+    #     INTER = 2, "Inter-state (IGST)"
+
+    class BillCash(models.IntegerChoices):
+        CREDIT = 1, "Credit"
+        CASH   = 2, "Cash"
+
+    class SupplyKind(models.IntegerChoices):
+        GOODS    = 1, "Goods"
+        SERVICES = 2, "Services"
+
+    # Fields (kept the same names to avoid breaking your code)
+    sorderdate     = models.DateTimeField("Sales Order date", null=True)
+    billno         = models.IntegerField("Bill No")
+    invoicenumber  = models.CharField("Invoice Number", max_length=50, null=True, blank=True)
+
+    accountid      = models.ForeignKey(to=account, on_delete=models.CASCADE, blank=True, null=True)  # allow null
+    invoicetypeid  = models.ForeignKey(to=invoicetypes, on_delete=models.CASCADE, blank=True, null=True)
+
+    latepaymentalert = models.BooleanField("Late Payment Alert", default=True, null=True)
+    grno           = models.CharField("GR No", max_length=50, null=True, blank=True)
+    terms          = models.IntegerField("Terms")
+    vehicle        = models.CharField("Vehicle", max_length=50, null=True, blank=True)
+
+    taxtype        = models.IntegerField("Tax Type")
+    billcash       = models.IntegerField("Bill/Cash", choices=BillCash.choices)
+    supply         = models.IntegerField("Supply", choices=SupplyKind.choices)
+
+    state    = models.ForeignKey(to=State, on_delete=models.CASCADE, null=True, blank=True)
+    district = models.ForeignKey(to=District, on_delete=models.CASCADE, null=True, blank=True)
+    city     = models.ForeignKey(to=City, on_delete=models.CASCADE, null=True, blank=True)
+    pincode  = models.CharField("pincode", max_length=50, null=True, blank=True)
+
+    totalpieces   = models.IntegerField("totalpieces", default=0, blank=True)
+    totalquanity  = models.DecimalField("totalquanity", max_digits=14, decimal_places=4, default=ZERO4, blank=True)
+    advance       = models.DecimalField("advance", max_digits=14, decimal_places=2, default=ZERO2, blank=True)
+
+    shippedto = models.ForeignKey(to=ShippingDetails, on_delete=models.CASCADE, null=True, related_name='shippedto')
+    ecom      = models.ForeignKey(to='financial.account', on_delete=models.CASCADE, null=True, related_name='ecommerce4')
+
+    remarks       = models.CharField("Remarks", max_length=500, null=True, blank=True)
+    cancelreason  = models.CharField("Cancelreason", max_length=500, null=True, blank=True)
+
+    transport = models.ForeignKey(account, on_delete=models.CASCADE, null=True, blank=True, related_name='sotransport')
+    broker    = models.ForeignKey(account, on_delete=models.CASCADE, null=True, blank=True, related_name='sobroker')
+
+    taxid = models.IntegerField("Terms", default=0)
+
+    # TDS/TCS (left as-is but kept non-null with sane defaults)
+    tds194q      = models.DecimalField("TDS 194 @",      max_digits=5,  decimal_places=2, default=ZERO2)
+    tds194q1     = models.DecimalField("TDS 194 @",      max_digits=5,  decimal_places=2, default=ZERO2)
+    tcs206c1ch1  = models.DecimalField("Tcs 206C1cH1",   max_digits=5,  decimal_places=2, default=ZERO2)
+    tcs206c1ch2  = models.DecimalField("Tcs 206C1cH2",   max_digits=5,  decimal_places=2, default=ZERO2)
+    tcs206c1ch3  = models.DecimalField("Tcs tcs206c1ch3",max_digits=5,  decimal_places=2, default=ZERO2)
+    tcs206C1     = models.DecimalField("Tcs 206C1",      max_digits=5,  decimal_places=2, default=ZERO2)
+    tcs206C2     = models.DecimalField("Tcs 206C2",      max_digits=5,  decimal_places=2, default=ZERO2)
+
+    duedate = models.DateField("Due Date", null=True)
+
+    # Monetary/tax fields → non-null with defaults
+    totalgst      = models.DecimalField("totalgst", max_digits=14, decimal_places=2, default=ZERO2)
+    stbefdiscount = models.DecimalField("Sub Total before Discount", max_digits=14, decimal_places=2, default=ZERO2)
+    discount      = models.DecimalField("Discount", max_digits=14, decimal_places=2, default=ZERO2)
+    subtotal      = models.DecimalField("Sub Total", max_digits=14, decimal_places=2, default=ZERO2)
+    addless       = models.DecimalField("Add/Less", max_digits=14, decimal_places=2, default=ZERO2)
+
+    apptaxrate    = models.DecimalField("app tax rate", max_digits=5, decimal_places=2, default=ZERO2)
+
+    cgst          = models.DecimalField("C.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    sgst          = models.DecimalField("S.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    igst          = models.DecimalField("I.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    isigst        = models.BooleanField("IsIgst", default=False)
+
+    invoicetype   = models.ForeignKey(InvoiceType, on_delete=models.CASCADE, null=True, verbose_name='Invoice Type')
+    reversecharge = models.BooleanField("Reverse charge", default=False)
+
+    cess     = models.DecimalField("Cess", max_digits=14, decimal_places=2, default=ZERO2)
+    expenses = models.DecimalField("EXpenses", max_digits=14, decimal_places=2, default=ZERO2)
+    gtotal   = models.DecimalField("Grand Total", max_digits=14, decimal_places=2, default=ZERO2)
+    roundOff = models.DecimalField("Raw Grand Total", max_digits=14, decimal_places=2, default=ZERO2)
+
+    subentity   = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, verbose_name='subentity')
+    entity      = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, verbose_name='entity')
+    entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, verbose_name='entity Financial year')
+
+    eway             = models.BooleanField(default=False)
+    einvoice         = models.BooleanField(default=False)
+    einvoicepluseway = models.BooleanField(default=False)
+    isammended       = models.BooleanField(default=False)
+    isadditionaldetail = models.BooleanField("Is Additional details", default=False)
+
+    originalinvoice = models.ForeignKey("self", null=True, on_delete=models.CASCADE, verbose_name='Orinial invoice')
+    createdby       = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True)
+
     history = HistoricalRecords()
-   
 
     class Meta:
-        unique_together = ('billno', 'entity','entityfinid',)
+        constraints = [
+            UniqueConstraint(fields=("billno", "entity", "entityfinid"), name="uq_billno_entity_fin"),
 
+            # IGST vs CGST/SGST mutual exclusivity:
+            # - if isigst=True  → cgst=0 and sgst=0 (allow igst 0 for zero-rated)
+            # - if isigst=False → igst=0
+            CheckConstraint(
+                name="ck_igst_vs_cgst_sgst_hdr",
+                check=(Q(isigst=True) & Q(cgst=0) & Q(sgst=0)) | (Q(isigst=False) & Q(igst=0)),
+            ),
+
+            # Non-negative header money amounts
+            CheckConstraint(
+                name="ck_header_amounts_nonneg",
+                check=(
+                    Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) & Q(cess__gte=0) &
+                    Q(stbefdiscount__gte=0) & Q(discount__gte=0) & Q(subtotal__gte=0) &
+                    Q(totalgst__gte=0) & Q(expenses__gte=0) & Q(addless__gte=0) &
+                    Q(advance__gte=0) & Q(gtotal__gte=0)
+                ),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "entityfinid", "billno"], name="ix_entity_fin_bill"),
+            models.Index(fields=["invoicenumber"], name="ix_invoice_no"),
+            models.Index(fields=["sorderdate"], name="ix_order_date"),
+            models.Index(fields=["accountid"], name="ix_customer"),
+        ]
 
     def __str__(self):
-        return f'{self.billno} '
+        return f"{self.billno}"
 
-class salesOrderdetails(TrackingModel):
-    salesorderheader = models.ForeignKey(to = SalesOderHeader,related_name='saleInvoiceDetails', on_delete=models.CASCADE,verbose_name= 'Sale Order Number')
-    product = models.ForeignKey(to = Product, on_delete=models.CASCADE,verbose_name= 'Product',null = True)
-    productdesc = models.CharField(max_length=500, null=True,verbose_name='product Desc')
-    orderqty =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Order Qty')
-    pieces =  models.IntegerField(verbose_name='pieces')
-    befDiscountProductAmount = models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'befDiscountProductAmount')
-    ratebefdiscount =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'ratebefdiscount')
-    orderDiscount =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'Discount')
-    orderDiscountValue =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'Discount')
-    rate =  models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'Rate')
-    amount =  models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'Amount')
-   # account   = models.ForeignKey(to = account, on_delete=models.CASCADE,blank=True,null=True,verbose_name= 'Other account')
-    othercharges =  models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'other charges',default=0,null=True)
-    cgst =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'CGST')
-    sgst =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'SGST')
-    igst =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'IGST')
-    isigst =   models.BooleanField(default=False)
-    cgstpercent =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'CGST Percent')
-    sgstpercent =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'SGST Percent')
-    igstpercent =  models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'IGST Percent')
-    # cgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
-    # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
-    cess = models.DecimalField(max_digits=14,null = True, decimal_places=2,verbose_name= 'Cess')
-    linetotal =  models.DecimalField(max_digits=14, decimal_places=2,verbose_name= 'Line Total')
-    isService = models.BooleanField(default=False,verbose_name= 'Is Service')
-    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+
+class salesOrderdetails(TrackingModel):  # keep your base class if TrackingModel
+    salesorderheader = models.ForeignKey(to=SalesOderHeader, related_name='saleInvoiceDetails',
+                                         on_delete=models.CASCADE, verbose_name='Sale Order Number')
+    product     = models.ForeignKey(to=Product, on_delete=models.CASCADE, verbose_name='Product', null=True, blank=True)
+    productdesc = models.CharField("product Desc", max_length=500, null=True, blank=True)
+
+    orderqty = models.DecimalField("Order Qty", max_digits=14, decimal_places=4, default=ZERO4)
+    pieces   = models.IntegerField("pieces", default=0)
+
+    befDiscountProductAmount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    ratebefdiscount          = models.DecimalField("ratebefdiscount", max_digits=14, decimal_places=2, default=ZERO2)
+
+    orderDiscount      = models.DecimalField("Discount", max_digits=14, decimal_places=2, default=ZERO2)
+    orderDiscountValue = models.DecimalField("Discount", max_digits=14, decimal_places=2, default=ZERO2)
+
+    rate   = models.DecimalField("Rate", max_digits=14, decimal_places=2, default=ZERO2)
+    amount = models.DecimalField("Amount", max_digits=14, decimal_places=2, default=ZERO2)
+
+    othercharges = models.DecimalField("other charges", max_digits=14, decimal_places=2, default=ZERO2, null=True, blank=True)
+
+    cgst  = models.DecimalField("CGST", max_digits=14, decimal_places=2, default=ZERO2)
+    sgst  = models.DecimalField("SGST", max_digits=14, decimal_places=2, default=ZERO2)
+    igst  = models.DecimalField("IGST", max_digits=14, decimal_places=2, default=ZERO2)
+    isigst = models.BooleanField(default=False)
+
+    # percents as 5,2
+    cgstpercent = models.DecimalField("CGST Percent", max_digits=5, decimal_places=2, default=ZERO2)
+    sgstpercent = models.DecimalField("SGST Percent", max_digits=5, decimal_places=2, default=ZERO2)
+    igstpercent = models.DecimalField("IGST Percent", max_digits=5, decimal_places=2, default=ZERO2)
+
+    cess      = models.DecimalField("Cess", max_digits=14, decimal_places=2, default=ZERO2)
+    linetotal = models.DecimalField("Line Total", max_digits=14, decimal_places=2, default=ZERO2)
+
+    isService = models.BooleanField("Is Service", default=False)
+
+    subentity = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, verbose_name='subentity')
+    entity    = models.ForeignKey(Entity, on_delete=models.CASCADE, verbose_name='entity')
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True)
+
     history = HistoricalRecords()
 
+    class Meta:
+        constraints = [
+            # Detail-level IGST vs CGST/SGST exclusivity
+            CheckConstraint(
+                name="ck_igst_vs_cgst_sgst_dtl",
+                check=(Q(isigst=True) & Q(cgst=0) & Q(sgst=0)) | (Q(isigst=False) & Q(igst=0)),
+            ),
+            # Non-negative amounts and percent range 0..100
+            CheckConstraint(
+                name="ck_detail_amounts_nonneg",
+                check=Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) & Q(cess__gte=0) &
+                      Q(amount__gte=0) & Q(linetotal__gte=0) & Q(orderqty__gte=0) & Q(pieces__gte=0),
+            ),
+            CheckConstraint(
+                name="ck_detail_percent_bounds",
+                check=(Q(cgstpercent__gte=0) & Q(cgstpercent__lte=100) &
+                       Q(sgstpercent__gte=0) & Q(sgstpercent__lte=100) &
+                       Q(igstpercent__gte=0) & Q(igstpercent__lte=100)),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["salesorderheader"], name="ix_detail_header"),
+            models.Index(fields=["product"], name="ix_detail_product"),
+        ]
+
     def __str__(self):
-        return f'{self.product} '
+        return f"{self.product or self.productdesc or '#'}"
     
 
 
@@ -769,91 +868,173 @@ class purchaseotherimporAttachment(models.Model):
 
 
 
-class purchaseorder(TrackingModel):
-    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
-    voucherno = models.IntegerField(verbose_name='Voucher No')
-    account = models.ForeignKey(to = account, on_delete=models.CASCADE,null=True,blank=True)
-    billno = models.IntegerField(verbose_name='Bill No')
-    billdate = models.DateTimeField(verbose_name='Bill Date',null = True)
-    terms = models.IntegerField(verbose_name='Terms')
-    taxtype = models.IntegerField(verbose_name='TaxType')
-    billcash = models.IntegerField(verbose_name='Bill/Cash')
-    totalpieces = models.IntegerField(verbose_name='totalpieces',default=0,blank = True)
-    state       = models.ForeignKey(to=State,on_delete=models.CASCADE,null=True)
-    district    = models.ForeignKey(to=District,on_delete=models.CASCADE,null=True)
-    city       = models.ForeignKey(to=City,on_delete=models.CASCADE,null=True)
-    pincode = models.CharField(max_length=50,verbose_name='pincode',null=True)
-    totalquanity =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'totalquanity')
-    advance =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,blank = True,verbose_name= 'advance')
-    remarks = models.CharField(max_length=500, null=True,verbose_name= 'Remarks')
-    transport =  models.ForeignKey(to = 'financial.account', on_delete=models.CASCADE,null=True,related_name='potransport')
-    broker =  models.ForeignKey(to = 'financial.account', on_delete=models.CASCADE,null=True,related_name='pobroker')
-    taxid = models.IntegerField(verbose_name='Terms',default = 0)
-    tds194q =  models.DecimalField(max_digits=14, decimal_places=4,default=0, verbose_name= 'TDS 194 @')
-    tds194q1 =  models.DecimalField(max_digits=14, decimal_places=4,default=0, verbose_name= 'TDS 194 @')
-    tcs206c1ch1 =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,verbose_name= 'Tcs 206C1cH1')
-    tcs206c1ch2 =  models.DecimalField(max_digits=14, decimal_places=4,default=0, verbose_name= 'Tcs 206C1cH2')
-    tcs206c1ch3 =  models.DecimalField(max_digits=14, decimal_places=4,default=0, verbose_name= 'Tcs tcs206c1ch3')
-    tcs206C1 =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,verbose_name= 'Tcs 206C1')
-    tcs206C2 =  models.DecimalField(max_digits=14, decimal_places=4,default=0 ,verbose_name= 'Tcs 206C2')
-    duedate = models.DateTimeField(verbose_name='Due Date',null = True)
-    inputdate = models.DateTimeField(verbose_name='Input Date',null = True)
-    vehicle = models.CharField(max_length=50, null=True,verbose_name='Vehicle')
-    invoicetype = models.ForeignKey(InvoiceType,on_delete=models.CASCADE,verbose_name= 'Invoice Type',null= True)
-    reversecharge =   models.BooleanField(default=False,verbose_name= 'Reverse charge')
-    grno = models.CharField(max_length=50,null=True,verbose_name='GR No')
-    gstr2astatus = models.BooleanField(verbose_name='GstR 2A Status',default= 1)
-    showledgeraccount = models.BooleanField(verbose_name='Show Ledger Account',default= 1)
-    subtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Sub Total')
-    cgst = models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'C.GST',default=0)
-    sgst = models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'S.GST',default=0)
-    igst = models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'I.GST',default=0)
-    addless =  models.DecimalField(max_digits=14, decimal_places=4,default=0,verbose_name= 'Add/Less')
-    ecom = models.ForeignKey(to='financial.account',on_delete=models.CASCADE,null=True,related_name='ecommerce1')
-    apptaxrate =  models.DecimalField(max_digits=4, decimal_places=2,default=0,verbose_name= 'app tax rate')
-    # cgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'C.GST Cess',default=0)
-    # sgstcess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'S.GST Cess',default=0)
-    cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
-    expenses = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Expenses',default=0)
-    gtotal = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'G Total')
-    roundOff = models.DecimalField(max_digits=14, decimal_places=4,default=0 , verbose_name= 'round off')
-    finalAmount = models.DecimalField(max_digits=14, decimal_places=4,default=0 , verbose_name= 'Final amount')
-    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
-    
-    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+class purchaseorder(TrackingModel):  # keep name to avoid breaking references
+    voucherdate   = models.DateField(verbose_name='Voucher Date', auto_now_add=True)
+    voucherno     = models.IntegerField(verbose_name='Voucher No')
+    account       = models.ForeignKey('financial.account', on_delete=models.CASCADE, null=True, blank=True)
 
+    billno        = models.IntegerField(verbose_name='Bill No')
+    billdate      = models.DateTimeField(verbose_name='Bill Date', null=True)
+    terms         = models.IntegerField(verbose_name='Terms')
+    taxtype       = models.IntegerField(verbose_name='TaxType')
+    billcash      = models.IntegerField(verbose_name='Bill/Cash')  # 0/2=cash, others=credit (to match legacy)
+
+    # Location
+    state         = models.ForeignKey(State,    on_delete=models.CASCADE, null=True)
+    district      = models.ForeignKey(District, on_delete=models.CASCADE, null=True)
+    city          = models.ForeignKey(City,     on_delete=models.CASCADE, null=True)
+    pincode       = models.CharField(max_length=50, verbose_name='pincode', null=True)
+
+    # Totals helpers
+    totalpieces   = models.IntegerField(verbose_name='totalpieces', default=0, blank=True)
+    totalquanity  = models.DecimalField(max_digits=14, decimal_places=4, default=ZERO4, blank=True, verbose_name='totalquanity')
+    advance       = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, blank=True, verbose_name='advance')
+
+    remarks       = models.CharField(max_length=500, null=True, verbose_name='Remarks')
+    transport     = models.ForeignKey('financial.account', on_delete=models.CASCADE, null=True, related_name='potransport')
+    broker        = models.ForeignKey('financial.account', on_delete=models.CASCADE, null=True, related_name='pobroker')
+
+    taxid         = models.IntegerField(verbose_name='Terms', default=0)
+    tds194q       = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='TDS 194 @')
+    tds194q1      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='TDS 194 @')
+    tcs206c1ch1   = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs 206C1cH1')
+    tcs206c1ch2   = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs 206C1cH2')
+    tcs206c1ch3   = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs tcs206c1ch3')
+    tcs206C1      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs 206C1')
+    tcs206C2      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs 206C2')
+
+    duedate       = models.DateField(verbose_name='Due Date', null=True)  # align with sales
+    inputdate     = models.DateTimeField(verbose_name='Input Date', null=True)
+    vehicle       = models.CharField(max_length=50, null=True, verbose_name='Vehicle')
+    invoicetype   = models.ForeignKey(InvoiceType, on_delete=models.CASCADE, verbose_name='Invoice Type', null=True)
+    reversecharge = models.BooleanField(default=False, verbose_name='Reverse charge')
+    grno          = models.CharField(max_length=50, null=True, verbose_name='GR No')
+
+    gstr2astatus      = models.BooleanField(verbose_name='GstR 2A Status', default=True)
+    showledgeraccount = models.BooleanField(verbose_name='Show Ledger Account', default=True)
+
+    # ---- Computed & monetary (2dp) | quantities 4dp ----
+    stbefdiscount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Sub Total before Discount')
+    discount      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Discount')
+
+    subtotal      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Sub Total')
+    addless       = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Add/Less')
+
+    cgst          = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, null=True, verbose_name='C.GST')
+    sgst          = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, null=True, verbose_name='S.GST')
+    igst          = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, null=True, verbose_name='I.GST')
+    cess          = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Cess')
+    totalgst      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, null=True, verbose_name='totalgst')
+
+    expenses      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Expenses')
+    gtotal        = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='G Total')
+    roundOff      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='round off')
+    finalAmount   = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Final amount')
+
+    subentity     = models.ForeignKey(subentity, on_delete=models.CASCADE, verbose_name='subentity', null=True)
+    entity        = models.ForeignKey(Entity, on_delete=models.CASCADE, verbose_name='entity')
+    entityfinid   = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, verbose_name='entity Financial year', null=True)
+
+    isactive      = models.BooleanField(default=True)
+    createdby     = models.ForeignKey(User, on_delete=models.CASCADE, null=True)
+
+    history       = HistoricalRecords()
 
     class Meta:
-        unique_together = ('voucherno', 'entity','entityfinid',)
-        unique_together = ('billno', 'account','entity','entityfinid',)
-        
+        db_table = "purchaseorder"
+        constraints = [
+            models.UniqueConstraint(fields=['voucherno', 'entity', 'entityfinid'], name='uq_po_voucherno_entity_fin'),
+            models.UniqueConstraint(fields=['billno', 'account', 'entity', 'entityfinid'], name='uq_po_billno_party_entity_fin'),
+            models.CheckConstraint(
+                name='ck_po_nonneg',
+                check=(
+                    Q(subtotal__gte=0) & Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) &
+                    Q(cess__gte=0) & Q(expenses__gte=0) & Q(gtotal__gte=0)
+                )
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['entity', 'voucherno'], name='ix_po_entity_vno'),
+            models.Index(fields=['entity', 'billno'],    name='ix_po_entity_bno'),
+            models.Index(fields=['entity', 'account'],   name='ix_po_entity_party'),
+        ]
 
     def __str__(self):
-        return f'{self.voucherno} '
+        return f'PO {self.voucherno} · {self.entity_id}'
 
-class PurchaseOrderDetails(models.Model):
-    purchaseorder = models.ForeignKey(to = purchaseorder,related_name='purchaseInvoiceDetails', on_delete=models.CASCADE,verbose_name= 'Purchase Order Number')
-    product = models.ForeignKey(to = Product, on_delete=models.CASCADE,verbose_name= 'Product',null = True)
-    productdesc = models.CharField(max_length=500, null=True,verbose_name='Product Desc')
-    orderqty =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Order Qty')
-    pieces =  models.IntegerField(verbose_name='pieces')
-    rate =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Rate')
-    amount =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Amount')
-    cgst =  models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'CGST')
-    sgst =  models.DecimalField(max_digits=14,null = True,decimal_places=4,verbose_name= 'SGST')
-    igst =  models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'IGST')
-    isigst =   models.BooleanField(default=False)
-    cgstpercent =  models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'CGST percent')
-    sgstpercent =  models.DecimalField(max_digits=14,null = True,decimal_places=4,verbose_name= 'SGST percent')
-    igstpercent =  models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'IGST percent')
-    othercharges =  models.DecimalField(max_digits=14,null=True, decimal_places=4,verbose_name= 'other charges',default=0)
-    cess = models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Cess',default=0)
-    linetotal =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Line Total')
-    subentity = models.ForeignKey(subentity,on_delete=models.CASCADE,verbose_name= 'subentity',null= True)
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+
+class PurchaseOrderDetails(TrackingModel):
+    purchaseorder = models.ForeignKey(
+        purchaseorder, related_name='purchaseInvoiceDetails',
+        on_delete=models.CASCADE, verbose_name='Purchase Order Number'
+    )
+    product       = models.ForeignKey(Product, on_delete=models.CASCADE, verbose_name='Product', null=True)
+    productdesc   = models.CharField(max_length=500, null=True, verbose_name='Product Desc')
+
+    # Qty/price
+    orderqty      = models.DecimalField(max_digits=14, decimal_places=4, verbose_name='Order Qty')
+    pieces        = models.IntegerField(verbose_name='pieces', default=0)
+    rate          = models.DecimalField(max_digits=14, decimal_places=2, verbose_name='Rate')    # 2dp like sales
+    amount        = models.DecimalField(max_digits=14, decimal_places=2, verbose_name='Amount')
+
+    # Optional “before-discount” fields for parity with sales (safe defaults)
+    befDiscountProductAmount = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='befDiscountProductAmount')
+    ratebefdiscount          = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='ratebefdiscount')
+    orderDiscount            = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='Discount')
+    orderDiscountValue       = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='Discount Value')
+
+    # Taxes (2dp)
+    cgst          = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='CGST', default=ZERO2)
+    sgst          = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='SGST', default=ZERO2)
+    igst          = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='IGST', default=ZERO2)
+    isigst        = models.BooleanField(default=False)
+
+    cgstpercent   = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='CGST percent')
+    sgstpercent   = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='SGST percent')
+    igstpercent   = models.DecimalField(max_digits=14, decimal_places=2, null=True, verbose_name='IGST percent')
+
+    othercharges  = models.DecimalField(max_digits=14, decimal_places=2, null=True, default=ZERO2, verbose_name='other charges')
+    cess          = models.DecimalField(max_digits=14, decimal_places=2, verbose_name='Cess', default=ZERO2)
+
+    linetotal     = models.DecimalField(max_digits=14, decimal_places=2, verbose_name='Line Total')
+
+    subentity     = models.ForeignKey(subentity, on_delete=models.CASCADE, verbose_name='subentity', null=True)
+    entity        = models.ForeignKey(Entity, on_delete=models.CASCADE, verbose_name='entity')
+    createdby     = models.ForeignKey(User, on_delete=models.CASCADE, null=True)
+
+    history       = HistoricalRecords()
+
+    class Meta:
+        db_table = "purchaseorderdetails"
+        constraints = [
+            # IGST vs CGST/SGST validity
+            models.CheckConstraint(
+                name="ck_po_line_tax_combo",
+                check=(
+                    Q(isigst=True,  cgst=0, sgst=0) |
+                    Q(isigst=False, igst=0)
+                ),
+            ),
+            # Non-negative guards
+            models.CheckConstraint(
+                name="ck_po_line_nonneg",
+                check=(
+                    Q(orderqty__gte=0) & Q(pieces__gte=0) &
+                    Q(rate__gte=0) & Q(amount__gte=0) &
+                    Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) &
+                    Q(cess__gte=0) & Q(othercharges__gte=0) &
+                    Q(linetotal__gte=0)
+                ),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['purchaseorder'], name='ix_pod_hdr'),
+            models.Index(fields=['entity', 'product'], name='ix_pod_entity_product'),
+            models.Index(fields=['isigst'], name='ix_pod_isigst'),
+        ]
+
+    def __str__(self):
+        return f'{self.product} · {self.purchaseorder_id}'
 
 
 
@@ -1585,6 +1766,211 @@ class ewbdetails(TrackingModel):
       transdocdate = models.DateTimeField(verbose_name='Transport document date',null = True)
       vehicalno = models.CharField(max_length=50, null=True,verbose_name='vehicalno')
       vehicaltype = models.ForeignKey(to = vehicalType, on_delete=models.CASCADE,blank=True)
+
+
+class TxnType(models.TextChoices):
+    SALES = "sales", "Sales"
+    PURCHASE = "purchase", "Purchase"
+    JOURNAL = "journal", "Journal"
+    SALES_RETURN = "salesreturn", "Sales Return"
+    PURCHASE_RETURN = "purchasereturn", "Purchase Return"
+
+
+class JournalLine(models.Model):
+    # Money ledger (GL). One row = one debit OR one credit.
+    entry = models.ForeignKey(entry, on_delete=models.CASCADE, related_name='journal_lines')
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+
+    transactiontype = models.CharField(max_length=20, choices=TxnType.choices, db_index=True)
+    transactionid = models.IntegerField(db_index=True)      # header id
+    detailid = models.IntegerField(null=True, blank=True)   # line id (optional)
+    voucherno = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+
+    accounthead = models.ForeignKey(accountHead, on_delete=models.CASCADE,
+                                    null=True, blank=True, related_name='jl_head')
+    account = models.ForeignKey(account, on_delete=models.CASCADE,
+                                null=True, blank=True, related_name='jl_account')
+
+    drcr = models.BooleanField()  # True=Debit, False=Credit
+    amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    desc = models.CharField(max_length=500, null=True, blank=True)
+    entrydate = models.DateField(db_index=True)
+    entrydatetime = models.DateTimeField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.CASCADE, null=True)
+
+    class Meta:
+        constraints = [
+            CheckConstraint(name="ck_amount_gt_zero", check=Q(amount__gt=0)),
+        ]
+        indexes = [
+            Index(fields=['entity', 'transactiontype', 'transactionid'], name='ix_jl_txn_locator'),
+            Index(fields=['account'], name='ix_jl_account'),
+            Index(fields=['entry'], name='ix_jl_entry'),
+            Index(fields=['entrydate'], name='ix_jl_entrydate'),
+        ]
+
+    def __str__(self):
+        side = "Dr" if self.drcr else "Cr"
+        return f"{side} {self.amount} · {self.account or self.accounthead} · {self.transactiontype}#{self.transactionid}"
+
+
+class InventoryMove(models.Model):
+    # Inventory movement (quantities/costing).
+    entry = models.ForeignKey(entry, on_delete=models.CASCADE, related_name='inventory_moves')
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+
+    transactiontype = models.CharField(max_length=20, choices=TxnType.choices, db_index=True)
+    transactionid = models.IntegerField(db_index=True)      # header id
+    detailid = models.IntegerField(null=True, blank=True)   # line id
+    voucherno = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='inv_moves')
+    location = models.IntegerField(null=True, blank=True)
+    uom = models.IntegerField(null=True, blank=True)
+
+    qty = models.DecimalField(max_digits=14, decimal_places=4)         # +in / -out
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=4, default=ZERO4)  # valuation cost
+    ext_cost = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)   # qty*unit_cost (abs)
+
+    move_type = models.CharField(max_length=10)  # "OUT"/"IN"/"REV" etc. (free text if you like)
+    entrydate = models.DateField(db_index=True)
+    entrydatetime = models.DateTimeField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.CASCADE, null=True)
+
+    class Meta:
+        constraints = [
+            CheckConstraint(name="ck_qty_nonzero", check=~Q(qty=0)),
+            CheckConstraint(name="ck_cost_nonneg", check=Q(unit_cost__gte=0) & Q(ext_cost__gte=0)),
+        ]
+        indexes = [
+            Index(fields=['entity', 'product', 'entrydate'], name='ix_im_entity_product_date'),
+            Index(fields=['transactiontype', 'transactionid'], name='ix_im_txn_locator'),
+        ]
+
+    def __str__(self):
+        direction = "IN" if self.qty > 0 else "OUT"
+        return f"{direction} {self.qty} · {self.product} · {self.transactiontype}#{self.transactionid}"
+
+
+
+class SalesQuotationHeader(TrackingModel):
+    class Status(models.TextChoices):
+        DRAFT    = "draft",    "Draft"
+        SENT     = "sent",     "Sent"
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
+        EXPIRED  = "expired",  "Expired"
+
+    quote_date   = models.DateTimeField("Quotation Date", auto_now_add=False, null=True)
+    quote_no     = models.CharField("Quotation No", max_length=50, null=True, blank=True)
+    version      = models.IntegerField(default=1)
+
+    account      = models.ForeignKey(account, on_delete=models.CASCADE, null=True, blank=True)
+    contact_name = models.CharField(max_length=120, null=True, blank=True)
+    contact_email= models.EmailField(null=True, blank=True)
+    # Optional shipping snapshot for clarity; keep it lightweight
+    shippedto    = models.ForeignKey(ShippingDetails, on_delete=models.SET_NULL, null=True, blank=True, related_name="quote_shipto")
+
+    # Validity & state
+    valid_until  = models.DateField(null=True, blank=True)
+    status       = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+
+    # Commercial terms
+    price_list   = models.CharField(max_length=60, null=True, blank=True)
+    currency     = models.CharField(max_length=10, null=True, blank=True)  # if you need it; else drop
+    remarks      = models.CharField(max_length=500, null=True, blank=True)
+
+    # Totals (estimates allowed; keep taxes optional)
+    stbefdiscount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)  # sum(ratebefdiscount)
+    discount      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    subtotal      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    addless       = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    tax_estimate  = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    gtotal        = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    # Optional hint for intended tax regime, NOT enforced here
+    intend_igst   = models.BooleanField(default=False)
+
+    # Org scoping like invoices
+    subentity     = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity        = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, blank=True)
+    entityfinid   = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
+
+    createdby     = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(fields=("quote_no", "entity", "entityfinid"), name="uq_quote_no_entity_fin"),
+            models.CheckConstraint(
+                name="ck_quote_amounts_nonneg",
+                check=(Q(stbefdiscount__gte=0) & Q(discount__gte=0) &
+                       Q(subtotal__gte=0) & Q(addless__gte=0) &
+                       Q(tax_estimate__gte=0) & Q(gtotal__gte=0)),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "entityfinid", "quote_no"], name="ix_quote_entity_fin_no"),
+            models.Index(fields=["quote_date"], name="ix_quote_date"),
+            models.Index(fields=["account"], name="ix_quote_customer"),
+            models.Index(fields=["status", "valid_until"], name="ix_quote_status_valid"),
+        ]
+
+    def __str__(self):
+        return f"Q{self.quote_no or '-'} v{self.version}"
+
+
+class SalesQuotationDetail(TrackingModel):
+    header        = models.ForeignKey(SalesQuotationHeader, related_name="lines", on_delete=models.CASCADE)
+    product       = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True)
+    productdesc   = models.CharField(max_length=500, null=True, blank=True)
+
+    qty           = models.DecimalField("Qty", max_digits=14, decimal_places=4, default=ZERO4)
+    pieces        = models.IntegerField(default=0)
+
+    ratebefdiscount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    line_discount   = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    rate            = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    amount          = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    # Optional tax snapshot (not enforced); keep percentages bounded if provided
+    cgstpercent   = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    sgstpercent   = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    igstpercent   = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+
+    tax_amount_est= models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    linetotal     = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    is_service    = models.BooleanField(default=False)
+
+    subentity     = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity        = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, blank=True)
+    createdby     = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                name="ck_quote_detail_amounts_nonneg",
+                check=(Q(amount__gte=0) & Q(linetotal__gte=0) & Q(qty__gte=0) & Q(pieces__gte=0))
+            ),
+            models.CheckConstraint(
+                name="ck_quote_detail_percent_bounds",
+                check=((Q(cgstpercent__isnull=True) | (Q(cgstpercent__gte=0) & Q(cgstpercent__lte=100))) &
+                       (Q(sgstpercent__isnull=True) | (Q(sgstpercent__gte=0) & Q(sgstpercent__lte=100))) &
+                       (Q(igstpercent__isnull=True) | (Q(igstpercent__gte=0) & Q(igstpercent__lte=100))))
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["header"], name="ix_quote_detail_header"),
+            models.Index(fields=["product"], name="ix_quote_detail_product"),
+        ]
+
+    def __str__(self):
+        return f"{self.product or self.productdesc or '#'}"
 
 
 

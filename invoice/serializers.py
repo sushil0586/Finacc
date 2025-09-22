@@ -6,7 +6,7 @@ from pprint import isreadable
 from select import select
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader
 from financial.models import account,accountHead,ShippingDetails,staticacounts,staticacountsmapping
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -23,7 +23,7 @@ import pandas as pd
 from django_pandas.io import read_frame
 import numpy as np
 import entity.views as entityview
-from django.db.models import Prefetch
+from django.db.models import Prefetch,Max
 from django.utils import timezone
 from helpers.utils.document_number import reset_counter_if_needed, build_document_number
 #from entity.views import generateeinvoice
@@ -36,6 +36,12 @@ from django.contrib.contenttypes.models import ContentType
 import base64
 import qrcode
 from io import BytesIO
+from decimal import Decimal,ROUND_HALF_UP, ROUND_CEILING, ROUND_FLOOR
+from .posting import Poster
+from invoice.models import TxnType
+from invoice.models import entry as EntryModel  # adjust
+from rest_framework.exceptions import ValidationError
+from typing import List, Optional
 
 
 class PaymentmodesSerializer(serializers.ModelSerializer):
@@ -1072,184 +1078,72 @@ class stocktransaction:
 
 
 
+TXN_MAP = {
+    'S': TxnType.SALES,
+    'SR': TxnType.SALES_RETURN,
+    'P': TxnType.PURCHASE,
+    'PR': TxnType.PURCHASE_RETURN,
+    'J': TxnType.JOURNAL,
+}
+
 class stocktransactionsale:
-    def __init__(self, order,transactiontype,debit,credit,description,entrytype):
+    """
+    Backward-compatible shim:
+      - createtransactiondetails(detail, ...) just collects detail objects
+      - createothertransactiondetails(charge, ...) collects charges keyed by detail.id
+      - createtransaction() dispatches to Poster
+    """
+    def __init__(self, order, transactiontype, debit, credit, description, entrytype):
         self.order = order
-        self.transactiontype = transactiontype
-        self.debit = debit
-        self.credit = credit
+        self.txn_str = transactiontype
         self.description = description
         self.entrytype = entrytype
-    
-    def createtransaction(self):
-        id = self.order.id
-        subtotal = self.order.subtotal
-        cgst = self.order.cgst
-        sgst = self.order.sgst
-        igst = self.order.igst
-        cess = self.order.cess
-        roundOff = self.order.roundOff
-        tcs206c1ch2 = self.order.tcs206c1ch2
-        tcs206C2 = self.order.tcs206C2
-        tds194q1 = self.order.tds194q1
-        expenses = self.order.expenses
-        gtotal = round(self.order.gtotal - round(tcs206c1ch2) - round(tcs206C2))
-        pentity = self.order.entity
-        const = stocktransconstant()
-
-        cgstid = const.getcgst(pentity)
-        igstid = const.getigst(pentity)
-        sgstid = const.getsgst(pentity)
-        cessid = const.getcessid(pentity)
-        tcs206c1ch2id = const.gettcs206c1ch2id(pentity)
-        tcs206C2id = const.gettcs206C2id(pentity)
-        tds194q1id = const.gettds194q1id(pentity)
-        expensesid = const.getexpensesid(pentity)
-        entryid, _ = entry.objects.get_or_create(entrydate1=self.order.sorderdate, entity=self.order.entity)
-
-        if self.order.totalquanity == 0.00:
-            qty = self.order.totalpieces
-        else:
-            qty = self.order.totalquanity
-
-        if self.entrytype == 'U':
-            StockTransactions.objects.filter(entity=pentity, transactiontype=self.transactiontype, transactionid=id).delete()
-            tdsmain.objects.filter(entityid=pentity, transactiontype=self.transactiontype, transactionno=id).delete()
-
-        iscash = False
-
-        if self.order.billcash == 0:
-            iscash = True
-            cash = const.getcashid(pentity)
-            StockTransactions.objects.create(accounthead=cash.accounthead, account=cash, transactiontype=self.transactiontype, transactionid=id, desc='Cash Receipt Sale Bill.No : ' + str(self.order.billno), drcr=1, debitamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='CIH', iscashtransaction=iscash, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=' Cash sale By Bill.No : ' + str(self.order.billno), drcr=0, creditamount=gtotal, entity=pentity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', iscashtransaction=iscash, voucherno=self.order.billno)
-        
-
-        if roundOff != 0:
-            if roundOff < 0:
-                roundoffid = const.getroundoffincome(pentity)
-                StockTransactions.objects.create(accounthead=roundoffid.accounthead, account=roundoffid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=abs(roundOff), entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-
-            if roundOff > 0:
-                roundoffid = const.getroundoffexpnses(pentity)
-                StockTransactions.objects.create(accounthead=roundoffid.accounthead, account=roundoffid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=abs(roundOff), entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-
-        StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.debit, debitamount=gtotal, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
-        
-        if tcs206C2 > 0:
-            StockTransactions.objects.create(accounthead=tcs206C2id.accounthead, account=tcs206C2id, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tcs206C2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tcs206C2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
-        
-        if tcs206c1ch2 > 0:
-            StockTransactions.objects.create(accounthead=tcs206c1ch2id.accounthead, account=tcs206c1ch2id, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tcs206c1ch2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TCS :' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tcs206c1ch2, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
-        
-        if expenses > 0:
-            StockTransactions.objects.create(accounthead=expensesid.accounthead, account=expensesid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=expenses, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-        
-        if tds194q1 > 0:
-            tdsvbo = const.gettdsvbono(pentity)
-            tdsreturnid = const.gettdsreturnid()
-            tdstypeid = const.gettdstypeid()
-            tdsmain.objects.create(voucherdate=self.order.sorderdate, voucherno=tdsvbo, creditaccountid=self.order.accountid, debitaccountid=tds194q1id, tdsaccountid=tds194q1id, tdsreturnccountid=tdsreturnid, tdstype=tdstypeid, debitamount=subtotal, tdsrate=self.order.tds194q, entityid=pentity, transactiontype=self.transactiontype, transactionno=id, tdsvalue=tds194q1)
-            StockTransactions.objects.create(accounthead=tds194q1id.accounthead, account=tds194q1id, transactiontype=self.transactiontype, transactionid=id, desc='TD194Q:' + str(self.description) + ' ' + str(self.order.billno), drcr=self.debit, debitamount=tds194q1, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            StockTransactions.objects.create(accounthead=self.order.accountid.accounthead, account=self.order.accountid, transactiontype=self.transactiontype, transactionid=id, desc='TDS194Q:' + str(self.description) + ' ' + str(self.order.billno), drcr=self.credit, creditamount=tds194q1, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, accounttype='M', voucherno=self.order.billno)
-
-        if igst > 0:
-            StockTransactions.objects.create(accounthead=igstid.accounthead, account=igstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=igst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-        
-        if cgst > 0:
-            StockTransactions.objects.create(accounthead=cgstid.accounthead, account=cgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-        
-        if sgst > 0:
-            StockTransactions.objects.create(accounthead=sgstid.accounthead, account=sgstid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=sgst, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-        
-        if cess > 0:
-            StockTransactions.objects.create(accounthead=cessid.accounthead, account=cessid, transactiontype=self.transactiontype, transactionid=id, desc=self.description + ' ' + str(self.order.billno), drcr=self.credit, creditamount=cess, entity=self.order.entity, createdby=self.order.createdby, entry=entryid, entrydatetime=self.order.sorderdate, voucherno=self.order.billno)
-            
-        return id
-
-    
-
+        self._details = []
+        self._extra_charges = {}  # {detail_id: [charge,...]}
 
     def createtransactiondetails(self, detail, stocktype):
-        if detail.orderqty == 0.00:
-            qty = detail.pieces
-        else:
-            qty = detail.orderqty
-
-        entryid, created = entry.objects.get_or_create(entrydate1=self.order.sorderdate, entity=self.order.entity)
-
-        sale_account = detail.product.saleaccount
-        purchase_account = detail.product.purchaseaccount
-
-        details = StockTransactions.objects.create(
-            accounthead=sale_account.creditaccounthead,
-            account=sale_account,
-            stock=detail.product,
-            transactiontype=self.transactiontype,
-            transactionid=self.order.id,
-            desc=self.description + ' ' + str(self.order.billno),
-            stockttype=stocktype,
-            quantity=qty,
-            drcr=self.credit,
-            creditamount=detail.amount - detail.othercharges,
-            entrydate=self.order.sorderdate,
-            entity=self.order.entity,
-            createdby=self.order.createdby,
-            entry=entryid,
-            accounttype='DD',
-            isactive=self.order.isactive,
-            rate=detail.rate,
-            entrydatetime=self.order.sorderdate,
-            voucherno=self.order.billno
-        )
-
-        details1 = StockTransactions.objects.create(
-            accounthead=self.order.accountid.creditaccounthead,
-            account=self.order.accountid,
-            stock=detail.product,
-            transactiontype=self.transactiontype,
-            transactionid=self.order.id,
-            desc=self.description + ' ' + str(self.order.billno),
-            stockttype=stocktype,
-            quantity=qty,
-            drcr=self.credit,
-            creditamount=detail.amount - detail.othercharges,
-            entrydate=self.order.sorderdate,
-            entity=self.order.entity,
-            createdby=self.order.createdby,
-            entry=entryid,
-            accounttype='MD',
-            isactive=self.order.isactive,
-            rate=detail.rate,
-            entrydatetime=self.order.sorderdate,
-            voucherno=self.order.billno
-        )
-
-        return details, details1
+        self._details.append(detail)
+        return None, None
 
     def createothertransactiondetails(self, detail, stocktype):
-        entryid, created = entry.objects.get_or_create(entrydate1=self.order.sorderdate, entity=self.order.entity)
-        details1 = StockTransactions.objects.create(
-            accounthead=detail.account.creditaccounthead,
-            account=detail.account,
-            transactiontype=self.transactiontype,
-            transactionid=self.order.id,
-            desc=self.description + ' ' + str(self.order.billno),
-            stockttype=stocktype,
-            drcr=self.credit,
-            creditamount=detail.amount,
-            entrydate=self.order.sorderdate,
-            entity=self.order.entity,
-            createdby=self.order.createdby,
-            entry=entryid,
-            accounttype='M',
-            isactive=self.order.isactive,
-            entrydatetime=self.order.sorderdate,
-            voucherno=self.order.billno
+        # 'detail' here is a charge object with .salesorderdetail (or similar)
+        detail_fk = getattr(detail, "salesorderdetail", None) or getattr(detail, "salesorderdetail_id", None)
+        detail_id = getattr(detail_fk, "id", None) if detail_fk else detail_fk
+        if detail_id:
+            self._extra_charges.setdefault(detail_id, []).append(detail)
+        return None
+
+    def createtransaction(self):
+        order = self.order
+        entry_obj, _ = EntryModel.objects.get_or_create(entrydate1=order.sorderdate, entity=order.entity)
+
+        poster = Poster(
+            entry=entry_obj,
+            entity=order.entity,
+            user=order.createdby,
+            transactiontype=TXN_MAP.get(str(self.txn_str).upper(), TxnType.SALES),
+            transactionid=order.id,
+            voucherno=order.billno,
+            entrydate=getattr(order.sorderdate, "date", lambda: order.sorderdate)(),
+            entrydt=order.sorderdate,
         )
-        return details1
+
+        t = TXN_MAP.get(str(self.txn_str).upper(), TxnType.SALES)
+        details = self._details or list(order.saleInvoiceDetails.all())
+
+        if t == TxnType.SALES:
+            poster.post_sales(order, details, extra_charges_map=self._extra_charges)
+        elif t == TxnType.SALES_RETURN:
+            poster.post_sales_return(order, details)
+        elif t == TxnType.PURCHASE:
+            poster.post_purchase(order, details, extra_charges_map=self._extra_charges)
+        elif t == TxnType.PURCHASE_RETURN:
+            poster.post_purchase_return(order, details)
+        else:
+            # For journals, call Poster.post_journal(...) directly where you build the lines
+            pass
+
+        return order.id
 
 
 
@@ -2450,36 +2344,224 @@ class purchaseorderimportSerializer(serializers.ModelSerializer):
 
 
 
+ZERO2 = Decimal("0.00")
+ZERO4 = Decimal("0.0000")
+AUTO_RECALC_TOTALS = True
+AUTO_COMPUTE_ROUNDOFF = True
+ROUNDOFF_MODE = "nearest"  # "nearest" | "up" | "down"
+
+def _state_code_from(obj):
+    if not obj:
+        return None
+    for attr in ("gst_state_code", "state_code", "statecode", "code"):
+        if hasattr(obj, attr):
+            val = getattr(obj, attr)
+            if val:
+                return str(val)
+    return None
+
+def _resolve_entity_state_code(source):
+    entity = source.get("entity") if isinstance(source, dict) else getattr(source, "entity", None)
+    if entity and getattr(entity, "state", None):
+        return _state_code_from(entity.state)
+    return None
+
+def _resolve_pos_state_code(source):
+    shippedto = source.get("shippedto") if isinstance(source, dict) else getattr(source, "shippedto", None)
+    header_state = source.get("state") if isinstance(source, dict) else getattr(source, "state", None)
+    if shippedto and getattr(shippedto, "state", None):
+        return _state_code_from(shippedto.state)
+    if header_state:
+        return _state_code_from(header_state)
+    return None
+
+def _apply_tax_scheme_to_header_data(payload: dict) -> bool:
+    ent = _resolve_entity_state_code(payload)
+    pos = _resolve_pos_state_code(payload)
+    is_inter = bool(ent and pos and ent != pos)
+    payload["isigst"] = is_inter
+    for k in ("cgst", "sgst", "igst"):
+        payload.setdefault(k, ZERO2)
+    if is_inter:
+        payload["cgst"] = ZERO2
+        payload["sgst"] = ZERO2
+    else:
+        payload["igst"] = ZERO2
+    return is_inter
+
+def _apply_tax_scheme_to_detail_dict(is_inter: bool, row: dict):
+    row["isigst"] = is_inter
+    for k in ("cgst", "sgst", "igst", "cgstpercent", "sgstpercent", "igstpercent"):
+        row.setdefault(k, ZERO2)
+    if is_inter:
+        row["cgst"] = row["sgst"] = ZERO2
+        row["cgstpercent"] = row["sgstpercent"] = ZERO2
+    else:
+        row["igst"] = ZERO2
+        row["igstpercent"] = ZERO2
+
+def _mode(order) -> str:
+    if str(order.einvoice).lower() == "true" and str(order.eway).lower() == "true":
+        return "both"
+    if order.einvoice:
+        return "einvoice"
+    if order.eway:
+        return "eway"
+    return "none"
+
+def _qr_base64_from_signed_qr(signed_qr_code: str):
+    if not signed_qr_code:
+        return None
+    qr = qrcode.make(signed_qr_code)
+    buf = BytesIO()
+    qr.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+def _build_adddetails_dict(instance: SalesOderHeader):
+    payload = {}
+    pay = PayDtls.objects.filter(invoice=instance).first()
+    ref = RefDtls.objects.filter(invoice=instance).first()
+    ewb = EwbDtls.objects.filter(invoice=instance).first()
+    exp = ExpDtls.objects.filter(invoice=instance).first()
+    addldocs = AddlDocDtls.objects.filter(invoice=instance)
+    if pay:
+        payload["paydtls"] = PayDtlsSerializer(pay).data
+    if ref:
+        payload["refdtls"] = RefDtlsSerializer(ref).data
+    if ewb:
+        payload["ewbdtls"] = EwbDtlsSerializer(ewb).data
+    if exp:
+        payload["expdtls"] = ExpDtlsSerializer(exp).data
+    payload["addldocdtls"] = AddlDocDtlsSerializer(addldocs, many=True).data
+    return payload
+
+def _recompute_header_totals(header: SalesOderHeader):
+    rows = salesOrderdetails.objects.filter(salesorderheader=header).values(
+        "orderqty", "ratebefdiscount", "rate", "amount",
+        "cgst", "sgst", "igst", "cess", "orderDiscountValue"
+    )
+    stbefdiscount = ZERO2
+    discount = ZERO2
+    subtotal = ZERO2
+    totalgst = ZERO2
+    for r in rows:
+        qty = r.get("orderqty") or ZERO4
+        rbd = r.get("ratebefdiscount") or ZERO2
+        rate = r.get("rate") or ZERO2
+        amt = r.get("amount") or ZERO2
+        cgst = r.get("cgst") or ZERO2
+        sgst = r.get("sgst") or ZERO2
+        igst = r.get("igst") or ZERO2
+        cess = r.get("cess") or ZERO2
+        disc_val = r.get("orderDiscountValue")
+        stbefdiscount += (rbd * qty)
+        if disc_val is not None:
+            discount += disc_val
+        else:
+            diff = rbd - rate
+            if diff > ZERO2:
+                discount += (diff * qty)
+        subtotal += amt
+        totalgst += (cgst + sgst + igst + (cess or ZERO2))
+
+    header.stbefdiscount = stbefdiscount
+    header.discount = discount
+    header.subtotal = subtotal
+    header.totalgst = totalgst
+
+    expenses = header.expenses or ZERO2
+    addless  = header.addless  or ZERO2
+    advance  = header.advance  or ZERO2
+
+    gross = subtotal + totalgst + expenses + addless - advance
+
+    if AUTO_COMPUTE_ROUNDOFF:
+        if ROUNDOFF_MODE == "nearest":
+            rounded = gross.to_integral_value(rounding=ROUND_HALF_UP)
+        elif ROUNDOFF_MODE == "up":
+            rounded = gross.to_integral_value(rounding=ROUND_CEILING)
+        elif ROUNDOFF_MODE == "down":
+            rounded = gross.to_integral_value(rounding=ROUND_FLOOR)
+        else:
+            rounded = gross.to_integral_value(rounding=ROUND_HALF_UP)
+        header.roundOff = (Decimal(rounded) - gross).quantize(Decimal("0.01"))
+        header.gtotal   = Decimal(rounded).quantize(Decimal("0.01"))
+    else:
+        header.gtotal = (gross + (header.roundOff or ZERO2)).quantize(Decimal("0.01"))
 
 class salesOrderdetailsSerializer(serializers.ModelSerializer):
-    # Assume that the 'otherchargesdetail' has a related field and needs optimization
+    # nested other charges
     otherchargesdetail = salesotherdetailsSerializer(many=True, required=False)
+
     id = serializers.IntegerField(required=False)
-    productname = serializers.CharField(source='product.productname', read_only=True)
-    hsn = serializers.CharField(source='product.hsn.hsnCode', read_only=True)
-    mrp = serializers.FloatField(source='product.mrp', read_only=True)
+
+    # read-only convenience fields from related product
+    productname = serializers.CharField(source='product.productname', read_only=True, allow_null=True)
+    hsn        = serializers.CharField(source='product.hsn.hsnCode', read_only=True, allow_null=True)
+    mrp        = serializers.DecimalField(source='product.mrp', max_digits=14, decimal_places=2,
+                                          read_only=True, allow_null=True)
+
+    # stricter validators on money/quantity/percent fields (all remain optional—model defaults handle omissions)
+    orderqty = serializers.DecimalField(max_digits=14, decimal_places=4, min_value=ZERO4, required=False)
+    pieces   = serializers.IntegerField(min_value=0, required=False)
+
+    befDiscountProductAmount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    ratebefdiscount          = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    orderDiscount            = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    orderDiscountValue       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+
+    rate   = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+
+    othercharges = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+
+    cgst = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    sgst = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    igst = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+
+    cgstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
+    sgstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
+    igstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
+
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
 
     class Meta:
         model = salesOrderdetails
         fields = (
-            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc', 'orderqty', 'pieces','befDiscountProductAmount','ratebefdiscount','orderDiscount','orderDiscountValue',
-            'rate', 'amount', 'othercharges', 'cgst', 'sgst', 'igst','isigst','cgstpercent', 'sgstpercent', 'igstpercent', 'cess', 'linetotal', 
-            'subentity', 'entity', 'otherchargesdetail',
+            'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc',
+            'orderqty', 'pieces',
+            'befDiscountProductAmount', 'ratebefdiscount', 'orderDiscount', 'orderDiscountValue',
+            'rate', 'amount', 'othercharges',
+            'cgst', 'sgst', 'igst', 'isigst', 'cgstpercent', 'sgstpercent', 'igstpercent', 'cess',
+            'linetotal', 'subentity', 'entity',
+            'otherchargesdetail',
         )
 
-    def to_representation(self, instance):
-        # Prefetch related data in the 'to_representation' method for optimization
-        # Prefetch related 'otherchargesdetail' to reduce query load
-        if hasattr(self, 'context') and 'request' in self.context:
-            queryset = salesOrderdetails.objects.prefetch_related(
-                Prefetch('otherchargesdetail', queryset=saleothercharges.objects.all())
-            ).get(id=instance.id)
-            
-            # Call parent class method to serialize optimized queryset data
-            
-            return super().to_representation(queryset)
-        
-        return super().to_representation(instance)
+    def validate(self, attrs):
+        """
+        Guard rails:
+          - If isIGST=True → CGST/SGST amounts must be 0 (and typically percents too)
+          - If isIGST=False → IGST amount must be 0
+        """
+        is_inter = bool(attrs.get("isigst"))
+        cgst = attrs.get("cgst") or ZERO2
+        sgst = attrs.get("sgst") or ZERO2
+        igst = attrs.get("igst") or ZERO2
+
+        if is_inter:
+            if cgst != 0 or sgst != 0:
+                raise serializers.ValidationError("IGST line cannot have CGST/SGST.")
+            # optional strictness on percents as well:
+            if (attrs.get("cgstpercent") or ZERO2) != 0 or (attrs.get("sgstpercent") or ZERO2) != 0:
+                raise serializers.ValidationError("IGST line cannot have CGST%/SGST%.")
+        else:
+            if igst != 0:
+                raise serializers.ValidationError("Intra-state line cannot have IGST.")
+            if (attrs.get("igstpercent") or ZERO2) != 0:
+                raise serializers.ValidationError("Intra-state line cannot have IGST%.")
+
+        return attrs
     
 
 # class salesOrderdetailsSerializer(serializers.ModelSerializer):
@@ -2650,9 +2732,21 @@ class AddDetailsSerializer(serializers.Serializer):
 
 class SalesOderHeaderSerializer(serializers.ModelSerializer):
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
-    adddetails = AddDetailsSerializer(required=False)
+    adddetails = serializers.DictField(required=False, write_only=True)
     originalinvoice_number = serializers.SerializerMethodField()
     einvoice_details = serializers.SerializerMethodField()
+
+    # stricter money/percent validators (not required; model defaults handle omissions)
+    # apptaxrate    = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
+    stbefdiscount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    discount      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    subtotal      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    totalgst      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    expenses      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    addless       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    advance       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    gtotal        = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    roundOff      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
     class Meta:
         model = SalesOderHeader
@@ -2664,203 +2758,153 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'discount', 'cgst', 'sgst', 'igst', 'isigst', 'invoicetype', 'reversecharge', 'cess', 'totalgst',
             'expenses', 'gtotal', 'roundOff', 'entityfinid', 'subentity', 'entity', 'createdby', 'eway', 'einvoice',
             'isammended', 'originalinvoice', 'originalinvoice_number', 'einvoicepluseway', 'isactive',
-            'saleInvoiceDetails', 'adddetails', 'einvoice_details','isadditionaldetail',
+            'saleInvoiceDetails', 'adddetails', 'einvoice_details', 'isadditionaldetail', 'invoicenumber',
         )
-    
+
+    # ---------- Read helpers ----------
     def get_originalinvoice_number(self, obj):
-        if obj.originalinvoice:
-            return getattr(obj.originalinvoice, "invoicenumber", None)
-        return None
-    
+        return getattr(getattr(obj, "originalinvoice", None), "invoicenumber", None)
+
     def get_einvoice_details(self, obj):
         try:
-            content_type = ContentType.objects.get_for_model(SalesOderHeader)
-            einv = EInvoiceDetails.objects.get(content_type=content_type, object_id=obj.id)
+            ct = ContentType.objects.get_for_model(SalesOderHeader)
+            einv = EInvoiceDetails.objects.get(content_type=ct, object_id=obj.id)
         except EInvoiceDetails.DoesNotExist:
             return None
-
-        qr_image_base64 = None
-        if einv.signed_qr_code:
-            # Generate QR image from SignedQRCode
-            qr = qrcode.make(einv.signed_qr_code)
-            buffered = BytesIO()
-            qr.save(buffered, format="PNG")
-            qr_image_base64 = base64.b64encode(buffered.getvalue()).decode()
-
         return {
             "irn": einv.irn,
             "ack_no": einv.ack_no,
             "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
-            "qr_image_base64": qr_image_base64
+            "qr_image_base64": _qr_base64_from_signed_qr(einv.signed_qr_code) if einv.signed_qr_code else None,
         }
-    
+
     def to_representation(self, instance):
-        representation = super().to_representation(instance)
+        rep = super().to_representation(instance)
+        rep["adddetails"] = _build_adddetails_dict(instance)
+        return rep
 
-        # Construct adddetails manually
-        adddetails = {}
+    # ---------- Normalize taxes before create/update ----------
+    def validate(self, attrs):
+        is_inter = _apply_tax_scheme_to_header_data(attrs)
+        for d in attrs.get("saleInvoiceDetails") or []:
+            _apply_tax_scheme_to_detail_dict(is_inter, d)
+        return attrs
 
-        pay = PayDtls.objects.filter(invoice=instance).first()
-        ref = RefDtls.objects.filter(invoice=instance).first()
-        ewb = EwbDtls.objects.filter(invoice=instance).first()
-        exp = ExpDtls.objects.filter(invoice=instance).first()
-        addldocs = AddlDocDtls.objects.filter(invoice=instance)
-
-        if pay:
-            adddetails['paydtls'] = PayDtlsSerializer(pay).data
-        if ref:
-            adddetails['refdtls'] = RefDtlsSerializer(ref).data
-        if ewb:
-            adddetails['ewbdtls'] = EwbDtlsSerializer(ewb).data
-        if exp:
-            adddetails['expdtls'] = ExpDtlsSerializer(exp).data
-        adddetails['addldocdtls'] = AddlDocDtlsSerializer(addldocs, many=True).data
-
-        representation['adddetails'] = adddetails
-        return representation
-    
+    # ---------- Create ----------
+    @transaction.atomic
     def create(self, validated_data):
-        with transaction.atomic():
-            sales_order_details_data = validated_data.pop('saleInvoiceDetails', [])
-            validated_data.pop('billno', None)
+        details_data = validated_data.pop('saleInvoiceDetails', [])
+        adddetails_data = validated_data.pop('adddetails', {})
+        validated_data.pop('billno', None)  # auto-assign
 
-            # Generate Bill No
-            last_order = SalesOderHeader.objects.filter(entity=validated_data['entity'].id).order_by('-id').first()
-            billno2 = last_order.billno + 1 if last_order and last_order.billno else 1
+        # ensure tax scheme normalized
+        is_inter = _apply_tax_scheme_to_header_data(validated_data)
+        for d in details_data:
+            _apply_tax_scheme_to_detail_dict(is_inter, d)
 
-            # Get and validate SalesInvoiceSettings
-            settings = SalesInvoiceSettings.objects.select_for_update().filter(
-                entity=validated_data['entity'].id,
-                entityfinid=validated_data['entityfinid'].id,
-                doctype__doccode='1001'
-            ).first()
+        # Bill no
+        max_bill = SalesOderHeader.objects.filter(entity=validated_data['entity']).aggregate(m=Max('billno'))['m'] or 0
+        next_bill = max_bill + 1
 
-            if not settings:
-                raise Exception("SalesInvoiceSettings not configured for this entity/financial year.")
+        # Numbering settings
+        settings = (SalesInvoiceSettings.objects
+                    .select_for_update()
+                    .filter(entity=validated_data['entity'].id,
+                            entityfinid=validated_data['entityfinid'].id,
+                            doctype__doccode='1001')
+                    .first())
+        if not settings:
+            raise Exception("SalesInvoiceSettings not configured for this entity/financial year.")
+        reset_counter_if_needed(settings)
+        number = build_document_number(settings)
+        if SalesOderHeader.objects.filter(invoicenumber=number).exists():
+            raise Exception("Duplicate invoice number generated. Please try again.")
 
-            reset_counter_if_needed(settings)
-            number = build_document_number(settings)
+        # Create header
+        order = SalesOderHeader.objects.create(**validated_data, billno=next_bill, invoicenumber=number)
 
-            if SalesOderHeader.objects.filter(invoicenumber=number).exists():
-                raise Exception("Duplicate invoice number generated. Please try again.")
+        # AddDetails children
+        paydtls_data = adddetails_data.get('paydtls')
+        refdtls_data = adddetails_data.get('refdtls')
+        ewbdtls_data = adddetails_data.get('ewbdtls')
+        expdtls_data = adddetails_data.get('expdtls')
+        addldocdtls_data = adddetails_data.get('addldocdtls', [])
 
-            # Create Sales Order
-            adddetails_data = validated_data.pop('adddetails', {})
-            order = SalesOderHeader.objects.create(**validated_data, billno=billno2, invoicenumber=number)
+        if paydtls_data:
+            paydtls_data.pop('id', None)
+            PayDtls.objects.create(invoice=order, **paydtls_data)
+        if refdtls_data:
+            refdtls_data.pop('id', None)
+            RefDtls.objects.create(invoice=order, **refdtls_data)
+        if ewbdtls_data:
+            ewbdtls_data.pop('id', None)
+            EwbDtls.objects.create(invoice=order, **ewbdtls_data)
+        if expdtls_data:
+            expdtls_data.pop('id', None)
+            ExpDtls.objects.create(invoice=order, **expdtls_data)
+        for doc in addldocdtls_data:
+            doc.pop('id', None)
+            AddlDocDtls.objects.create(invoice=order, **doc)
 
-            # Handle nested adddetails
-            
-            paydtls_data = adddetails_data.get('paydtls')
-            refdtls_data = adddetails_data.get('refdtls')
-            ewbdtls_data = adddetails_data.get('ewbdtls')
-            expdtls_data = adddetails_data.get('expdtls')
-            addldocdtls_data = adddetails_data.get('addldocdtls', [])
+        # Stock + details
+        stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0,
+                                   description='By Sale Bill No:', entrytype='I')
+        for row in details_data:
+            row.pop('id', None)
+            other_charges = row.pop('otherchargesdetail', [])
+            detail = salesOrderdetails.objects.create(salesorderheader=order, **row)
+            stk.createtransactiondetails(detail=detail, stocktype='S')
+            for oc in other_charges:
+                oc_obj = saleothercharges.objects.create(salesorderdetail=detail, **oc)
+                stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
 
-            if paydtls_data:
-                paydtls_data.pop('id', None)
-                PayDtls.objects.create(invoice=order, **paydtls_data)
-            if refdtls_data:
-                refdtls_data.pop('id', None)
-                RefDtls.objects.create(invoice=order, **refdtls_data)
-            if ewbdtls_data:
-                ewbdtls_data.pop('id', None)
-                EwbDtls.objects.create(invoice=order, **ewbdtls_data)
-            if expdtls_data:
-                expdtls_data.pop('id', None)
-                ExpDtls.objects.create(invoice=order, **expdtls_data)
-            for doc_data in addldocdtls_data:
-                doc_data.pop('id', None)
-                AddlDocDtls.objects.create(invoice=order, **doc_data)
+        settings.current_number += 1
+        settings.save()
+        stk.createtransaction()
 
-            # Stock and order details
-            stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='I')
+        # Recompute totals (+ round off)
+        if AUTO_RECALC_TOTALS:
+            _recompute_header_totals(order)
+            order.save(update_fields=["stbefdiscount", "discount", "subtotal", "totalgst", "roundOff", "gtotal"])
 
-            for order_detail_data in sales_order_details_data:
-                order_detail_data.pop('id', None)
-                other_charges = order_detail_data.pop('otherchargesdetail', [])
-                detail = salesOrderdetails.objects.create(salesorderheader=order, **order_detail_data)
-                stk.createtransactiondetails(detail=detail, stocktype='S')
-                for charge_data in other_charges:
-                    charge = saleothercharges.objects.create(salesorderdetail=detail, **charge_data)
-                    stk.createothertransactiondetails(detail=charge, stocktype='S')
+        # E-invoice / E-way flow
+        mode = _mode(order)
+        if mode == 'eway':
+            # Build & print payload; validate IRN presence in your flow if needed
+            serializer = EwaybillFullSerializer(order)
+            json_data = json.dumps(serializer.data.get('ewaybill_payload', {}), indent=4, default=str)
+            print(json_data)
+        elif mode != "none":
+            einvoice_data = SalesOrderFullSerializer(order, context={"mode": mode}).data
+            json_data = json.dumps(einvoice_data, indent=4, default=str)
+            print(json_data)
+            gst_response = gstinvoice(order, json_data)
+            print(gst_response)
+            if gst_response.get("status_cd") == "1":
+                data = gst_response["data"]
+                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
+                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+                EInvoiceDetails.objects.update_or_create(
+                    content_type=ContentType.objects.get_for_model(order),
+                    object_id=order.id,
+                    defaults={
+                        "irn": data["Irn"],
+                        "ack_no": data["AckNo"],
+                        "ack_date": ack_dt,
+                        "signed_invoice": data["SignedInvoice"],
+                        "signed_qr_code": data["SignedQRCode"],
+                        "status": data.get("Status", "ACT"),
+                        "ewb_no": data.get("EwbNo"),
+                        "ewb_date": ewb_dt,
+                        "ewb_valid_till": ewb_valid_till,
+                        "remarks": data.get("Remarks"),
+                    }
+                )
+        return order
 
-            settings.current_number += 1
-            settings.save()
-            stk.createtransaction()
-
-            # # PDF, Email, E-Invoice
-            # full_order_data = SalesOrderHeaderPDFSerializer(order).data
-            # context = {'saleInvoice': full_order_data}
-            # pdf_content = render_to_pdf('sales_invoice_template.html', context)
-
-
-            mode = "none"
-
-            if str(order.einvoice).lower() == "true" and str(order.eway).lower() == "true":
-                mode = "both"
-            elif order.einvoice:
-                mode = "einvoice"
-            elif order.eway:
-                mode = "eway"
-
-            
-            if mode == 'eway':
-                # 2. Fetch IRN from EInvoiceDetails
-                content_type = ContentType.objects.get_for_model(order)
-                einv = EInvoiceDetails.objects.filter(content_type=content_type, object_id=order.id).first()
-                serializer = EwaybillFullSerializer(order)
-                json_data = json.dumps(serializer.data['ewaybill_payload'], indent=4, default=str)
-                print(json_data)
-
-                # if not einv or not einv.irn:
-                #     serializer = EwaybillFullSerializer(order)
-                #     json_data = json.dumps(serializer.data['ewaybill_payload'], indent=4, default=str)
-                #     print(json_data)
-                #     return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
-                
-                
-
-
-
-
-
-            
-            elif mode !="none":
-                
-                einvoice_data = SalesOrderFullSerializer(order,context={"mode": mode}).data
-                json_data = json.dumps(einvoice_data, indent=4, default=str)
-
-                print(json_data)
-
-
-                gst_response = gstinvoice(order, json_data)
-                print(gst_response)
-                if gst_response.get("status_cd") == "1":
-                    data = gst_response["data"]
-                    ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-                    ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                    ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-
-                    EInvoiceDetails.objects.update_or_create(
-                        content_type=ContentType.objects.get_for_model(order),
-                        object_id=order.id,
-                        defaults={
-                            "irn": data["Irn"],
-                            "ack_no": data["AckNo"],
-                            "ack_date": ack_dt,
-                            "signed_invoice": data["SignedInvoice"],
-                            "signed_qr_code": data["SignedQRCode"],
-                            "status": data.get("Status", "ACT"),
-                            "ewb_no": data.get("EwbNo"),
-                            "ewb_date": ewb_dt,
-                            "ewb_valid_till": ewb_valid_till,
-                            "remarks": data.get("Remarks"),
-                        }
-                    )
-
-            return order
-
-
+    # ---------- Update ----------
+    @transaction.atomic
     def update(self, instance, validated_data):
         fields = [
             'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
@@ -2868,182 +2912,171 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'tds194q', 'tds194q1', 'tcs206c1ch1', 'state', 'district', 'city', 'pincode', 'tcs206c1ch2', 'tcs206c1ch3',
             'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'stbefdiscount', 'subtotal', 'discount', 'cgst', 'sgst', 'igst',
             'isigst', 'invoicetype', 'reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'roundOff', 'isactive',
-            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby','isadditionaldetail', 'adddetails'
+            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby', 'isadditionaldetail',
+            'invoicenumber',
         ]
 
+        details_data = validated_data.pop('saleInvoiceDetails', [])
         adddetails_data = validated_data.pop('adddetails', {})
-        for field in fields:    
-            if field in validated_data:
-                setattr(instance, field, validated_data[field])
 
-        
+        for f in fields:
+            if f in validated_data:
+                setattr(instance, f, validated_data[f])
+
+        # derive tax scheme from current (possibly updated) header
+        header_view = {
+            "entity": instance.entity,
+            "shippedto": instance.shippedto,
+            "state": instance.state,
+            "cgst": instance.cgst, "sgst": instance.sgst, "igst": instance.igst,
+            "isigst": instance.isigst,
+        }
+        is_inter = _apply_tax_scheme_to_header_data(header_view)
+        instance.isigst = is_inter
+        if is_inter:
+            instance.cgst = instance.sgst = ZERO2
+        else:
+            instance.igst = ZERO2
+
+        for d in details_data:
+            _apply_tax_scheme_to_detail_dict(is_inter, d)
+
+        instance.save()
+
+        # Stock envelope
+        stk = stocktransactionsale(instance, transactiontype='S', debit=1, credit=0,
+                                   description='By Sale Bill No:', entrytype='U')
+        stk.createtransaction()
+
+        # AddDetails upserts
         paydtls_data = adddetails_data.get('paydtls')
         refdtls_data = adddetails_data.get('refdtls')
         ewbdtls_data = adddetails_data.get('ewbdtls')
         expdtls_data = adddetails_data.get('expdtls')
         addldocdtls_data = adddetails_data.get('addldocdtls', [])
-        sales_order_details_data = validated_data.pop('saleInvoiceDetails', [])
 
-        with transaction.atomic():
-            instance.save()
+        if paydtls_data:
+            paydtls_data.pop('id', None)
+            PayDtls.objects.update_or_create(invoice=instance, defaults=paydtls_data)
+        if refdtls_data:
+            refdtls_data.pop('id', None)
+            RefDtls.objects.update_or_create(invoice=instance, defaults=refdtls_data)
+        if ewbdtls_data:
+            ewbdtls_data.pop('id', None)
+            EwbDtls.objects.update_or_create(invoice=instance, defaults=ewbdtls_data)
+        if expdtls_data:
+            expdtls_data.pop('id', None)
+            ExpDtls.objects.update_or_create(invoice=instance, defaults=expdtls_data)
 
-            stk = stocktransactionsale(instance, transactiontype='S', debit=1, credit=0, description='By Sale Bill No:', entrytype='U')
-            stk.createtransaction()
+        # AddlDocDtls diff
+        existing_docs = AddlDocDtls.objects.filter(invoice=instance)
+        existing_ids = {d.id for d in existing_docs}
+        incoming_ids = set()
+        for doc in addldocdtls_data:
+            doc_id = doc.get('id', 0)
+            if doc_id and doc_id in existing_ids:
+                obj = AddlDocDtls.objects.get(id=doc_id, invoice=instance)
+                for k, v in doc.items():
+                    if k != "id":
+                        setattr(obj, k, v)
+                obj.save()
+                incoming_ids.add(doc_id)
+            else:
+                AddlDocDtls.objects.create(invoice=instance, **{k: v for k, v in doc.items() if k != "id"})
+        to_delete = existing_ids - incoming_ids
+        if to_delete:
+            AddlDocDtls.objects.filter(id__in=to_delete).delete()
 
-            if paydtls_data:
-                PayDtls.objects.update_or_create(invoice=instance, defaults=paydtls_data)
-            if refdtls_data:
-                RefDtls.objects.update_or_create(invoice=instance, defaults=refdtls_data)
-            if ewbdtls_data:
-                EwbDtls.objects.update_or_create(invoice=instance, defaults=ewbdtls_data)
-            if expdtls_data:
-                ExpDtls.objects.update_or_create(invoice=instance, defaults=expdtls_data)
+        # Details upsert
+        existing_details = salesOrderdetails.objects.filter(salesorderheader=instance)
+        existing_ids = {d.id for d in existing_details}
+        seen_ids = set()
 
-            existing_docs = AddlDocDtls.objects.filter(invoice=instance)
-            existing_doc_ids = {doc.id for doc in existing_docs}
-            incoming_doc_ids = set()
+        for row in details_data:
+            detail_id = row.get('id', 0)
+            other_charges = row.pop('otherchargesdetail', [])
+            if not detail_id:
+                new_detail = salesOrderdetails.objects.create(salesorderheader=instance, **row)
+                stk.createtransactiondetails(detail=new_detail, stocktype='S')
+                for oc in other_charges:
+                    oc_obj = saleothercharges.objects.create(salesorderdetail=new_detail, **oc)
+                    stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
+            else:
+                seen_ids.add(detail_id)
+                try:
+                    d = salesOrderdetails.objects.get(id=detail_id, salesorderheader=instance)
+                except salesOrderdetails.DoesNotExist:
+                    continue
+                for k, v in row.items():
+                    if k != "id":
+                        setattr(d, k, v)
+                d.save()
+                stk.createtransactiondetails(detail=d, stocktype='S')
+                saleothercharges.objects.filter(salesorderdetail=d).delete()
+                for oc in other_charges:
+                    oc_obj = saleothercharges.objects.create(salesorderdetail=d, **oc)
+                    stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
 
-            for doc_data in addldocdtls_data:
-                doc_id = doc_data.get('id', 0)
-                if doc_id and doc_id in existing_doc_ids:
-                    doc = AddlDocDtls.objects.get(id=doc_id, invoice=instance)
-                    for attr, value in doc_data.items():
-                        setattr(doc, attr, value)
-                    doc.save()
-                    incoming_doc_ids.add(doc_id)
-                else:
-                    AddlDocDtls.objects.create(invoice=instance, **doc_data)
+        ids_to_delete = existing_ids - seen_ids
+        if ids_to_delete:
+            salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()
 
-            to_delete_ids = existing_doc_ids - incoming_doc_ids
-            if to_delete_ids:
-                AddlDocDtls.objects.filter(id__in=to_delete_ids).delete()
+        # Recompute totals (+ round off)
+        if AUTO_RECALC_TOTALS:
+            _recompute_header_totals(instance)
+            instance.save(update_fields=["stbefdiscount", "discount", "subtotal", "totalgst", "roundOff", "gtotal"])
 
-            existing_details = salesOrderdetails.objects.filter(salesorderheader=instance)
-            existing_ids = {detail.id for detail in existing_details}
-            payload_ids = set()
+        # EWay-only flow (requires IRN)
+        mode = _mode(instance)
+        if mode == 'eway':
+            ct = ContentType.objects.get_for_model(instance)
+            einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=instance.id).first()
+            if not einv or not einv.irn:
+                return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
+            ewb = EwbDtls.objects.filter(invoice=instance.id).first()
+            if not ewb:
+                return {"error": "E-Way Bill details not found for this order."}
+            payload = {
+                "Irn": einv.irn,
+                "Distance": int(ewb.Distance),
+                "TransMode": ewb.TransMode,
+                "TransId": ewb.TransId,
+                "TransName": ewb.TransName,
+                "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
+                "TransDocNo": ewb.TransDocNo,
+                "VehNo": ewb.VehNo,
+                "VehType": ewb.VehType
+            }
+            gst_response = gst_ewaybill(instance, json.dumps(payload, indent=4, default=str))
+            print(gst_response)
+            if gst_response.get("status_cd") == "1":
+                data = gst_response["data"]
+                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
+                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+                EInvoiceDetails.objects.update_or_create(
+                    content_type=ct, object_id=instance.id,
+                    defaults={
+                        "ewb_no": data.get("EwbNo"),
+                        "ewb_date": ewb_dt,
+                        "ewb_valid_till": ewb_valid_till,
+                        "remarks": data.get("Remarks"),
+                    }
+                )
 
-            for detail_data in sales_order_details_data:
-                detail_id = detail_data.get('id', 0)
-                other_charges = detail_data.pop('otherchargesdetail', [])
-
-                if detail_id == 0:
-                    new_detail = salesOrderdetails.objects.create(salesorderheader=instance, **detail_data)
-                    stk.createtransactiondetails(detail=new_detail, stocktype='S')
-                    for oc in other_charges:
-                        oc_obj = saleothercharges.objects.create(salesorderdetail=new_detail, **oc)
-                        stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
-                else:
-                    payload_ids.add(detail_id)
-                    try:
-                        detail = salesOrderdetails.objects.get(id=detail_id, salesorderheader=instance)
-                        for attr, val in detail_data.items():
-                            setattr(detail, attr, val)
-                        detail.save()
-                        stk.createtransactiondetails(detail=detail, stocktype='S')
-
-                        saleothercharges.objects.filter(salesorderdetail=detail).delete()
-                        for oc in other_charges:
-                            oc_obj = saleothercharges.objects.create(salesorderdetail=detail, **oc)
-                            stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
-                    except salesOrderdetails.DoesNotExist:
-                        continue
-
-            ids_to_delete = existing_ids - payload_ids
-            if ids_to_delete:
-                salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()
-
-            mode = "none"
-
-            if str(instance.einvoice).lower() == "true" and str(instance.eway).lower() == "true":
-                mode = "both"
-            elif instance.einvoice:
-                mode = "einvoice"
-            elif instance.eway:
-                mode = "eway"
-
-            if mode == 'eway':
-                # 2. Fetch IRN from EInvoiceDetails
-                # 1. Fetch IRN from EInvoiceDetails
-                content_type = ContentType.objects.get_for_model(instance)
-                einv = EInvoiceDetails.objects.filter(content_type=content_type, object_id=instance.id).first()
-
-                if not einv or not einv.irn:
-                    return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
-
-                # 2. Fetch EwbDtls
-                ewb = EwbDtls.objects.filter(invoice=instance.id).first()
-                if not ewb:
-                    return {"error": "E-Way Bill details not found for this order."}
-
-                # 3. Prepare JSON payload using EwbDtls
-                json_data = {
-                    "Irn": einv.irn,
-                    "Distance": int(ewb.Distance),
-                    "TransMode": ewb.TransMode,
-                    "TransId": ewb.TransId,
-                    "TransName": ewb.TransName,
-                    "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
-                    "TransDocNo": ewb.TransDocNo,
-                    "VehNo": ewb.VehNo,
-                    "VehType": ewb.VehType
-                }
-
-                # # Optional: Add Dispatch details if available
-                # if ewb.DispNm and ewb.DispAddr1 and ewb.DispLoc and ewb.DispPin and ewb.DispStcd:
-                #     json_data["DispDtls"] = {
-                #         "Nm": ewb.DispNm,
-                #         "Addr1": ewb.DispAddr1,
-                #         "Addr2": ewb.DispAddr2 or "",
-                #         "Loc": ewb.DispLoc,
-                #         "Pin": int(ewb.DispPin),
-                #         "Stcd": ewb.DispStcd
-                #     }
-
-                # 4. Call gstinvoice with JSON payload
-                gst_response =  gst_ewaybill(instance, json.dumps(json_data, indent=4, default=str))
-
-                print(gst_response)
-
-                if gst_response.get("status_cd") == "1":
-                    data = gst_response["data"]
-                    
-                    ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                    ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-
-                    EInvoiceDetails.objects.update_or_create(
-                        content_type=content_type,
-                        object_id=instance.id,
-                        defaults={
-                            "ewb_no": data.get("EwbNo"),
-                            "ewb_date": ewb_dt,
-                            "ewb_valid_till": ewb_valid_till,
-                            "remarks": data.get("Remarks"),
-                        }
-                    )
-
-
-
-
-            if mode != "none":
-                # 7️⃣ Handle E-Invoice if not already generated
-                content_type = ContentType.objects.get_for_model(instance)
-                existing_irn = EInvoiceDetails.objects.filter(content_type=content_type, object_id=instance.id).first()
-                if existing_irn and existing_irn.irn:
-                    return instance  # Skip IRN generation if already exists
-
-                # 8️⃣ Generate E-Invoice
+        # Generate IRN if needed (einvoice/both)
+        if mode != "none":
+            ct = ContentType.objects.get_for_model(instance)
+            existing_irn = EInvoiceDetails.objects.filter(content_type=ct, object_id=instance.id).first()
+            if not (existing_irn and existing_irn.irn):
                 json_data = SalesOrderFullSerializer(instance).data
                 gst_response = gstinvoice(instance, json.dumps(json_data, indent=4, default=str))
-
                 if gst_response.get("status_cd") == "1":
                     data = gst_response["data"]
                     ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
                     ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
                     ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-
                     EInvoiceDetails.objects.update_or_create(
-                        content_type=content_type,
-                        object_id=instance.id,
+                        content_type=ct, object_id=instance.id,
                         defaults={
                             "irn": data["Irn"],
                             "ack_no": data["AckNo"],
@@ -3056,10 +3089,8 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                             "ewb_valid_till": ewb_valid_till,
                             "remarks": data.get("Remarks"),
                         }
-                    )           
-
-
-            return instance
+                    )
+        return instance
 
 
 class SalesOrderSerializer(serializers.ModelSerializer):
@@ -8164,6 +8195,191 @@ class ReceiptVoucherPdfSerializer(serializers.ModelSerializer):
     
     def get_amountinwords(self, obj):
         return f"{string.capwords(num2words(obj.total_amount))} only"
+    
+
+
+
+
+# from decimal import Decimal
+# from typing import List, Optional
+
+# from django.db import transaction
+# from django.db.models import Prefetch, Q
+# from django.utils import timezone
+
+# from rest_framework import serializers, permissions, status, generics
+# from rest_framework.response import Response
+# from rest_framework.exceptions import ValidationError
+# from rest_framework.views import APIView
+
+# --- import your models ---
+# from .models import SalesQuotationHeader, SalesQuotationDetail
+# from invoice.models import SalesOderHeader, salesOrderdetails  # your existing invoice models
+# from accounts.models import Entity, subentity, entityfinancialyear
+# from users.models import User
+
+
+# =============================
+# Serializers
+# =============================
+
+class SalesQuotationLineSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = SalesQuotationDetail
+        fields = [
+            "id",
+            "product",
+            "productdesc",
+            "qty",
+            "pieces",
+            "ratebefdiscount",
+            "line_discount",
+            "rate",
+            "amount",
+            "cgstpercent",
+            "sgstpercent",
+            "igstpercent",
+            "tax_amount_est",
+            "linetotal",
+            "is_service",
+            "subentity",
+            "entity",
+        ]
+        read_only_fields = []
+
+    def validate(self, data):
+        # basic sanity
+        for f in ("qty", "pieces", "amount", "linetotal", "rate"):
+            v = data.get(f)
+            if v is not None and Decimal(v) < 0:
+                raise ValidationError({f: "Must be >= 0"})
+
+        # percent bounds if provided
+        for p in ("cgstpercent", "sgstpercent", "igstpercent"):
+            v = data.get(p)
+            if v is not None and not (Decimal("0") <= Decimal(v) <= Decimal("100")):
+                raise ValidationError({p: "Must be between 0 and 100"})
+        return data
+
+
+class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
+    lines = SalesQuotationLineSerializer(many=True)
+    createdby = serializers.HiddenField(default=serializers.CurrentUserDefault())
+
+    class Meta:
+        model = SalesQuotationHeader
+        fields = [
+            "id",
+            "quote_date",
+            "quote_no",
+            "version",
+            "account",
+            "contact_name",
+            "contact_email",
+            "shippedto",
+            "valid_until",
+            "status",
+            "price_list",
+            "currency",
+            "remarks",
+            "stbefdiscount",
+            "discount",
+            "subtotal",
+            "addless",
+            "tax_estimate",
+            "gtotal",
+            "intend_igst",
+            "subentity",
+            "entity",
+            "entityfinid",
+            "createdby",
+            "lines",
+        ]
+        read_only_fields = ("version",)
+
+    def validate(self, data):
+        # Non-negative header fields
+        money_fields = [
+            "stbefdiscount",
+            "discount",
+            "subtotal",
+            "addless",
+            "tax_estimate",
+            "gtotal",
+        ]
+        for f in money_fields:
+            v = data.get(f)
+            if v is not None and Decimal(v) < 0:
+                raise ValidationError({f: "Must be >= 0"})
+
+        # basic logical checks
+        vu = data.get("valid_until")
+        if vu and vu < timezone.now().date():
+            # allow back-dated validity only if still draft
+            status_val = data.get("status") or getattr(self.instance, "status", None)
+            if status_val and status_val != SalesQuotationHeader.Status.DRAFT:
+                raise ValidationError({"valid_until": "Cannot set past valid_until for non-draft quotations"})
+        return data
+
+    # --- nested writes ---
+    def _upsert_lines(self, header: SalesQuotationHeader, lines_payload: List[dict]):
+        seen_ids: List[int] = []
+        for item in lines_payload:
+            pk = item.get("id")
+            item["header"] = header
+            if pk:
+                try:
+                    inst = SalesQuotationDetail.objects.get(id=pk, header=header)
+                except SalesQuotationDetail.DoesNotExist:
+                    raise ValidationError({"lines": f"Line id {pk} does not exist for this quotation"})
+                for k, v in item.items():
+                    setattr(inst, k, v)
+                inst.save()
+                seen_ids.append(inst.id)
+            else:
+                inst = SalesQuotationDetail.objects.create(**item)
+                seen_ids.append(inst.id)
+
+        # delete missing
+        SalesQuotationDetail.objects.filter(header=header).exclude(id__in=seen_ids).delete()
+
+    def _recalc_totals(self, header: SalesQuotationHeader):
+        # If you want automatic totals. Otherwise, keep values from payload.
+        qs = header.lines.all()
+        stbef = sum((ln.ratebefdiscount or Decimal("0")) * (ln.qty or Decimal("0")) for ln in qs)
+        amount_sum = sum(ln.amount or Decimal("0") for ln in qs)
+        tax_est = sum(ln.tax_amount_est or Decimal("0") for ln in qs)
+        subtotal = amount_sum
+        header.stbefdiscount = stbef
+        header.subtotal = subtotal
+        header.tax_estimate = tax_est
+        header.gtotal = subtotal + (header.addless or Decimal("0")) - (header.discount or Decimal("0")) + tax_est
+        header.save(update_fields=["stbefdiscount", "subtotal", "tax_estimate", "gtotal"]) 
+
+    @transaction.atomic
+    def create(self, validated_data):
+        lines_payload = validated_data.pop("lines", [])
+        hdr = SalesQuotationHeader.objects.create(**validated_data)
+        self._upsert_lines(hdr, lines_payload)
+        self._recalc_totals(hdr)
+        return hdr
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        lines_payload = validated_data.pop("lines", None)
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+        if lines_payload is not None:
+            self._upsert_lines(instance, lines_payload)
+        self._recalc_totals(instance)
+        return instance
+
+
+
+
 
 
 
