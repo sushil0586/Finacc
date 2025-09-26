@@ -6216,10 +6216,14 @@ class ReceiptVoucherLookupAPIView(APIView):
     
 
 
+# --------------------------------------
+# List / Create
+# --------------------------------------
 class SalesQuotationListCreateAPIView(ListCreateAPIView):
     """
     GET: list quotations (filter by entity, status, search by quote_no/account/contact)
     POST: create quotation with nested lines
+
     Query params:
       - entity: int
       - status: comma separated statuses
@@ -6239,22 +6243,30 @@ class SalesQuotationListCreateAPIView(ListCreateAPIView):
         entity_id = self.request.query_params.get("entity")
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
+
         status_param = self.request.query_params.get("status")
         if status_param:
             st = [s.strip() for s in status_param.split(",") if s.strip()]
             qs = qs.filter(status__in=st)
+
         q = self.request.query_params.get("q")
         if q:
             qs = qs.filter(
-                Q(quote_no__icontains=q) | Q(contact_name__icontains=q) | Q(contact_email__icontains=q) |
-                Q(account__accountname__icontains=q)  # adjust field name to your account model
+                Q(quote_no__icontains=q)
+                | Q(contact_name__icontains=q)
+                | Q(contact_email__icontains=q)
+                | Q(account__accountname__icontains=q)  # adjust if your account name field differs
             )
+
         ordering = self.request.query_params.get("ordering")
         if ordering:
             qs = qs.order_by(*[s.strip() for s in ordering.split(",") if s.strip()])
         return qs
 
 
+# --------------------------------------
+# Retrieve / Update / Destroy
+# --------------------------------------
 class SalesQuotationRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = SalesQuotationHeaderSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -6269,12 +6281,16 @@ class SalesQuotationRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         if instance.status in (SalesQuotationHeader.Status.ACCEPTED, SalesQuotationHeader.Status.REJECTED):
-            raise ValidationError("Cannot delete a quotation that is accepted/rejected. Use cancel/expire if needed.")
+            raise ValidationError("Cannot delete a quotation that is accepted/rejected. Use expire/cancel if needed.")
         return super().perform_destroy(instance)
 
 
+# --------------------------------------
+# Status PATCH
+# --------------------------------------
 class SalesQuotationStatusAPIView(UpdateAPIView):
-    """PATCH {"status": "sent" | "accepted" | "rejected" | "expired"}
+    """
+    PATCH {"status": "sent" | "accepted" | "rejected" | "expired"}
     Optionally accept {"valid_until": "YYYY-MM-DD"} when marking as sent.
     """
     serializer_class = SalesQuotationHeaderSerializer
@@ -6288,24 +6304,47 @@ class SalesQuotationStatusAPIView(UpdateAPIView):
         instance = self.get_object()
         new_status = request.data.get("status")
         valid_until = request.data.get("valid_until")
+
         if new_status not in SalesQuotationHeader.Status.values:
             raise ValidationError({"status": "Invalid status"})
+
         # simple transition rules
         if instance.status == SalesQuotationHeader.Status.REJECTED:
             raise ValidationError("Rejected quotations cannot transition further.")
+
         if new_status == SalesQuotationHeader.Status.SENT and not valid_until and not instance.valid_until:
             raise ValidationError({"valid_until": "valid_until is required when sending a quotation"})
+
         if valid_until:
             instance.valid_until = valid_until
+
         instance.status = new_status
         instance.save(update_fields=["status", "valid_until"])
-        return Response(self.get_serializer(instance).data)
-    
+        return Response(self.get_serializer(instance).data, status=status.HTTP_200_OK)
 
-def convert_quotation_to_invoice(quote: SalesQuotationHeader, invoice_no: str, bill_no: int, *,
-                                 tax_is_igst: bool) -> SalesOderHeader:
+
+# --------------------------------------
+# Conversion: Quotation -> Invoice
+# --------------------------------------
+def convert_quotation_to_invoice(
+    quote: SalesQuotationHeader,
+    invoice_no: str,
+    bill_no: int,
+    *,
+    tax_is_igst: bool,
+) -> SalesOderHeader:
+    """
+    Creates SalesOderHeader + salesOrderdetails from an ACCEPTED quotation.
+
+    Totals on the invoice:
+      subtotal   = Σ line.amount
+      totalgst   = Σ (line cgst/sgst/igst)
+      gtotal     = subtotal - discount + addless + totalgst + (cess if present on invoice)
+    """
     if quote.status != SalesQuotationHeader.Status.ACCEPTED:
         raise ValueError("Only accepted quotations can be converted.")
+
+    ZERO = Decimal("0.00")
 
     with transaction.atomic():
         hdr = SalesOderHeader.objects.create(
@@ -6313,34 +6352,41 @@ def convert_quotation_to_invoice(quote: SalesQuotationHeader, invoice_no: str, b
             billno=bill_no,
             invoicenumber=invoice_no,
             accountid=quote.account,
-            # copy ship-to if you want:
             shippedto=quote.shippedto,
-            # tax regime now enforced:
             isigst=tax_is_igst,
-            cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"),
+            cgst=ZERO, sgst=ZERO, igst=ZERO,
             stbefdiscount=quote.stbefdiscount,
             discount=quote.discount,
             subtotal=quote.subtotal,
             addless=quote.addless,
-            totalgst=Decimal("0.00"),  # recompute below
-            gtotal=Decimal("0.00"),    # recompute below
-            subentity=quote.subentity, entity=quote.entity, entityfinid=quote.entityfinid,
+            totalgst=ZERO,   # recompute below
+            gtotal=ZERO,     # recompute below
+            subentity=quote.subentity,
+            entity=quote.entity,
+            entityfinid=quote.entityfinid,
             createdby=quote.createdby,
         )
 
-        total_tax = Decimal("0.00")
-        for ln in quote.lines.all():
-            # decide tax % from snapshot or your product tax logic:
-            cgstp = ln.cgstpercent or Decimal("0.00")
-            sgstp = ln.sgstpercent or Decimal("0.00")
-            igstp = ln.igstpercent or Decimal("0.00")
+        sum_cgst = ZERO
+        sum_sgst = ZERO
+        sum_igst = ZERO
+        # trust header.subtotal already matches Σ amount; else recompute as you prefer
 
-            cgst = sgst = igst = Decimal("0.00")
+        for ln in quote.lines.all():
+            # fallback percents if None
+            cgstp = ln.cgstpercent or ZERO
+            sgstp = ln.sgstpercent or ZERO
+            igstp = ln.igstpercent or ZERO
+
+            # compute taxes as per mode
             if tax_is_igst:
                 igst = (ln.amount * igstp) / Decimal("100")
+                cgst = ZERO
+                sgst = ZERO
             else:
                 cgst = (ln.amount * cgstp) / Decimal("100")
                 sgst = (ln.amount * sgstp) / Decimal("100")
+                igst = ZERO
 
             linetotal = ln.amount + cgst + sgst + igst
 
@@ -6360,11 +6406,26 @@ def convert_quotation_to_invoice(quote: SalesQuotationHeader, invoice_no: str, b
                 isService=ln.is_service,
                 subentity=hdr.subentity, entity=hdr.entity, createdby=hdr.createdby,
             )
-            total_tax += (cgst + sgst + igst)
 
-        hdr.totalgst = total_tax
-        hdr.gtotal   = hdr.subtotal + hdr.addless + total_tax
-        hdr.save(update_fields=["totalgst", "gtotal"])
+            sum_cgst += cgst
+            sum_sgst += sgst
+            sum_igst += igst
+
+        hdr.cgst = sum_cgst
+        hdr.sgst = sum_sgst
+        hdr.igst = sum_igst
+        hdr.totalgst = sum_cgst + sum_sgst + sum_igst
+
+        # include cess on invoice header if present, else 0
+        cess = getattr(hdr, "cess", ZERO)
+        hdr.gtotal = hdr.subtotal - hdr.discount + hdr.addless + hdr.totalgst + cess
+
+        # persist
+        update_fields = ["cgst", "sgst", "igst", "totalgst", "gtotal"]
+        if hasattr(hdr, "cess"):
+            update_fields.append("cess")
+        hdr.save(update_fields=update_fields)
+
         return hdr
 
 
@@ -6383,11 +6444,7 @@ class SalesQuotationConvertAPIView(APIView):
 
     def post(self, request, id: int):
         try:
-            quote = (
-                SalesQuotationHeader.objects
-                .prefetch_related("lines")
-                .get(id=id)
-            )
+            quote = SalesQuotationHeader.objects.prefetch_related("lines").get(id=id)
         except SalesQuotationHeader.DoesNotExist:
             return Response({"detail": "Quotation not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -6400,15 +6457,16 @@ class SalesQuotationConvertAPIView(APIView):
         if not invoice_no or bill_no is None:
             raise ValidationError({"invoice_no": "required", "bill_no": "required"})
 
-        # Use your existing conversion service
         hdr = convert_quotation_to_invoice(
             quote=quote,
             invoice_no=invoice_no,
             bill_no=bill_no,
             tax_is_igst=tax_is_igst,
         )
-        return Response({"invoice_id": hdr.id, "billno": hdr.billno, "invoicenumber": hdr.invoicenumber}, status=200)
-
+        return Response(
+            {"invoice_id": hdr.id, "billno": hdr.billno, "invoicenumber": hdr.invoicenumber},
+            status=status.HTTP_200_OK,
+        )
 
 
 
