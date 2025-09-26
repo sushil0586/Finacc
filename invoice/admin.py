@@ -484,6 +484,7 @@ from django.db import transaction
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
+ZERO4 = Decimal("0.0000")
 
 # from .models import SalesQuotationHeader, SalesQuotationDetail
 # from invoice.services import convert_quotation_to_invoice  # import your service
@@ -505,8 +506,10 @@ class SalesQuotationLineInline(admin.TabularInline):
         "product", "productdesc", "qty", "pieces",
         "ratebefdiscount", "line_discount", "rate", "amount",
         "cgstpercent", "sgstpercent", "igstpercent",
-        "tax_amount_est", "linetotal", "is_service",
+        "cgst", "sgst", "igst", "linetotal",
+        "is_service",
     )
+    readonly_fields = ("cgst", "sgst", "igst", "linetotal")
     autocomplete_fields = ("product",)
 
 
@@ -519,19 +522,22 @@ class SalesQuotationHeaderAdmin(_BaseAdmin):
 
     list_display = (
         "quote_no", "quote_date", "account", "status", "valid_until",
-        "subtotal", "tax_estimate", "gtotal", "intend_igst",
-        "entity", "version", "_convert_btn"
+        "subtotal", "totalgst", "gtotal", "isigst",
+        "entity", "version", "_convert_btn",
     )
     list_filter = (
-        "status", "intend_igst", "entity", "subentity", "entityfinid",
-        ("quote_date", admin.DateFieldListFilter), ("valid_until", admin.DateFieldListFilter)
+        "status", "isigst", "entity", "subentity", "entityfinid",
+        ("quote_date", admin.DateFieldListFilter), ("valid_until", admin.DateFieldListFilter),
     )
     search_fields = (
         "quote_no", "contact_name", "contact_email",
-        "account__accountname",  # adjust to your account model field
+        "account__accountname",
     )
     ordering = ("-quote_date", "-id")
-  #  autocomplete_fields = ("account", "shippedto", "entity", "subentity", "entityfinid")
+    # autocomplete_fields = ("account", "shippedto", "entity", "subentity", "entityfinid")
+
+    # keep totals read-only; we recompute them from lines
+    readonly_fields = ("version", "stbefdiscount", "subtotal", "cgst", "sgst", "igst", "totalgst", "gtotal")
 
     fieldsets = (
         ("Quotation", {
@@ -541,10 +547,10 @@ class SalesQuotationHeaderAdmin(_BaseAdmin):
             "fields": ("account", "contact_name", "contact_email", "shippedto")
         }),
         ("Commercials", {
-            "fields": ("price_list", "currency", "remarks", "intend_igst")
+            "fields": ("price_list", "currency", "remarks", "isigst", "addless", "discount", "cess")
         }),
-        ("Totals", {
-            "fields": ("stbefdiscount", "discount", "subtotal", "addless", "tax_estimate", "gtotal")
+        ("Roll-up Totals", {
+            "fields": ("stbefdiscount", "subtotal", "cgst", "sgst", "igst", "totalgst", "gtotal")
         }),
         ("Scope", {
             "fields": ("entity", "subentity", "entityfinid", "createdby")
@@ -561,21 +567,26 @@ class SalesQuotationHeaderAdmin(_BaseAdmin):
     def get_readonly_fields(self, request, obj=None):
         ro = list(super().get_readonly_fields(request, obj))
         if obj:
-            # Freeze some fields after acceptance/rejection
-            if obj.status in (SalesQuotationHeader.Status.ACCEPTED, SalesQuotationHeader.Status.REJECTED, SalesQuotationHeader.Status.EXPIRED):
+            # Freeze a bunch of fields once the quote is finalized
+            if obj.status in (
+                SalesQuotationHeader.Status.ACCEPTED,
+                SalesQuotationHeader.Status.REJECTED,
+                SalesQuotationHeader.Status.EXPIRED,
+            ):
                 ro += [
                     "quote_no", "quote_date", "account", "shippedto", "valid_until",
-                    "price_list", "currency", "remarks", "intend_igst",
-                    "stbefdiscount", "discount", "subtotal", "addless", "tax_estimate", "gtotal",
+                    "price_list", "currency", "remarks", "isigst",
+                    # totals are already read-only globally; keep them here for clarity
+                    "stbefdiscount", "discount", "subtotal", "addless", "cess", "cgst", "sgst", "igst", "totalgst", "gtotal",
                     "entity", "subentity", "entityfinid", "createdby",
                 ]
-            # Always keep version read-only
             ro += list(self.readonly_when_final)
+        # dedupe
         return tuple(dict.fromkeys(ro))
 
     @transaction.atomic
     def save_model(self, request, obj, form, change):
-        # Auto-increment version if significant header fields changed (optional)
+        # optional: bump version when significant header fields change
         if change and form.changed_data:
             significant = {"price_list", "currency", "account", "valid_until", "remarks"}
             if significant.intersection(set(form.changed_data)):
@@ -587,15 +598,56 @@ class SalesQuotationHeaderAdmin(_BaseAdmin):
         super().save_related(request, form, formsets, change)
         # Recalculate totals based on current lines
         hdr: SalesQuotationHeader = form.instance
-        qs = hdr.lines.all()
-        stbef = sum((ln.ratebefdiscount or Decimal("0")) * (ln.qty or Decimal("0")) for ln in qs)
-        amount_sum = sum((ln.amount or Decimal("0")) for ln in qs)
-        tax_est = sum((ln.tax_amount_est or Decimal("0")) for ln in qs)  # ← add “for ln in qs”
+        lines = list(hdr.lines.all())
+
+        def d(v, fallback=ZERO2):
+            return v if v is not None else fallback
+
+        stbef = sum(d(ln.ratebefdiscount) * (ln.qty or ZERO4) for ln in lines)
+
+        sum_amount = ZERO2
+        sum_cgst = ZERO2
+        sum_sgst = ZERO2
+        sum_igst = ZERO2
+
+        for ln in lines:
+            qty = ln.qty or ZERO4
+            amount = d(ln.amount)
+            if amount == ZERO2:
+                amount = d(ln.rate) * qty - d(ln.line_discount)
+
+            if hdr.isigst:
+                igst = amount * (d(ln.igstpercent) / Decimal("100")) if ln.igstpercent is not None else d(ln.igst)
+                cgst = ZERO2
+                sgst = ZERO2
+            else:
+                cgst = amount * (d(ln.cgstpercent) / Decimal("100")) if ln.cgstpercent is not None else d(ln.cgst)
+                sgst = amount * (d(ln.sgstpercent) / Decimal("100")) if ln.sgstpercent is not None else d(ln.sgst)
+                igst = ZERO2
+
+            # normalize line values so inline shows the computed numbers
+            ln.amount = amount
+            ln.cgst = cgst
+            ln.sgst = sgst
+            ln.igst = igst
+            ln.linetotal = amount + cgst + sgst + igst
+            ln.save(update_fields=["amount", "cgst", "sgst", "igst", "linetotal"])
+
+            sum_amount += amount
+            sum_cgst += cgst
+            sum_sgst += sgst
+            sum_igst += igst
+
+        totalgst = sum_cgst + sum_sgst + sum_igst
         hdr.stbefdiscount = stbef
-        hdr.subtotal = amount_sum
-        hdr.tax_estimate = tax_est
-        hdr.gtotal = amount_sum + (hdr.addless or 0) - (hdr.discount or 0) + tax_est
-        hdr.save(update_fields=["stbefdiscount", "subtotal", "tax_estimate", "gtotal"])
+        hdr.subtotal = sum_amount
+        hdr.cgst = sum_cgst
+        hdr.sgst = sum_sgst
+        hdr.igst = sum_igst
+        hdr.totalgst = totalgst
+        hdr.gtotal = sum_amount - d(hdr.discount) + d(hdr.addless) + totalgst + d(hdr.cess)
+
+        hdr.save(update_fields=["stbefdiscount", "subtotal", "cgst", "sgst", "igst", "totalgst", "gtotal"])
 
     # ---------
     # Buttons & actions
@@ -603,7 +655,7 @@ class SalesQuotationHeaderAdmin(_BaseAdmin):
     @admin.display(description="Convert")
     def _convert_btn(self, obj: "SalesQuotationHeader"):
         if obj.status == SalesQuotationHeader.Status.ACCEPTED:
-            url = reverse("admin:salesquotation_convert", args=[obj.id])  # wire via custom admin view (see below)
+            url = reverse("admin:salesquotation_convert", args=[obj.id])
             return format_html('<a class="button" href="{}">Convert</a>', url)
         return mark_safe("—")
 
@@ -626,7 +678,6 @@ class SalesQuotationHeaderAdmin(_BaseAdmin):
     def action_mark_expired(self, request, queryset):
         updated = queryset.update(status=SalesQuotationHeader.Status.EXPIRED)
         self.message_user(request, f"{updated} quotation(s) marked as Expired", level=messages.INFO)
-
 #     @admin.action(description="Convert to Invoice…")
 #     def action_convert_to_invoice(self, request, queryset):
 #         """Bulk convert accepted quotations. Uses a default pattern; customize as needed."""
