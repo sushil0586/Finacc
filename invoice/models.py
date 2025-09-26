@@ -1856,59 +1856,102 @@ class InventoryMove(models.Model):
 
 class SalesQuotationHeader(TrackingModel):
     class Status(models.TextChoices):
-        DRAFT    = "draft",    "Draft"
-        SENT     = "sent",     "Sent"
+        DRAFT = "draft", "Draft"
+        SENT = "sent", "Sent"
         ACCEPTED = "accepted", "Accepted"
         REJECTED = "rejected", "Rejected"
-        EXPIRED  = "expired",  "Expired"
+        EXPIRED = "expired", "Expired"
 
-    quote_date   = models.DateTimeField("Quotation Date", auto_now_add=False, null=True)
-    quote_no     = models.CharField("Quotation No", max_length=50, null=True, blank=True)
-    version      = models.IntegerField(default=1)
+    quote_date = models.DateTimeField("Quotation Date", auto_now_add=False, null=True)
+    quote_no = models.CharField("Quotation No", max_length=50, null=True, blank=True)
+    version = models.IntegerField(default=1)
+    taxtype = models.IntegerField(default=1)
+    Terms = models.IntegerField(default=1)  # (kept name as provided)
+    invoicetype = models.IntegerField(default=1)
 
-    account      = models.ForeignKey(account, on_delete=models.CASCADE, null=True, blank=True)
+    account = models.ForeignKey(account, on_delete=models.CASCADE, null=True, blank=True)
     contact_name = models.CharField(max_length=120, null=True, blank=True)
-    contact_email= models.EmailField(null=True, blank=True)
+    contact_email = models.EmailField(null=True, blank=True)
     # Optional shipping snapshot for clarity; keep it lightweight
-    shippedto    = models.ForeignKey(ShippingDetails, on_delete=models.SET_NULL, null=True, blank=True, related_name="quote_shipto")
+    shippedto = models.ForeignKey(
+        ShippingDetails,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quote_shipto",
+    )
 
     # Validity & state
-    valid_until  = models.DateField(null=True, blank=True)
-    status       = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    valid_until = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
 
     # Commercial terms
-    price_list   = models.CharField(max_length=60, null=True, blank=True)
-    currency     = models.CharField(max_length=10, null=True, blank=True)  # if you need it; else drop
-    remarks      = models.CharField(max_length=500, null=True, blank=True)
+    price_list = models.CharField(max_length=60, null=True, blank=True)
+    currency = models.CharField(max_length=10, null=True, blank=True)  # if needed
+    remarks = models.CharField(max_length=500, null=True, blank=True)
 
     # Totals (estimates allowed; keep taxes optional)
-    stbefdiscount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)  # sum(ratebefdiscount)
-    discount      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
-    subtotal      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
-    addless       = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
-    tax_estimate  = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
-    gtotal        = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    tds194q = models.DecimalField("TDS 194 @", max_digits=5, decimal_places=2, default=ZERO2)
+    tds194q1 = models.DecimalField("TDS 194 @", max_digits=5, decimal_places=2, default=ZERO2)
+    tcs206c1ch1 = models.DecimalField("Tcs 206C1cH1", max_digits=5, decimal_places=2, default=ZERO2)
+    tcs206c1ch2 = models.DecimalField("Tcs 206C1cH2", max_digits=5, decimal_places=2, default=ZERO2)
+    tcs206c1ch3 = models.DecimalField("Tcs tcs206c1ch3", max_digits=5, decimal_places=2, default=ZERO2)
+    tcs206C1 = models.DecimalField("Tcs 206C1", max_digits=5, decimal_places=2, default=ZERO2)
+    tcs206C2 = models.DecimalField("Tcs 206C2", max_digits=5, decimal_places=2, default=ZERO2)
 
-    # Optional hint for intended tax regime, NOT enforced here
-    intend_igst   = models.BooleanField(default=False)
+    totalgst = models.DecimalField("totalgst", max_digits=14, decimal_places=2, default=ZERO2)
+    cess = models.DecimalField("Cess", max_digits=14, decimal_places=2, default=ZERO2)
+    stbefdiscount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)  # sum(ratebefdiscount)
+    discount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    addless = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    cgst          = models.DecimalField("C.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    sgst          = models.DecimalField("S.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    igst          = models.DecimalField("I.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    isigst        = models.BooleanField("IsIgst", default=False)
+    gtotal = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+
 
     # Org scoping like invoices
-    subentity     = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
-    entity        = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, blank=True)
-    entityfinid   = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
+    subentity = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, blank=True)
+    entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
 
-    createdby     = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
 
     history = HistoricalRecords()
 
     class Meta:
         constraints = [
             UniqueConstraint(fields=("quote_no", "entity", "entityfinid"), name="uq_quote_no_entity_fin"),
-            models.CheckConstraint(
+            CheckConstraint(
                 name="ck_quote_amounts_nonneg",
-                check=(Q(stbefdiscount__gte=0) & Q(discount__gte=0) &
-                       Q(subtotal__gte=0) & Q(addless__gte=0) &
-                       Q(tax_estimate__gte=0) & Q(gtotal__gte=0)),
+                check=(
+                    Q(stbefdiscount__gte=0)
+                    & Q(discount__gte=0)
+                    & Q(subtotal__gte=0)
+                    & Q(addless__gte=0)
+                    & Q(cess__gte=0)
+                    & Q(cgst__gte=0)
+                    & Q(sgst__gte=0)
+                    & Q(igst__gte=0)
+                    & Q(totalgst__gte=0)
+                    & Q(gtotal__gte=0)
+                ),
+            ),
+            # Ensure tax-mode consistency:
+            # - If IGST mode (isigst=True) => CGST/SGST must be 0
+            # - If intra-state (isigst=False) => IGST must be 0
+            CheckConstraint(
+                name="ck_quote_tax_mode_consistency",
+                check=(Q(isigst=True, cgst=0, sgst=0) | Q(isigst=False, igst=0)),
+            ),
+            # Optional (strict): totalgst must equal cgst+sgst+igst.
+            # Comment out if rounding differences are expected.
+            CheckConstraint(
+                name="ck_quote_totalgst_sum",
+                check=Q(totalgst=F("cgst") + F("sgst") + F("igst")),
             ),
         ]
         indexes = [
@@ -1918,7 +1961,7 @@ class SalesQuotationHeader(TrackingModel):
             models.Index(fields=["status", "valid_until"], name="ix_quote_status_valid"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Q{self.quote_no or '-'} v{self.version}"
 
 
@@ -1940,7 +1983,9 @@ class SalesQuotationDetail(TrackingModel):
     sgstpercent   = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     igstpercent   = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
 
-    tax_amount_est= models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    cgst          = models.DecimalField("C.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    sgst          = models.DecimalField("S.GST", max_digits=14, decimal_places=2, default=ZERO2)
+    igst          = models.DecimalField("I.GST", max_digits=14, decimal_places=2, default=ZERO2)
     linetotal     = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
     is_service    = models.BooleanField(default=False)
@@ -1963,6 +2008,7 @@ class SalesQuotationDetail(TrackingModel):
                        (Q(sgstpercent__isnull=True) | (Q(sgstpercent__gte=0) & Q(sgstpercent__lte=100))) &
                        (Q(igstpercent__isnull=True) | (Q(igstpercent__gte=0) & Q(igstpercent__lte=100))))
             ),
+            
         ]
         indexes = [
             models.Index(fields=["header"], name="ix_quote_detail_header"),

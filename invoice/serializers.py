@@ -8169,6 +8169,7 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
                     )
 
         return instance
+    
 
 class ReceiptVoucherPdfSerializer(serializers.ModelSerializer):
     invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
@@ -8223,6 +8224,9 @@ class ReceiptVoucherPdfSerializer(serializers.ModelSerializer):
 # Serializers
 # =============================
 
+# ---------------------------
+# Line (Detail) Serializer
+# ---------------------------
 class SalesQuotationLineSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
@@ -8241,29 +8245,48 @@ class SalesQuotationLineSerializer(serializers.ModelSerializer):
             "cgstpercent",
             "sgstpercent",
             "igstpercent",
-            "tax_amount_est",
-            "linetotal",
+            "cgst",            # now writable
+            "sgst",            # now writable
+            "igst",            # now writable
+            "linetotal",       # now writable (we'll normalize)
             "is_service",
             "subentity",
             "entity",
+            "createdby",
         ]
-        read_only_fields = []
+        read_only_fields = ["createdby"]
 
     def validate(self, data):
-        # basic sanity
-        for f in ("qty", "pieces", "amount", "linetotal", "rate"):
+        # non-negative basics
+        for f in ["qty", "pieces", "ratebefdiscount", "line_discount", "rate", "amount",
+                  "cgst", "sgst", "igst"]:
             v = data.get(f)
-            if v is not None and Decimal(v) < 0:
-                raise ValidationError({f: "Must be >= 0"})
+            if v is not None and v < 0:
+                raise ValidationError({f: "Must be ≥ 0"})
 
-        # percent bounds if provided
-        for p in ("cgstpercent", "sgstpercent", "igstpercent"):
+        # percent bounds
+        for p in ["cgstpercent", "sgstpercent", "igstpercent"]:
             v = data.get(p)
-            if v is not None and not (Decimal("0") <= Decimal(v) <= Decimal("100")):
+            if v is not None and (v < 0 or v > 100):
                 raise ValidationError({p: "Must be between 0 and 100"})
+
+        # If client provided linetotal, ensure it’s consistent (1p tolerance)
+        amt = data.get("amount")
+        if amt is not None:
+            cg = data.get("cgst") or 0
+            sg = data.get("sgst") or 0
+            ig = data.get("igst") or 0
+            lt = data.get("linetotal")
+            if lt is not None:
+                expected = amt + cg + sg + ig
+                if (lt - expected).copy_abs() > Decimal("0.01"):
+                    raise ValidationError({"linetotal": "Must equal amount + cgst + sgst + igst"})
         return data
 
 
+# ---------------------------
+# Header Serializer
+# ---------------------------
 class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
     lines = SalesQuotationLineSerializer(many=True)
     createdby = serializers.HiddenField(default=serializers.CurrentUserDefault())
@@ -8275,6 +8298,9 @@ class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
             "quote_date",
             "quote_no",
             "version",
+            "taxtype",
+            "Terms",
+            "invoicetype",
             "account",
             "contact_name",
             "contact_email",
@@ -8284,46 +8310,44 @@ class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
             "price_list",
             "currency",
             "remarks",
+            # money & taxes (now writable)
             "stbefdiscount",
             "discount",
             "subtotal",
             "addless",
-            "tax_estimate",
+            "cess",
+            "cgst",
+            "sgst",
+            "igst",
+            "totalgst",
+            "isigst",
             "gtotal",
-            "intend_igst",
+            # scoping
             "subentity",
             "entity",
             "entityfinid",
             "createdby",
+            # nested
             "lines",
         ]
         read_only_fields = ("version",)
 
     def validate(self, data):
-        # Non-negative header fields
-        money_fields = [
-            "stbefdiscount",
-            "discount",
-            "subtotal",
-            "addless",
-            "tax_estimate",
-            "gtotal",
-        ]
-        for f in money_fields:
+        # non-negative checks
+        for f in ["stbefdiscount", "discount", "subtotal", "addless", "cess", "cgst", "sgst", "igst", "totalgst", "gtotal"]:
             v = data.get(f)
-            if v is not None and Decimal(v) < 0:
-                raise ValidationError({f: "Must be >= 0"})
+            if v is not None and v < 0:
+                raise ValidationError({f: "Must be ≥ 0"})
 
-        # basic logical checks
+        # valid_until rule
         vu = data.get("valid_until")
         if vu and vu < timezone.now().date():
-            # allow back-dated validity only if still draft
             status_val = data.get("status") or getattr(self.instance, "status", None)
             if status_val and status_val != SalesQuotationHeader.Status.DRAFT:
                 raise ValidationError({"valid_until": "Cannot set past valid_until for non-draft quotations"})
         return data
 
-    # --- nested writes ---
+    # ------- nested writes (same as before) -------
     def _upsert_lines(self, header: SalesQuotationHeader, lines_payload: List[dict]):
         seen_ids: List[int] = []
         for item in lines_payload:
@@ -8341,22 +8365,85 @@ class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
             else:
                 inst = SalesQuotationDetail.objects.create(**item)
                 seen_ids.append(inst.id)
-
-        # delete missing
         SalesQuotationDetail.objects.filter(header=header).exclude(id__in=seen_ids).delete()
 
+    # ------- totals roll-up (trust posted taxes if provided, then normalize) -------
     def _recalc_totals(self, header: SalesQuotationHeader):
-        # If you want automatic totals. Otherwise, keep values from payload.
-        qs = header.lines.all()
-        stbef = sum((ln.ratebefdiscount or Decimal("0")) * (ln.qty or Decimal("0")) for ln in qs)
-        amount_sum = sum(ln.amount or Decimal("0") for ln in qs)
-        tax_est = sum(ln.tax_amount_est or Decimal("0") for ln in qs)
-        subtotal = amount_sum
+        """
+        Normalization rules:
+        - If line tax values (cgst/sgst/igst) are provided, we use them.
+        - Otherwise we compute from percents based on header.isigst.
+        - We always force tax-mode consistency (isigst=True → cgst=sgst=0; else igst=0)
+        - Header totals are overwritten as Σ of line taxes (we don't trust header if mismatched).
+        - linetotal is set to amount + taxes (overwrites if off by > 0.01).
+        """
+        qs = list(header.lines.all())
+        ZERO2 = Decimal("0.00")
+        ZERO4 = Decimal("0.0000")
+
+        def d(v, fallback=ZERO2):
+            return v if v is not None else fallback
+
+        stbef = sum(d(ln.ratebefdiscount) * d(ln.qty, ZERO4) for ln in qs)
+
+        subtotal = ZERO2
+        sum_cgst = ZERO2
+        sum_sgst = ZERO2
+        sum_igst = ZERO2
+
+        for ln in qs:
+            qty = d(ln.qty, ZERO4)
+            amount = d(ln.amount)
+            if amount == ZERO2:
+                amount = d(ln.rate) * qty - d(ln.line_discount)
+
+            # Prefer posted taxes; else compute from percents given isIGST mode
+            if header.isigst:
+                igst = d(ln.igst) if ln.igst is not None else (
+                    amount * (d(ln.igstpercent) / Decimal("100")) if ln.igstpercent is not None else ZERO2
+                )
+                cgst = ZERO2
+                sgst = ZERO2
+            else:
+                cgst = d(ln.cgst) if ln.cgst is not None else (
+                    amount * (d(ln.cgstpercent) / Decimal("100")) if ln.cgstpercent is not None else ZERO2
+                )
+                sgst = d(ln.sgst) if ln.sgst is not None else (
+                    amount * (d(ln.sgstpercent) / Decimal("100")) if ln.sgstpercent is not None else ZERO2
+                )
+                igst = ZERO2
+
+            # Normalize and persist line
+            ln.amount = amount
+            ln.cgst = cgst
+            ln.sgst = sgst
+            ln.igst = igst
+            lt_expected = amount + cgst + sgst + igst
+            if (d(ln.linetotal) - lt_expected).copy_abs() > Decimal("0.01"):
+                ln.linetotal = lt_expected
+            ln.save(update_fields=["amount", "cgst", "sgst", "igst", "linetotal"])
+
+            subtotal += amount
+            sum_cgst += cgst
+            sum_sgst += sgst
+            sum_igst += igst
+
+        totalgst = sum_cgst + sum_sgst + sum_igst
+        discount = d(header.discount)
+        addless = d(header.addless)
+        cess = d(header.cess)
+
         header.stbefdiscount = stbef
         header.subtotal = subtotal
-        header.tax_estimate = tax_est
-        header.gtotal = subtotal + (header.addless or Decimal("0")) - (header.discount or Decimal("0")) + tax_est
-        header.save(update_fields=["stbefdiscount", "subtotal", "tax_estimate", "gtotal"]) 
+        header.cgst = sum_cgst
+        header.sgst = sum_sgst
+        header.igst = sum_igst
+        header.totalgst = totalgst
+        header.gtotal = subtotal - discount + addless + totalgst + cess
+
+        header.save(update_fields=[
+            "stbefdiscount", "subtotal", "cgst", "sgst", "igst", "totalgst", "gtotal"
+        ])
 
     @transaction.atomic
     def create(self, validated_data):
@@ -8376,6 +8463,7 @@ class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
             self._upsert_lines(instance, lines_payload)
         self._recalc_totals(instance)
         return instance
+
 
 
 
