@@ -11,6 +11,7 @@ from rest_framework.exceptions import NotFound
 from helpers.utils.pdf import render_to_pdf
 from django.utils.functional import cached_property
 from rest_framework.filters import OrderingFilter
+from django.utils.dateparse import parse_date
 
 import json
 
@@ -1081,21 +1082,48 @@ class Salereturnpdfview(RetrieveAPIView):
 
 
 class salesOrderpdfview(RetrieveAPIView):
-
     serializer_class = SalesOrderHeaderPDFSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        entityfinid = self.request.query_params.get('entityfinid')  # Get entity financial year ID
+        # Parse query params safely (avoid implicit type casting & joins)
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
 
-        queryset = SalesOderHeader.objects.filter(entity = entity)
+        try:
+            entity = int(entity) if entity is not None else None
+        except (TypeError, ValueError):
+            entity = None
 
+        try:
+            entityfinid = int(entityfinid) if entityfinid is not None else None
+        except (TypeError, ValueError):
+            entityfinid = None
+
+        # Shape the query to avoid N+1
+        qs = (
+            SalesOderHeader.objects
+            .select_related(
+                "entity", "entity__city", "entity__state", "entity__bank",
+                "accountid", "accountid__city", "accountid__state",
+                "shippedto", "shippedto__city", "shippedto__state",
+                "transport", "createdby"
+            )
+            .prefetch_related(
+                Prefetch(
+                    "saleInvoiceDetails",
+                    queryset=salesOrderdetails.objects.select_related("product")
+                )
+            )
+        )
+
+        if entity:
+            qs = qs.filter(entity_id=entity)
         if entityfinid:
-            queryset = queryset.filter(entityfinid=entityfinid)
-        
-        return queryset.prefetch_related('saleInvoiceDetails')
+            qs = qs.filter(entityfinid_id=entityfinid)
+
+        return qs
     
 class SalesOrderPDFViewprint(APIView):
     permission_classes = (permissions.IsAuthenticated,)
@@ -1919,35 +1947,84 @@ class salesreturnApiView(ListCreateAPIView):
         entity = self.request.query_params.get('entity')
         return salereturn.objects.filter(entity = entity)
 
+def _entity_from_request(request) -> int:
+    entity = request.query_params.get("entity")
+    if not entity:
+        raise ValidationError({"entity": "Query param 'entity' is required."})
+    try:
+        return int(entity)
+    except (TypeError, ValueError):
+        raise ValidationError({"entity": "Query param 'entity' must be an integer."})
+
+
+def _base_qs():
+    # Heavily cuts queries on list/detail + update:
+    return (
+        journalmain.objects
+        .select_related("entity", "entityfinid", "createdby", "mainaccountid")
+        .prefetch_related(
+            # only what serializer needs
+            "journaldetails__account"
+        )
+        .order_by("-voucherdate", "-voucherno", "-id")
+    )
+
 
 
 class journalmainApiView(ListCreateAPIView):
-
     serializer_class = journalmainSerializer
     permission_classes = (permissions.IsAuthenticated,)
-
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['voucherno','voucherdate','entityfinid','vouchertype']
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    # simple field filters; date range handled manually (see get_queryset)
+    filterset_fields = ["voucherno", "entityfinid", "vouchertype"]
+    ordering_fields = ["voucherdate", "voucherno", "id"]
 
     @transaction.atomic
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return journalmain.objects.filter(entity = entity)
+        # createdby stamped consistently here
+        serializer.save(createdby=self.request.user)
 
+    def get_queryset(self):
+        entity_id = _entity_from_request(self.request)
+        qs = _base_qs().filter(entity_id=entity_id)
+
+        # Optional: date range ?from=YYYY-MM-DD&to=YYYY-MM-DD
+        d_from = self.request.query_params.get("from")
+        d_to   = self.request.query_params.get("to")
+        if d_from:
+            df = parse_date(d_from)
+            if not df:
+                raise ValidationError({"from": "Invalid date format. Use YYYY-MM-DD."})
+            qs = qs.filter(voucherdate__gte=df)
+        if d_to:
+            dt = parse_date(d_to)
+            if not dt:
+                raise ValidationError({"to": "Invalid date format. Use YYYY-MM-DD."})
+            qs = qs.filter(voucherdate__lte=dt)
+
+        return qs
 
 
 class journalmainupdateapiview(RetrieveUpdateDestroyAPIView):
-
     serializer_class = journalmainSerializer
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return journalmain.objects.filter(entity = entity)
+        # Same optimized queryset as list, scoped by entity
+        entity_id = _entity_from_request(self.request)
+        return _base_qs().filter(entity_id=entity_id)
+
+    @transaction.atomic
+    def delete(self, request, *args, **kwargs):
+        # Guard rails: don’t allow deleting posted/locked vouchers
+        instance = self.get_object()
+        if getattr(instance, "is_locked", False) or getattr(instance, "is_posted", False):
+            return Response(
+                {"detail": "Cannot delete a locked/posted voucher."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().delete(request, *args, **kwargs)
 
 
 

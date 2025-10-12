@@ -4,9 +4,13 @@ from itertools import product
 from os import device_encoding
 from pprint import isreadable
 from select import select
+from typing import Optional
+from .models import account as Account, journaldetails as JournalDetails
+from typing import Optional, Any, TYPE_CHECKING
+
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader,DetailKind,VoucherType 
 from financial.models import account,accountHead,ShippingDetails,staticacounts,staticacountsmapping
 from inventory.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -42,7 +46,18 @@ from invoice.models import TxnType
 from invoice.models import entry as EntryModel  # adjust
 from rest_framework.exceptions import ValidationError
 from typing import List, Optional
+from django.db.models import Sum, F, Value as V
+from django.db.models.functions import Coalesce
+from django.db.models import DecimalField
+from django.db.models import (
+    Sum, F, Q, Value, DecimalField, Case, When, ExpressionWrapper
+)
+from django.db.models.functions import Cast, Coalesce
 
+if TYPE_CHECKING:
+    from .models import journalmain as JournalMain
+    from .models import journaldetails as JournalDetails
+    from .models import account as Account
 
 class PaymentmodesSerializer(serializers.ModelSerializer):
 
@@ -1088,14 +1103,13 @@ TXN_MAP = {
 
 class stocktransactionsale:
     """
-    Backward-compatible shim:
-      - createtransactiondetails(detail, ...) just collects detail objects
-      - createothertransactiondetails(charge, ...) collects charges keyed by detail.id
-      - createtransaction() dispatches to Poster
+    Sales shim:
+      - collects sales details/charges
+      - posts only SALES / SALES_RETURN
     """
     def __init__(self, order, transactiontype, debit, credit, description, entrytype):
         self.order = order
-        self.txn_str = transactiontype
+        self.txn_str = (transactiontype or 'S')
         self.description = description
         self.entrytype = entrytype
         self._details = []
@@ -1106,7 +1120,7 @@ class stocktransactionsale:
         return None, None
 
     def createothertransactiondetails(self, detail, stocktype):
-        # 'detail' here is a charge object with .salesorderdetail (or similar)
+        # charge FK on sales side
         detail_fk = getattr(detail, "salesorderdetail", None) or getattr(detail, "salesorderdetail_id", None)
         detail_id = getattr(detail_fk, "id", None) if detail_fk else detail_fk
         if detail_id:
@@ -1135,13 +1149,88 @@ class stocktransactionsale:
             poster.post_sales(order, details, extra_charges_map=self._extra_charges)
         elif t == TxnType.SALES_RETURN:
             poster.post_sales_return(order, details)
-        elif t == TxnType.PURCHASE:
+        # No purchase posting here.
+
+        return order.id
+
+
+from datetime import datetime, time as _time
+
+
+
+def _ensure_datetime(dt_or_date, fallback_date=None):
+    """
+    If dt_or_date is a datetime → return as-is.
+    If it's a date → return date @ 00:00.
+    If it's None → use fallback_date (date) @ 00:00; if that’s also None, use today @ 00:00.
+    """
+    if isinstance(dt_or_date, datetime):
+        return dt_or_date
+    if dt_or_date is not None:  # it's a date
+        return datetime.combine(dt_or_date, _time(0, 0, 0))
+    # fallback
+    if fallback_date is not None:
+        return datetime.combine(fallback_date, _time(0, 0, 0))
+    today = datetime.now().date()
+    return datetime.combine(today, _time(0, 0, 0))
+
+
+class stocktransaction:
+    """
+    Purchase shim:
+      - collects purchase details/charges
+      - posts only PURCHASE / PURCHASE_RETURN
+      - main date = billdate (fallback voucherdate)
+    """
+    def __init__(self, order, transactiontype, debit, credit, description, entrytype):
+        self.order = order
+        self.txn_str = (transactiontype or 'P')
+        self.description = description
+        self.entrytype = entrytype
+        self._details = []
+        self._extra_charges = {}  # {detail_id: [purchaseothercharges,...]}
+
+    def createtransactiondetails(self, detail, stocktype):
+        self._details.append(detail)
+        return None, None
+
+    def createothertransactiondetails(self, detail, stocktype):
+        # charge FK on purchase side
+        line_fk = getattr(detail, "purchaseorderdetail", None) or getattr(detail, "purchaseorderdetail_id", None)
+        line_id = getattr(line_fk, "id", None) if line_fk else line_fk
+        if line_id:
+            self._extra_charges.setdefault(line_id, []).append(detail)
+        return None
+
+    def createtransaction(self):
+        order = self.order
+
+        bill_dt = getattr(order, "billdate", None)      # DateTimeField
+        vouch_d = getattr(order, "voucherdate", None)   # DateField fallback
+        entrydt  = _ensure_datetime(bill_dt, fallback_date=vouch_d)
+        entrydate = entrydt.date()
+
+        entry_obj, _ = EntryModel.objects.get_or_create(entrydate1=entrydate, entity=order.entity)
+
+        poster = Poster(
+            entry=entry_obj,
+            entity=order.entity,
+            user=getattr(order, "createdby", None),
+            transactiontype=TXN_MAP.get(str(self.txn_str).upper(), TxnType.PURCHASE),
+            transactionid=order.id,
+            voucherno=getattr(order, "voucherno", None),
+            entrydate=entrydate,
+            entrydt=entrydt,
+        )
+
+        t = TXN_MAP.get(str(self.txn_str).upper(), TxnType.PURCHASE)
+        details = self._details or list(order.purchaseInvoiceDetails.all())
+
+        if t == TxnType.PURCHASE:
             poster.post_purchase(order, details, extra_charges_map=self._extra_charges)
         elif t == TxnType.PURCHASE_RETURN:
             poster.post_purchase_return(order, details)
-        else:
-            # For journals, call Poster.post_journal(...) directly where you build the lines
-            pass
+        # No sales posting here.
 
         return order.id
 
@@ -1326,257 +1415,518 @@ class gststocktransaction:
 
         return detail
 
+
+
+class journaldetailsSerializer(serializers.ModelSerializer):
+    # Optional and nullable in API
+    cb_account = serializers.PrimaryKeyRelatedField(
+        queryset=account.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    parent = serializers.PrimaryKeyRelatedField(
+        queryset=journaldetails.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = journaldetails
+        fields = "__all__"
+        extra_kwargs = {
+            "line_kind": {"required": False},  # default on model
+        }
+
+    def validate(self, data):
+        debit = data.get("debitamount") or ZERO4
+        credit = data.get("creditamount") or ZERO4
+        drcr = bool(data.get("drcr"))
+        if debit < 0 or credit < 0:
+            raise serializers.ValidationError("Amounts cannot be negative.")
+        # exactly one side
+        if (debit == 0) == (credit == 0):
+            raise serializers.ValidationError("Provide exactly one of debitamount or creditamount.")
+        # drcr must align to non-zero side
+        if drcr and debit <= 0:
+            raise serializers.ValidationError("drcr=True (Debit) requires debitamount > 0.")
+        if (not drcr) and credit <= 0:
+            raise serializers.ValidationError("drcr=False (Credit) requires creditamount > 0.")
+        return data
+
+
+class journalmainSerializer(serializers.ModelSerializer):
+    journaldetails = journaldetailsSerializer(many=True)
+
+    class Meta:
+        model = journalmain
+        fields = (
+            "id",
+            "voucherdate",
+            "voucherno",
+            "vouchertype",
+            "mainaccountid",
+            "entrydate",
+            "entityfinid",
+            "entity",
+            "createdby",
+            "isactive",
+            "journaldetails",
+        )
+
+    # ---- header helpers -------------------------------------------------
+
+    def _txn_type_for_header(self, header: journalmain) -> str:
+        return {
+            VoucherType.CASH:     TxnType.JOURNAL_CASH,
+            VoucherType.BANK:     TxnType.JOURNAL_BANK,
+            VoucherType.JOURNAL:  TxnType.JOURNAL,
+        }[header.vouchertype]
+
+    def _ensure_main_account(self, validated_header: dict) -> Optional["Account"]:
+        """
+        Cash (C): force cash account from constants.
+        Bank (B): require/resolve mainaccountid (int → object).
+        Journal (J): force None.
+        Returns resolved Account (or None) to optionally stamp into details.
+        """
+        vt = validated_header.get("vouchertype")
+        entity = validated_header.get("entity")
+        main_acct = validated_header.get("mainaccountid")
+
+        if vt == "C":
+            const = stocktransconstant()
+            cash_acct = const.getcashid(entity)
+            validated_header["mainaccountid"] = cash_acct
+            return cash_acct
+
+        if vt == "B":
+            if not main_acct:
+                raise serializers.ValidationError({"mainaccountid": "Bank voucher requires mainaccountid."})
+            if isinstance(main_acct, int):
+                try:
+                    main_acct = account.objects.get(id=main_acct)
+                except account.DoesNotExist:
+                    raise serializers.ValidationError({"mainaccountid": "Invalid bank account id."})
+                validated_header["mainaccountid"] = main_acct
+            return main_acct
+
+        # Journal vouchers: ensure None
+        validated_header["mainaccountid"] = None
+        return None
+
+    def _post_with_poster(self, header: journalmain):
+        entry_env, _ = EntryModel.objects.get_or_create(entrydate1=header.entrydate, entity=header.entity)
+        details_qs = header.journaldetails.select_related("account").filter(line_kind="BASE")
+        Poster(
+            entry=entry_env,
+            entity=header.entity,
+            user=self.context["request"].user,
+            transactiontype=TxnType.JOURNAL,  # Poster will override to JOURNAL_CASH / JOURNAL_BANK as needed
+            transactionid=header.id,
+            voucherno=header.voucherno,
+            entrydate=header.entrydate,
+            entrydt=header.entrydate,
+        ).post_journal_voucher(header, details=details_qs)
+
+    # ---- component detail builders --------------------------------------
+
+    def _build_component_rows(
+        self,
+        *,
+        header: "JournalMain",
+        base_row: "JournalDetails",
+        cb_acct: Optional["Account"],
+        const: Any,  # do not annotate as stocktransconstant (not a type)
+    ) -> list["JournalDetails"]:
+        """
+        Create journaldetails rows derived from a saved BASE row:
+          - AUTO_CB (if Cash/Bank)
+          - DISCOUNT (if > 0)
+          - BANK_CHARGES (Bank only, if > 0)
+          - TDS (Bank only, if > 0)
+        """
+        rows: list[journaldetails] = []
+        vt = header.vouchertype
+        is_dr = bool(base_row.drcr)
+        amt = (base_row.debitamount or ZERO4) + (base_row.creditamount or ZERO4)
+
+        # 1) AUTO CB (opposite side of base)
+        if vt in ("C", "B") and cb_acct is not None and amt > ZERO4:
+            rows.append(
+                journaldetails(
+                    Journalmain=header,
+                    parent=base_row,
+                    line_kind=DetailKind.AUTO_CB,
+                    account=cb_acct,
+                    desc=(base_row.desc or "") + " (auto CB)",
+                    drcr=(not is_dr),
+                    debitamount=amt if not is_dr else ZERO4,
+                    creditamount=amt if is_dr else ZERO4,
+                    discount=ZERO4,
+                    bankcharges=ZERO4,
+                    tds=ZERO4,
+                    entity=header.entity,
+                    cb_account=cb_acct,
+                )
+            )
+
+        # 2) DISCOUNT (opposite of base)
+        if (base_row.discount or ZERO4) > ZERO4:
+            disc_acct = const.getdiscount(header.entity)
+            d_amt = base_row.discount
+            rows.append(
+                journaldetails(
+                    Journalmain=header,
+                    parent=base_row,
+                    line_kind=DetailKind.DISCOUNT,
+                    account=disc_acct,
+                    desc=(base_row.desc or "") + " (discount)",
+                    drcr=(not is_dr),
+                    debitamount=d_amt if not is_dr else ZERO4,
+                    creditamount=d_amt if is_dr else ZERO4,
+                    discount=ZERO4,
+                    bankcharges=ZERO4,
+                    tds=ZERO4,
+                    entity=header.entity,
+                    cb_account=cb_acct if vt in ("C", "B") else None,
+                )
+            )
+
+        # 3) BANK CHARGES (Bank only) — charges account takes DR if base DR, else CR
+        if vt == "B" and (base_row.bankcharges or ZERO4) > ZERO4:
+            bc_acct = const.getbankcharges(header.entity)
+            bc_amt = base_row.bankcharges
+            rows.append(
+                journaldetails(
+                    Journalmain=header,
+                    parent=base_row,
+                    line_kind=DetailKind.BANK_CHARGES,
+                    account=bc_acct,
+                    desc=(base_row.desc or "") + " (B Charges)",
+                    drcr=True if is_dr else False,
+                    debitamount=bc_amt if is_dr else ZERO4,
+                    creditamount=bc_amt if not is_dr else ZERO4,
+                    discount=ZERO4,
+                    bankcharges=ZERO4,
+                    tds=ZERO4,
+                    entity=header.entity,
+                    cb_account=cb_acct,
+                )
+            )
+
+        # 4) TDS (Bank only) — opposite of base
+        if vt == "B" and (base_row.tds or ZERO4) > ZERO4:
+            tds_acct = const.gettds194q1id(header.entity)
+            tds_amt = base_row.tds
+            rows.append(
+                journaldetails(
+                    Journalmain=header,
+                    parent=base_row,
+                    line_kind=DetailKind.TDS,
+                    account=tds_acct,
+                    desc=(base_row.desc or "") + " (tds)",
+                    drcr=(not is_dr),
+                    debitamount=tds_amt if not is_dr else ZERO4,
+                    creditamount=tds_amt if is_dr else ZERO4,
+                    discount=ZERO4,
+                    bankcharges=ZERO4,
+                    tds=ZERO4,
+                    entity=header.entity,
+                    cb_account=cb_acct,
+                )
+            )
+
+        return rows
+
+    # ---- create/update ---------------------------------------------------
+
+    @transaction.atomic
+    def create(self, validated_data):
+        details_payload = validated_data.pop("journaldetails", [])
+        self._ensure_main_account(validated_data)  # validates + stamps header
+
+        header = journalmain.objects.create(**validated_data)
+
+        base_rows = [
+            journaldetails(Journalmain=header, line_kind=DetailKind.BASE, **d)
+            for d in details_payload
+        ]
+        journaldetails.objects.bulk_create(base_rows)
+
+        self._post_with_poster(header)
+        return header
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        details_payload = validated_data.pop("journaldetails", None)
+        self._ensure_main_account(validated_data)
+
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+
+        if details_payload is not None:
+            journaldetails.objects.filter(Journalmain=instance, entity=instance.entity).delete()
+            base_rows = [
+                journaldetails(Journalmain=instance, line_kind=DetailKind.BASE, **d)
+                for d in details_payload
+            ]
+            journaldetails.objects.bulk_create(base_rows)
+
+        self._post_with_poster(instance)
+        return instance
+
     
 
 
 
 
 
-class journaldetailsSerializer(serializers.ModelSerializer):
-    #entityUser = entityUserSerializer(many=True)
-    id = serializers.IntegerField(required=False)
-    accountname = serializers.SerializerMethodField()
+# class journaldetailsSerializer(serializers.ModelSerializer):
+#     #entityUser = entityUserSerializer(many=True)
+#     id = serializers.IntegerField(required=False)
+#     accountname = serializers.SerializerMethodField()
 
-    class Meta:
-        model = journaldetails
-        fields =  ('id','account','accountname','desc','drcr','debitamount','creditamount','discount','bankcharges','tds','chqbank','entity',)
+#     class Meta:
+#         model = journaldetails
+#         fields =  ('id','account','accountname','desc','drcr','debitamount','creditamount','discount','bankcharges','tds','chqbank','entity',)
 
-    def get_accountname(self,obj):
-         return obj.account.accountname
+#     def get_accountname(self,obj):
+#          return obj.account.accountname
 
 
 
-class journalmainSerializer(serializers.ModelSerializer):
-    journaldetails = journaldetailsSerializer(many=True)
-    class Meta:
-        model = journalmain
-        fields = ('id','voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entityfinid','entity','createdby', 'isactive','journaldetails',)
-    def create(self, validated_data):
-        journaldetails_data = validated_data.pop('journaldetails')
-        const = stocktransconstant()
-        with transaction.atomic():
-            order = journalmain.objects.create(**validated_data)
-            for journaldetail_data in journaldetails_data:
-                detail = journaldetails.objects.create(Journalmain = order, **journaldetail_data)
-                print(order.entrydate)
-                id,created  = entry.objects.get_or_create(entrydate1 = order.entrydate,entity = order.entity)
+# class journalmainSerializer(serializers.ModelSerializer):
+#     journaldetails = journaldetailsSerializer(many=True)
+#     class Meta:
+#         model = journalmain
+#         fields = ('id','voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entityfinid','entity','createdby', 'isactive','journaldetails',)
+#     def create(self, validated_data):
+#         journaldetails_data = validated_data.pop('journaldetails')
+#         const = stocktransconstant()
+#         with transaction.atomic():
+#             order = journalmain.objects.create(**validated_data)
+#             for journaldetail_data in journaldetails_data:
+#                 detail = journaldetails.objects.create(Journalmain = order, **journaldetail_data)
+#                 print(order.entrydate)
+#                 id,created  = entry.objects.get_or_create(entrydate1 = order.entrydate,entity = order.entity)
 
-                narration = ''
+#                 narration = ''
 
-                if detail.account.accountcode == 4000:
-                    iscash = True
-                else:
-                    iscash = False
-                # accounttype = 'M'
+#                 if detail.account.accountcode == 4000:
+#                     iscash = True
+#                 else:
+#                     iscash = False
+#                 # accounttype = 'M'
 
-                if order.vouchertype == 'C':
-                    iscash = True
+#                 if order.vouchertype == 'C':
+#                     iscash = True
 
-                    narration = 'Cash V.No '
+#                     narration = 'Cash V.No '
                 
-                if order.vouchertype == 'B':
-                    narration = 'Bank V.No '
+#                 if order.vouchertype == 'B':
+#                     narration = 'Bank V.No '
                 
-                if order.vouchertype == 'J':
-                    narration = 'Journal V.No '
+#                 if order.vouchertype == 'J':
+#                     narration = 'Journal V.No '
                 
 
 
-               # accountentryid,accountentrycreated  = accountentry.objects.get_or_create(entrydate2 = order.entrydate,account =detail.account,  entity = order.entity)
+#                # accountentryid,accountentrycreated  = accountentry.objects.get_or_create(entrydate2 = order.entrydate,account =detail.account,  entity = order.entity)
 
-                if order.vouchertype == 'C':
-                # iscash = False
-                    iscash = True
+#                 if order.vouchertype == 'C':
+#                 # iscash = False
+#                     iscash = True
 
-                    #if self.order.account.accountcode == 4000:
+#                     #if self.order.account.accountcode == 4000:
 
-                    cash = const.getcashid(order.entity)
+#                     cash = const.getcashid(order.entity)
                         
-                    #cash = account.objects.get(entity =order.entity,accountcode = 4000)
-                    if detail.drcr == 1:
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(order.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                     #cash = account.objects.get(entity =order.entity,accountcode = 4000)
+#                     if detail.drcr == 1:
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(order.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = order.voucherno)
-                    else:
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(order.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = order.voucherno)
+#                     else:
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(order.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
                         
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = order.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = order.voucherno)
 
                     
-                if order.vouchertype == 'B':
-                    cash = account.objects.get(id = order.mainaccountid)
-                    if detail.drcr == 1:
-                        if detail.discount > 0:
+#                 if order.vouchertype == 'B':
+#                     cash = account.objects.get(id = order.mainaccountid)
+#                     if detail.drcr == 1:
+#                         if detail.discount > 0:
 
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(order.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                        if detail.bankcharges > 0:
-                            nnation = ' (B Charges)'
-                            bc = const.getbankcharges(order.entity)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(order.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         if detail.bankcharges > 0:
+#                             nnation = ' (B Charges)'
+#                             bc = const.getbankcharges(order.entity)
+#                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
-                        if detail.tds > 0:
-                            nnation = ' (tds)'
-                            tds = const.gettds194q1id(order.entity)
-                            StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         if detail.tds > 0:
+#                             nnation = ' (tds)'
+#                             tds = const.gettds194q1id(order.entity)
+#                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                    else:
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(order.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation ,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                        if detail.bankcharges > 0:
-                            nnation = ' (B Charges)'
-                            bc = const.getbankcharges(order.entity)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                        if detail.tds > 0:
-                            nnation = ' (tds)'
-                            tds = const.gettds194q1id(order.entity)
-                            StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                     else:
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(order.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation ,drcr=0,creditamount=detail.discount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         if detail.bankcharges > 0:
+#                             nnation = ' (B Charges)'
+#                             bc = const.getbankcharges(order.entity)
+#                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         if detail.tds > 0:
+#                             nnation = ' (tds)'
+#                             tds = const.gettds194q1id(order.entity)
+#                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',voucherno = order.voucherno)
 
                 
 
-                StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',iscashtransaction= iscash,voucherno = order.voucherno)
+#                 StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = narration + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate,accounttype='M',iscashtransaction= iscash,voucherno = order.voucherno)
 
           
-        return order
+#         return order
 
-    def update(self, instance, validated_data):
-        const = stocktransconstant()
-        fields = ['voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entityfinid', 'entity','createdby','isactive',]
-        for field in fields:
-            try:
-                setattr(instance, field, validated_data[field])
-            except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-                pass
-        with transaction.atomic():
-            instance.save()
-        # stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'Sale')
-            journaldetails.objects.filter(Journalmain=instance,entity = instance.entity).delete()
-            StockTransactions.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
-        #   stk.updateransaction()
+#     def update(self, instance, validated_data):
+#         const = stocktransconstant()
+#         fields = ['voucherdate','voucherno','vouchertype','mainaccountid','entrydate','entityfinid', 'entity','createdby','isactive',]
+#         for field in fields:
+#             try:
+#                 setattr(instance, field, validated_data[field])
+#             except KeyError:  # validated_data may not contain all fields during HTTP PATCH
+#                 pass
+#         with transaction.atomic():
+#             instance.save()
+#         # stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'Sale')
+#             journaldetails.objects.filter(Journalmain=instance,entity = instance.entity).delete()
+#             StockTransactions.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
+#         #   stk.updateransaction()
 
-            journaldetails_data = validated_data.get('journaldetails')
+#             journaldetails_data = validated_data.get('journaldetails')
 
-            for journaldetail_data in journaldetails_data:
-                detail = journaldetails.objects.create(Journalmain = instance, **journaldetail_data)
-                id,created  = entry.objects.get_or_create(entrydate1 = instance.entrydate,entity = instance.entity)
-              #  StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = 'Journal V.No' + str(instance.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',isactive = 1)
-                #stk.createtransactiondetails(detail=detail,stocktype='S')
+#             for journaldetail_data in journaldetails_data:
+#                 detail = journaldetails.objects.create(Journalmain = instance, **journaldetail_data)
+#                 id,created  = entry.objects.get_or_create(entrydate1 = instance.entrydate,entity = instance.entity)
+#               #  StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = 'Journal V.No' + str(instance.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',isactive = 1)
+#                 #stk.createtransactiondetails(detail=detail,stocktype='S')
 
-                if instance.vouchertype == 'C':
-                    iscash = True
-                    narration = 'Cash V.No '
+#                 if instance.vouchertype == 'C':
+#                     iscash = True
+#                     narration = 'Cash V.No '
                 
-                if instance.vouchertype == 'B':
-                    narration = 'Bank V.No '
+#                 if instance.vouchertype == 'B':
+#                     narration = 'Bank V.No '
                 
-                if instance.vouchertype == 'J':
-                    narration = 'Journal V.No '
+#                 if instance.vouchertype == 'J':
+#                     narration = 'Journal V.No '
 
 
-                if instance.vouchertype == 'C':
-                    iscash = True
-                    #if self.order.account.accountcode == 4000:
+#                 if instance.vouchertype == 'C':
+#                     iscash = True
+#                     #if self.order.account.accountcode == 4000:
                         
-                    cash = const.getcashid(instance.entity)
-                    if detail.drcr == 1:
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(instance.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno,iscashtransaction= iscash)
+#                     cash = const.getcashid(instance.entity)
+#                     if detail.drcr == 1:
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(instance.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno,iscashtransaction= iscash)
                             
 
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = instance.voucherno)
-                    else:
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(instance.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno,iscashtransaction= iscash)
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = instance.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = instance.voucherno)
+#                     else:
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(instance.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno,iscashtransaction= iscash)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='CIH',iscashtransaction= iscash,voucherno = instance.voucherno)
 
                     
-                if instance.vouchertype == 'B':
-                    cash = account.objects.get(id = instance.mainaccountid)
-                    if detail.drcr == 1:
+#                 if instance.vouchertype == 'B':
+#                     cash = account.objects.get(id = instance.mainaccountid)
+#                     if detail.drcr == 1:
 
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(instance.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                        if detail.bankcharges > 0:
-                            nnation = ' (B Charges)'
-                            bc = const.getbankcharges(instance.entity)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(instance.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                         if detail.bankcharges > 0:
+#                             nnation = ' (B Charges)'
+#                             bc = const.getbankcharges(instance.entity)
+#                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                         
-                        if detail.tds > 0:
-                            nnation = ' (tds)'
-                            tds = const.gettds194q1id(instance.entity)
-                            StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                         if detail.tds > 0:
+#                             nnation = ' (tds)'
+#                             tds = const.gettds194q1id(instance.entity)
+#                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',isactive = 1,voucherno = instance.voucherno)
-                    else:
-                        if detail.discount > 0:
-                            nnation = ' (discount)'
-                            disc = const.getdiscount(instance.entity)
-                            StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=0,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',isactive = 1,voucherno = instance.voucherno)
+#                     else:
+#                         if detail.discount > 0:
+#                             nnation = ' (discount)'
+#                             disc = const.getdiscount(instance.entity)
+#                             StockTransactions.objects.create(accounthead= disc.accounthead,account= disc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.discount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
                         
-                        if detail.bankcharges > 0:
-                            nnation = ' (B Charges)'
-                            bc = const.getbankcharges(instance.entity)
-                            StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                         if detail.bankcharges > 0:
+#                             nnation = ' (B Charges)'
+#                             bc = const.getbankcharges(instance.entity)
+#                             StockTransactions.objects.create(accounthead= bc.accounthead,account= bc,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,creditamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.bankcharges,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
-                        if detail.tds > 0:
-                            nnation = ' (tds)'
-                            tds = const.gettds194q1id(instance.entity)
-                            StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
-                            StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                         if detail.tds > 0:
+#                             nnation = ' (tds)'
+#                             tds = const.gettds194q1id(instance.entity)
+#                             StockTransactions.objects.create(accounthead= tds.accounthead,account= tds,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=1,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
+#                             StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno) + nnation,drcr=0,debitamount=detail.tds,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',voucherno = instance.voucherno)
 
-                        StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',isactive = 1,voucherno = instance.voucherno)
+#                         StockTransactions.objects.create(accounthead= cash.accounthead,account= cash,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=1,creditamount=detail.debitamount,debitamount=detail.creditamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',isactive = 1,voucherno = instance.voucherno)
 
                 
-                if detail.account.accountcode == 4000:
-                    iscash = True
-                else:
-                    iscash = False
-                # accounttype = 'M'
+#                 if detail.account.accountcode == 4000:
+#                     iscash = True
+#                 else:
+#                     iscash = False
+#                 # accounttype = 'M'
 
-                if instance.vouchertype == 'C':
-                    iscash = True
+#                 if instance.vouchertype == 'C':
+#                     iscash = True
 
 
               
 
-                StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',iscashtransaction= iscash,voucherno = instance.voucherno)
+#                 StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = instance.vouchertype,transactionid = instance.id,desc = narration + str(instance.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=instance.entity,createdby= instance.createdby,entrydate = instance.entrydate,entry =id,entrydatetime = instance.entrydate,accounttype='M',iscashtransaction= iscash,voucherno = instance.voucherno)
 
         
-        return instance
+#         return instance
 
 
 
@@ -2040,43 +2390,51 @@ class PurchaseReturnPDFSerializer(serializers.ModelSerializer):
 
 
 class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
-   # saleInvoiceDetails1 = serializers.SerializerMethodField()
     saleInvoiceDetails = SalesOrderDetailsPDFSerializer(many=True, read_only=True)
-    entityname = serializers.CharField(source='entity.entityname', read_only=True)
-    entitypan = serializers.CharField(source='entity.panno', read_only=True)
-    entitydesc = serializers.CharField(source='entity.entitydesc', read_only=True)
-   # entityaddress = serializers.SerializerMethodField()
-    entityaddress = serializers.CharField(source='entity.address', read_only=True)
-    entitycityname = serializers.CharField(source='entity.city.cityname', read_only=True)
-    entitystate = serializers.CharField(source='entity.state.statename', read_only=True)
-    entitypincode = serializers.CharField(source='entity.pincode', read_only=True)
-    entitygst = serializers.CharField(source='entity.gstno', read_only=True)
-    billtoname = serializers.CharField(source='accountid.accountname', read_only=True)
-    billtoaddress1 = serializers.CharField(source='accountid.address1', read_only=True)
-    billtoaddress2 = serializers.CharField(source='accountid.address2', read_only=True)
-    billtostate = serializers.CharField(source='accountid.state.statename', read_only=True)
-    billtocity = serializers.CharField(source='accountid.city.cityname', read_only=True)
-    billtopin = serializers.CharField(source='accountid.city.pincode', read_only=True)
-    billtopan = serializers.CharField(source='accountid.pan', read_only=True)
-    #billtoaddress = serializers.SerializerMethodField()
-    billtogst = serializers.CharField(source='accountid.gstno', read_only=True)
-    shiptoname = serializers.CharField(source='shippedto.full_name', read_only=True)
-    shiptoaddress1 = serializers.CharField(source='shippedto.address1', read_only=True)
-    shiptoaddress2 = serializers.CharField(source='shippedto.address2', read_only=True)
-    shiptostate = serializers.CharField(source='shippedto.state.statename', read_only=True)
-    shiptocity = serializers.CharField(source='shippedto.city.cityname', read_only=True)
-    shiptopin = serializers.CharField(source='shippedto.city.pincode', read_only=True)
-    shiptopan = serializers.CharField(source='shippedto.pan', read_only=True)
-    shiptogst = serializers.CharField(source='shippedto.gstno', read_only=True)
-    transportname = serializers.CharField(source='transport.accountname', read_only=True)
-    #shiptoaddress = serializers.SerializerMethodField()
+
+    # Entity
+    entityname = serializers.CharField(source="entity.entityname", read_only=True)
+    entitypan = serializers.CharField(source="entity.panno", read_only=True)
+    entitydesc = serializers.CharField(source="entity.entitydesc", read_only=True)
+    entityaddress = serializers.CharField(source="entity.address", read_only=True)
+    entitycityname = serializers.CharField(source="entity.city.cityname", read_only=True)
+    entitystate = serializers.CharField(source="entity.state.statename", read_only=True)
+    entitypincode = serializers.CharField(source="entity.pincode", read_only=True)
+    entitygst = serializers.CharField(source="entity.gstno", read_only=True)
+
+    # Bill-to
+    billtoname = serializers.CharField(source="accountid.accountname", read_only=True)
+    billtoaddress1 = serializers.CharField(source="accountid.address1", read_only=True)
+    billtoaddress2 = serializers.CharField(source="accountid.address2", read_only=True)
+    billtostate = serializers.CharField(source="accountid.state.statename", read_only=True)
+    billtocity = serializers.CharField(source="accountid.city.cityname", read_only=True)
+    billtopin = serializers.CharField(source="accountid.city.pincode", read_only=True)
+    billtopan = serializers.CharField(source="accountid.pan", read_only=True)
+    billtogst = serializers.CharField(source="accountid.gstno", read_only=True)
+
+    # Ship-to
+    shiptoname = serializers.CharField(source="shippedto.full_name", read_only=True)
+    shiptoaddress1 = serializers.CharField(source="shippedto.address1", read_only=True)
+    shiptoaddress2 = serializers.CharField(source="shippedto.address2", read_only=True)
+    shiptostate = serializers.CharField(source="shippedto.state.statename", read_only=True)
+    shiptocity = serializers.CharField(source="shippedto.city.cityname", read_only=True)
+    shiptopin = serializers.CharField(source="shippedto.city.pincode", read_only=True)
+    shiptopan = serializers.CharField(source="shippedto.pan", read_only=True)
+    shiptogst = serializers.CharField(source="shippedto.gstno", read_only=True)
+
+    # Other
+    transportname = serializers.CharField(source="transport.accountname", read_only=True)
+    phoneno = serializers.CharField(source="entity.phoneoffice", read_only=True)
+    phoneno2 = serializers.CharField(source="entity.phoneresidence", read_only=True)
+    bankname = serializers.CharField(source="entity.bank.bankname", read_only=True)
+    bankacno = serializers.CharField(source="entity.bankacno", read_only=True)
+    ifsccode = serializers.CharField(source="entity.ifsccode", read_only=True)
+
+    # Display invoice number as billno in PDF
+    billno = serializers.CharField(source="invoicenumber", read_only=True)
+
+    # Computed
     amountinwords = serializers.SerializerMethodField()
-    phoneno = serializers.CharField(source='entity.phoneoffice', read_only=True)
-    phoneno2 = serializers.CharField(source= 'entity.phoneresidence', read_only=True)
-    bankname = serializers.CharField(source= 'entity.bank.bankname', read_only=True)
-    bankacno = serializers.CharField(source= 'entity.bankacno', read_only=True)
-    ifsccode = serializers.CharField(source= 'entity.ifsccode', read_only=True)
-    billno = serializers.CharField(source= 'invoicenumber', read_only=True)
     gst_summary = serializers.SerializerMethodField()
     einvoice_details = serializers.SerializerMethodField()
     doctype = serializers.SerializerMethodField()
@@ -2084,33 +2442,107 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOderHeader
         fields = (
-            'id', 'sorderdate', 'billno','accountid', 'billtoname', 'billtoaddress1',
-             'billtoaddress2','billtocity','billtostate','billtogst','billtopan','billtopin',
-            'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply',
-            'totalquanity', 'totalpieces', 'advance', 'shiptostate', 'shiptoname','shiptocity','shiptoaddress1','shiptoaddress2','shiptopan','shiptogst','shiptopin',
-            'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
-            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate','stbefdiscount','discount', 'subtotal',
-            'cgst', 'sgst', 'igst', 'cess', 'totalgst', 'expenses', 'gtotal', 'amountinwords',
-            'subentity', 'entity', 'entityname', 'entityaddress','entitycityname','entitystate','entitypincode', 'entitygst', 'createdby', 'eway',
-            'einvoice', 'einvoicepluseway', 'isactive', 'phoneno', 'phoneno2', 'entitydesc','reversecharge','bankname','bankacno','ifsccode','transportname',
-            'entitypan', 'saleInvoiceDetails','gst_summary','einvoice_details','doctype'
+            "id", "sorderdate", "billno", "accountid",
+            "billtoname", "billtoaddress1", "billtoaddress2", "billtocity",
+            "billtostate", "billtogst", "billtopan", "billtopin",
+            "latepaymentalert", "grno", "terms", "vehicle", "taxtype", "billcash",
+            "supply", "totalquanity", "totalpieces", "advance",
+            "shiptostate", "shiptoname", "shiptocity", "shiptoaddress1",
+            "shiptoaddress2", "shiptopan", "shiptogst", "shiptopin",
+            "remarks", "transport", "broker", "taxid", "tds194q", "tds194q1",
+            "tcs206c1ch1", "tcs206c1ch2", "tcs206c1ch3", "tcs206C1", "tcs206C2",
+            "addless", "duedate", "stbefdiscount", "discount", "subtotal",
+            "cgst", "sgst", "igst", "cess", "totalgst", "expenses", "gtotal",
+            "amountinwords",
+            "subentity", "entity", "entityname", "entityaddress",
+            "entitycityname", "entitystate", "entitypincode", "entitygst",
+            "createdby", "eway", "einvoice", "einvoicepluseway", "isactive",
+            "phoneno", "phoneno2", "entitydesc", "reversecharge",
+            "bankname", "bankacno", "ifsccode", "transportname",
+            "entitypan", "saleInvoiceDetails", "gst_summary", "einvoice_details",
+            "doctype",
         )
+
+    # -------- Computed fields --------
+
+    def get_doctype(self, obj):
+        return "Tax Invoice"
+
+    def get_amountinwords(self, obj):
+        # Prefer Indian currency wording; fall back to simple words if needed
+        try:
+            text = num2words(obj.gtotal or 0, lang="en_IN", to="currency", currency="INR")
+            return string.capwords(text)
+        except Exception:
+            return f"{string.capwords(num2words(obj.gtotal or 0))} only"
+
+    def get_gst_summary(self, obj):
+        """
+        GST summary for the sales order header.
+        Keeps your original grouping-by-header behavior, but fixes mixed-type expressions.
+        """
+        qs = salesOrderdetails.objects.filter(salesorderheader_id=obj.id)
+
+        # Reusable field specs
+        rate_field = DecimalField(max_digits=6,  decimal_places=2)
+        money_field = DecimalField(max_digits=14, decimal_places=2)
+
+        # taxPercent: if IGST% is 0, use CGST% + SGST%, else IGST%
+        tax_percent_expr = Case(
+            When(
+                igstpercent=Value(0),
+                then=ExpressionWrapper(
+                    Coalesce(Cast(F("cgstpercent"), rate_field), Value(0, output_field=rate_field)) +
+                    Coalesce(Cast(F("sgstpercent"), rate_field), Value(0, output_field=rate_field)),
+                    output_field=rate_field,
+                ),
+            ),
+            default=Cast(F("igstpercent"), rate_field),
+            output_field=rate_field,
+        )
+
+        aggregated = (
+            qs.values("salesorderheader")  # keep same grouping you had before
+            .annotate(
+                taxPercent=tax_percent_expr,
+                taxable_amount=ExpressionWrapper(
+                    Coalesce(Sum(Cast("amount", money_field)), Value(0, output_field=money_field)),
+                    output_field=money_field,
+                ),
+                total_cgst_amount=ExpressionWrapper(
+                    Coalesce(Sum(Cast("cgst", money_field)), Value(0, output_field=money_field)),
+                    output_field=money_field,
+                ),
+                total_sgst_amount=ExpressionWrapper(
+                    Coalesce(Sum(Cast("sgst", money_field)), Value(0, output_field=money_field)),
+                    output_field=money_field,
+                ),
+                total_igst_amount=ExpressionWrapper(
+                    Coalesce(Sum(Cast("igst", money_field)), Value(0, output_field=money_field)),
+                    output_field=money_field,
+                ),
+            )
+        )
+
+        return list(aggregated)
 
 
     def get_einvoice_details(self, obj):
         try:
-            content_type = ContentType.objects.get_for_model(SalesOderHeader)
-            einv = EInvoiceDetails.objects.get(content_type=content_type, object_id=obj.id)
+            ct = ContentType.objects.get_for_model(SalesOderHeader)
+            einv = EInvoiceDetails.objects.get(content_type=ct, object_id=obj.id)
         except EInvoiceDetails.DoesNotExist:
             return None
 
         qr_image_base64 = None
         if einv.signed_qr_code:
-            # Generate QR image from SignedQRCode
-            qr = qrcode.make(einv.signed_qr_code)
-            buffered = BytesIO()
-            qr.save(buffered, format="PNG")
-            qr_image_base64 = base64.b64encode(buffered.getvalue()).decode()
+            try:
+                qr = qrcode.make(einv.signed_qr_code)
+                buf = BytesIO()
+                qr.save(buf, format="PNG")
+                qr_image_base64 = base64.b64encode(buf.getvalue()).decode()
+            except Exception:
+                qr_image_base64 = None
 
         return {
             "irn": einv.irn,
@@ -2119,41 +2551,8 @@ class SalesOrderHeaderPDFSerializer(serializers.ModelSerializer):
             "qr_image_base64": qr_image_base64,
             "ewb_no": einv.ewb_no,
             "ewb_date": einv.ewb_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_date else None,
-            "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None
+            "ewb_valid_till": einv.ewb_valid_till.strftime("%d/%m/%Y %H:%M:%S") if einv.ewb_valid_till else None,
         }
-
-    def get_doctype(self, obj):
-        return "Tax Invoice"
-
-
-   
-
-    
-
-    def get_amountinwords(self, obj):
-        return f"{string.capwords(num2words(obj.gtotal))} only"
-
-    def get_gst_summary(self, obj):
-        """
-        Fetch and serialize GST summary data for the sales order header.
-        """
-        salesorderheader_id = obj.id
-        aggregated_data = (
-            salesOrderdetails.objects.filter(salesorderheader_id=salesorderheader_id)
-            .values("salesorderheader")
-            .annotate(
-                taxPercent=Case(
-                    When(igstpercent=0, then=F("cgstpercent") + F("sgstpercent")),
-                    default=F("igstpercent"),
-                    output_field=FloatField(),
-                ),
-                taxable_amount=Sum("amount"),  # <- Removed filter
-                total_cgst_amount=Sum("cgst", filter=Q(cgst__isnull=False)),
-                total_sgst_amount=Sum("sgst", filter=Q(sgst__isnull=False)),
-                total_igst_amount=Sum("igst", filter=Q(igst__isnull=False)),
-            )
-        )
-        return list(aggregated_data)
     
     # def get_saleInvoiceDetails1(self, obj):
     #     details = obj.saleInvoiceDetails.all()  
@@ -2489,42 +2888,131 @@ def _recompute_header_totals(header: SalesOderHeader):
     else:
         header.gtotal = (gross + (header.roundOff or ZERO2)).quantize(Decimal("0.01"))
 
+Q2 = Decimal("0.01")
+def q2(x):
+    if x is None or x == "":
+        return ZERO2
+    return Decimal(x).quantize(Q2, rounding=ROUND_HALF_UP)
+
+def _normalize_on_isigst_flip(instance, new_isigst: bool):
+    """
+    Make existing data comply with header/detail CheckConstraints when flipping regime.
+    """
+    from .models import salesOrderdetails as _Detail
+    if new_isigst:
+        instance.cgst = ZERO2
+        instance.sgst = ZERO2
+        _Detail.objects.filter(salesorderheader=instance).update(isigst=True, cgst=ZERO2, sgst=ZERO2)
+    else:
+        instance.igst = ZERO2
+        _Detail.objects.filter(salesorderheader=instance).update(isigst=False, igst=ZERO2)
+
+def _deduce_isigst_from_payload(validated_header: dict, details_data: list, fallback: bool) -> bool:
+    """
+    Decide isigst from numbers the client sent when 'isigst' isn't in the payload.
+    Priority: header amounts → detail amounts → detail flags → fallback.
+    """
+    igst = q2(validated_header.get("igst"))
+    cgst = q2(validated_header.get("cgst"))
+    sgst = q2(validated_header.get("sgst"))
+
+    # Clear, non-ambiguous signals from header:
+    if igst > ZERO2 and cgst == ZERO2 and sgst == ZERO2:
+        return True
+    if (cgst > ZERO2 or sgst > ZERO2) and igst == ZERO2:
+        return False
+
+    # Look at details:
+    any_igst_amt = any(q2(d.get("igst")) > ZERO2 for d in details_data)
+    any_cgsg_amt = any(q2(d.get("cgst")) > ZERO2 or q2(d.get("sgst")) > ZERO2 for d in details_data)
+    if any_igst_amt and not any_cgsg_amt:
+        return True
+    if any_cgsg_amt and not any_igst_amt:
+        return False
+
+    # Look at detail flags (majority):
+    flags = [bool(d.get("isigst")) for d in details_data if d.get("isigst") is not None]
+    if flags:
+        trues = sum(1 for f in flags if f)
+        falses = len(flags) - trues
+        if trues > falses:
+            return True
+        if falses > trues:
+            return False
+
+    return bool(fallback)
+
+def _ensure_line_totals_in_payload(row: dict) -> None:
+    """If linetotal missing, compute it from amounts—no regime logic."""
+    amount = q2(row.get("amount"))
+    cgst   = q2(row.get("cgst"))
+    sgst   = q2(row.get("sgst"))
+    igst   = q2(row.get("igst"))
+    cess   = q2(row.get("cess"))
+    ochg   = q2(row.get("othercharges"))
+    if row.get("linetotal") in (None, ""):
+        row["linetotal"] = q2(amount + cgst + sgst + igst + cess + ochg)
+
+def _rollup_component_taxes_to_header(hdr):
+    agg = hdr.saleInvoiceDetails.aggregate(
+        sub=Sum("amount"), cg=Sum("cgst"), sg=Sum("sgst"), ig=Sum("igst"), ce=Sum("cess"),
+        stbef=Sum("befDiscountProductAmount"), discv=Sum("orderDiscountValue"),
+    )
+    hdr.subtotal      = q2(agg["sub"] or ZERO2)
+    hdr.cgst          = q2(agg["cg"] or ZERO2)
+    hdr.sgst          = q2(agg["sg"] or ZERO2)
+    hdr.igst          = q2(agg["ig"] or ZERO2)
+    hdr.cess          = q2(agg["ce"] or ZERO2)
+    hdr.totalgst      = q2(hdr.cgst + hdr.sgst + hdr.igst + hdr.cess)
+    hdr.stbefdiscount = q2(agg["stbef"] or ZERO2)
+    hdr.discount      = q2(agg["discv"] or ZERO2)
+
+def _recompute_header_totals(hdr):
+    addless  = q2(hdr.addless or ZERO2)
+    expenses = q2(hdr.expenses or ZERO2)
+    advance  = q2(hdr.advance or ZERO2)
+    gross = q2(hdr.subtotal + hdr.totalgst + addless + expenses)
+    net   = q2(gross - advance)
+    hdr.roundOff = net
+    hdr.gtotal   = net
+
+
 class salesOrderdetailsSerializer(serializers.ModelSerializer):
     # nested other charges
-    otherchargesdetail = salesotherdetailsSerializer(many=True, required=False)
+    otherchargesdetail = serializers.ListSerializer(child=serializers.DictField(), required=False)
 
     id = serializers.IntegerField(required=False)
 
     # read-only convenience fields from related product
     productname = serializers.CharField(source='product.productname', read_only=True, allow_null=True)
-    hsn        = serializers.CharField(source='product.hsn.hsnCode', read_only=True, allow_null=True)
-    mrp        = serializers.DecimalField(source='product.mrp', max_digits=14, decimal_places=2,
-                                          read_only=True, allow_null=True)
+    hsn         = serializers.CharField(source='product.hsn.hsnCode', read_only=True, allow_null=True)
+    mrp         = serializers.DecimalField(source='product.mrp', max_digits=14, decimal_places=2,
+                                           read_only=True, allow_null=True)
 
-    # stricter validators on money/quantity/percent fields (all remain optional—model defaults handle omissions)
-    orderqty = serializers.DecimalField(max_digits=14, decimal_places=4, min_value=ZERO4, required=False)
-    pieces   = serializers.IntegerField(min_value=0, required=False)
+    # validators (still optional; model defaults handle omissions)
+    orderqty = serializers.DecimalField(max_digits=14, decimal_places=4, required=False)
+    pieces   = serializers.IntegerField(required=False)
 
-    befDiscountProductAmount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    ratebefdiscount          = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    orderDiscount            = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    orderDiscountValue       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    befDiscountProductAmount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    ratebefdiscount          = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    orderDiscount            = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    orderDiscountValue       = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
-    rate   = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    rate   = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
-    othercharges = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    othercharges = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
-    cgst = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    sgst = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    igst = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    cess = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    cgst = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    sgst = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    igst = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    cess = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
-    cgstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
-    sgstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
-    igstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
+    cgstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    sgstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    igstpercent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
 
-    linetotal = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    linetotal = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
     class Meta:
         model = salesOrderdetails
@@ -2539,28 +3027,15 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
-        """
-        Guard rails:
-          - If isIGST=True → CGST/SGST amounts must be 0 (and typically percents too)
-          - If isIGST=False → IGST amount must be 0
-        """
-        is_inter = bool(attrs.get("isigst"))
-        cgst = attrs.get("cgst") or ZERO2
-        sgst = attrs.get("sgst") or ZERO2
-        igst = attrs.get("igst") or ZERO2
+        # Non-negative sanity (DB constraints also protect this)
+        for f in ("amount", "cgst", "sgst", "igst", "cess", "othercharges", "linetotal"):
+            if attrs.get(f) is not None and q2(attrs[f]) < ZERO2:
+                raise serializers.ValidationError({f: "Must be >= 0.00"})
 
-        if is_inter:
-            if cgst != 0 or sgst != 0:
-                raise serializers.ValidationError("IGST line cannot have CGST/SGST.")
-            # optional strictness on percents as well:
-            if (attrs.get("cgstpercent") or ZERO2) != 0 or (attrs.get("sgstpercent") or ZERO2) != 0:
-                raise serializers.ValidationError("IGST line cannot have CGST%/SGST%.")
-        else:
-            if igst != 0:
-                raise serializers.ValidationError("Intra-state line cannot have IGST.")
-            if (attrs.get("igstpercent") or ZERO2) != 0:
-                raise serializers.ValidationError("Intra-state line cannot have IGST%.")
-
+        # Compute linetotal if missing
+        row = dict(attrs)
+        _ensure_line_totals_in_payload(row)
+        attrs["linetotal"] = row["linetotal"]
         return attrs
     
 
@@ -2729,39 +3204,219 @@ class AddDetailsSerializer(serializers.Serializer):
     addldocdtls = AddlDocDtlsSerializer(many=True, required=False)
 
 
+def _normalize_sales_detail_taxes_trust_amounts(d: dict, is_inter: bool) -> None:
+    """
+    Normalize ONE sales detail dict IN-PLACE.
+    Priority: USE POSTED AMOUNTS if provided (>0); otherwise compute from %; otherwise 0.
+    Enforce regime:
+      - Inter-state: IGST only (zero CGST/SGST).
+      - Intra-state: CGST+SGST only (zero IGST).
+    """
+    amt = q2(d.get("amount", ZERO2) or ZERO2)
+
+    # Posted amounts (trusted if > 0)
+    cgst_amt = q2(d.get("cgst", ZERO2) or ZERO2)
+    sgst_amt = q2(d.get("sgst", ZERO2) or ZERO2)
+    igst_amt = q2(d.get("igst", ZERO2) or ZERO2)
+    cess_amt = q2(d.get("cess", ZERO2) or ZERO2)
+
+    # Posted percents (used only when corresponding amount is 0)
+    c_pct = q2(d.get("cgstpercent", ZERO2) or ZERO2)
+    s_pct = q2(d.get("sgstpercent", ZERO2) or ZERO2)
+    i_pct = q2(d.get("igstpercent", ZERO2) or ZERO2)
+
+    if is_inter:
+        # IGST regime: keep IGST if posted; else compute from igst% ; else merge cgst+sgst if present; else compute from their %
+        if igst_amt > ZERO2:
+            cgst_amt = sgst_amt = ZERO2
+        elif i_pct > ZERO2:
+            igst_amt = q2(amt * i_pct / Decimal("100"))
+            cgst_amt = sgst_amt = ZERO2
+        elif (cgst_amt > ZERO2 or sgst_amt > ZERO2):
+            igst_amt = q2(cgst_amt + sgst_amt)
+            cgst_amt = sgst_amt = ZERO2
+        elif (c_pct > ZERO2 or s_pct > ZERO2):
+            igst_amt = q2(amt * (c_pct + s_pct) / Decimal("100"))
+            cgst_amt = sgst_amt = ZERO2
+        else:
+            cgst_amt = sgst_amt = ZERO2  # leave igst as posted (zero)
+    else:
+        # Intra regime: keep CGST/SGST if posted; else compute from their %; else split IGST (amount or %) into halves
+        if (cgst_amt > ZERO2 or sgst_amt > ZERO2):
+            igst_amt = ZERO2
+            # if only one side posted but percents available, fill the other from % (optional, safe no-op if pct=0)
+            if cgst_amt == ZERO2 and c_pct > ZERO2:
+                cgst_amt = q2(amt * c_pct / Decimal("100"))
+            if sgst_amt == ZERO2 and s_pct > ZERO2:
+                sgst_amt = q2(amt * s_pct / Decimal("100"))
+        elif (c_pct > ZERO2 or s_pct > ZERO2):
+            cgst_amt = q2(amt * c_pct / Decimal("100"))
+            sgst_amt = q2(amt * s_pct / Decimal("100"))
+            igst_amt = ZERO2
+        elif igst_amt > ZERO2:
+            half = q2(igst_amt / Decimal("2"))
+            cgst_amt, sgst_amt, igst_amt = half, q2(igst_amt - half), ZERO2
+        elif i_pct > ZERO2:
+            half = q2(i_pct / Decimal("2"))
+            cgst_amt = q2(amt * half / Decimal("100"))
+            sgst_amt = q2(amt * (i_pct - half) / Decimal("100"))
+            igst_amt = ZERO2
+        else:
+            igst_amt = ZERO2  # leave cgst/sgst as posted (zeros)
+
+    d["cgst"] = cgst_amt
+    d["sgst"] = sgst_amt
+    d["igst"] = igst_amt
+    d["cess"] = cess_amt
+    # (optional) reflect regime on the row for downstream logic
+    d["isigst"] = bool(is_inter)
+
+def _rollup_component_taxes_to_header(order) -> None:
+    from invoice.models import salesOrderdetails
+    agg = (salesOrderdetails.objects
+           .filter(salesorderheader=order)
+           .annotate(
+               _cgst=Coalesce(F("cgst"), V(ZERO2)),
+               _sgst=Coalesce(F("sgst"), V(ZERO2)),
+               _igst=Coalesce(F("igst"), V(ZERO2)),
+               _cess=Coalesce(F("cess"), V(ZERO2)),
+           ).aggregate(
+               sum_cgst=Coalesce(Sum("_cgst"), V(ZERO2)),
+               sum_sgst=Coalesce(Sum("_sgst"), V(ZERO2)),
+               sum_igst=Coalesce(Sum("_igst"), V(ZERO2)),
+               sum_cess=Coalesce(Sum("_cess"), V(ZERO2)),
+           ))
+    order.cgst = q2(agg["sum_cgst"])
+    order.sgst = q2(agg["sum_sgst"])
+    order.igst = q2(agg["sum_igst"])
+    order.cess = q2(agg["sum_cess"])
+
+def _recompute_header_totals(order) -> None:
+    from invoice.models import salesOrderdetails
+    agg = (salesOrderdetails.objects
+           .filter(salesorderheader=order)
+           .annotate(
+               _amt = Coalesce(F("amount"), V(ZERO2)),
+               _cgst= Coalesce(F("cgst"),   V(ZERO2)),
+               _sgst= Coalesce(F("sgst"),   V(ZERO2)),
+               _igst= Coalesce(F("igst"),   V(ZERO2)),
+               _cess= Coalesce(F("cess"),   V(ZERO2)),
+           ).aggregate(
+               total_amount=Coalesce(Sum("_amt"),  V(ZERO2)),
+               sum_cgst    =Coalesce(Sum("_cgst"), V(ZERO2)),
+               sum_sgst    =Coalesce(Sum("_sgst"), V(ZERO2)),
+               sum_igst    =Coalesce(Sum("_igst"), V(ZERO2)),
+               sum_cess    =Coalesce(Sum("_cess"), V(ZERO2)),
+           ))
+
+    subtotal = q2(agg["total_amount"])
+    totalgst = q2(agg["sum_cgst"] + agg["sum_sgst"] + agg["sum_igst"] + agg["sum_cess"])
+    discount = q2(order.discount or ZERO2)
+    addless  = q2(order.addless  or ZERO2)
+    expenses = q2(order.expenses or ZERO2)
+
+    order.stbefdiscount = subtotal
+    order.subtotal      = subtotal
+    order.totalgst      = totalgst
+    order.gtotal        = q2(subtotal - discount + addless + totalgst + expenses)
+
+def _estimate_unit_cost(product) -> Decimal:
+    """
+    Best-effort fallback for InventoryMove.unit_cost on SALES (COGS).
+    Tries common field names; returns ZERO4 if nothing found.
+    """
+    for attr in (
+        "standardcost", "std_cost", "average_cost", "avgcost",
+        "last_purchase_rate", "lastpurchaserate", "purchase_rate", "purchaserate",
+    ):
+        val = getattr(product, attr, None)
+        try:
+            val = Decimal(str(val))
+        except Exception:
+            val = None
+        if val and val > ZERO4:
+            return val.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    return ZERO4
+
+
+
+
+
+
+# serializers.py (only relevant parts changed)
+from django.db import transaction
+from django.db.models import Max
+from django.contrib.contenttypes.models import ContentType
+
+# keep your existing imports...
+# IMPORTANT: ensure stocktransactionsale is imported where it lives
+# from Finacc.invoice.posting import stocktransactionsale  # adjust path if needed
 
 class SalesOderHeaderSerializer(serializers.ModelSerializer):
+    # ---------- nested ----------
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
     adddetails = serializers.DictField(required=False, write_only=True)
-    originalinvoice_number = serializers.SerializerMethodField()
-    einvoice_details = serializers.SerializerMethodField()
 
-    # stricter money/percent validators (not required; model defaults handle omissions)
-    # apptaxrate    = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=ZERO2, max_value=Decimal("100.00"), required=False)
-    stbefdiscount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    discount      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    subtotal      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    totalgst      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    expenses      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    addless       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    advance       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
-    gtotal        = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    # ---------- read-only helpers ----------
+    originalinvoice_number = serializers.SerializerMethodField()
+    einvoice_details       = serializers.SerializerMethodField()
+
+    # ---------- optional numeric fields (model defaults still apply) ----------
+    stbefdiscount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    discount      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    subtotal      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    totalgst      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    expenses      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    addless       = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    advance       = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    gtotal        = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     roundOff      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
     class Meta:
         model = SalesOderHeader
         fields = (
-            'id', 'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'state', 'district', 'city',
-            'pincode', 'terms', 'vehicle', 'taxtype', 'billcash', 'supply', 'totalquanity', 'totalpieces', 'advance',
-            'shippedto', 'remarks', 'transport', 'broker', 'taxid', 'tds194q', 'tds194q1', 'tcs206c1ch1',
-            'tcs206c1ch2', 'tcs206c1ch3', 'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'stbefdiscount', 'subtotal',
-            'discount', 'cgst', 'sgst', 'igst', 'isigst', 'invoicetype', 'reversecharge', 'cess', 'totalgst',
-            'expenses', 'gtotal', 'roundOff', 'entityfinid', 'subentity', 'entity', 'createdby', 'eway', 'einvoice',
-            'isammended', 'originalinvoice', 'originalinvoice_number', 'einvoicepluseway', 'isactive',
-            'saleInvoiceDetails', 'adddetails', 'einvoice_details', 'isadditionaldetail', 'invoicenumber',
+            'id','sorderdate','billno','accountid','latepaymentalert','grno','state','district','city',
+            'pincode','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance',
+            'shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1',
+            'tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless','duedate','stbefdiscount','subtotal',
+            'discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst',
+            'expenses','gtotal','roundOff','entityfinid','subentity','entity','createdby','eway','einvoice',
+            'isammended','originalinvoice','originalinvoice_number','einvoicepluseway','isactive',
+            'saleInvoiceDetails','adddetails','einvoice_details','isadditionaldetail','invoicenumber',
         )
 
-    # ---------- Read helpers ----------
+    # ===== utilities ==========================================================
+
+    @staticmethod
+    def _pk_or_none(val):
+        """Return positive int PK, else None for 0/'0'/None/''/negatives."""
+        try:
+            i = int(val)
+            return i if i > 0 else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _strip_pk(cls, d: dict):
+        """Remove 'id' key if it's falsy or non-positive."""
+        if 'id' in d and cls._pk_or_none(d['id']) is None:
+            d.pop('id', None)
+        return d
+
+    @staticmethod
+    def _header_update_fields():
+        return [
+            'sorderdate','billno','accountid','latepaymentalert','grno','terms','vehicle','taxtype','billcash',
+            'supply','totalquanity','totalpieces','advance','shippedto','remarks','transport','broker','taxid',
+            'tds194q','tds194q1','tcs206c1ch1','state','district','city','pincode','tcs206c1ch2','tcs206c1ch3',
+            'tcs206C1','tcs206C2','addless','duedate','stbefdiscount','subtotal','discount',
+            'cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst','expenses','gtotal',
+            'roundOff','isactive','eway','einvoice','einvoicepluseway','entityfinid','subentity','entity',
+            'createdby','isadditionaldetail','invoicenumber',
+        ]
+
+    # ===== read helpers =======================================================
+
     def get_originalinvoice_number(self, obj):
         return getattr(getattr(obj, "originalinvoice", None), "invoicenumber", None)
 
@@ -2780,33 +3435,66 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
-        rep["adddetails"] = _build_adddetails_dict(instance)
+        try:
+            rep["adddetails"] = _build_adddetails_dict(instance)
+        except Exception:
+            rep["adddetails"] = None
         return rep
 
-    # ---------- Normalize taxes before create/update ----------
+    # ===== validation (pass-through; no state/logic) ==========================
     def validate(self, attrs):
-        is_inter = _apply_tax_scheme_to_header_data(attrs)
-        for d in attrs.get("saleInvoiceDetails") or []:
-            _apply_tax_scheme_to_detail_dict(is_inter, d)
         return attrs
 
-    # ---------- Create ----------
-    @transaction.atomic
-    def create(self, validated_data):
-        details_data = validated_data.pop('saleInvoiceDetails', [])
-        adddetails_data = validated_data.pop('adddetails', {})
-        validated_data.pop('billno', None)  # auto-assign
+    # ===== private steps (shared by create/update) ============================
 
-        # ensure tax scheme normalized
-        is_inter = _apply_tax_scheme_to_header_data(validated_data)
-        for d in details_data:
-            _apply_tax_scheme_to_detail_dict(is_inter, d)
+    def _decide_and_enforce_isigst(self, inst_or_data, details_data, is_create: bool) -> bool:
+        """
+        Decide effective 'isigst' and zero opposite header tax fields to satisfy
+        DB CheckConstraint before save.
+        """
+        if is_create:
+            provided = inst_or_data.get('isigst', None)
+            new_isigst = _deduce_isigst_from_payload(inst_or_data, details_data, fallback=bool(provided or False)) \
+                         if provided is None else bool(provided)
+            inst_or_data['isigst'] = new_isigst
+            if new_isigst:
+                inst_or_data['cgst'] = ZERO2
+                inst_or_data['sgst'] = ZERO2
+            else:
+                inst_or_data['igst'] = ZERO2
+            return new_isigst
 
-        # Bill no
-        max_bill = SalesOderHeader.objects.filter(entity=validated_data['entity']).aggregate(m=Max('billno'))['m'] or 0
+        # update-path
+        instance, payload = inst_or_data
+        provided = payload.get('isigst', None)
+        new_isigst = _deduce_isigst_from_payload(payload, details_data, fallback=instance.isigst) \
+                     if provided is None else bool(provided)
+
+        # if flipping or payload would violate constraint -> normalize first
+        need_normalize = (
+            new_isigst != bool(instance.isigst)
+            or (new_isigst and (q2(payload.get('cgst', instance.cgst)) > ZERO2 or
+                                q2(payload.get('sgst', instance.sgst)) > ZERO2))
+            or ((not new_isigst) and q2(payload.get('igst', instance.igst)) > ZERO2)
+        )
+        if need_normalize:
+            _normalize_on_isigst_flip(instance, new_isigst)
+
+        # enforce opposite zeros in payload we're about to save
+        if new_isigst:
+            payload['cgst'] = ZERO2
+            payload['sgst'] = ZERO2
+        else:
+            payload['igst'] = ZERO2
+        payload['isigst'] = new_isigst
+        return new_isigst
+
+    def _number_and_create_header(self, validated_data) -> SalesOderHeader:
+        """Assign next billno + invoicenumber and create header."""
+        validated_data.pop('billno', None)
+        max_bill  = SalesOderHeader.objects.filter(entity=validated_data['entity']).aggregate(m=Max('billno'))['m'] or 0
         next_bill = max_bill + 1
 
-        # Numbering settings
         settings = (SalesInvoiceSettings.objects
                     .select_for_update()
                     .filter(entity=validated_data['entity'].id,
@@ -2820,66 +3508,176 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         if SalesOderHeader.objects.filter(invoicenumber=number).exists():
             raise Exception("Duplicate invoice number generated. Please try again.")
 
-        # Create header
         order = SalesOderHeader.objects.create(**validated_data, billno=next_bill, invoicenumber=number)
+        settings.current_number += 1
+        settings.save()
+        return order
 
-        # AddDetails children
-        paydtls_data = adddetails_data.get('paydtls')
-        refdtls_data = adddetails_data.get('refdtls')
-        ewbdtls_data = adddetails_data.get('ewbdtls')
-        expdtls_data = adddetails_data.get('expdtls')
-        addldocdtls_data = adddetails_data.get('addldocdtls', [])
+    def _upsert_adddetails(self, order, adddetails_data: dict, is_update: bool):
+        """Create/Update Pay/Ref/Ewb/Exp and AddlDoc lines."""
+        paydtls_data     = adddetails_data.get('paydtls')
+        refdtls_data     = adddetails_data.get('refdtls')
+        ewbdtls_data     = adddetails_data.get('ewbdtls')
+        expdtls_data     = adddetails_data.get('expdtls')
+        addldocdtls_list = adddetails_data.get('addldocdtls', [])
 
         if paydtls_data:
             paydtls_data.pop('id', None)
-            PayDtls.objects.create(invoice=order, **paydtls_data)
+            (PayDtls.objects.update_or_create if is_update else PayDtls.objects.create)(
+                invoice=order, defaults=paydtls_data
+            ) if is_update else PayDtls.objects.create(invoice=order, **paydtls_data)
+
         if refdtls_data:
             refdtls_data.pop('id', None)
-            RefDtls.objects.create(invoice=order, **refdtls_data)
+            (RefDtls.objects.update_or_create if is_update else RefDtls.objects.create)(
+                invoice=order, defaults=refdtls_data
+            ) if is_update else RefDtls.objects.create(invoice=order, **refdtls_data)
+
         if ewbdtls_data:
             ewbdtls_data.pop('id', None)
-            EwbDtls.objects.create(invoice=order, **ewbdtls_data)
+            (EwbDtls.objects.update_or_create if is_update else EwbDtls.objects.create)(
+                invoice=order, defaults=ewbdtls_data
+            ) if is_update else EwbDtls.objects.create(invoice=order, **ewbdtls_data)
+
         if expdtls_data:
             expdtls_data.pop('id', None)
-            ExpDtls.objects.create(invoice=order, **expdtls_data)
-        for doc in addldocdtls_data:
-            doc.pop('id', None)
-            AddlDocDtls.objects.create(invoice=order, **doc)
+            (ExpDtls.objects.update_or_create if is_update else ExpDtls.objects.create)(
+                invoice=order, defaults=expdtls_data
+            ) if is_update else ExpDtls.objects.create(invoice=order, **expdtls_data)
 
-        # Stock + details
-        stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0,
-                                   description='By Sale Bill No:', entrytype='I')
+        # AddlDocDtls diff on update; plain create on insert
+        if is_update:
+            existing = AddlDocDtls.objects.filter(invoice=order)
+            existing_ids = {d.id for d in existing}
+            incoming_ids = set()
+            for doc in addldocdtls_list:
+                doc_id = self._pk_or_none(doc.get('id'))
+                if doc_id and doc_id in existing_ids:
+                    obj = AddlDocDtls.objects.get(id=doc_id, invoice=order)
+                    for k, v in doc.items():
+                        if k != "id":
+                            setattr(obj, k, v)
+                    obj.save()
+                    incoming_ids.add(doc_id)
+                else:
+                    AddlDocDtls.objects.create(invoice=order, **{k: v for k, v in doc.items() if k != "id"})
+            to_delete = existing_ids - incoming_ids
+            if to_delete:
+                AddlDocDtls.objects.filter(id__in=to_delete).delete()
+        else:
+            for doc in addldocdtls_list:
+                doc.pop('id', None)
+                AddlDocDtls.objects.create(invoice=order, **doc)
+
+    def _upsert_details(self, order, details_data: list, is_update: bool):
+        """
+        Trust amounts/percents from client, compute linetotal if missing.
+        On update: upsert and delete removed lines. No stock posting here.
+        """
+        if not is_update:
+            for row in details_data:
+                self._strip_pk(row)
+                other_charges = row.pop('otherchargesdetail', [])
+                for oc in other_charges:
+                    self._strip_pk(oc)
+                _ensure_line_totals_in_payload(row)
+                d = salesOrderdetails.objects.create(salesorderheader=order, **row)
+                if other_charges:
+                    for oc in other_charges:
+                        oc['salesorderdetail'] = d
+                    saleothercharges.objects.bulk_create([
+                        saleothercharges(**oc) for oc in other_charges
+                    ])
+            return
+
+        # update path
+        existing_map = {d.id: d for d in salesOrderdetails.objects.filter(salesorderheader=order)}
+        existing_ids = set(existing_map.keys())
+        seen_ids     = set()
+
         for row in details_data:
+            detail_id = self._pk_or_none(row.get('id'))
             row.pop('id', None)
             other_charges = row.pop('otherchargesdetail', [])
-            detail = salesOrderdetails.objects.create(salesorderheader=order, **row)
-            stk.createtransactiondetails(detail=detail, stocktype='S')
             for oc in other_charges:
-                oc_obj = saleothercharges.objects.create(salesorderdetail=detail, **oc)
-                stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
+                self._strip_pk(oc)
 
-        settings.current_number += 1
-        settings.save()
+            _ensure_line_totals_in_payload(row)
+
+            if detail_id is None:
+                d = salesOrderdetails.objects.create(salesorderheader=order, **row)
+            else:
+                d = existing_map.get(detail_id)
+                if d:
+                    seen_ids.add(detail_id)
+                    for k, v in row.items():
+                        setattr(d, k, v)
+                    d.save()
+                else:
+                    d = salesOrderdetails.objects.create(salesorderheader=order, **row)
+
+            # refresh charges
+            saleothercharges.objects.filter(salesorderdetail=d).delete()
+            if other_charges:
+                for oc in other_charges:
+                    oc['salesorderdetail'] = d
+                saleothercharges.objects.bulk_create([saleothercharges(**oc) for oc in other_charges])
+
+        # delete removed detail lines
+        ids_to_delete = existing_ids - seen_ids
+        if ids_to_delete:
+            salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()
+
+    def _recalc_totals(self, order: SalesOderHeader):
+        _rollup_component_taxes_to_header(order)
+        _recompute_header_totals(order)
+        order.save(update_fields=[
+            "cgst","sgst","igst","cess",
+            "stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"
+        ])
+
+    def _post_once_via_shim(self, order: SalesOderHeader, entrytype: str):
+        """
+        Single authoritative posting (creates JL & IM).
+        DO NOT call createtransactiondetails per-line; shim re-queries.
+        """
+        stk = stocktransactionsale(order, transactiontype='S', debit=1, credit=0,
+                                   description='By Sale Bill No:', entrytype=entrytype)
         stk.createtransaction()
 
-        # Recompute totals (+ round off)
-        if AUTO_RECALC_TOTALS:
-            _recompute_header_totals(order)
-            order.save(update_fields=["stbefdiscount", "discount", "subtotal", "totalgst", "roundOff", "gtotal"])
+    # ===== CREATE =============================================================
 
-        # E-invoice / E-way flow
+    @transaction.atomic
+    def create(self, validated_data):
+        details_data    = validated_data.pop('saleInvoiceDetails', [])
+        adddetails_data = validated_data.pop('adddetails', {})
+
+        # decide/enforce regime (no state logic; trust payload)
+        self._decide_and_enforce_isigst(validated_data, details_data, is_create=True)
+
+        # header create with numbering
+        order = self._number_and_create_header(validated_data)
+
+        # add-details create
+        self._upsert_adddetails(order, adddetails_data, is_update=False)
+
+        # detail rows create
+        self._upsert_details(order, details_data, is_update=False)
+
+        # totals
+        self._recalc_totals(order)
+
+        # authoritative posting
+        self._post_once_via_shim(order, entrytype='I')
+
+        # e-invoice / e-way (unchanged)
         mode = _mode(order)
         if mode == 'eway':
-            # Build & print payload; validate IRN presence in your flow if needed
             serializer = EwaybillFullSerializer(order)
-            json_data = json.dumps(serializer.data.get('ewaybill_payload', {}), indent=4, default=str)
-            print(json_data)
+            print(json.dumps(serializer.data.get('ewaybill_payload', {}), indent=4, default=str))
         elif mode != "none":
             einvoice_data = SalesOrderFullSerializer(order, context={"mode": mode}).data
-            json_data = json.dumps(einvoice_data, indent=4, default=str)
-            print(json_data)
-            gst_response = gstinvoice(order, json_data)
-            print(gst_response)
+            gst_response = gstinvoice(order, json.dumps(einvoice_data, indent=4, default=str))
             if gst_response.get("status_cd") == "1":
                 data = gst_response["data"]
                 ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
@@ -2903,130 +3701,37 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                 )
         return order
 
-    # ---------- Update ----------
+    # ===== UPDATE =============================================================
+
     @transaction.atomic
     def update(self, instance, validated_data):
-        fields = [
-            'sorderdate', 'billno', 'accountid', 'latepaymentalert', 'grno', 'terms', 'vehicle', 'taxtype', 'billcash',
-            'supply', 'totalquanity', 'totalpieces', 'advance', 'shippedto', 'remarks', 'transport', 'broker', 'taxid',
-            'tds194q', 'tds194q1', 'tcs206c1ch1', 'state', 'district', 'city', 'pincode', 'tcs206c1ch2', 'tcs206c1ch3',
-            'tcs206C1', 'tcs206C2', 'addless', 'duedate', 'stbefdiscount', 'subtotal', 'discount', 'cgst', 'sgst', 'igst',
-            'isigst', 'invoicetype', 'reversecharge', 'cess', 'totalgst', 'expenses', 'gtotal', 'roundOff', 'isactive',
-            'eway', 'einvoice', 'einvoicepluseway', 'entityfinid', 'subentity', 'entity', 'createdby', 'isadditionaldetail',
-            'invoicenumber',
-        ]
-
-        details_data = validated_data.pop('saleInvoiceDetails', [])
+        details_data    = validated_data.pop('saleInvoiceDetails', [])
         adddetails_data = validated_data.pop('adddetails', {})
 
-        for f in fields:
+        # decide/enforce regime and normalize header if flipping
+        self._decide_and_enforce_isigst((instance, validated_data), details_data, is_create=False)
+
+        # apply header fields & persist (ensure zeros on cgst/sgst/igst land)
+        touched = []
+        for f in self._header_update_fields():
             if f in validated_data:
                 setattr(instance, f, validated_data[f])
+                touched.append(f)
+        instance.save(update_fields=list(set(touched) | {'cgst','sgst','igst'}))
 
-        # derive tax scheme from current (possibly updated) header
-        header_view = {
-            "entity": instance.entity,
-            "shippedto": instance.shippedto,
-            "state": instance.state,
-            "cgst": instance.cgst, "sgst": instance.sgst, "igst": instance.igst,
-            "isigst": instance.isigst,
-        }
-        is_inter = _apply_tax_scheme_to_header_data(header_view)
-        instance.isigst = is_inter
-        if is_inter:
-            instance.cgst = instance.sgst = ZERO2
-        else:
-            instance.igst = ZERO2
+        # add-details upsert
+        self._upsert_adddetails(instance, adddetails_data, is_update=True)
 
-        for d in details_data:
-            _apply_tax_scheme_to_detail_dict(is_inter, d)
+        # details upsert (and delete removed)
+        self._upsert_details(instance, details_data, is_update=True)
 
-        instance.save()
+        # totals
+        self._recalc_totals(instance)
 
-        # Stock envelope
-        stk = stocktransactionsale(instance, transactiontype='S', debit=1, credit=0,
-                                   description='By Sale Bill No:', entrytype='U')
-        stk.createtransaction()
+        # authoritative posting
+        self._post_once_via_shim(instance, entrytype='U')
 
-        # AddDetails upserts
-        paydtls_data = adddetails_data.get('paydtls')
-        refdtls_data = adddetails_data.get('refdtls')
-        ewbdtls_data = adddetails_data.get('ewbdtls')
-        expdtls_data = adddetails_data.get('expdtls')
-        addldocdtls_data = adddetails_data.get('addldocdtls', [])
-
-        if paydtls_data:
-            paydtls_data.pop('id', None)
-            PayDtls.objects.update_or_create(invoice=instance, defaults=paydtls_data)
-        if refdtls_data:
-            refdtls_data.pop('id', None)
-            RefDtls.objects.update_or_create(invoice=instance, defaults=refdtls_data)
-        if ewbdtls_data:
-            ewbdtls_data.pop('id', None)
-            EwbDtls.objects.update_or_create(invoice=instance, defaults=ewbdtls_data)
-        if expdtls_data:
-            expdtls_data.pop('id', None)
-            ExpDtls.objects.update_or_create(invoice=instance, defaults=expdtls_data)
-
-        # AddlDocDtls diff
-        existing_docs = AddlDocDtls.objects.filter(invoice=instance)
-        existing_ids = {d.id for d in existing_docs}
-        incoming_ids = set()
-        for doc in addldocdtls_data:
-            doc_id = doc.get('id', 0)
-            if doc_id and doc_id in existing_ids:
-                obj = AddlDocDtls.objects.get(id=doc_id, invoice=instance)
-                for k, v in doc.items():
-                    if k != "id":
-                        setattr(obj, k, v)
-                obj.save()
-                incoming_ids.add(doc_id)
-            else:
-                AddlDocDtls.objects.create(invoice=instance, **{k: v for k, v in doc.items() if k != "id"})
-        to_delete = existing_ids - incoming_ids
-        if to_delete:
-            AddlDocDtls.objects.filter(id__in=to_delete).delete()
-
-        # Details upsert
-        existing_details = salesOrderdetails.objects.filter(salesorderheader=instance)
-        existing_ids = {d.id for d in existing_details}
-        seen_ids = set()
-
-        for row in details_data:
-            detail_id = row.get('id', 0)
-            other_charges = row.pop('otherchargesdetail', [])
-            if not detail_id:
-                new_detail = salesOrderdetails.objects.create(salesorderheader=instance, **row)
-                stk.createtransactiondetails(detail=new_detail, stocktype='S')
-                for oc in other_charges:
-                    oc_obj = saleothercharges.objects.create(salesorderdetail=new_detail, **oc)
-                    stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
-            else:
-                seen_ids.add(detail_id)
-                try:
-                    d = salesOrderdetails.objects.get(id=detail_id, salesorderheader=instance)
-                except salesOrderdetails.DoesNotExist:
-                    continue
-                for k, v in row.items():
-                    if k != "id":
-                        setattr(d, k, v)
-                d.save()
-                stk.createtransactiondetails(detail=d, stocktype='S')
-                saleothercharges.objects.filter(salesorderdetail=d).delete()
-                for oc in other_charges:
-                    oc_obj = saleothercharges.objects.create(salesorderdetail=d, **oc)
-                    stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
-
-        ids_to_delete = existing_ids - seen_ids
-        if ids_to_delete:
-            salesOrderdetails.objects.filter(id__in=ids_to_delete).delete()
-
-        # Recompute totals (+ round off)
-        if AUTO_RECALC_TOTALS:
-            _recompute_header_totals(instance)
-            instance.save(update_fields=["stbefdiscount", "discount", "subtotal", "totalgst", "roundOff", "gtotal"])
-
-        # EWay-only flow (requires IRN)
+        # eWay / eInvoice (unchanged)
         mode = _mode(instance)
         if mode == 'eway':
             ct = ContentType.objects.get_for_model(instance)
@@ -3047,23 +3752,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                 "VehNo": ewb.VehNo,
                 "VehType": ewb.VehType
             }
-            gst_response = gst_ewaybill(instance, json.dumps(payload, indent=4, default=str))
-            print(gst_response)
-            if gst_response.get("status_cd") == "1":
-                data = gst_response["data"]
-                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-                EInvoiceDetails.objects.update_or_create(
-                    content_type=ct, object_id=instance.id,
-                    defaults={
-                        "ewb_no": data.get("EwbNo"),
-                        "ewb_date": ewb_dt,
-                        "ewb_valid_till": ewb_valid_till,
-                        "remarks": data.get("Remarks"),
-                    }
-                )
-
-        # Generate IRN if needed (einvoice/both)
+            print(gst_ewaybill(instance, json.dumps(payload, indent=4, default=str)))
         if mode != "none":
             ct = ContentType.objects.get_for_model(instance)
             existing_irn = EInvoiceDetails.objects.filter(content_type=ct, object_id=instance.id).first()
@@ -3091,6 +3780,10 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                         }
                     )
         return instance
+
+
+
+
 
 
 class SalesOrderSerializer(serializers.ModelSerializer):
@@ -3652,6 +4345,94 @@ class jobworkchallanSerializer(serializers.ModelSerializer):
         return instance
 
 
+def _norm_dec(x):
+    # tolerant Decimal coercion; keeps None → 0
+    try:
+        return q2(Decimal(x))
+    except Exception:
+        return q2(Decimal(str(x or "0")))
+
+def _normalize_purchase_detail_taxes(d: dict, is_inter: bool) -> None:
+    """
+    Normalize one purchase detail dict:
+      - Respect posted amounts if present (igst/cgst/sgst/cess).
+      - Otherwise derive from *_percent and base 'amount'.
+      - Enforce scheme:
+          inter   => keep IGST, zero CGST/SGST
+          intra   => keep CGST/SGST, zero IGST
+    """
+    from decimal import Decimal
+    amt   = q2(d.get("amount") or ZERO2)
+
+    # posted amounts (if any)
+    igst  = q2(d.get("igst") or ZERO2)
+    cgst  = q2(d.get("cgst") or ZERO2)
+    sgst  = q2(d.get("sgst") or ZERO2)
+    cess  = q2(d.get("cess") or ZERO2)
+
+    # percents (used only if not posted)
+    igstp = q2(d.get("igstpercent") or ZERO2)
+    cgstp = q2(d.get("cgstpercent") or ZERO2)
+    sgstp = q2(d.get("sgstpercent") or ZERO2)
+
+    posted_any = (igst > ZERO2) or (cgst > ZERO2) or (sgst > ZERO2) or (cess > ZERO2)
+
+    if is_inter:
+        if not posted_any and igstp > ZERO2 and amt > ZERO2:
+            igst = q2(amt * igstp / Decimal("100"))
+        d["isigst"] = True
+        d["igst"]   = igst
+        d["cgst"]   = ZERO2
+        d["sgst"]   = ZERO2
+        d["cess"]   = cess
+    else:
+        if not posted_any:
+            if cgstp > ZERO2 and amt > ZERO2:
+                cgst = q2(amt * cgstp / Decimal("100"))
+            if sgstp > ZERO2 and amt > ZERO2:
+                sgst = q2(amt * sgstp / Decimal("100"))
+        d["isigst"] = False
+        d["igst"]   = ZERO2
+        d["cgst"]   = cgst
+        d["sgst"]   = sgst
+        d["cess"]   = cess
+
+
+
+def _purchase_is_inter(header_like, details_list) -> bool:
+    """
+    Decide inter vs intra for PURCHASE, prioritizing explicit IGST signals:
+      1) If header igst > 0 → inter
+      2) Else if any line has isigst=True or igstpercent>0 or igst>0 → inter
+      3) Else fall back to sales-style heuristic _apply_tax_scheme_to_header_data
+    """
+    try:
+        igst_hdr = q2((header_like.get("igst") if isinstance(header_like, dict)
+                       else getattr(header_like, "igst", ZERO2)) or ZERO2)
+    except Exception:
+        igst_hdr = ZERO2
+    if igst_hdr > ZERO2:
+        return True
+
+    for d in (details_list or []):
+        if bool(d.get("isigst")):
+            return True
+        if q2(d.get("igst") or ZERO2) > ZERO2:
+            return True
+        if q2(d.get("igstpercent") or ZERO2) > ZERO2:
+            return True
+
+    # fallback to your existing (sales-style) heuristic
+    hdr_copy = dict(header_like) if isinstance(header_like, dict) else {
+        "entity": getattr(header_like, "entity", None),
+        "shippedto": getattr(header_like, "shippedto", None),
+        "state": getattr(header_like, "state", None),
+        "cgst": getattr(header_like, "cgst", ZERO2),
+        "sgst": getattr(header_like, "sgst", ZERO2),
+        "igst": getattr(header_like, "igst", ZERO2),
+        "isigst": getattr(header_like, "isigst", None),
+    }
+    return bool(_apply_tax_scheme_to_header_data(hdr_copy))
 
 
 class PurchaseOrderDetailsSerializer(serializers.ModelSerializer):
@@ -3701,97 +4482,303 @@ class PurchaseOrderAttachmentSerializer(serializers.ModelSerializer):
         """Handles single file creation"""
         return PurchaseOrderAttachment.objects.create(**validated_data)
 
+TWOPL = Decimal("0.01")
+ZERO2 = Decimal("0.00")
+
+def q2(x):
+    if isinstance(x, Decimal):
+        return x.quantize(TWOPL, rounding=ROUND_HALF_UP)
+    return Decimal(str(x or "0")).quantize(TWOPL, rounding=ROUND_HALF_UP)
+
+def _recompute_purchase_totals(po: purchaseorder) -> None:
+    """
+    Recompute monetary totals for a purchaseorder from saved lines.
+    - subtotal  = sum(line.amount)
+    - totalgst  = sum(line.cgst + line.sgst + line.igst + line.cess)
+    - gtotal    = subtotal - discount + addless + totalgst + expenses
+    Round-off is left as-is (policy-specific).
+    """
+    qs = (PurchaseOrderDetails.objects
+          .filter(purchaseorder=po)
+          .annotate(
+              _amount=Coalesce(F("amount"), V(ZERO2)),
+              _cgst=Coalesce(F("cgst"), V(ZERO2)),
+              _sgst=Coalesce(F("sgst"), V(ZERO2)),
+              _igst=Coalesce(F("igst"), V(ZERO2)),
+              _cess=Coalesce(F("cess"), V(ZERO2)),
+          ))
+
+    agg = qs.aggregate(
+        total_amount=Coalesce(Sum("_amount"), V(ZERO2)),
+        sum_cgst=Coalesce(Sum("_cgst"), V(ZERO2)),
+        sum_sgst=Coalesce(Sum("_sgst"), V(ZERO2)),
+        sum_igst=Coalesce(Sum("_igst"), V(ZERO2)),
+        sum_cess=Coalesce(Sum("_cess"), V(ZERO2)),
+    )
+
+    subtotal  = q2(agg["total_amount"])
+    totalgst  = q2(agg["sum_cgst"] + agg["sum_sgst"] + agg["sum_igst"] + agg["sum_cess"])
+    discount  = q2(po.discount or ZERO2)
+    addless   = q2(po.addless  or ZERO2)
+    expenses  = q2(po.expenses or ZERO2)
+    # roundoff = q2(po.roundOff or ZERO2)  # if you want to apply it inside gtotal
+
+    gtotal = q2(subtotal - discount + addless + totalgst + expenses)
+
+    # write back
+    po.stbefdiscount = subtotal           # simple parity with sales; adjust if you track befor-discount values
+    po.subtotal      = subtotal
+    po.totalgst      = totalgst
+    po.gtotal        = gtotal
+    # po.roundOff    = roundoff           # leave untouched unless you enforce a rounding policy
+    # (Optionally mirror totalgst into component buckets; disabled to preserve posted header values)
+    # if getattr(po, "isigst", False):
+    #     po.igst = totalgst; po.cgst = ZERO2; po.sgst = ZERO2
+    # else:
+    #     half = q2(totalgst / Decimal("2")); po.cgst = half; po.sgst = totalgst - half; po.igst = ZERO2
+
+
+
 
 class purchaseorderSerializer(serializers.ModelSerializer):
     purchaseInvoiceDetails = PurchaseOrderDetailsSerializer(many=True)
-    attachments = PurchaseOrderAttachmentSerializer(many=True,required=False, allow_null=True)
-   # productname = serializers.SerializerMethodField()
+    attachments = PurchaseOrderAttachmentSerializer(many=True, required=False, allow_null=True, default=list)
+
+    # validators kept optional (totals may be omitted in POST)
+    stbefdiscount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    discount      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    subtotal      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    totalgst      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    expenses      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    addless       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    advance       = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    gtotal        = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
+    roundOff      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
     class Meta:
         model = purchaseorder
-        fields = ('id','voucherdate','voucherno','account', 'state','district','city','pincode','billno','billdate','terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','reversecharge','invoicetype','cess','expenses','gtotal','roundOff', 'finalAmount', 'entityfinid','subentity','entity','isactive','purchaseInvoiceDetails','attachments',)
+        fields = (
+            'id','voucherdate','voucherno','account','state','district','city','pincode',
+            'billno','billdate','terms','showledgeraccount','taxtype','billcash',
+            'totalpieces','totalquanity','advance','remarks','transport','broker','taxid',
+            'tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2',
+            'duedate','inputdate','vehicle','grno','gstr2astatus',
+            'stbefdiscount','discount','subtotal','addless','cgst','sgst','igst','totalgst',
+            'reversecharge','invoicetype','cess','expenses','gtotal','roundOff','finalAmount',
+            'entityfinid','subentity','entity','isactive',
+            'purchaseInvoiceDetails','attachments',
+        )
 
+    # ---------- Normalize header/lines; PRESERVE posted header GST numbers ----------
+    def validate(self, attrs):
+        is_inter = _purchase_is_inter(attrs, attrs.get("purchaseInvoiceDetails") or [])
+        attrs.pop('isigst', None)
 
-    
-    
+        igst_in = q2(attrs.get("igst", ZERO2) or ZERO2)
+        cgst_in = q2(attrs.get("cgst", ZERO2) or ZERO2)
+        sgst_in = q2(attrs.get("sgst", ZERO2) or ZERO2)
+        if is_inter:
+            attrs["igst"] = igst_in; attrs["cgst"] = ZERO2; attrs["sgst"] = ZERO2
+        else:
+            attrs["igst"] = ZERO2;   attrs["cgst"] = cgst_in; attrs["sgst"] = sgst_in
 
+        for d in attrs.get("purchaseInvoiceDetails") or []:
+            _normalize_purchase_detail_taxes(d, is_inter)
+        return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
-        PurchaseOrderDetails_data = validated_data.pop('purchaseInvoiceDetails')
-        with transaction.atomic():
-            order = purchaseorder.objects.create(**validated_data)
-            stk = stocktransaction(order, transactiontype='P', debit=1, credit=0, description='To Purchase V.No: ', entrytype='I')
+        details_data = validated_data.pop('purchaseInvoiceDetails', [])
+        attachments_data = validated_data.pop('attachments', []) or []
 
-            for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
-                PurchaseOrderDetail_data.pop('id', None)  # Remove id if exists
-                purchaseothercharges_data = PurchaseOrderDetail_data.pop('otherchargesdetail', [])
+        is_inter = _purchase_is_inter(validated_data, details_data)
+        validated_data.pop('isigst', None)
 
-                detail = PurchaseOrderDetails.objects.create(purchaseorder=order, **PurchaseOrderDetail_data)
-                for purchaseothercharge_data in purchaseothercharges_data:
-                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail=detail, **purchaseothercharge_data)
-                    stk.createothertransactiondetails(detail=detail1, stocktype='P')
+        igst_in = q2(validated_data.get("igst", ZERO2) or ZERO2)
+        cgst_in = q2(validated_data.get("cgst", ZERO2) or ZERO2)
+        sgst_in = q2(validated_data.get("sgst", ZERO2) or ZERO2)
+        if is_inter:
+            validated_data["igst"] = igst_in; validated_data["cgst"] = ZERO2; validated_data["sgst"] = ZERO2
+        else:
+            validated_data["igst"] = ZERO2;   validated_data["cgst"] = cgst_in; validated_data["sgst"] = sgst_in
 
-                stk.createtransactiondetails(detail=detail, stocktype='P')
+        for d in details_data:
+            d.pop('id', None); d.pop('productname', None)
+            _normalize_purchase_detail_taxes(d, is_inter)
 
-            stk.createtransaction()
+        order = purchaseorder.objects.create(**validated_data)
+
+        stk = stocktransaction(order, transactiontype='P', debit=1, credit=0,
+                               description='To Purchase V.No: ', entrytype='I')
+
+        for row in details_data:
+            other_charges = row.pop('otherchargesdetail', [])
+            detail = PurchaseOrderDetails.objects.create(purchaseorder=order, **row)
+            stk.createtransactiondetails(detail=detail, stocktype='P')
+            for oc in other_charges:
+                oc_obj = purchaseothercharges.objects.create(purchaseorderdetail=detail, **oc)
+                stk.createothertransactiondetails(detail=oc_obj, stocktype='P')
+
+        # ✅ CORRECT FK NAME: purchase_order
+        for att in attachments_data:
+            att.pop('id', None)
+            PurchaseOrderAttachment.objects.create(purchase_order=order, **att)
+
+        stk.createtransaction()
+
+        if AUTO_RECALC_TOTALS:
+            _recompute_purchase_totals(order)
+            order.save(update_fields=["stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"])
+
         return order
 
-
+    @transaction.atomic
     def update(self, instance, validated_data):
-        fields = ['voucherdate','voucherno','account','state','district','city','pincode', 'billno','billdate','showledgeraccount','terms','taxtype','reversecharge','invoicetype','billcash','totalpieces','totalquanity','advance','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus','subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount', 'entityfinid','subentity', 'entity','isactive']
-        for field in fields:
-            if field in validated_data:
-                setattr(instance, field, validated_data[field])
+        fields = [
+            'voucherdate','voucherno','account','state','district','city','pincode',
+            'billno','billdate','showledgeraccount','terms','taxtype','reversecharge',
+            'invoicetype','billcash','totalpieces','totalquanity','advance','remarks',
+            'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2',
+            'tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno',
+            'gstr2astatus','stbefdiscount','discount','subtotal','addless',
+            'cgst','sgst','igst','totalgst','cess','expenses','gtotal','roundOff',
+            'finalAmount','entityfinid','subentity','entity','isactive'
+        ]
 
-        stk = stocktransaction(instance, transactiontype='P', debit=1, credit=0, description='To Purchase V.No: ', entrytype='U')
-        
-        with transaction.atomic():
-            stk.createtransaction()
-            instance.save()
+        details_data     = validated_data.pop('purchaseInvoiceDetails', [])
+        attachments_data = validated_data.pop('attachments', []) or []
+        validated_data.pop('isigst', None)  # header has no such field
 
-            existing_details = PurchaseOrderDetails.objects.filter(purchaseorder=instance, entity=instance.entity)
-            existing_details_map = {detail.id: detail for detail in existing_details}
+        # ----- 1) Apply header changes (do not post yet) -----
+        for f in fields:
+            if f in validated_data:
+                setattr(instance, f, validated_data[f])
 
-            submitted_details = validated_data.get('purchaseInvoiceDetails', [])
-            updated_detail_ids = []
+        # Decide tax regime from header snapshot + incoming detail payload
+        header_view = {
+            "entity": instance.entity,
+            "shippedto": getattr(instance, "shippedto", None),
+            "state": instance.state,
+            "cgst": q2(getattr(instance, "cgst", ZERO2) or ZERO2),
+            "sgst": q2(getattr(instance, "sgst", ZERO2) or ZERO2),
+            "igst": q2(getattr(instance, "igst", ZERO2) or ZERO2),
+        }
+        is_inter = _purchase_is_inter(header_view, details_data)
 
-            for detail_data in submitted_details:
-                detail_id = detail_data.get('id', 0)
-                purchaseothercharges_data = detail_data.pop('otherchargesdetail', [])
+        # Preserve the amounts the client sent (or currently on instance) on the valid side
+        igst_now = q2(getattr(instance, "igst", ZERO2) or ZERO2)
+        cgst_now = q2(getattr(instance, "cgst", ZERO2) or ZERO2)
+        sgst_now = q2(getattr(instance, "sgst", ZERO2) or ZERO2)
+        if is_inter:
+            instance.igst = igst_now; instance.cgst = ZERO2; instance.sgst = ZERO2
+        else:
+            instance.igst = ZERO2;    instance.cgst = cgst_now; instance.sgst = sgst_now
 
-                if detail_id == 0:
-                    # New Detail
-                    detail_data.pop('id', None)
-                    detail = PurchaseOrderDetails.objects.create(purchaseorder=instance, **detail_data)
-                    stk.createtransactiondetails(detail=detail, stocktype='P')
-                elif detail_id in existing_details_map:
-                    # Update existing detail
-                    detail = existing_details_map[detail_id]
-                    for attr, value in detail_data.items():
-                        setattr(detail, attr, value)
-                    detail.save()
-                    # Remove from deletion list
-                    stk.createtransactiondetails(detail=detail, stocktype='P')
-                    existing_details_map.pop(detail_id)
-                else:
-                    # Not in existing DB -> skip it (invalid id)
+        # Normalize each incoming detail to regime (sets isigst, zeros incompatible buckets)
+        for d in details_data:
+            d.pop('productname', None)
+            _normalize_purchase_detail_taxes(d, is_inter)
+
+        # Save header fields now (but not posting yet)
+        instance.save(update_fields=[
+            'voucherdate','voucherno','account','state','district','city','pincode',
+            'billno','billdate','showledgeraccount','terms','taxtype','reversecharge',
+            'invoicetype','billcash','totalpieces','totalquanity','advance','remarks',
+            'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2',
+            'tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno',
+            'gstr2astatus','stbefdiscount','discount','subtotal','addless',
+            'cgst','sgst','igst','totalgst','cess','expenses','gtotal','roundOff',
+            'finalAmount','entityfinid','subentity','entity','isactive'
+        ])
+
+        # ----- 2) Details upsert (persist the exact new state) -----
+        existing = list(PurchaseOrderDetails.objects.filter(purchaseorder=instance))
+        by_id    = {x.id: x for x in existing}
+        seen     = set()
+
+        for row in details_data:
+            detail_id     = row.get('id', 0)
+            other_charges = row.pop('otherchargesdetail', [])
+
+            if not detail_id:
+                row.pop('id', None)
+                d = PurchaseOrderDetails.objects.create(purchaseorder=instance, **row)
+            else:
+                d = by_id.get(detail_id)
+                if not d:
                     continue
+                seen.add(detail_id)
+                for k, v in row.items():
+                    if k != "id":
+                        setattr(d, k, v)
+                d.save()
 
-                updated_detail_ids.append(detail.id)
+            # refresh seen for newly created as well
+            if getattr(d, "id", None):
+                seen.add(d.id)
 
-                
+            # (re)create other charges
+            purchaseothercharges.objects.filter(purchaseorderdetail=d).delete()
+            for oc in other_charges:
+                purchaseothercharges.objects.create(purchaseorderdetail=d, **oc)
 
-                # Delete and recreate other charges
-                purchaseothercharges.objects.filter(purchaseorderdetail=detail).delete()
-                for purchaseothercharge_data in purchaseothercharges_data:
-                    detail1 = purchaseothercharges.objects.create(purchaseorderdetail=detail, **purchaseothercharge_data)
-                    stk.createothertransactiondetails(detail=detail1, stocktype='P')
+        # Delete removed lines
+        to_delete = set(by_id.keys()) - seen
+        if to_delete:
+            PurchaseOrderDetails.objects.filter(id__in=to_delete).delete()
 
-            # Delete any details not included in update
-            for remaining_detail in existing_details_map.values():
-                remaining_detail.delete()
+        # ----- 3) Attachments diff (correct FK: purchase_order) -----
+        existing_atts = list(PurchaseOrderAttachment.objects.filter(purchase_order=instance))
+        by_id_att     = {a.id: a for a in existing_atts}
+        incoming_ids  = set()
+        for att in attachments_data:
+            att_id = att.get('id', 0)
+            if att_id and att_id in by_id_att:
+                a = by_id_att[att_id]
+                for k, v in att.items():
+                    if k != "id":
+                        setattr(a, k, v)
+                a.save()
+                incoming_ids.add(att_id)
+            else:
+                PurchaseOrderAttachment.objects.create(
+                    purchase_order=instance,
+                    **{k: v for k, v in att.items() if k != "id"}
+                )
+        to_del = set(by_id_att.keys()) - incoming_ids
+        if to_del:
+            PurchaseOrderAttachment.objects.filter(id__in=to_del).delete()
+
+        # ----- 4) Recompute header totals from SAVED lines (optional but recommended) -----
+        if AUTO_RECALC_TOTALS:
+            _recompute_purchase_totals(instance)
+            instance.save(update_fields=["stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"])
+
+        # ----- 5) NOW post the transaction using the fresh, saved rows -----
+        stk = stocktransaction(
+            instance, transactiontype='P', debit=1, credit=0,
+            description='To Purchase V.No: ', entrytype='U'
+        )
+
+        # Feed current saved lines & charges so Poster is never a step behind
+        current_lines = list(
+            PurchaseOrderDetails.objects.filter(purchaseorder=instance)
+            .select_related("product")
+            .prefetch_related("otherchargesdetail")
+        )
+        for d in current_lines:
+            stk.createtransactiondetails(detail=d, stocktype='P')
+            for oc in getattr(d, "otherchargesdetail", []).all():
+                stk.createothertransactiondetails(detail=oc, stocktype='P')
+
+        stk.createtransaction()
 
         return instance
+
+
+
+
+
 
 
 class newPurchaseOrderDetailsSerializer(serializers.ModelSerializer):
