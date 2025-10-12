@@ -6,6 +6,7 @@ from django.db.models import Min, Max
 from invoice.models import JournalLine  # <-- your GL table
 from typing import Tuple, List,Optional
 from invoice.serializers import stocktransconstant
+from .pagination import SmallPageNumberPagination
 
 from itertools import product
 from django.http import request,JsonResponse
@@ -15,7 +16,7 @@ from pandas.tseries.offsets import MonthEnd,QuarterEnd
 from decimal import Decimal,InvalidOperation
 from django.db.models import Sum, Q, Value as V,DecimalField
 from django.utils.timezone import make_aware, is_aware
-from .serializers import CashbookUnifiedSerializer
+from .serializers import CashbookUnifiedSerializer,TrialBalanceAccountRowSerializer,TrialBalanceAccountLedgerRowSerializer
 from django.utils.dateparse import parse_date
 from collections import deque
 from django.utils import timezone  
@@ -6409,6 +6410,344 @@ class CashBookAPIView(APIView):
         }
         return Response(CashbookUnifiedSerializer(multi_payload).data, status=200)
 
+
+
+class TrialbalanceApiViewJournalByAccount(ListAPIView):
+    """
+    GET /api/reports/trial-balance/accounts/?entity=1&accounthead=10&startdate=2025-04-01&enddate=2025-04-30
+
+    Emits Trial Balance rows *per account* whose chosen display head equals ?accounthead.
+    Head rule (per account): closing >= 0 → account.accounthead, else → account.creditaccounthead.
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = TrialBalanceAccountRowSerializer
+
+    def _parse_ymd(self, s: str) -> date:
+        s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+        return date.fromisoformat(s)  # strict YYYY-MM-DD
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get("entity")
+        head_id_s = request.query_params.get("accounthead")
+        start_s   = request.query_params.get("startdate")
+        end_s     = request.query_params.get("enddate")
+
+        if not (entity_id and head_id_s and start_s and end_s):
+            return Response({"detail": "Required: entity, accounthead, startdate, enddate (YYYY-MM-DD)"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            startdate = self._parse_ymd(start_s)
+            enddate   = self._parse_ymd(end_s)
+            head_id   = int(head_id_s)
+        except Exception:
+            return Response(
+                {"detail": "Invalid inputs.", "received": {"accounthead": head_id_s, "startdate": start_s, "enddate": end_s}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if startdate > enddate:
+            return Response([], status=status.HTTP_200_OK)
+
+        # Clamp to FY if present
+        fy = (
+            entityfinancialyear.objects
+            .filter(entity_id=entity_id,
+                    finstartyear__date__lte=enddate,
+                    finendyear__date__gte=startdate)
+            .order_by("-finstartyear")
+            .first()
+        )
+        if fy:
+            startdate = max(startdate, fy.finstartyear.date())
+            enddate   = min(enddate, fy.finendyear.date())
+            if startdate > enddate:
+                return Response([], status=status.HTTP_200_OK)
+
+        # ---- Opening (< startdate) per account ----
+        opening_qs = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, entrydate__lt=startdate)
+            .exclude(account_id__isnull=True)
+            .values(
+                "account_id", "account__accountname",
+                "account__accounthead_id", "account__accounthead__name",
+                "account__creditaccounthead_id", "account__creditaccounthead__name",
+            )
+            .annotate(
+                opening=Sum(
+                    Case(
+                        When(drcr=True, then=F("amount")),
+                        When(drcr=False, then=-F("amount")),
+                        default=V(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
+        )
+
+        # ---- Period ([start,end]) per account ----
+        period_qs = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, entrydate__gte=startdate, entrydate__lte=enddate)
+            .exclude(account_id__isnull=True)
+            .values(
+                "account_id", "account__accountname",
+                "account__accounthead_id", "account__accounthead__name",
+                "account__creditaccounthead_id", "account__creditaccounthead__name",
+            )
+            .annotate(
+                debit=Sum(
+                    Case(When(drcr=True, then=F("amount")), default=V(0),
+                         output_field=DecimalField(max_digits=18, decimal_places=2)),
+                    default=V(0), output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+                credit=Sum(
+                    Case(When(drcr=False, then=F("amount")), default=V(0),
+                         output_field=DecimalField(max_digits=18, decimal_places=2)),
+                    default=V(0), output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+            )
+        )
+
+        # ---- Merge per account ----
+        per_account = {}
+        for r in opening_qs:
+            aid = r["account_id"]
+            per_account[aid] = dict(
+                account=aid,
+                accountname=r["account__accountname"] or "",
+                opening=r["opening"] or ZERO,
+                debit=ZERO, credit=ZERO,
+                ah_id=r["account__accounthead_id"],
+                ah_name=r["account__accounthead__name"] or "",
+                ch_id=r["account__creditaccounthead_id"],
+                ch_name=r["account__creditaccounthead__name"] or "",
+            )
+
+        for r in period_qs:
+            aid = r["account_id"]
+            item = per_account.setdefault(aid, dict(
+                account=aid,
+                accountname=r["account__accountname"] or "",
+                opening=ZERO, debit=ZERO, credit=ZERO,
+                ah_id=r["account__accounthead_id"],
+                ah_name=r["account__accounthead__name"] or "",
+                ch_id=r["account__creditaccounthead_id"],
+                ch_name=r["account__creditaccounthead__name"] or "",
+            ))
+            item["debit"]  = (item["debit"]  or ZERO) + (r["debit"]  or ZERO)
+            item["credit"] = (item["credit"] or ZERO) + (r["credit"] or ZERO)
+
+        if not per_account:
+            return Response([], status=status.HTTP_200_OK)
+
+        # ---- Choose head by sign; keep only requested head ----
+        rows = []
+        for v in per_account.values():
+            closing = (v["opening"] or ZERO) + (v["debit"] or ZERO) - (v["credit"] or ZERO)
+            disp_head_id, disp_head_name = (
+                (v["ah_id"], v["ah_name"]) if closing >= 0 else (v["ch_id"], v["ch_name"])
+            )
+            if disp_head_id is None or disp_head_id != head_id:
+                continue
+
+            rows.append(dict(
+                account=v["account"],
+                accountname=v["accountname"],
+                accounthead=head_id,
+                accountheadname=disp_head_name or "",
+                openingbalance=v["opening"] or ZERO,
+                debit=v["debit"] or ZERO,
+                credit=v["credit"] or ZERO,
+                closingbalance=closing,
+                drcr=("CR" if closing < 0 else "DR"),
+                obdrcr=("CR" if (v["opening"] or ZERO) < 0 else "DR"),
+            ))
+
+        rows.sort(key=lambda x: (x["accountname"] or "").lower())
+
+        # Serialize (fast — pure dicts, no DB hits)
+        data = self.serializer_class(rows, many=True).data
+        return Response(data, status=status.HTTP_200_OK)
+
+DEC = DecimalField(max_digits=18, decimal_places=2)               # reuse this
+VZ  = lambda: V(ZERO, output_field=DEC)                           # Decimal zero Value()
+class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = TrialBalanceAccountLedgerRowSerializer
+    pagination_class = SmallPageNumberPagination
+
+    def _parse_ymd(self, s: str) -> date:
+        s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+        return date.fromisoformat(s)
+
+    def get(self, request, *args, **kwargs):
+        entity_id  = request.query_params.get("entity")
+        account_id = request.query_params.get("account")
+        start_s    = request.query_params.get("startdate")
+        end_s      = request.query_params.get("enddate")
+
+        if not (entity_id and account_id and start_s and end_s):
+            return Response({"detail": "Required: entity, account, startdate, enddate (YYYY-MM-DD)"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            startdate = self._parse_ymd(start_s)
+            enddate   = self._parse_ymd(end_s)
+            account_id = int(account_id)
+        except Exception:
+            return Response({"detail": "Invalid inputs.", "received": {
+                "entity": entity_id, "account": request.query_params.get("account"),
+                "startdate": start_s, "enddate": end_s}},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        if startdate > enddate:
+            return Response([], status=status.HTTP_200_OK)
+
+        fy = (
+            entityfinancialyear.objects
+            .filter(entity_id=entity_id,
+                    finstartyear__date__lte=enddate,
+                    finendyear__date__gte=startdate)
+            .order_by("-finstartyear")
+            .first()
+        )
+        if fy:
+            startdate = max(startdate, fy.finstartyear.date())
+            enddate   = min(enddate, fy.finendyear.date())
+            if startdate > enddate:
+                return Response([], status=status.HTTP_200_OK)
+
+        # 1) Opening balance (< startdate) — use Decimal output_field everywhere
+        opening_sum = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, account_id=account_id, entrydate__lt=startdate)
+            .aggregate(opening=Coalesce(
+                Sum(
+                    Case(
+                        When(drcr=True,  then=F("amount")),
+                        When(drcr=False, then=-F("amount")),
+                        default=VZ(),                         # Decimal 0
+                        output_field=DEC,                     # Case result is Decimal
+                    ),
+                    output_field=DEC,                         # Sum result is Decimal
+                ),
+                VZ(),                                         # Coalesce fallback Decimal 0
+                output_field=DEC,
+            ))
+        )["opening"] or ZERO
+
+        name_row = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, account_id=account_id)
+            .values("account__accountname")
+            .order_by("entrydate", "id")
+            .first()
+        )
+        accountname = (name_row or {}).get("account__accountname", "") or ""
+
+        opening_row = None
+        if opening_sum is not None:
+            obal = opening_sum
+            opening_row = dict(
+                account=account_id,
+                accountname=accountname,
+                sortdate=startdate,
+                entrydate=startdate.strftime("%d-%m-%Y"),
+                narration="Opening Balance",
+                transactiontype="OPENING",
+                transactionid="",
+                debit=(obal if obal > 0 else ZERO),
+                credit=(obal if obal < 0 else ZERO),
+                runningbalance=obal,
+            )
+
+        # 2) Period lines — projection list
+        values_list = ["id", "account_id", "account__accountname", "entrydate", "drcr", "amount"]
+        for opt in ("desc", "narration", "notes"):
+            try:
+                JournalLine._meta.get_field(opt); values_list.append(opt)
+            except Exception:
+                pass
+
+        possible_type_fields = [
+            "vouchertype", "voucher_type", "transactiontype", "source_type",
+            "journalmain__vouchertype", "journal__vouchertype",
+        ]
+        possible_id_fields = [
+            "voucherno", "voucher_no", "source_id",
+            "journalmain__voucherno", "journal__voucherno",
+        ]
+
+        def field_exists(path: str) -> bool:
+            model = JournalLine
+            parts = path.split("__")
+            for i, part in enumerate(parts):
+                try:
+                    fld = model._meta.get_field(part)
+                except Exception:
+                    return False
+                if i < len(parts) - 1:
+                    if getattr(fld, "remote_field", None) and fld.remote_field.model:
+                        model = fld.remote_field.model
+                    else:
+                        return False
+            return True
+
+        type_fields = [f for f in possible_type_fields if field_exists(f)]
+        id_fields   = [f for f in possible_id_fields if field_exists(f)]
+        values_list.extend(type_fields + id_fields)
+
+        lines_qs = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, account_id=account_id,
+                    entrydate__gte=startdate, entrydate__lte=enddate)
+            .values(*values_list)
+            .order_by("entrydate", "id")
+        )
+
+        def pick_first(row, candidates):
+            for c in candidates:
+                if c in row and row[c] not in (None, "", " "):
+                    return str(row[c])
+            return ""
+
+        rows = []
+        running = opening_sum if opening_sum is not None else ZERO
+        if opening_row:
+            rows.append(opening_row)
+
+        for r in lines_qs:
+            amt = r["amount"] or ZERO
+            is_dr = bool(r["drcr"])
+            debit  = amt if is_dr else ZERO
+            credit = amt if not is_dr else ZERO
+            running = running + debit - credit
+
+            narration = pick_first(r, ["desc", "narration", "notes"])
+            txn_type  = pick_first(r, type_fields) or "UNKNOWN"
+            txn_id    = pick_first(r, id_fields)   or f"L{r['id']}"
+
+            rows.append(dict(
+                account=r["account_id"],
+                accountname=r.get("account__accountname") or accountname,
+                sortdate=r["entrydate"],
+                entrydate=r["entrydate"].strftime("%d-%m-%Y"),
+                narration=narration or "",
+                transactiontype=txn_type,
+                transactionid=str(txn_id),
+                debit=debit,
+                credit=credit,
+                runningbalance=running,
+            ))
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            data = self.serializer_class(page, many=True).data
+            return self.get_paginated_response(data)
+        return Response(self.serializer_class(rows, many=True).data, status=status.HTTP_200_OK)
 
 
 

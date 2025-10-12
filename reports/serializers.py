@@ -1253,4 +1253,29 @@ class CashbookUnifiedSerializer(serializers.Serializer):
 
     # One or more sections (FY-bounded). Single-FY => len == 1
     sections = CashbookUnifiedSectionSerializer(many=True)
+
+
+class TrialBalanceAccountRowSerializer(serializers.Serializer):
+    account = serializers.IntegerField()
+    accountname = serializers.CharField(allow_blank=True)
+    accounthead = serializers.IntegerField()
+    accountheadname = serializers.CharField(allow_blank=True)
+    openingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
+    debit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    credit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    closingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
+    drcr = serializers.ChoiceField(choices=["DR", "CR"])
+    obdrcr = serializers.ChoiceField(choices=["DR", "CR"])
     
+
+class TrialBalanceAccountLedgerRowSerializer(serializers.Serializer):
+    account = serializers.IntegerField()
+    accountname = serializers.CharField(allow_blank=True)
+    entrydate = serializers.CharField(allow_blank=True)   # dd-mm-YYYY
+    sortdate = serializers.DateField()                    # for sorting/pagination
+    narration = serializers.CharField(allow_blank=True)
+    transactiontype = serializers.CharField(allow_blank=False)  # <- must be non-blank
+    transactionid = serializers.CharField(allow_blank=True)
+    debit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    credit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    runningbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
