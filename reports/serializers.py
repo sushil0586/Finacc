@@ -1196,4 +1196,61 @@ class TrialBalanceHeadRowSerializer(serializers.Serializer):
     credit = serializers.DecimalField(max_digits=18, decimal_places=2)
     closingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
     drcr = serializers.CharField()     # "DR" / "CR" for closing
+
+
+
+class CashbookLineSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    voucherno = serializers.CharField(allow_blank=True)
+    desc = serializers.CharField(allow_blank=True)
+    debit = serializers.DecimalField(max_digits=16, decimal_places=2)
+    credit = serializers.DecimalField(max_digits=16, decimal_places=2)
+    balance = serializers.DecimalField(max_digits=16, decimal_places=2)  # global running after this line
+
+class CashbookDaySectionSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    day_opening = serializers.DecimalField(max_digits=16, decimal_places=2)
+    day_receipts = serializers.DecimalField(max_digits=16, decimal_places=2)
+    day_payments = serializers.DecimalField(max_digits=16, decimal_places=2)
+    day_closing_balance = serializers.DecimalField(max_digits=16, decimal_places=2)
+    items = CashbookLineSerializer(many=True)
+
+class CashbookUnifiedSectionSerializer(serializers.Serializer):
+    # Present for both single and multi; in single-FY you can still fill fy_* or leave them blank
+    fy_name  = serializers.CharField(allow_blank=True, required=False)
+    fy_start = serializers.DateField(required=False)
+    fy_end   = serializers.DateField(required=False)
+
+    # The clipped period for this section (FY-bounded window)
+    from_date = serializers.DateField()
+    to_date   = serializers.DateField()
+
+    # Section-level numbers
+    opening_balance  = serializers.DecimalField(max_digits=16, decimal_places=2)
+    total_receipts   = serializers.DecimalField(max_digits=16, decimal_places=2)
+    total_payments   = serializers.DecimalField(max_digits=16, decimal_places=2)
+    closing_balance  = serializers.DecimalField(max_digits=16, decimal_places=2)
+
+    # Detail
+    lines        = CashbookLineSerializer(many=True)
+    day_sections = CashbookDaySectionSerializer(many=True)
+
+class CashbookUnifiedSerializer(serializers.Serializer):
+    # Context
+    entity     = serializers.IntegerField()
+    account_id = serializers.IntegerField()
+    from_date  = serializers.DateField()
+    to_date    = serializers.DateField()
+
+    # Tells the frontend if there are multiple sections
+    spans_multiple_fy = serializers.BooleanField()
+
+    # Always provided (even for single-FY; equals the only section’s numbers)
+    grand_opening        = serializers.DecimalField(max_digits=16, decimal_places=2)
+    grand_total_receipts = serializers.DecimalField(max_digits=16, decimal_places=2)
+    grand_total_payments = serializers.DecimalField(max_digits=16, decimal_places=2)
+    grand_closing        = serializers.DecimalField(max_digits=16, decimal_places=2)
+
+    # One or more sections (FY-bounded). Single-FY => len == 1
+    sections = CashbookUnifiedSectionSerializer(many=True)
     

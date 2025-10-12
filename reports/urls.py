@@ -67,6 +67,7 @@ urlpatterns  = [
     path('emialculator/', views.EMICalculatorAPIView.as_view(), name='accounts-receivable-aging'),
     path('sales-order-gst-summary/', views.GSTSummaryView.as_view(), name='sales-order-gst-summary'),
     path('trial-balance/', views.TrialbalanceApiViewJournal.as_view(), name='sales-order-gst-summary'),
+    path('cash_book/', views.CashBookAPIView.as_view(), name='sales-order-gst-summary'),
 
     
     
