@@ -4,15 +4,18 @@ from django.shortcuts import render
 from collections import defaultdict
 from django.db.models import Min, Max
 from invoice.models import JournalLine  # <-- your GL table
+from typing import Tuple, List,Optional
+from invoice.serializers import stocktransconstant
 
 from itertools import product
 from django.http import request,JsonResponse
 from django.shortcuts import render
 import json
 from pandas.tseries.offsets import MonthEnd,QuarterEnd
-from decimal import Decimal
-from django.db.models import Sum, Q
+from decimal import Decimal,InvalidOperation
+from django.db.models import Sum, Q, Value as V,DecimalField
 from django.utils.timezone import make_aware, is_aware
+from .serializers import CashbookUnifiedSerializer
 from django.utils.dateparse import parse_date
 from collections import deque
 from django.utils import timezone  
@@ -38,7 +41,7 @@ from rest_framework.renderers import JSONRenderer
 from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
-from entity.models import Entity,entityconstitution,entityfinancialyear
+from entity.models import Entity,entityconstitution,entityfinancialyear,entityfinancialyear as FinancialYear
 from django_pandas.io import read_frame
 from django.db.models import Q
 import numpy as np
@@ -5831,7 +5834,8 @@ class TrialBalanceView(APIView):
 
 class TrialbalanceApiViewJournal(ListAPIView):
     """
-    GET /api/reports/trialbalance?entity=1&startdate=2025-04-01&enddate=2025-04-30
+    GET /api/reports/trial-balance/?entity=1&startdate=2025-04-01&enddate=2025-04-30
+
     Trial Balance aggregated at AccountHead level with sign-based head selection:
       - DR (>=0): group under account.accounthead
       - CR (<0):  group under account.creditaccounthead
@@ -5840,43 +5844,60 @@ class TrialbalanceApiViewJournal(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = TrialBalanceHeadRowSerializer
 
-    def _parse_ymd(self, s: str):
-        return datetime.strptime(s, "%Y-%m-%d").date()
+    # ---- safer ISO date parsing (trims & normalizes smart dashes) ----
+    def _parse_ymd(self, s: str) -> date:
+        if s is None:
+            raise ValueError("empty")
+        s = str(s).strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+        return date.fromisoformat(s)  # strict YYYY-MM-DD
 
     def get(self, request, *args, **kwargs):
+        # ---- params ----
         entity_id = request.query_params.get("entity")
         start_s = request.query_params.get("startdate")
         end_s = request.query_params.get("enddate")
 
-        if not (entity_id and start_s and end_s):
+        if entity_id is None or start_s is None or end_s is None:
             return Response(
                 {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        entity_id = str(entity_id).strip()
+        start_s = str(start_s).strip()
+        end_s = str(end_s).strip()
+
         # ---- date parsing ----
         try:
             startdate = self._parse_ymd(start_s)
             enddate = self._parse_ymd(end_s)
-        except ValueError:
-            return Response({"detail": "Dates must be YYYY-MM-DD."}, status=400)
+        except Exception:
+            # echo back what we received to help spot hidden chars
+            return Response(
+                {"detail": "Dates must be YYYY-MM-DD.", "received": {"startdate": start_s, "enddate": end_s}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if startdate > enddate:
-            return Response([], status=200)
+            # empty range → empty TB is valid
+            return Response([], status=status.HTTP_200_OK)
 
         # ---- optional clamp to financial year (JournalLine.entrydate is a DateField) ----
         fy = (
             entityfinancialyear.objects
-            .filter(entity_id=entity_id,
-                    finstartyear__date__lte=enddate,
-                    finendyear__date__gte=startdate)
+            .filter(
+                entity_id=entity_id,
+                finstartyear__date__lte=enddate,
+                finendyear__date__gte=startdate,
+            )
             .order_by("-finstartyear")
             .first()
         )
         if fy:
             startdate = max(startdate, fy.finstartyear.date())
-            enddate   = min(enddate,   fy.finendyear.date())
+            enddate = min(enddate, fy.finendyear.date())
             if startdate > enddate:
-                return Response([], status=200)
+                return Response([], status=status.HTTP_200_OK)
 
         # =========================
         # 1) OPENING (< startdate) PER ACCOUNT
@@ -5898,12 +5919,12 @@ class TrialbalanceApiViewJournal(ListAPIView):
             .annotate(
                 opening=Sum(
                     Case(
-                        When(drcr=True, then=F("amount")),     # Debit +
-                        When(drcr=False, then=-F("amount")),    # Credit −
-                        default=Value(0),
+                        When(drcr=True, then=F("amount")),      # Debit +
+                        When(drcr=False, then=-F("amount")),     # Credit −
+                        default=V(0),
                         output_field=DecimalField(max_digits=18, decimal_places=2),
                     ),
-                    default=Value(0),
+                    default=V(0),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 )
             )
@@ -5928,19 +5949,19 @@ class TrialbalanceApiViewJournal(ListAPIView):
                 debit=Sum(
                     Case(
                         When(drcr=True, then=F("amount")),
-                        default=Value(0),
+                        default=V(0),
                         output_field=DecimalField(max_digits=18, decimal_places=2),
                     ),
-                    default=Value(0),
+                    default=V(0),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
                 credit=Sum(
                     Case(
                         When(drcr=False, then=F("amount")),
-                        default=Value(0),
+                        default=V(0),
                         output_field=DecimalField(max_digits=18, decimal_places=2),
                     ),
-                    default=Value(0),
+                    default=V(0),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
             )
@@ -5950,8 +5971,9 @@ class TrialbalanceApiViewJournal(ListAPIView):
         # 3) MERGE PER-ACCOUNT
         # =========================
         per_acct = {}
+
         def _extract_heads(row):
-            # prefer account.* heads; fall back to explicit JournalLine.accounthead
+            # Prefer account.* heads; fall back to explicit JournalLine.accounthead
             ah_id = row.get("account__accounthead_id") or row.get("accounthead_id")
             ah_nm = row.get("account__accounthead__name") or row.get("accounthead__name")
             ch_id = row.get("account__creditaccounthead_id") or ah_id
@@ -5959,9 +5981,8 @@ class TrialbalanceApiViewJournal(ListAPIView):
             return ah_id, ah_nm, ch_id, ch_nm
 
         for r in opening_acct:
-            aid = r["account_id"]  # may be None if no account on line
+            aid = r["account_id"]  # may be None if line had no account
             ah_id, ah_nm, ch_id, ch_nm = _extract_heads(r)
-            # if we still don't have any head, skip
             if ah_id is None and ch_id is None:
                 continue
             per_acct[aid] = dict(
@@ -5981,9 +6002,8 @@ class TrialbalanceApiViewJournal(ListAPIView):
                 ah_id=ah_id, ah_name=ah_nm or "",
                 ch_id=ch_id, ch_name=ch_nm or "",
             ))
-            item["debit"]  = (item["debit"]  or ZERO) + (r["debit"]  or ZERO)
+            item["debit"] = (item["debit"] or ZERO) + (r["debit"] or ZERO)
             item["credit"] = (item["credit"] or ZERO) + (r["credit"] or ZERO)
-            # refresh names if they were blank
             if not item["ah_name"] and ah_nm:
                 item["ah_name"] = ah_nm
             if not item["ch_name"] and ch_nm:
@@ -5991,7 +6011,7 @@ class TrialbalanceApiViewJournal(ListAPIView):
 
         # If no data, short-circuit
         if not per_acct:
-            return Response([], status=200)
+            return Response([], status=status.HTTP_200_OK)
 
         # =========================
         # 4) CHOOSE DISPLAY HEAD BY CLOSING SIGN & RE-AGGREGATE
@@ -6004,7 +6024,7 @@ class TrialbalanceApiViewJournal(ListAPIView):
             else:
                 hid, hname = v["ch_id"], v["ch_name"]
 
-            if hid is None:  # nothing to group under
+            if hid is None:
                 continue
 
             agg = by_head.setdefault(hid, dict(
@@ -6015,8 +6035,8 @@ class TrialbalanceApiViewJournal(ListAPIView):
                 credit=ZERO,
             ))
             agg["openingbalance"] += v["opening"] or ZERO
-            agg["debit"]          += v["debit"]   or ZERO
-            agg["credit"]         += v["credit"]  or ZERO
+            agg["debit"] += v["debit"] or ZERO
+            agg["credit"] += v["credit"] or ZERO
 
         # =========================
         # 5) FINALIZE & RETURN
@@ -6030,8 +6050,364 @@ class TrialbalanceApiViewJournal(ListAPIView):
             out.append(v)
 
         out.sort(key=lambda x: (x["accountheadname"] or "").lower())
-        return Response(TrialBalanceHeadRowSerializer(out, many=True).data)
+        return Response(self.serializer_class(out, many=True).data, status=status.HTTP_200_OK)
 
+
+# ---- numeric constants (avoid Decimal/Integer mixed types in aggregates) ----
+ZERO = Decimal("0.00")
+DEC0 = V(Decimal("0.00"), output_field=DecimalField(max_digits=18, decimal_places=2))
+
+
+# ----------------------
+# Helper functions
+# ----------------------
+def _parse_iso_date(s: str) -> date:
+    """Strict YYYY-MM-DD with dash normalization and trimming."""
+    if s is None:
+        raise ValueError("empty")
+    s = str(s).strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+    return date.fromisoformat(s)
+
+def _bool(s: Optional[str], default: bool = False) -> bool:
+    if s is None:
+        return default
+    return str(s).strip().lower() in {"1", "true", "yes", "y", "t"}
+
+def _fy_covering_date(entity_id: int, d: date):
+    """Return FY row covering date d (entityfinancialyear has finstartyear/finendyear, often DateTimeFields)."""
+    return (
+        entityfinancialyear.objects
+        .filter(entity_id=entity_id, finstartyear__date__lte=d, finendyear__date__gte=d)
+        .order_by("finstartyear")
+        .first()
+    )
+
+def _fys_overlapping_range(entity_id: int, d1: date, d2: date) -> List[entityfinancialyear]:
+    return list(
+        entityfinancialyear.objects
+        .filter(entity_id=entity_id)
+        .filter(finstartyear__date__lte=d2, finendyear__date__gte=d1)
+        .order_by("finstartyear")
+    )
+
+def _clip_to_fy(d1: date, d2: date, fy: entityfinancialyear) -> Tuple[date, date]:
+    fy_start = fy.finstartyear.date()
+    fy_end   = fy.finendyear.date()
+    return max(d1, fy_start), min(d2, fy_end)
+
+def _fy_name(fy: entityfinancialyear) -> str:
+    s = fy.finstartyear.date()
+    e = fy.finendyear.date()
+    return f"FY {s.year}-{str(e.year)[-2:]}"
+
+def _aggregate_opening(base_qs, before_date: date) -> Decimal:
+    """Opening = Σ(Dr − Cr) strictly before 'before_date'."""
+    agg = base_qs.filter(entrydate__lt=before_date).aggregate(
+        dr=Coalesce(Sum("amount", filter=Q(drcr=True)), DEC0),
+        cr=Coalesce(Sum("amount", filter=Q(drcr=False)), DEC0),
+    )
+    return Decimal(agg["dr"]) - Decimal(agg["cr"])
+
+def _fetch_period_rows(base_qs, d1: date, d2: date):
+    return list(
+        base_qs.filter(entrydate__gte=d1, entrydate__lte=d2)
+               .order_by("entrydate", "voucherno", "id")
+               .values("entrydate", "voucherno", "desc", "drcr", "amount")
+    )
+
+def _build_lines_and_totals(rows, opening: Decimal):
+    running = opening
+    out = []
+    tot_dr = ZERO
+    tot_cr = ZERO
+
+    for r in rows:
+        amt = Decimal(r["amount"])
+        if r["drcr"]:
+            debit, credit = amt, ZERO
+            running += amt
+            tot_dr += amt
+        else:
+            debit, credit = ZERO, amt
+            running -= amt
+            tot_cr += amt
+
+        out.append({
+            "date": r["entrydate"],
+            "voucherno": r["voucherno"] or "",
+            "desc": r["desc"] or "",
+            "debit": debit,
+            "credit": credit,
+            "balance": running,
+        })
+
+    closing = opening + tot_dr - tot_cr
+    return out, tot_dr, tot_cr, closing
+
+def _build_day_sections(lines, opening: Decimal, include_empty_days: bool, d1: date, d2: date):
+    from collections import defaultdict as _dd
+    buckets = _dd(list)
+    for row in lines:
+        buckets[row["date"]].append(row)
+
+    if include_empty_days:
+        days = []
+        cur = d1
+        while cur <= d2:
+            days.append(cur)
+            cur += timedelta(days=1)
+    else:
+        days = sorted(buckets.keys())
+
+    sections = []
+    carry = opening
+    for d in days:
+        items = buckets.get(d, [])
+        day_dr = sum((i["debit"] for i in items), ZERO)
+        day_cr = sum((i["credit"] for i in items), ZERO)
+        day_open = carry
+        day_close = day_open + day_dr - day_cr
+        sections.append({
+            "date": d,
+            "day_opening": day_open,
+            "items": items,
+            "day_receipts": day_dr,
+            "day_payments": day_cr,
+            "day_closing_balance": day_close,
+        })
+        carry = day_close
+
+    return sections
+
+
+# ----------------------
+# API View
+# ----------------------
+class CashBookAPIView(APIView):
+    """
+    Unified Cash Book API (single or multi-FY via `sections[]`)
+
+    GET /api/reports/cashbook?entity=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+      Optional:
+        - account_id=INT                (default: const.getcashid(entity))
+        - voucherno=JV123               (exact)
+        - txn=Sale,Receipt              (IN-list)
+        - desc_contains=rent            (icontains)
+        - min_amount=100.00
+        - max_amount=5000
+        - include_empty_days=true|false (default false)
+        - posted_only=true|false        (default true; filters entry__is_posted=True)
+        - strict_fy=true|false          (default false; if true and FY missing → 400)
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        # ---- required params ----
+        entity_raw = request.query_params.get("entity")
+        from_raw   = request.query_params.get("from")
+        to_raw     = request.query_params.get("to")
+        if entity_raw is None or from_raw is None or to_raw is None:
+            return Response(
+                {"detail": "Query params required: entity, from, to (YYYY-MM-DD)"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            entity_id = int(str(entity_raw).strip())
+            from_dt   = _parse_iso_date(from_raw)
+            to_dt     = _parse_iso_date(to_raw)
+        except Exception:
+            return Response(
+                {"detail": "Dates must be YYYY-MM-DD.",
+                 "received": {"from": from_raw, "to": to_raw}},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if to_dt < from_dt:
+            return Response({"detail": "'to' must be >= 'from'."}, status=400)
+
+        # ---- resolve account (default: cash for entity) ----
+        account_pk: Optional[int] = None
+        account_q = request.query_params.get("account_id")
+        if account_q:
+            try:
+                account_pk = int(account_q)
+            except ValueError:
+                return Response({"detail": "Invalid account_id."}, status=400)
+        else:
+            try:
+                const = stocktransconstant()
+                acct = const.getcashid(entity_id)  # may return model or int
+                account_pk = int(acct.pk) if hasattr(acct, "pk") else int(acct)
+            except Exception as ex:
+                return Response({"detail": f"Unable to resolve cash account for entity={entity_id}: {ex}"}, status=400)
+
+        include_empty_days = _bool(request.query_params.get("include_empty_days"), default=False)
+        posted_only        = _bool(request.query_params.get("posted_only"), default=True)
+        strict_fy          = _bool(request.query_params.get("strict_fy"), default=False)
+
+        # ---- base queryset ----
+        base = JournalLine.objects.filter(entity_id=entity_id, account_id=account_pk)
+        # if posted_only:
+        #     base = base.filter(entry__is_posted=True)  # remove if your header lacks this flag
+
+        # ---- optional filters ----
+        voucherno = request.query_params.get("voucherno")
+        if voucherno:
+            base = base.filter(voucherno=voucherno)
+
+        txn_raw = request.query_params.get("txn")
+        if txn_raw:
+            txns = [t.strip() for t in txn_raw.split(",") if t.strip()]
+            if txns:
+                base = base.filter(transactiontype__in=txns)
+
+        desc_contains = request.query_params.get("desc_contains")
+        if desc_contains:
+            base = base.filter(desc__icontains=desc_contains)
+
+        min_amount = request.query_params.get("min_amount")
+        if min_amount:
+            try:
+                base = base.filter(amount__gte=Decimal(min_amount))
+            except (InvalidOperation, ValueError):
+                return Response({"detail": "Invalid min_amount."}, status=400)
+
+        max_amount = request.query_params.get("max_amount")
+        if max_amount:
+            try:
+                base = base.filter(amount__lte=Decimal(max_amount))
+            except (InvalidOperation, ValueError):
+                return Response({"detail": "Invalid max_amount."}, status=400)
+
+        # ---- financial year handling (soft fallback) ----
+        fy_from = _fy_covering_date(entity_id, from_dt)
+        fy_to   = _fy_covering_date(entity_id, to_dt)
+
+        # If FY rows missing → fallback to a single non-FY section unless strict_fy=true
+        if not fy_from or not fy_to:
+            if strict_fy:
+                return Response(
+                    {"detail": "Requested dates are not fully covered by financial year setup.",
+                     "hint": "Add FY rows for these dates or call without strict_fy."},
+                    status=400
+                )
+
+            grand_opening = _aggregate_opening(base, from_dt)
+            rows = _fetch_period_rows(base, from_dt, to_dt)
+            lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, grand_opening)
+            day_sections = _build_day_sections(lines, grand_opening, include_empty_days, from_dt, to_dt)
+
+            payload = {
+                "entity": entity_id,
+                "account_id": account_pk,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_opening": grand_opening,
+                "grand_total_receipts": tot_dr,
+                "grand_total_payments": tot_cr,
+                "grand_closing": closing,
+                "sections": [
+                    {
+                        # FY metadata omitted when FY rows are absent
+                        "from_date": from_dt,
+                        "to_date": to_dt,
+                        "opening_balance": grand_opening,
+                        "total_receipts": tot_dr,
+                        "total_payments": tot_cr,
+                        "closing_balance": closing,
+                        "lines": lines,
+                        "day_sections": day_sections,
+                    }
+                ],
+            }
+            return Response(CashbookUnifiedSerializer(payload).data, status=200)
+
+        # ---- same-FY fast path ----
+        grand_opening = _aggregate_opening(base, from_dt)
+
+        if fy_from.id == fy_to.id:
+            rows = _fetch_period_rows(base, from_dt, to_dt)
+            lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, grand_opening)
+            day_sections = _build_day_sections(lines, grand_opening, include_empty_days, from_dt, to_dt)
+
+            payload = {
+                "entity": entity_id,
+                "account_id": account_pk,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_opening": grand_opening,
+                "grand_total_receipts": tot_dr,
+                "grand_total_payments": tot_cr,
+                "grand_closing": closing,
+                "sections": [
+                    {
+                        "fy_name": _fy_name(fy_from),
+                        "fy_start": fy_from.finstartyear.date(),
+                        "fy_end": fy_from.finendyear.date(),
+                        "from_date": from_dt,
+                        "to_date": to_dt,
+                        "opening_balance": grand_opening,
+                        "total_receipts": tot_dr,
+                        "total_payments": tot_cr,
+                        "closing_balance": closing,
+                        "lines": lines,
+                        "day_sections": day_sections,
+                    }
+                ],
+            }
+            return Response(CashbookUnifiedSerializer(payload).data, status=200)
+
+        # ---- multi-FY path ----
+        fys = _fys_overlapping_range(entity_id, from_dt, to_dt)
+        if not fys:
+            return Response({"detail": "No financial year overlaps the requested range."}, status=400)
+
+        sections = []
+        rolling_opening = grand_opening
+        grand_dr = ZERO
+        grand_cr = ZERO
+        last_closing = rolling_opening
+
+        for fy in fys:
+            sub_from, sub_to = _clip_to_fy(from_dt, to_dt, fy)
+            rows = _fetch_period_rows(base, sub_from, sub_to)
+            lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, rolling_opening)
+            day_sections = _build_day_sections(lines, rolling_opening, include_empty_days, sub_from, sub_to)
+
+            sections.append({
+                "fy_name": _fy_name(fy),
+                "fy_start": fy.finstartyear.date(),
+                "fy_end": fy.finendyear.date(),
+                "from_date": sub_from,
+                "to_date": sub_to,
+                "opening_balance": rolling_opening,
+                "total_receipts": tot_dr,
+                "total_payments": tot_cr,
+                "closing_balance": closing,
+                "lines": lines,
+                "day_sections": day_sections,
+            })
+
+            grand_dr += tot_dr
+            grand_cr += tot_cr
+            rolling_opening = closing
+            last_closing = closing
+
+        multi_payload = {
+            "entity": entity_id,
+            "account_id": account_pk,
+            "from_date": from_dt,
+            "to_date": to_dt,
+            "spans_multiple_fy": True,
+            "grand_opening": grand_opening,
+            "grand_total_receipts": grand_dr,
+            "grand_total_payments": grand_cr,
+            "grand_closing": last_closing,
+            "sections": sections,
+        }
+        return Response(CashbookUnifiedSerializer(multi_payload).data, status=200)
 
 
 
