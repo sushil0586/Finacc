@@ -903,7 +903,7 @@ class purchaseorder(TrackingModel):  # keep name to avoid breaking references
     tcs206C1      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs 206C1')
     tcs206C2      = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, verbose_name='Tcs 206C2')
 
-    duedate       = models.DateField(verbose_name='Due Date', null=True)  # align with sales
+    duedate       = models.DateTimeField(verbose_name='Due Date', null=True)  # align with sales
     inputdate     = models.DateTimeField(verbose_name='Input Date', null=True)
     vehicle       = models.CharField(max_length=50, null=True, verbose_name='Vehicle')
     invoicetype   = models.ForeignKey(InvoiceType, on_delete=models.CASCADE, verbose_name='Invoice Type', null=True)
@@ -1239,40 +1239,148 @@ class salereturnothercharges(TrackingModel):
 
 
 
-class journalmain(TrackingModel):
-    voucherdate = models.DateField(verbose_name='Vocucher Date',auto_now_add=True)
-    voucherno = models.IntegerField(verbose_name='Voucher No')
-    vouchertype = models.CharField(max_length=50, null=True,verbose_name='Voucher Type',default='J')
-    mainaccountid = models.IntegerField(verbose_name='Main account Id',null=True)
-    entrydate = models.DateTimeField(verbose_name='Entry Date')
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
-    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+class VoucherType(models.TextChoices):
+    JOURNAL = "J", "Journal"
+    BANK    = "B", "Bank"
+    CASH    = "C", "Cash"
 
+class DetailKind(models.TextChoices):
+    BASE         = "BASE", "Base"            # user-entered line
+    AUTO_CB      = "AUTO_CB", "Auto Cash/Bank"
+    DISCOUNT     = "DISCOUNT", "Discount"
+    BANK_CHARGES = "BANK_CHARGES", "Bank Charges"
+    TDS          = "TDS", "TDS"
+
+class journalmain(TrackingModel):
+    voucherdate  = models.DateField(verbose_name="Voucher Date",auto_now_add=True)                 # API sets; no auto_now_add
+    voucherno    = models.PositiveIntegerField(verbose_name="Voucher No")
+    vouchertype  = models.CharField(max_length=2, choices=VoucherType.choices, default=VoucherType.JOURNAL)
+    # required for BANK/CASH only; null for JOURNAL
+    mainaccountid = models.ForeignKey(account, on_delete=models.PROTECT, null=True, blank=True, verbose_name="Main Account")
+
+    entrydate    = models.DateTimeField(verbose_name="Entry Date")
+    entity       = models.ForeignKey(Entity, on_delete=models.CASCADE, verbose_name="Entity")
+    entityfinid  = models.ForeignKey(entityfinancialyear, on_delete=models.PROTECT, null=True, verbose_name="Entity Financial Year")
+    createdby    = models.ForeignKey(User, on_delete=models.PROTECT, null=True)
+
+    narration    = models.CharField(max_length=1000, null=True, blank=True)
+
+    # operational/aggregates
+    is_posted    = models.BooleanField(default=False)
+    is_locked    = models.BooleanField(default=False)
+    lines_count  = models.PositiveIntegerField(default=0)
+    total_debit  = models.DecimalField(max_digits=16, decimal_places=2, default=ZERO2)
+    total_credit = models.DecimalField(max_digits=16, decimal_places=2, default=ZERO2)
 
     class Meta:
-        unique_together = ('voucherno','vouchertype','entity',)
-        
-
+        constraints = [
+            # unique voucher within entity+type+financial year
+            UniqueConstraint(fields=["entity", "vouchertype", "entityfinid", "voucherno"], name="uq_voucher_per_entity_type_year"),
+            # mainaccount required for Bank/Cash; must be NULL for Journal
+            CheckConstraint(
+                name="ck_mainaccount_by_type",
+                check=(
+                    Q(vouchertype__in=[VoucherType.BANK, VoucherType.CASH], mainaccountid__isnull=False) |
+                    Q(vouchertype=VoucherType.JOURNAL, mainaccountid__isnull=True)
+                ),
+            ),
+            # enforce balance only when posted
+            CheckConstraint(name="ck_balanced_when_posted",
+                            check=Q(is_posted=False) | Q(total_debit=F("total_credit"))),
+        ]
+        indexes = [
+            Index(fields=["entity", "vouchertype", "voucherdate"], name="ix_voucher_list"),
+            Index(fields=["entity", "entityfinid", "voucherno"], name="ix_voucher_no_lookup"),
+            Index(fields=["is_posted", "voucherdate"], name="ix_voucher_posted_date"),
+        ]
 
     def __str__(self):
-        return f'{self.voucherno}  '
+        return f"{self.get_vouchertype_display()} #{self.voucherno} ({self.voucherdate})"
 
 
 
-class journaldetails(TrackingModel):
-    Journalmain = models.ForeignKey(to = journalmain,related_name='journaldetails', on_delete=models.CASCADE,null=True,blank=True,verbose_name='Journal Main')
-    account = models.ForeignKey(to = account, on_delete=models.CASCADE,null=True,blank=True,verbose_name='Account Name')
-    desc = models.CharField(max_length=500, null=True,verbose_name='Description')
-    drcr = models.BooleanField(verbose_name='Debit/Credit')
-    debitamount =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Debit Amount',null=True)
-    creditamount =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Credit Amount',null=True)
-    discount =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Discount',null=True,default=0)
-    bankcharges =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'Bank Charges',null=True,default=0)
-    tds =  models.DecimalField(max_digits=14, decimal_places=4,verbose_name= 'tds',null=True,default=0)
-    chqbank = models.CharField(max_length=500, null=True,verbose_name='Chq.no + Bank')
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+class journaldetails(TrackingModel):  # or inherit your TrackingModel if you have it
+    # Link back to the voucher header
+    Journalmain = models.ForeignKey(
+        "journalmain",
+        related_name="journaldetails",     # <- used in posting service: header.journaldetails.all()
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        verbose_name="Journal Main",
+    )
+
+    # Counterparty / line account captured in the UI
+    account = models.ForeignKey(
+        account,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        verbose_name="Account Name",
+    )
+
+    desc = models.CharField(max_length=500, null=True, blank=True, verbose_name="Description")
+
+    # UI-side direction (True = Debit, False = Credit), kept for clarity and mapping
+    drcr = models.BooleanField(verbose_name="Debit/Credit")
+
+    # Keep your two-side amounts as you originally had
+    debitamount  = models.DecimalField(max_digits=14, decimal_places=4, verbose_name="Debit Amount",  null=True, default=ZERO4)
+    creditamount = models.DecimalField(max_digits=14, decimal_places=4, verbose_name="Credit Amount", null=True, default=ZERO4)
+
+    # Optional adjustments captured at the voucher-line level (don’t affect GL directly unless you map them)
+    discount    = models.DecimalField(max_digits=14, decimal_places=4, verbose_name="Discount",     null=True, default=ZERO4)
+    bankcharges = models.DecimalField(max_digits=14, decimal_places=4, verbose_name="Bank Charges", null=True, default=ZERO4)
+    tds         = models.DecimalField(max_digits=14, decimal_places=4, verbose_name="TDS",          null=True, default=ZERO4)
+
+    # Cheque / bank text (you can later split into instrument_no/bank_name/date if you do reconciliation)
+    chqbank = models.CharField(max_length=500, null=True, blank=True, verbose_name="Chq.no + Bank")
+    
+    line_kind   = models.CharField(max_length=20, choices=DetailKind.choices, default=DetailKind.BASE)
+    parent      = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="children", help_text="Base line that this was derived from")
+    cb_account = models.ForeignKey(
+        'financial.account',           # ← must match app_label.ModelName exactly
+        on_delete=models.PROTECT,
+        related_name='cashbook_lines',null = True,blank = True
+    )
+    entity    = models.ForeignKey(Entity, on_delete=models.CASCADE, verbose_name="Entity")
+    createdby = models.ForeignKey(User, on_delete=models.PROTECT, null=True)
+
+    class Meta:
+        constraints = [
+            # Non-negative rule (UI safety)
+            CheckConstraint(
+                name="ck_jd_non_negative",
+                check=Q(debitamount__gte=0) & Q(creditamount__gte=0) &
+                      Q(discount__gte=0) & Q(bankcharges__gte=0) & Q(tds__gte=0)
+            ),
+            # Exactly one side must be > 0 (either debit or credit, not both, not neither)
+            CheckConstraint(
+                name="ck_jd_one_side_only",
+                check=(
+                    (Q(debitamount__gt=0) & Q(creditamount=0)) |
+                    (Q(creditamount__gt=0) & Q(debitamount=0))
+                ),
+            ),
+            # Optional: drcr should match which side is non-zero (soft guard at DB level)
+            CheckConstraint(
+                name="ck_jd_drcr_consistent",
+                check=(
+                    (Q(drcr=True)  & Q(debitamount__gt=0)  & Q(creditamount=0)) |
+                    (Q(drcr=False) & Q(creditamount__gt=0) & Q(debitamount=0))
+                ),
+            ),
+        ]
+        indexes = [
+            Index(fields=["Journalmain", "account"], name="ix_jd_main_acct"),
+            Index(fields=["entity", "account"], name="ix_jd_entity_acct"),
+        ]
+
+    def __str__(self):
+        side = "Dr" if self.drcr else "Cr"
+        amt = self.debitamount or self.creditamount or Decimal("0")
+        return f"{side} {amt} → {self.account} ({self.desc or ''})"
 
 
 
@@ -1774,6 +1882,62 @@ class TxnType(models.TextChoices):
     JOURNAL = "journal", "Journal"
     SALES_RETURN = "salesreturn", "Sales Return"
     PURCHASE_RETURN = "purchasereturn", "Purchase Return"
+    JOURNAL_CASH = "journal_cash", "Journal (Cash)"      # ← NEW
+    JOURNAL_BANK = "journal_bank", "Journal (Bank)"      # ← NEW
+
+class PostingConfig(models.Model):
+    # Who carries adjustments when target == "CARRIER"
+    CARRIER_CB    = "CB"
+    CARRIER_PARTY = "PARTY"
+    CARRIER_CHOICES = [(CARRIER_CB, "Cash/Bank"), (CARRIER_PARTY, "Party")]
+
+    # Presentation (visual order only)
+    ORDER_BEFORE   = "components_before_party"
+    ORDER_BETWEEN  = "components_between_cb_and_party"
+    ORDER_AFTER    = "components_after_party"
+    ORDER_CHOICES  = [
+        (ORDER_BEFORE,  "Components before party"),
+        (ORDER_BETWEEN, "Components between CB and party"),
+        (ORDER_AFTER,   "Components after party"),
+    ]
+
+    # Per-component offset targets
+    TARGET_CB      = "CB"
+    TARGET_PARTY   = "PARTY"
+    TARGET_CARRIER = "CARRIER"
+    TARGET_CHOICES = [
+        (TARGET_CB, "Cash/Bank"),
+        (TARGET_PARTY, "Party"),
+        (TARGET_CARRIER, "Carrier (net into main line)"),
+    ]
+
+    entity = models.OneToOneField(Entity, on_delete=models.CASCADE, related_name="posting_config")
+
+    adjustment_carrier_on_receipt = models.CharField(max_length=10, choices=CARRIER_CHOICES, default=CARRIER_CB)
+    adjustment_carrier_on_payment = models.CharField(max_length=10, choices=CARRIER_CHOICES, default=CARRIER_CB)
+
+    presentation_order_on_receipt = models.CharField(max_length=40, choices=ORDER_CHOICES, default=ORDER_BETWEEN)
+    presentation_order_on_payment = models.CharField(max_length=40, choices=ORDER_CHOICES, default=ORDER_BETWEEN)
+
+    # offset targets — RECEIPT
+    discount_offset_target_on_receipt    = models.CharField(max_length=10, choices=TARGET_CHOICES, default=TARGET_CARRIER)
+    bankcharges_offset_target_on_receipt = models.CharField(max_length=10, choices=TARGET_CHOICES, default=TARGET_CARRIER)
+    tds_offset_target_on_receipt         = models.CharField(max_length=10, choices=TARGET_CHOICES, default=TARGET_CARRIER)
+
+    # offset targets — PAYMENT
+    discount_offset_target_on_payment    = models.CharField(max_length=10, choices=TARGET_CHOICES, default=TARGET_CARRIER)
+    bankcharges_offset_target_on_payment = models.CharField(max_length=10, choices=TARGET_CHOICES, default=TARGET_CARRIER)
+    tds_offset_target_on_payment         = models.CharField(max_length=10, choices=TARGET_CHOICES, default=TARGET_CARRIER)
+
+    # Optional per-entity overrides; if null we fall back to stocktransconstant()
+    discount_account_receipt = models.ForeignKey("financial.account", null=True, blank=True, on_delete=models.PROTECT, related_name="cfg_disc_recv")
+    discount_account_payment = models.ForeignKey("financial.account", null=True, blank=True, on_delete=models.PROTECT, related_name="cfg_disc_paid")
+    bank_charges_account     = models.ForeignKey("financial.account", null=True, blank=True, on_delete=models.PROTECT, related_name="cfg_bank_chg")
+    tds_receivable_account   = models.ForeignKey("financial.account", null=True, blank=True, on_delete=models.PROTECT, related_name="cfg_tds_recv")
+    tds_payable_account      = models.ForeignKey("financial.account", null=True, blank=True, on_delete=models.PROTECT, related_name="cfg_tds_pay")
+
+    def __str__(self):
+        return f"PostingConfig[{self.entity_id}]"
 
 
 class JournalLine(models.Model):
@@ -1829,7 +1993,7 @@ class InventoryMove(models.Model):
     location = models.IntegerField(null=True, blank=True)
     uom = models.IntegerField(null=True, blank=True)
 
-    qty = models.DecimalField(max_digits=14, decimal_places=4)         # +in / -out
+    qty = models.DecimalField(max_digits=18, decimal_places=4)         # +in / -out
     unit_cost = models.DecimalField(max_digits=14, decimal_places=4, default=ZERO4)  # valuation cost
     ext_cost = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)   # qty*unit_cost (abs)
 

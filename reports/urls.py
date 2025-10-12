@@ -65,6 +65,10 @@ urlpatterns  = [
     path('accounts-receivable-aging/', views.AccountsReceivableAgingReport.as_view(), name='accounts-receivable-aging'),
     path('accounts-payable-aging/', views.AccountsPayableAgingReportView.as_view(), name='accounts-receivable-aging'),
     path('emialculator/', views.EMICalculatorAPIView.as_view(), name='accounts-receivable-aging'),
+    path('sales-order-gst-summary/', views.GSTSummaryView.as_view(), name='sales-order-gst-summary'),
+    path('trial-balance/', views.TrialbalanceApiViewJournal.as_view(), name='sales-order-gst-summary'),
+
+    
     
 
     

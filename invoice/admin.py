@@ -6,7 +6,7 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,ReceiptVoucherInvoiceAllocation,ReceiptVoucher,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls,JournalLine, InventoryMove, TxnType,SalesQuotationDetail,SalesQuotationHeader
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,ReceiptVoucherInvoiceAllocation,ReceiptVoucher,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls,JournalLine, InventoryMove, TxnType,SalesQuotationDetail,SalesQuotationHeader,PostingConfig
 )
 from django.utils.translation import gettext_lazy as _
 from import_export.admin import ImportExportMixin
@@ -511,6 +511,11 @@ class SalesQuotationLineInline(admin.TabularInline):
     )
     readonly_fields = ("cgst", "sgst", "igst", "linetotal")
     autocomplete_fields = ("product",)
+
+@admin.register(PostingConfig)
+class PostingConfigAdmin(admin.ModelAdmin):
+    list_display = ("entity", "adjustment_carrier_on_receipt", "adjustment_carrier_on_payment")
+    search_fields = ("entity__entityname",)
 
 
 # --------------

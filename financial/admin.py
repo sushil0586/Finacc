@@ -17,12 +17,14 @@ class accountAdmin(ImportExportMixin,admin.ModelAdmin):
     list_filter = (
         ('entity', admin.RelatedOnlyFieldListFilter),
     )
+    search_fields = ("accountname", "code", "gstin")  # adjust field names
     
 
 admin.site.register(accountHead, accountheadAdmin)
 
 
 admin.site.register(account,accountAdmin)
+
 # admin.site.register(account_detials1)
 # admin.site.register(account_detials2)
 
@@ -30,7 +32,9 @@ class accounttypeadmin(ImportExportMixin,admin.ModelAdmin):
     list_display = ['id', 'accounttypename','accounttypecode','entity']
 
 admin.site.register(accounttype,accounttypeadmin)
-admin.site.register(ShippingDetails)
+@admin.register(ShippingDetails)
+class ShippingDetailsAdmin(admin.ModelAdmin):
+    search_fields = ("name", "address1", "pincode", "city__name")
 @admin.register(ContactDetails)
 class ContactDetailsAdmin(admin.ModelAdmin):
     list_display = (
