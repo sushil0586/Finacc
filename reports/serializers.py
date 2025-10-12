@@ -21,6 +21,7 @@ from reports.models import TransactionType
 
 
 
+
 class closingstockSerializer(serializers.ModelSerializer):
 
     class Meta:
@@ -1178,4 +1179,21 @@ class EMICalculatorSerializer(serializers.Serializer):
     tenure_months = serializers.IntegerField()
     start_date = serializers.DateField()
     interest_type = serializers.ChoiceField(choices=['flat', 'reducing'])  # New field
+
+
+class SalesGSTSummarySerializer(serializers.Serializer):
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    cgst = serializers.DecimalField(max_digits=14, decimal_places=2)
+    sgst = serializers.DecimalField(max_digits=14, decimal_places=2)
+    igst = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+class TrialBalanceHeadRowSerializer(serializers.Serializer):
+    accounthead = serializers.IntegerField()
+    accountheadname = serializers.CharField()
+    openingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
+    obdrcr = serializers.CharField()   # "DR" / "CR" for opening
+    debit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    credit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    closingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
+    drcr = serializers.CharField()     # "DR" / "CR" for closing
     

@@ -3,6 +3,7 @@ from django.shortcuts import render
 # Create your views here.
 from collections import defaultdict
 from django.db.models import Min, Max
+from invoice.models import JournalLine  # <-- your GL table
 
 from itertools import product
 from django.http import request,JsonResponse
@@ -16,13 +17,13 @@ from django.utils.dateparse import parse_date
 from collections import deque
 from django.utils import timezone  
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
-from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain
+from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain,salereturnDetails,Purchasereturndetails
 # from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
 # purchasereturndetailsSerializer,PRSerializer,TrialbalanceSerializer,TrialbalanceSerializerbyaccounthead,TrialbalanceSerializerbyaccount,accountheadserializer,accountHead,accountserializer,accounthserializer, stocktranserilaizer,cashserializer,journalmainSerializer,stockdetailsSerializer,stockmainSerializer,\
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList,SalesGSTSummarySerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -62,7 +63,8 @@ from reports.models import TransactionType
 from .serializers import TransactionTypeSerializer
 from .serializers import EMICalculatorSerializer
 from helpers.utils.emi import calculate_emi
-
+from reports.serializers import TrialBalanceHeadRowSerializer
+ZERO = Decimal("0.00")
 
 
 
@@ -5598,6 +5600,438 @@ class EMICalculatorAPIView(APIView):
                 'amortization_schedule': schedule
             }, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class GSTSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        def aggregate_queryset(qs):
+            return qs.aggregate(
+                amount=Coalesce(Sum('amount'), Value(0, output_field=DecimalField())),
+                cgst=Coalesce(Sum('cgst'), Value(0, output_field=DecimalField())),
+                sgst=Coalesce(Sum('sgst'), Value(0, output_field=DecimalField())),
+                igst=Coalesce(Sum('igst'), Value(0, output_field=DecimalField()))
+            )
+
+        def fetch_and_aggregate(gst_filter):
+            sales_qs = salesOrderdetails.objects.filter(gst_filter)
+            return_qs = Purchasereturndetails.objects.filter(gst_filter)
+            salereturn_qs = salereturnDetails.objects.filter(gst_filter)
+    
+            sales_agg = aggregate_queryset(sales_qs)
+            return_agg = aggregate_queryset(return_qs)
+            salereturn_agg = aggregate_queryset(salereturn_qs)
+
+            return {
+                "total_amount": (sales_agg["amount"] + return_agg["amount"]) - salereturn_agg["amount"],
+                "cgst": (sales_agg["cgst"] + return_agg["cgst"]) - salereturn_agg["cgst"],
+                "sgst": (sales_agg["sgst"] + return_agg["sgst"]) - salereturn_agg["sgst"],
+                "igst": (sales_agg["igst"] + return_agg["igst"]) - salereturn_agg["igst"]
+            }
+
+        # Outward taxable supplies (> 0%)
+        taxable_filter = (
+            Q(cgstpercent__gt=0) |
+            Q(sgstpercent__gt=0) |
+            Q(igstpercent__gt=0)
+        )
+
+        # 0% GST supplies (exactly 0)
+        zero_filter = (
+            Q(cgstpercent=0) &
+            Q(sgstpercent=0) &
+            Q(igstpercent=0)
+        )
+
+        # Nil-rated supplies (null or not provided)
+        nil_filter = (
+            Q(cgstpercent__isnull=True) &
+            Q(sgstpercent__isnull=True) &
+            Q(igstpercent__isnull=True)
+        )
+
+        data = {
+            "Outward taxable supplies": fetch_and_aggregate(taxable_filter),
+            "Outward supplies at 0% GST": fetch_and_aggregate(zero_filter),
+            "Nil rated outward supplies": fetch_and_aggregate(nil_filter),
+        }
+
+        return Response(data)
+
+
+
+class TrialBalanceView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    # ----- helpers ---------------------------------------------------------
+    def _sum_debit(self, qs):
+        return Coalesce(Sum(Case(When(drcr=True, then=F('amount')),
+                                 default=Value(0),
+                                 output_field=DecimalField(max_digits=14, decimal_places=2))),
+                        Value(0, output_field=DecimalField(max_digits=14, decimal_places=2)))
+
+    def _sum_credit(self, qs):
+        return Coalesce(Sum(Case(When(drcr=False, then=F('amount')),
+                                 default=Value(0),
+                                 output_field=DecimalField(max_digits=14, decimal_places=2))),
+                        Value(0, output_field=DecimalField(max_digits=14, decimal_places=2)))
+
+    def _opening_by_account(self, entity_id, start_date, accounthead_id=None, drcr_filter=None):
+        """
+        Opening = sum of all postings strictly before start_date
+        """
+        qs = (JournalLine.objects
+              .filter(entity_id=entity_id, entrydate__lt=start_date)
+              .select_related('account', 'accounthead'))
+
+        if accounthead_id:
+            qs = qs.filter(accounthead_id=accounthead_id)
+
+        # (optional) filter by side for opening
+        if drcr_filter == 'dr':
+            qs = qs.filter(drcr=True)
+        elif drcr_filter == 'cr':
+            qs = qs.filter(drcr=False)
+
+        # aggregate per account
+        agg = (qs.values('account_id', 'account__accountname', 'accounthead_id', 'accounthead__accounthead')
+                 .annotate(
+                     opening_debit=self._sum_debit(qs),
+                     opening_credit=self._sum_credit(qs),
+                 )
+                 .annotate(
+                     opening_balance=F('opening_debit') - F('opening_credit')
+                 ))
+
+        # return as dict keyed by account_id
+        return {
+            row['account_id']: {
+                'account_id': row['account_id'],
+                'accountname': row['account__accountname'],
+                'accounthead_id': row['accounthead_id'],
+                'accounthead': row['accounthead__accounthead'],
+                'opening_debit': row['opening_debit'],
+                'opening_credit': row['opening_credit'],
+                'opening_balance': row['opening_balance'],
+            }
+            for row in agg
+        }
+
+    def _period_by_account(self, entity_id, start_date, end_date, accounthead_id=None, drcr_filter=None):
+        """
+        Movements in the date window (inclusive)
+        """
+        qs = (JournalLine.objects
+              .filter(entity_id=entity_id, entrydate__range=(start_date, end_date))
+              .select_related('account', 'accounthead'))
+
+        if accounthead_id:
+            qs = qs.filter(accounthead_id=accounthead_id)
+
+        # (optional) filter by side for period totals
+        if drcr_filter == 'dr':
+            qs = qs.filter(drcr=True)
+        elif drcr_filter == 'cr':
+            qs = qs.filter(drcr=False)
+
+        agg = (qs.values('account_id', 'account__accountname', 'accounthead_id', 'accounthead__accounthead')
+                .annotate(
+                    period_debit=self._sum_debit(qs),
+                    period_credit=self._sum_credit(qs),
+                )
+                .annotate(
+                    period_balance=F('period_debit') - F('period_credit')
+                ))
+
+        return {
+            row['account_id']: {
+                'account_id': row['account_id'],
+                'accountname': row['account__accountname'],
+                'accounthead_id': row['accounthead_id'],
+                'accounthead': row['accounthead__accounthead'],
+                'period_debit': row['period_debit'],
+                'period_credit': row['period_credit'],
+                'period_balance': row['period_balance'],
+            }
+            for row in agg
+        }
+
+    # ----- GET -------------------------------------------------------------
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get('entity')
+        start_date = request.query_params.get('startdate')
+        end_date = request.query_params.get('enddate')
+        accounthead_id = request.query_params.get('accounthead')  # accountHead PK (optional)
+        drcr = request.query_params.get('drcr')  # 'dr' | 'cr' | None
+
+        if not entity_id or not start_date or not end_date:
+            return Response({'error': 'Missing required parameters: entity, startdate, enddate'}, status=400)
+
+        start_date = parse_date(start_date)
+        end_date = parse_date(end_date)
+
+        # Opening and period dictionaries keyed by account_id
+        opening = self._opening_by_account(entity_id, start_date, accounthead_id, drcr)
+        period = self._period_by_account(entity_id, start_date, end_date, accounthead_id, drcr)
+
+        # Merge
+        account_ids = set(opening.keys()) | set(period.keys())
+        result = []
+        for acc_id in account_ids:
+            o = opening.get(acc_id)
+            p = period.get(acc_id)
+
+            accountname = (o or p)['accountname']
+            accounthead = (o or p)['accounthead']
+            accounthead_id = (o or p)['accounthead_id']
+
+            opening_debit = (o or {}).get('opening_debit', Decimal('0'))
+            opening_credit = (o or {}).get('opening_credit', Decimal('0'))
+            opening_balance = (o or {}).get('opening_balance', Decimal('0'))
+
+            period_debit = (p or {}).get('period_debit', Decimal('0'))
+            period_credit = (p or {}).get('period_credit', Decimal('0'))
+            period_balance = (p or {}).get('period_balance', Decimal('0'))
+
+            closing_balance = opening_balance + period_balance
+
+            result.append({
+                'account_id': acc_id,
+                'accountname': accountname,
+                'accounthead_id': accounthead_id,
+                'accounthead': accounthead,
+
+                'opening_debit': opening_debit,
+                'opening_credit': opening_credit,
+                'opening_balance': opening_balance,
+                'obdrcr': 'DR' if opening_balance > 0 else 'CR' if opening_balance < 0 else '',
+
+                'period_debit': period_debit,
+                'period_credit': period_credit,
+                'period_balance': period_balance,
+
+                'closing_balance': closing_balance,
+                'drcr': 'DR' if closing_balance > 0 else 'CR' if closing_balance < 0 else '',
+            })
+
+        # Optional post-filter by DR/CR on closing (kept for parity with your old view)
+        if drcr == 'dr':
+            result = [r for r in result if r['closing_balance'] > 0]
+        elif drcr == 'cr':
+            result = [r for r in result if r['closing_balance'] < 0]
+
+        # Sort nicely by account head then account name
+        result.sort(key=lambda r: (str(r['accounthead'] or ''), str(r['accountname'] or '')))
+
+        return Response(result)
+
+
+
+class TrialbalanceApiViewJournal(ListAPIView):
+    """
+    GET /api/reports/trialbalance?entity=1&startdate=2025-04-01&enddate=2025-04-30
+    Trial Balance aggregated at AccountHead level with sign-based head selection:
+      - DR (>=0): group under account.accounthead
+      - CR (<0):  group under account.creditaccounthead
+      - Fallback to JournalLine.accounthead where account is missing.
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = TrialBalanceHeadRowSerializer
+
+    def _parse_ymd(self, s: str):
+        return datetime.strptime(s, "%Y-%m-%d").date()
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get("entity")
+        start_s = request.query_params.get("startdate")
+        end_s = request.query_params.get("enddate")
+
+        if not (entity_id and start_s and end_s):
+            return Response(
+                {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ---- date parsing ----
+        try:
+            startdate = self._parse_ymd(start_s)
+            enddate = self._parse_ymd(end_s)
+        except ValueError:
+            return Response({"detail": "Dates must be YYYY-MM-DD."}, status=400)
+        if startdate > enddate:
+            return Response([], status=200)
+
+        # ---- optional clamp to financial year (JournalLine.entrydate is a DateField) ----
+        fy = (
+            entityfinancialyear.objects
+            .filter(entity_id=entity_id,
+                    finstartyear__date__lte=enddate,
+                    finendyear__date__gte=startdate)
+            .order_by("-finstartyear")
+            .first()
+        )
+        if fy:
+            startdate = max(startdate, fy.finstartyear.date())
+            enddate   = min(enddate,   fy.finendyear.date())
+            if startdate > enddate:
+                return Response([], status=200)
+
+        # =========================
+        # 1) OPENING (< startdate) PER ACCOUNT
+        # =========================
+        opening_acct = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, entrydate__lt=startdate)
+            .values(
+                "account_id",
+                # account-based heads
+                "account__accounthead_id",
+                "account__accounthead__name",
+                "account__creditaccounthead_id",
+                "account__creditaccounthead__name",
+                # fallback explicit head on the line (when account is null)
+                "accounthead_id",
+                "accounthead__name",
+            )
+            .annotate(
+                opening=Sum(
+                    Case(
+                        When(drcr=True, then=F("amount")),     # Debit +
+                        When(drcr=False, then=-F("amount")),    # Credit −
+                        default=Value(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
+        )
+
+        # =========================
+        # 2) PERIOD ([start,end]) PER ACCOUNT
+        # =========================
+        period_acct = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, entrydate__gte=startdate, entrydate__lte=enddate)
+            .values(
+                "account_id",
+                "account__accounthead_id",
+                "account__accounthead__name",
+                "account__creditaccounthead_id",
+                "account__creditaccounthead__name",
+                "accounthead_id",
+                "accounthead__name",
+            )
+            .annotate(
+                debit=Sum(
+                    Case(
+                        When(drcr=True, then=F("amount")),
+                        default=Value(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+                credit=Sum(
+                    Case(
+                        When(drcr=False, then=F("amount")),
+                        default=Value(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+            )
+        )
+
+        # =========================
+        # 3) MERGE PER-ACCOUNT
+        # =========================
+        per_acct = {}
+        def _extract_heads(row):
+            # prefer account.* heads; fall back to explicit JournalLine.accounthead
+            ah_id = row.get("account__accounthead_id") or row.get("accounthead_id")
+            ah_nm = row.get("account__accounthead__name") or row.get("accounthead__name")
+            ch_id = row.get("account__creditaccounthead_id") or ah_id
+            ch_nm = row.get("account__creditaccounthead__name") or ah_nm
+            return ah_id, ah_nm, ch_id, ch_nm
+
+        for r in opening_acct:
+            aid = r["account_id"]  # may be None if no account on line
+            ah_id, ah_nm, ch_id, ch_nm = _extract_heads(r)
+            # if we still don't have any head, skip
+            if ah_id is None and ch_id is None:
+                continue
+            per_acct[aid] = dict(
+                opening=r["opening"] or ZERO,
+                debit=ZERO, credit=ZERO,
+                ah_id=ah_id, ah_name=ah_nm or "",
+                ch_id=ch_id, ch_name=ch_nm or "",
+            )
+
+        for r in period_acct:
+            aid = r["account_id"]
+            ah_id, ah_nm, ch_id, ch_nm = _extract_heads(r)
+            if ah_id is None and ch_id is None:
+                continue
+            item = per_acct.setdefault(aid, dict(
+                opening=ZERO, debit=ZERO, credit=ZERO,
+                ah_id=ah_id, ah_name=ah_nm or "",
+                ch_id=ch_id, ch_name=ch_nm or "",
+            ))
+            item["debit"]  = (item["debit"]  or ZERO) + (r["debit"]  or ZERO)
+            item["credit"] = (item["credit"] or ZERO) + (r["credit"] or ZERO)
+            # refresh names if they were blank
+            if not item["ah_name"] and ah_nm:
+                item["ah_name"] = ah_nm
+            if not item["ch_name"] and ch_nm:
+                item["ch_name"] = ch_nm
+
+        # If no data, short-circuit
+        if not per_acct:
+            return Response([], status=200)
+
+        # =========================
+        # 4) CHOOSE DISPLAY HEAD BY CLOSING SIGN & RE-AGGREGATE
+        # =========================
+        by_head = {}  # key = head_id
+        for _, v in per_acct.items():
+            closing = (v["opening"] or ZERO) + (v["debit"] or ZERO) - (v["credit"] or ZERO)
+            if closing >= 0:
+                hid, hname = v["ah_id"], v["ah_name"]
+            else:
+                hid, hname = v["ch_id"], v["ch_name"]
+
+            if hid is None:  # nothing to group under
+                continue
+
+            agg = by_head.setdefault(hid, dict(
+                accounthead=hid,
+                accountheadname=hname or "",
+                openingbalance=ZERO,
+                debit=ZERO,
+                credit=ZERO,
+            ))
+            agg["openingbalance"] += v["opening"] or ZERO
+            agg["debit"]          += v["debit"]   or ZERO
+            agg["credit"]         += v["credit"]  or ZERO
+
+        # =========================
+        # 5) FINALIZE & RETURN
+        # =========================
+        out = []
+        for hid, v in by_head.items():
+            closing = (v["openingbalance"] or ZERO) + (v["debit"] or ZERO) - (v["credit"] or ZERO)
+            v["closingbalance"] = closing
+            v["drcr"] = "CR" if closing < 0 else "DR"
+            v["obdrcr"] = "CR" if (v["openingbalance"] or ZERO) < 0 else "DR"
+            out.append(v)
+
+        out.sort(key=lambda x: (x["accountheadname"] or "").lower())
+        return Response(TrialBalanceHeadRowSerializer(out, many=True).data)
+
 
 
 
