@@ -62,6 +62,8 @@ INSTALLED_APPS = [
     'reports',
     'simple_history',
     'errorlogger',
+    'numbering',
+    
 ]
 
 INSTALLED_APPS += ['auditlogger']
