@@ -6577,21 +6577,9 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
 DEC = DecimalField(max_digits=18, decimal_places=2)               # reuse this
 VZ  = lambda: V(ZERO, output_field=DEC)                           # Decimal zero Value()
 class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
-    """
-    GET /api/reports/trial-balance/account-ledger/?entity=1&account=123&startdate=2025-04-01&enddate=2025-04-30
-
-    Emits:
-      • "Opening Balance" row as of startdate (transactiontype="OPENING", transactionid=0)
-      • One row per JournalLine within [startdate, enddate]
-      • Running balance after each row
-      • Narration from first available of: desc / narration / notes
-      • transactiontype never blank (fallback "UNKNOWN")
-      • transactionid always an int (extracts digits, else falls back to line id)
-    """
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = TrialBalanceAccountLedgerRowSerializer
 
-    # strict YYYY-MM-DD (normalize hidden dash chars)
     def _parse_ymd(self, s: str) -> date:
         s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
         return date.fromisoformat(s)
@@ -6652,7 +6640,7 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             ))
         )["opening"] or ZERO
 
-        # account name (ordered to allow .first())
+        # account name
         name_row = (
             JournalLine.objects
             .filter(entity_id=entity_id, account_id=account_id)
@@ -6668,56 +6656,30 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             opening_row = dict(
                 account=account_id,
                 accountname=accountname,
-                sortdate=startdate,                              # Date object: DRF emits ISO "YYYY-MM-DD"
-                entrydate=startdate.strftime("%d-%m-%Y"),        # Display string
+                sortdate=startdate,                             # Date object → ISO in JSON
+                entrydate=startdate.strftime("%d-%m-%Y"),       # Display string
                 narration="Opening Balance",
                 transactiontype="OPENING",
-                transactionid=0,                                 # integer sentinel for opening row
+                transactionid=0,                                # opening sentinel
                 debit=(obal if obal > 0 else ZERO),
                 credit=(obal if obal < 0 else ZERO),
                 runningbalance=obal,
             )
 
-        # ---- 2) Period lines (detail-level; narration preserved) ----
-        values_list = ["id", "account_id", "account__accountname", "entrydate", "drcr", "amount"]
-
-        # optional narration-ish fields
+        # ---- 2) Period lines (detail-level) ----
+        # Project fields directly present on JournalLine:
+        values_list = [
+            "id", "account_id", "account__accountname", "entrydate",
+            "drcr", "amount",
+            "transactiontype", "transactionid", "voucherno",   # <-- direct fields
+        ]
+        # Optional narration-ish fields
         for opt in ("desc", "narration", "notes"):
             try:
                 JournalLine._meta.get_field(opt)
                 values_list.append(opt)
             except Exception:
                 pass
-
-        # candidate fields for type/id (incl. FK traversals)
-        possible_type_fields = [
-            "vouchertype", "voucher_type", "transactiontype", "source_type",
-            "journalmain__vouchertype", "journal__vouchertype",
-        ]
-        possible_id_fields = [
-            "voucherno", "voucher_no", "source_id",
-            "journalmain__voucherno", "journal__voucherno",
-        ]
-
-        # validate model paths (supports FK hops)
-        def field_exists(path: str) -> bool:
-            model = JournalLine
-            parts = path.split("__")
-            for i, part in enumerate(parts):
-                try:
-                    fld = model._meta.get_field(part)
-                except Exception:
-                    return False
-                if i < len(parts) - 1:
-                    if getattr(fld, "remote_field", None) and fld.remote_field.model:
-                        model = fld.remote_field.model
-                    else:
-                        return False
-            return True
-
-        type_fields = [f for f in possible_type_fields if field_exists(f)]
-        id_fields   = [f for f in possible_id_fields if field_exists(f)]
-        values_list.extend(type_fields + id_fields)
 
         lines_qs = (
             JournalLine.objects
@@ -6727,30 +6689,11 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             .order_by("entrydate", "id")
         )
 
-        # helpers
         def pick_first(row, candidates):
             for c in candidates:
                 if c in row and row[c] not in (None, "", " "):
                     return str(row[c])
             return ""
-
-        def extract_int_or_fallback(val, fallback: int) -> int:
-            """
-            Returns an int:
-              - numeric types -> int(val)
-              - strings -> first contiguous digit group ('RV-000912' -> 912)
-              - blank/none/non-numeric -> fallback
-            """
-            if val is None:
-                return fallback
-            try:
-                return int(val)
-            except Exception:
-                s = str(val).strip()
-                if not s:
-                    return fallback
-                m = re.search(r"\d+", s)
-                return int(m.group(0)) if m else fallback
 
         rows = []
         running = opening_sum if opening_sum is not None else ZERO
@@ -6764,19 +6707,27 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             credit = amt if not is_dr else ZERO
             running = running + debit - credit
 
+            # narration (desc/narration/notes if present; model at least has desc)
             narration = pick_first(r, ["desc", "narration", "notes"])
-            txn_type  = pick_first(r, type_fields) or "UNKNOWN"
-            raw_txn_id = pick_first(r, id_fields)
-            txn_id = extract_int_or_fallback(raw_txn_id, fallback=int(r["id"]))
+
+            # transactiontype from model (fallback to UNKNOWN if somehow empty)
+            txn_type = (r.get("transactiontype") or "").strip() or "UNKNOWN"
+
+            # transactionid from model (header id); if null/blank, fallback to line id
+            jl_txn_id = r.get("transactionid")
+            try:
+                txn_id = int(jl_txn_id) if jl_txn_id is not None and str(jl_txn_id).strip() != "" else int(r["id"])
+            except Exception:
+                txn_id = int(r["id"])
 
             rows.append(dict(
                 account=r["account_id"],
                 accountname=r.get("account__accountname") or accountname,
-                sortdate=r["entrydate"],                         # Date object
-                entrydate=r["entrydate"].strftime("%d-%m-%Y"),   # Display string
+                sortdate=r["entrydate"],                        # date object
+                entrydate=r["entrydate"].strftime("%d-%m-%Y"),  # display string
                 narration=narration or "",
                 transactiontype=txn_type,
-                transactionid=txn_id,                            # int
+                transactionid=txn_id,                           # <-- JournalLine.transactionid (header id)
                 debit=debit,
                 credit=credit,
                 runningbalance=running,

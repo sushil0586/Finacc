@@ -1877,13 +1877,13 @@ class ewbdetails(TrackingModel):
 
 
 class TxnType(models.TextChoices):
-    SALES = "sales", "Sales"
-    PURCHASE = "purchase", "Purchase"
-    JOURNAL = "journal", "Journal"
-    SALES_RETURN = "salesreturn", "Sales Return"
-    PURCHASE_RETURN = "purchasereturn", "Purchase Return"
-    JOURNAL_CASH = "journal_cash", "Journal (Cash)"      # ← NEW
-    JOURNAL_BANK = "journal_bank", "Journal (Bank)"      # ← NEW
+    SALES = "S", "Sales"
+    PURCHASE = "P", "Purchase"
+    JOURNAL = "J", "Journal"
+    SALES_RETURN = "SR", "Sales Return"
+    PURCHASE_RETURN = "PR", "Purchase Return"
+    JOURNAL_CASH = "C", "Journal (Cash)"      # ← NEW
+    JOURNAL_BANK = "B", "Journal (Bank)"      # ← NEW
 
 class PostingConfig(models.Model):
     # Who carries adjustments when target == "CARRIER"
