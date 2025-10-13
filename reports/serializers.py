@@ -1271,11 +1271,12 @@ class TrialBalanceAccountRowSerializer(serializers.Serializer):
 class TrialBalanceAccountLedgerRowSerializer(serializers.Serializer):
     account = serializers.IntegerField()
     accountname = serializers.CharField(allow_blank=True)
-    entrydate = serializers.CharField(allow_blank=True)   # dd-mm-YYYY
-    sortdate = serializers.DateField()                    # for sorting/pagination
+    entrydate = serializers.CharField(allow_blank=True)        # "DD-MM-YYYY" (display)
+    sortdate = serializers.DateField()                         # stays a date (ISO in JSON)
     narration = serializers.CharField(allow_blank=True)
-    transactiontype = serializers.CharField(allow_blank=False)  # <- must be non-blank
-    transactionid = serializers.CharField(allow_blank=True)
-    debit = serializers.DecimalField(max_digits=18, decimal_places=2)
-    credit = serializers.DecimalField(max_digits=18, decimal_places=2)
-    runningbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
+    transactiontype = serializers.CharField(allow_blank=False)
+    transactionid = serializers.IntegerField()
+    # real numeric decimals (no string coercion)
+    debit = serializers.DecimalField(max_digits=18, decimal_places=2, coerce_to_string=False)
+    credit = serializers.DecimalField(max_digits=18, decimal_places=2, coerce_to_string=False)
+    runningbalance = serializers.DecimalField(max_digits=18, decimal_places=2, coerce_to_string=False)

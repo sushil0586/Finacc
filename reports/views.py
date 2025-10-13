@@ -2,6 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 from collections import defaultdict
+import re
 from django.db.models import Min, Max
 from invoice.models import JournalLine  # <-- your GL table
 from typing import Tuple, List,Optional
@@ -6576,10 +6577,21 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
 DEC = DecimalField(max_digits=18, decimal_places=2)               # reuse this
 VZ  = lambda: V(ZERO, output_field=DEC)                           # Decimal zero Value()
 class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
+    """
+    GET /api/reports/trial-balance/account-ledger/?entity=1&account=123&startdate=2025-04-01&enddate=2025-04-30
+
+    Emits:
+      • "Opening Balance" row as of startdate (transactiontype="OPENING", transactionid=0)
+      • One row per JournalLine within [startdate, enddate]
+      • Running balance after each row
+      • Narration from first available of: desc / narration / notes
+      • transactiontype never blank (fallback "UNKNOWN")
+      • transactionid always an int (extracts digits, else falls back to line id)
+    """
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = TrialBalanceAccountLedgerRowSerializer
-    pagination_class = SmallPageNumberPagination
 
+    # strict YYYY-MM-DD (normalize hidden dash chars)
     def _parse_ymd(self, s: str) -> date:
         s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
         return date.fromisoformat(s)
@@ -6606,6 +6618,7 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
         if startdate > enddate:
             return Response([], status=status.HTTP_200_OK)
 
+        # ---- Clamp to FY if present ----
         fy = (
             entityfinancialyear.objects
             .filter(entity_id=entity_id,
@@ -6620,7 +6633,7 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             if startdate > enddate:
                 return Response([], status=status.HTTP_200_OK)
 
-        # 1) Opening balance (< startdate) — use Decimal output_field everywhere
+        # ---- 1) Opening balance (< startdate) ----
         opening_sum = (
             JournalLine.objects
             .filter(entity_id=entity_id, account_id=account_id, entrydate__lt=startdate)
@@ -6629,16 +6642,17 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
                     Case(
                         When(drcr=True,  then=F("amount")),
                         When(drcr=False, then=-F("amount")),
-                        default=VZ(),                         # Decimal 0
-                        output_field=DEC,                     # Case result is Decimal
+                        default=VZ(),
+                        output_field=DEC,
                     ),
-                    output_field=DEC,                         # Sum result is Decimal
+                    output_field=DEC,
                 ),
-                VZ(),                                         # Coalesce fallback Decimal 0
+                VZ(),
                 output_field=DEC,
             ))
         )["opening"] or ZERO
 
+        # account name (ordered to allow .first())
         name_row = (
             JournalLine.objects
             .filter(entity_id=entity_id, account_id=account_id)
@@ -6654,24 +6668,28 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             opening_row = dict(
                 account=account_id,
                 accountname=accountname,
-                sortdate=startdate,
-                entrydate=startdate.strftime("%d-%m-%Y"),
+                sortdate=startdate,                              # Date object: DRF emits ISO "YYYY-MM-DD"
+                entrydate=startdate.strftime("%d-%m-%Y"),        # Display string
                 narration="Opening Balance",
                 transactiontype="OPENING",
-                transactionid="",
+                transactionid=0,                                 # integer sentinel for opening row
                 debit=(obal if obal > 0 else ZERO),
                 credit=(obal if obal < 0 else ZERO),
                 runningbalance=obal,
             )
 
-        # 2) Period lines — projection list
+        # ---- 2) Period lines (detail-level; narration preserved) ----
         values_list = ["id", "account_id", "account__accountname", "entrydate", "drcr", "amount"]
+
+        # optional narration-ish fields
         for opt in ("desc", "narration", "notes"):
             try:
-                JournalLine._meta.get_field(opt); values_list.append(opt)
+                JournalLine._meta.get_field(opt)
+                values_list.append(opt)
             except Exception:
                 pass
 
+        # candidate fields for type/id (incl. FK traversals)
         possible_type_fields = [
             "vouchertype", "voucher_type", "transactiontype", "source_type",
             "journalmain__vouchertype", "journal__vouchertype",
@@ -6681,6 +6699,7 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             "journalmain__voucherno", "journal__voucherno",
         ]
 
+        # validate model paths (supports FK hops)
         def field_exists(path: str) -> bool:
             model = JournalLine
             parts = path.split("__")
@@ -6708,11 +6727,30 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             .order_by("entrydate", "id")
         )
 
+        # helpers
         def pick_first(row, candidates):
             for c in candidates:
                 if c in row and row[c] not in (None, "", " "):
                     return str(row[c])
             return ""
+
+        def extract_int_or_fallback(val, fallback: int) -> int:
+            """
+            Returns an int:
+              - numeric types -> int(val)
+              - strings -> first contiguous digit group ('RV-000912' -> 912)
+              - blank/none/non-numeric -> fallback
+            """
+            if val is None:
+                return fallback
+            try:
+                return int(val)
+            except Exception:
+                s = str(val).strip()
+                if not s:
+                    return fallback
+                m = re.search(r"\d+", s)
+                return int(m.group(0)) if m else fallback
 
         rows = []
         running = opening_sum if opening_sum is not None else ZERO
@@ -6728,25 +6766,22 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
 
             narration = pick_first(r, ["desc", "narration", "notes"])
             txn_type  = pick_first(r, type_fields) or "UNKNOWN"
-            txn_id    = pick_first(r, id_fields)   or f"L{r['id']}"
+            raw_txn_id = pick_first(r, id_fields)
+            txn_id = extract_int_or_fallback(raw_txn_id, fallback=int(r["id"]))
 
             rows.append(dict(
                 account=r["account_id"],
                 accountname=r.get("account__accountname") or accountname,
-                sortdate=r["entrydate"],
-                entrydate=r["entrydate"].strftime("%d-%m-%Y"),
+                sortdate=r["entrydate"],                         # Date object
+                entrydate=r["entrydate"].strftime("%d-%m-%Y"),   # Display string
                 narration=narration or "",
                 transactiontype=txn_type,
-                transactionid=str(txn_id),
+                transactionid=txn_id,                            # int
                 debit=debit,
                 credit=credit,
                 runningbalance=running,
             ))
 
-        page = self.paginate_queryset(rows)
-        if page is not None:
-            data = self.serializer_class(page, many=True).data
-            return self.get_paginated_response(data)
         return Response(self.serializer_class(rows, many=True).data, status=status.HTTP_200_OK)
 
 
