@@ -1280,3 +1280,59 @@ class TrialBalanceAccountLedgerRowSerializer(serializers.Serializer):
     debit = serializers.DecimalField(max_digits=18, decimal_places=2, coerce_to_string=False)
     credit = serializers.DecimalField(max_digits=18, decimal_places=2, coerce_to_string=False)
     runningbalance = serializers.DecimalField(max_digits=18, decimal_places=2, coerce_to_string=False)
+
+
+class LedgerSummaryRequestSerializer(serializers.Serializer):
+    # Required
+    entity = serializers.IntegerField()
+    startdate = serializers.DateField(format="%Y-%m-%d", input_formats=["%Y-%m-%d"])
+    enddate = serializers.DateField(format="%Y-%m-%d", input_formats=["%Y-%m-%d"])
+
+    # Grouping
+    group_by = serializers.ChoiceField(
+        choices=["account", "head", "head_account"], required=False, default="account"
+    )
+
+    # Common filters (removed: posted_only, txn_out)
+    txn_in = serializers.CharField(required=False, allow_blank=True)     # e.g. "Sale,Receipt"
+    voucherno = serializers.CharField(required=False, allow_blank=True)
+    vno_contains = serializers.CharField(required=False, allow_blank=True)
+    desc_contains = serializers.CharField(required=False, allow_blank=True)
+
+    accounthead = serializers.CharField(required=False, allow_blank=True)  # "3,5"
+    account = serializers.CharField(required=False, allow_blank=True)      # "101,205"
+
+    # Summary-focused filters
+    sign = serializers.ChoiceField(choices=["DR", "CR", "ALL"], required=False, default="ALL")
+    amount_min = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    amount_max = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    include_zero = serializers.BooleanField(required=False, default=False)
+    min_activity = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)  # debit+credit >=
+
+    # Sorting & pagination
+    order_by = serializers.CharField(required=False, allow_blank=True, default="accountname")
+    page = serializers.IntegerField(required=False, min_value=1, default=1)
+    pagesize = serializers.IntegerField(required=False, min_value=1, max_value=2000, default=200)
+
+    def validate(self, attrs):
+        if attrs["enddate"] < attrs["startdate"]:
+            raise serializers.ValidationError({"enddate": "enddate must be >= startdate."})
+        return attrs
+
+
+class LedgerSummaryRowSerializer(serializers.Serializer):
+    head_id = serializers.IntegerField(required=False, allow_null=True)
+    head_name = serializers.CharField(required=False, allow_blank=True)
+    account = serializers.IntegerField(required=False)
+    accountname = serializers.CharField(required=False, allow_blank=True)
+    openingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
+    debit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    credit = serializers.DecimalField(max_digits=18, decimal_places=2)
+    period_net = serializers.DecimalField(max_digits=18, decimal_places=2)
+    abs_movement = serializers.DecimalField(max_digits=18, decimal_places=2)
+    balancetotal = serializers.DecimalField(max_digits=18, decimal_places=2)
+    drcr = serializers.ChoiceField(choices=["DR", "CR"])
+    obdrcr = serializers.ChoiceField(choices=["DR", "CR"])
+    txn_count = serializers.IntegerField()
+    last_txn_date = serializers.DateField(allow_null=True, required=False)
+    links = serializers.DictField(child=serializers.CharField(), required=False)

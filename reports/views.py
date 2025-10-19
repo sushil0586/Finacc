@@ -7,7 +7,7 @@ from django.db.models import Min, Max
 from invoice.models import JournalLine  # <-- your GL table
 from typing import Tuple, List,Optional
 from invoice.serializers import stocktransconstant
-from .pagination import SmallPageNumberPagination
+from .pagination import SmallPageNumberPagination,SimpleNumberPagination
 
 from itertools import product
 from django.http import request,JsonResponse
@@ -15,7 +15,7 @@ from django.shortcuts import render
 import json
 from pandas.tseries.offsets import MonthEnd,QuarterEnd
 from decimal import Decimal,InvalidOperation
-from django.db.models import Sum, Q, Value as V,DecimalField
+from django.db.models import Sum, Q, Value as V,DecimalField,ExpressionWrapper,Count
 from django.utils.timezone import make_aware, is_aware
 from .serializers import CashbookUnifiedSerializer,TrialBalanceAccountRowSerializer,TrialBalanceAccountLedgerRowSerializer
 from django.utils.dateparse import parse_date
@@ -28,7 +28,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList,SalesGSTSummarySerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList,SalesGSTSummarySerializer,LedgerSummaryRequestSerializer,LedgerSummaryRowSerializer
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -6735,9 +6735,258 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
 
         return Response(self.serializer_class(rows, many=True).data, status=status.HTTP_200_OK)
 
+DEC18_2 = DecimalField(max_digits=18, decimal_places=2)
+ZERO_D = Decimal("0.00")
+ZERO = V(ZERO_D, output_field=DEC18_2)
 
+class LedgerSummaryJournalline(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
 
+    ORDER_MAP = {
+        "accountname": "account__accountname",
+        "-accountname": "-account__accountname",
+        "head_name": "account__accounthead__name",
+        "-head_name": "-account__accounthead__name",
+        "opening": "openingbalance",
+        "-opening": "-openingbalance",
+        "debit": "debit",
+        "-debit": "-debit",
+        "credit": "credit",
+        "-credit": "-credit",
+        "period_net": "period_net",
+        "-period_net": "-period_net",
+        "abs_movement": "abs_movement",
+        "-abs_movement": "-abs_movement",
+        "balancetotal": "balancetotal",
+        "-balancetotal": "-balancetotal",
+    }
 
+    def post(self, request, *_args, **_kwargs):
+        # 1) Validate input
+        in_ser = LedgerSummaryRequestSerializer(data=request.data)
+        in_ser.is_valid(raise_exception=True)
+        p = in_ser.validated_data
+
+        entity_id = p["entity"]
+        startdate = p["startdate"]
+        enddate = p["enddate"]
+        group_by = p["group_by"]
+
+        # 2) Base queryset (up to enddate)
+        qs = JournalLine.objects.filter(
+            entity_id=entity_id,
+            account__isnull=False,
+            entrydate__lte=enddate,
+        )
+
+        # 3) Optional filters (apply to qs)
+        if p.get("txn_in"):
+            include_txn = [x.strip() for x in str(p["txn_in"]).split(",") if x.strip()]
+            qs = qs.filter(transactiontype__in=include_txn)
+
+        if p.get("voucherno"):
+            qs = qs.filter(voucherno=str(p["voucherno"]))
+        if p.get("vno_contains"):
+            qs = qs.filter(voucherno__icontains=str(p["vno_contains"]))
+        if p.get("desc_contains"):
+            qs = qs.filter(desc__icontains=str(p["desc_contains"]))
+
+        if p.get("accounthead"):
+            ah_ids = [int(x) for x in str(p["accounthead"]).split(",") if x.strip()]
+            qs = qs.filter(account__accounthead_id__in=ah_ids)
+        else:
+            ah_ids = None  # for totals reuse below
+
+        if p.get("account"):
+            acc_ids = [int(x) for x in str(p["account"]).split(",") if x.strip()]
+            qs = qs.filter(account_id__in=acc_ids)
+        else:
+            acc_ids = None  # for totals reuse below
+
+        # 4) Aggregations (one grouped query)
+        period_f = Q(entrydate__gte=startdate, entrydate__lte=enddate)
+
+        opening_expr = Coalesce(
+            Sum(
+                Case(
+                    When(drcr=True, then=F("amount")),
+                    When(drcr=False, then=-F("amount")),
+                    default=V(0),
+                    output_field=DEC18_2,
+                ),
+                filter=Q(entrydate__lt=startdate),
+                output_field=DEC18_2,
+            ),
+            ZERO,
+        )
+        debit_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=True), output_field=DEC18_2),
+            ZERO,
+        )
+        credit_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=False), output_field=DEC18_2),
+            ZERO,
+        )
+        period_net_expr = ExpressionWrapper(F("debit") - F("credit"), output_field=DEC18_2)
+        abs_mov_expr = ExpressionWrapper(F("debit") + F("credit"), output_field=DEC18_2)
+        closing_expr = ExpressionWrapper(F("openingbalance") + F("debit") - F("credit"), output_field=DEC18_2)
+
+        # Group fields
+        if group_by == "head":
+            group_vals = ["account__accounthead_id", "account__accounthead__name"]
+        else:
+            group_vals = [
+                "account_id",
+                "account__accountname",
+                "account__accounthead_id",
+                "account__accounthead__name",
+            ]
+
+        qs = (
+            qs.values(*group_vals)
+              .annotate(
+                  openingbalance=opening_expr,
+                  debit=debit_expr,
+                  credit=credit_expr,
+              )
+              .annotate(
+                  period_net=period_net_expr,
+                  abs_movement=abs_mov_expr,
+                  balancetotal=closing_expr,
+                  txn_count=Count("id", filter=period_f),
+                  last_txn_date=Max("entrydate", filter=period_f),
+              )
+              .annotate(
+                  drcr=Case(When(balancetotal__lt=0, then=V("CR")), default=V("DR")),
+                  obdrcr=Case(When(openingbalance__lt=0, then=V("CR")), default=V("DR")),
+              )
+        )
+
+        # 5) Summary-focused filters
+        sign = p.get("sign", "ALL")
+        if sign == "DR":
+            qs = qs.filter(balancetotal__gt=0)
+        elif sign == "CR":
+            qs = qs.filter(balancetotal__lt=0)
+
+        if not p.get("include_zero", False):
+            qs = qs.exclude(balancetotal=ZERO_D)
+
+        if p.get("min_activity") is not None:
+            qs = qs.filter(abs_movement__gte=p["min_activity"])
+
+        if p.get("amount_min") is not None:
+            qs = qs.filter(balancetotal__gte=p["amount_min"])
+        if p.get("amount_max") is not None:
+            qs = qs.filter(balancetotal__lte=p["amount_max"])
+
+        # 6) Ordering (safe per grouping)
+        order_key = (p.get("order_by") or "").strip() or ("head_name" if group_by == "head" else "accountname")
+        order_field = self.ORDER_MAP.get(order_key)
+        if group_by == "head" and order_field in ("account__accountname", "-account__accountname"):
+            order_field = "account__accounthead__name"
+        if not order_field:
+            order_field = "account__accounthead__name" if group_by == "head" else "account__accountname"
+        qs = qs.order_by(order_field)
+
+        # 7) GRAND TOTALS — recompute from JournalLine with same filters (no alias aggregation)
+        totals_qs = JournalLine.objects.filter(
+            entity_id=entity_id,
+            account__isnull=False,
+            entrydate__lte=enddate,
+        )
+        if p.get("txn_in"):
+            totals_qs = totals_qs.filter(transactiontype__in=include_txn)
+        if p.get("voucherno"):
+            totals_qs = totals_qs.filter(voucherno=str(p["voucherno"]))
+        if p.get("vno_contains"):
+            totals_qs = totals_qs.filter(voucherno__icontains=str(p["vno_contains"]))
+        if p.get("desc_contains"):
+            totals_qs = totals_qs.filter(desc__icontains=str(p["desc_contains"]))
+        if ah_ids:
+            totals_qs = totals_qs.filter(account__accounthead_id__in=ah_ids)
+        if acc_ids:
+            totals_qs = totals_qs.filter(account_id__in=acc_ids)
+
+        opening_total_expr = Coalesce(
+            Sum(
+                Case(
+                    When(drcr=True, then=F("amount")),
+                    When(drcr=False, then=-F("amount")),
+                    default=V(0),
+                    output_field=DEC18_2,
+                ),
+                filter=Q(entrydate__lt=startdate),
+                output_field=DEC18_2,
+            ),
+            ZERO,
+        )
+        debit_total_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=True), output_field=DEC18_2),
+            ZERO,
+        )
+        credit_total_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=False), output_field=DEC18_2),
+            ZERO,
+        )
+
+        totals_raw = totals_qs.aggregate(
+            opening=opening_total_expr,
+            debit=debit_total_expr,
+            credit=credit_total_expr,
+        )
+        opening_t = totals_raw["opening"] or ZERO_D
+        debit_t = totals_raw["debit"] or ZERO_D
+        credit_t = totals_raw["credit"] or ZERO_D
+        totals = {
+            "opening": opening_t,
+            "debit": debit_t,
+            "credit": credit_t,
+            "closing": opening_t + debit_t - credit_t,
+        }
+
+        # 8) Pagination
+        paginator = SimpleNumberPagination()
+        paginator.page_size = p["pagesize"]
+        page = paginator.paginate_queryset(list(qs), request)
+
+        # 9) Shape rows according to group_by and serialize
+        rows = []
+        for r in page:
+            row = dict(
+                openingbalance=r["openingbalance"],
+                debit=r["debit"],
+                credit=r["credit"],
+                period_net=r["period_net"],
+                abs_movement=r["abs_movement"],
+                balancetotal=r["balancetotal"],
+                drcr=r["drcr"],
+                obdrcr=r["obdrcr"],
+                txn_count=r["txn_count"],
+                last_txn_date=r["last_txn_date"],
+            )
+            if group_by in ("head", "head_account"):
+                row["head_id"] = r.get("account__accounthead_id")
+                row["head_name"] = r.get("account__accounthead__name") or ""
+            if group_by in ("account", "head_account"):
+                row["account"] = r.get("account_id")
+                row["accountname"] = r.get("account__accountname") or ""
+                row["links"] = {
+                    "detail": f"/api/reports/ledger-detail?entity={entity_id}&account={r.get('account_id')}&from={startdate}&to={enddate}"
+                }
+            rows.append(row)
+
+        out_ser = LedgerSummaryRowSerializer(rows, many=True)
+
+        # 10) Meta echo & paginated response
+        meta_echo = {
+            "entity": entity_id,
+            "from": str(startdate),
+            "to": str(enddate),
+            "group_by": group_by,
+            "order_by": order_key,
+        }
+        return paginator.get_paginated_response(out_ser.data, totals=totals, meta_echo=meta_echo)
     
 
 
