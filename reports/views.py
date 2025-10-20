@@ -6795,13 +6795,13 @@ class LedgerSummaryJournalline(APIView):
             ah_ids = [int(x) for x in str(p["accounthead"]).split(",") if x.strip()]
             qs = qs.filter(account__accounthead_id__in=ah_ids)
         else:
-            ah_ids = None  # for totals reuse below
+            ah_ids = None
 
         if p.get("account"):
             acc_ids = [int(x) for x in str(p["account"]).split(",") if x.strip()]
             qs = qs.filter(account_id__in=acc_ids)
         else:
-            acc_ids = None  # for totals reuse below
+            acc_ids = None
 
         # 4) Aggregations (one grouped query)
         period_f = Q(entrydate__gte=startdate, entrydate__lte=enddate)
@@ -6880,6 +6880,12 @@ class LedgerSummaryJournalline(APIView):
         if p.get("amount_max") is not None:
             qs = qs.filter(balancetotal__lte=p["amount_max"])
 
+        # New: range_min / range_max on balancetotal (inclusive)
+        if p.get("range_min") is not None:
+            qs = qs.filter(balancetotal__gte=p["range_min"])
+        if p.get("range_max") is not None:
+            qs = qs.filter(balancetotal__lte=p["range_max"])
+
         # 6) Ordering (safe per grouping)
         order_key = (p.get("order_by") or "").strip() or ("head_name" if group_by == "head" else "accountname")
         order_field = self.ORDER_MAP.get(order_key)
@@ -6889,7 +6895,7 @@ class LedgerSummaryJournalline(APIView):
             order_field = "account__accounthead__name" if group_by == "head" else "account__accountname"
         qs = qs.order_by(order_field)
 
-        # 7) GRAND TOTALS — recompute from JournalLine with same filters (no alias aggregation)
+        # 7) GRAND TOTALS — recompute from JournalLine with same base filters (pre-agg filters)
         totals_qs = JournalLine.objects.filter(
             entity_id=entity_id,
             account__isnull=False,
@@ -6922,11 +6928,11 @@ class LedgerSummaryJournalline(APIView):
             ZERO,
         )
         debit_total_expr = Coalesce(
-            Sum(F("amount"), filter=period_f & Q(drcr=True), output_field=DEC18_2),
+            Sum(F("amount"), filter=Q(entrydate__gte=startdate, entrydate__lte=enddate) & Q(drcr=True), output_field=DEC18_2),
             ZERO,
         )
         credit_total_expr = Coalesce(
-            Sum(F("amount"), filter=period_f & Q(drcr=False), output_field=DEC18_2),
+            Sum(F("amount"), filter=Q(entrydate__gte=startdate, entrydate__lte=enddate) & Q(drcr=False), output_field=DEC18_2),
             ZERO,
         )
 
@@ -6950,10 +6956,43 @@ class LedgerSummaryJournalline(APIView):
         paginator.page_size = p["pagesize"]
         page = paginator.paginate_queryset(list(qs), request)
 
-        # 9) Shape rows according to group_by and serialize
+        # 9) Shape rows — ensure all keys exist, null when not applicable
         rows = []
         for r in page:
+            # head fields
+            head_id = r.get("account__accounthead_id") if group_by != "head" else r.get("account__accounthead_id")
+            head_name = r.get("account__accounthead__name")
+
+            if group_by == "head":
+                # values() only included head fields
+                head_id = r.get("account__accounthead_id")
+                head_name = r.get("account__accounthead__name")
+                account_id = None
+                account_name = None
+                links = None
+            elif group_by == "account":
+                head_id = r.get("account__accounthead_id")
+                head_name = r.get("account__accounthead__name")
+                account_id = r.get("account_id")
+                account_name = r.get("account__accountname") or ""
+                links = {
+                    "detail": f"/api/reports/ledger-detail?entity={entity_id}&account={account_id}&from={startdate}&to={enddate}"
+                }
+            else:  # head_account
+                head_id = r.get("account__accounthead_id")
+                head_name = r.get("account__accounthead__name")
+                account_id = r.get("account_id")
+                account_name = r.get("account__accountname") or ""
+                links = {
+                    "detail": f"/api/reports/ledger-detail?entity={entity_id}&account={account_id}&from={startdate}&to={enddate}"
+                }
+
             row = dict(
+                head_id=head_id,
+                head_name=head_name,
+                account=account_id,
+                accountname=account_name,
+
                 openingbalance=r["openingbalance"],
                 debit=r["debit"],
                 credit=r["credit"],
@@ -6962,18 +7001,12 @@ class LedgerSummaryJournalline(APIView):
                 balancetotal=r["balancetotal"],
                 drcr=r["drcr"],
                 obdrcr=r["obdrcr"],
+
                 txn_count=r["txn_count"],
                 last_txn_date=r["last_txn_date"],
+
+                links=links,
             )
-            if group_by in ("head", "head_account"):
-                row["head_id"] = r.get("account__accounthead_id")
-                row["head_name"] = r.get("account__accounthead__name") or ""
-            if group_by in ("account", "head_account"):
-                row["account"] = r.get("account_id")
-                row["accountname"] = r.get("account__accountname") or ""
-                row["links"] = {
-                    "detail": f"/api/reports/ledger-detail?entity={entity_id}&account={r.get('account_id')}&from={startdate}&to={enddate}"
-                }
             rows.append(row)
 
         out_ser = LedgerSummaryRowSerializer(rows, many=True)
@@ -6984,10 +7017,8 @@ class LedgerSummaryJournalline(APIView):
             "from": str(startdate),
             "to": str(enddate),
             "group_by": group_by,
-            "order_by": order_key,
+            "order_by": (p.get("order_by") or ("head_name" if group_by == "head" else "accountname")),
         }
         return paginator.get_paginated_response(out_ser.data, totals=totals, meta_echo=meta_echo)
-    
-
 
 

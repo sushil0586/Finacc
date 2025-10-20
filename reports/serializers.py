@@ -1293,7 +1293,7 @@ class LedgerSummaryRequestSerializer(serializers.Serializer):
         choices=["account", "head", "head_account"], required=False, default="account"
     )
 
-    # Common filters (removed: posted_only, txn_out)
+    # Common filters (kept minimal as requested)
     txn_in = serializers.CharField(required=False, allow_blank=True)     # e.g. "Sale,Receipt"
     voucherno = serializers.CharField(required=False, allow_blank=True)
     vno_contains = serializers.CharField(required=False, allow_blank=True)
@@ -1309,6 +1309,10 @@ class LedgerSummaryRequestSerializer(serializers.Serializer):
     include_zero = serializers.BooleanField(required=False, default=False)
     min_activity = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)  # debit+credit >=
 
+    # New: range filters applied to balancetotal (inclusive)
+    range_min = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    range_max = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+
     # Sorting & pagination
     order_by = serializers.CharField(required=False, allow_blank=True, default="accountname")
     page = serializers.IntegerField(required=False, min_value=1, default=1)
@@ -1321,10 +1325,15 @@ class LedgerSummaryRequestSerializer(serializers.Serializer):
 
 
 class LedgerSummaryRowSerializer(serializers.Serializer):
-    head_id = serializers.IntegerField(required=False, allow_null=True)
-    head_name = serializers.CharField(required=False, allow_blank=True)
-    account = serializers.IntegerField(required=False)
-    accountname = serializers.CharField(required=False, allow_blank=True)
+    # Head fields (always present; null when not applicable)
+    head_id = serializers.IntegerField(allow_null=True)
+    head_name = serializers.CharField(allow_blank=True, allow_null=True)
+
+    # Account fields (always present; null when not applicable)
+    account = serializers.IntegerField(allow_null=True)
+    accountname = serializers.CharField(allow_blank=True, allow_null=True)
+
+    # Numbers
     openingbalance = serializers.DecimalField(max_digits=18, decimal_places=2)
     debit = serializers.DecimalField(max_digits=18, decimal_places=2)
     credit = serializers.DecimalField(max_digits=18, decimal_places=2)
@@ -1333,6 +1342,10 @@ class LedgerSummaryRowSerializer(serializers.Serializer):
     balancetotal = serializers.DecimalField(max_digits=18, decimal_places=2)
     drcr = serializers.ChoiceField(choices=["DR", "CR"])
     obdrcr = serializers.ChoiceField(choices=["DR", "CR"])
+
+    # Activity meta (for period)
     txn_count = serializers.IntegerField()
     last_txn_date = serializers.DateField(allow_null=True, required=False)
-    links = serializers.DictField(child=serializers.CharField(), required=False)
+
+    # Hints
+    links = serializers.DictField(child=serializers.CharField(), allow_null=True, required=False)
