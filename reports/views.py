@@ -4,10 +4,13 @@ from django.shortcuts import render
 from collections import defaultdict
 import re
 from django.db.models import Min, Max
+from django.db.models.expressions import Window
 from invoice.models import JournalLine  # <-- your GL table
 from typing import Tuple, List,Optional
 from invoice.serializers import stocktransconstant
 from .pagination import SmallPageNumberPagination,SimpleNumberPagination
+from django.db.models.functions import TruncDay, TruncMonth, TruncQuarter, TruncYear
+
 
 from itertools import product
 from django.http import request,JsonResponse
@@ -68,7 +71,10 @@ from reports.models import TransactionType
 from .serializers import TransactionTypeSerializer
 from .serializers import EMICalculatorSerializer
 from helpers.utils.emi import calculate_emi
-from reports.serializers import TrialBalanceHeadRowSerializer
+from reports.services.trading_account import build_trading_account_dynamic
+from reports.services.profit_and_loss import build_profit_and_loss_statement
+from reports.services.balance_sheet import build_balance_sheet_statement
+from reports.serializers import TrialBalanceHeadRowSerializer, LedgerFilterSerializer, LedgerAccountSerializer
 ZERO = Decimal("0.00")
 
 
@@ -7020,5 +7026,458 @@ class LedgerSummaryJournalline(APIView):
             "order_by": (p.get("order_by") or ("head_name" if group_by == "head" else "accountname")),
         }
         return paginator.get_paginated_response(out_ser.data, totals=totals, meta_echo=meta_echo)
+
+
+class ledgerjournaldetails(ListAPIView):
+    """
+    Optimized ledger details:
+    - DB-side grouping & windowed running balance (non-aggregated)
+    - FY-aware 'Y' aggregation
+    - Total shows SUM(debits/credits); balance is final running balance
+    """
+    serializer_class = LedgerAccountSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    @staticmethod
+    def _split_ints(v): return [int(x) for x in str(v).split(',') if x.strip()]
+    @staticmethod
+    def _split_strs(v): return [x.strip() for x in str(v).split(',') if x.strip()]
+
+    def post(self, request, *args, **kwargs):
+        s_in = LedgerFilterSerializer(data=request.data)
+        if not s_in.is_valid():
+            return Response(s_in.errors, status=status.HTTP_400_BAD_REQUEST)
+        p = s_in.validated_data
+
+        entity = p['entity']
+        sdate  = p['startdate']
+        edate  = p['enddate']
+
+        # Resolve FY that covers the requested range
+        fy = (entityfinancialyear.objects
+              .filter(entity=entity, finstartyear__lte=edate, finendyear__gte=sdate)
+              .first())
+        if not fy:
+            return Response({"detail": "Financial year not found for the given range."}, status=400)
+
+        fy_start = fy.finstartyear.date() if isinstance(fy.finstartyear, datetime) else fy.finstartyear
+        fy_end   = fy.finendyear.date()   if isinstance(fy.finendyear,   datetime) else fy.finendyear
+
+        # Base queryset (FY start..enddate)
+        base = JournalLine.objects.filter(
+            entity=entity, entrydate__range=(fy_start, edate)
+        ).select_related('account')
+
+        if p.get('include_entry_id', False):
+            base = base.select_related('entry')  # only when needed
+
+        # Filters
+        if p.get('accounthead'):
+            base = base.filter(accounthead_id__in=self._split_ints(p['accounthead']))
+        if p.get('account'):
+            base = base.filter(account_id__in=self._split_ints(p['account']))
+        if p.get('transactiontype'):
+            base = base.filter(transactiontype__in=self._split_strs(p['transactiontype']))
+        if p.get('transactionid'):
+            base = base.filter(transactionid__in=self._split_ints(p['transactionid']))
+        if p.get('voucherno'):
+            base = base.filter(voucherno__icontains=p['voucherno'])
+        if p.get('drcr') in ('0','1'):
+            base = base.filter(drcr=(p['drcr'] == '1'))
+        if p.get('desc'):
+            base = base.filter(desc__icontains=p['desc'])
+
+        # Amount range (applied after debit/credit split)
+        amt_range = None
+        if p.get('amountstart') is not None and p.get('amountend') is not None:
+            amt_range = (Decimal(p['amountstart']), Decimal(p['amountend']))
+
+        # Details window (inside start..end)
+        details_base = base.filter(entrydate__gte=sdate)
+        if p.get('sub_startdate') and p.get('sub_enddate'):
+            details_base = details_base.filter(entrydate__range=(p['sub_startdate'], p['sub_enddate']))
+
+        # Common annotations (reuse in multiple places)
+        debit_case  = Case(When(drcr=True,  then=F('amount')))
+        credit_case = Case(When(drcr=False, then=F('amount')))
+        debit_annot  = Coalesce(Sum(debit_case),  Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
+        credit_annot = Coalesce(Sum(credit_case), Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
+
+        include_opening   = p.get('include_opening', True)
+        include_total     = p.get('include_total', True)
+        include_zero      = p.get('include_zero_balance', False)
+        include_entry_id  = p.get('include_entry_id', False)
+
+        # --------------------------
+        # 1) OPENING (FY start..sdate-1) — net split to one row
+        # --------------------------
+        opening_by_acct = {}
+        if include_opening:
+            open_qs = (base.filter(entrydate__lt=sdate)
+                           .values('account_id', 'account__accountname', 'account__accountcode')
+                           .annotate(debitamount=debit_annot, creditamount=credit_annot))
+            for r in open_qs:
+                acct_id   = r['account_id']
+                acct_name = r['account__accountname']
+                acct_code = r.get('account__accountcode')
+                d = r['debitamount']; c = r['creditamount']
+                bal = d - c
+                drcr_flag = (bal > 0)
+                op_debit  = bal if bal >= 0 else Decimal('0.00')
+                op_credit = (-bal) if bal < 0 else Decimal('0.00')
+                opening_by_acct[acct_id] = {
+                    'accountname': acct_name,
+                    'accountid': acct_id,
+                    'accountcode': acct_code,
+                    'creditamount': op_credit,
+                    'debitamount':  op_debit,
+                    'desc': 'Opening',
+                    'entrydate': sdate,
+                    'transactiontype': 'O',
+                    'transactionid': -1,
+                    'drcr': drcr_flag,
+                    'displaydate': sdate.strftime('%d-%m-%Y')
+                }
+
+        # --------------------------
+        # 2) DETAILS
+        #     - FY-aware 'Y'
+        #     - DB window running balance for non-aggregated (no nested aggregate on alias)
+        # --------------------------
+        aggby = (p.get('aggby') or '').strip().upper()
+        detail_rows = []
+
+        if aggby == 'Y':
+            # One line per account for the entity FY
+            grouped = (details_base
+                       .values('account_id', 'account__accountname', 'account__accountcode')
+                       .annotate(debitamount=debit_annot, creditamount=credit_annot))
+            for r in grouped:
+                acct_id   = r['account_id']
+                acct_name = r['account__accountname']
+                acct_code = r.get('account__accountcode')
+                d = r['debitamount']; c = r['creditamount']
+                if amt_range and not (amt_range[0] <= d <= amt_range[1] or amt_range[0] <= c <= amt_range[1]):
+                    continue
+                desc = f"FY {fy_start.strftime('%Y')}-{str(fy_end.year % 100).zfill(2)}"
+                drcr_flag = (d - c) > 0
+                detail_rows.append({
+                    'accountname': acct_name,
+                    'accountid': acct_id,
+                    'accountcode': acct_code,
+                    'creditamount': c,
+                    'debitamount':  d,
+                    'desc': desc,
+                    'entrydate': fy_end,          # anchor for sort
+                    'transactiontype': 'Y',
+                    'transactionid': -1,
+                    'drcr': drcr_flag,
+                    'displaydate': f"{fy_start.strftime('%d-%m-%Y')} to {fy_end.strftime('%d-%m-%Y')}"
+                })
+
+        elif aggby in ('D','M','Q'):
+            trunc = {'D': TruncDay('entrydate'),
+                     'M': TruncMonth('entrydate'),
+                     'Q': TruncQuarter('entrydate')}[aggby]
+            grouped = (details_base
+                       .annotate(period=trunc)
+                       .values('account_id', 'account__accountname', 'account__accountcode', 'period')
+                       .annotate(debitamount=debit_annot, creditamount=credit_annot)
+                       .order_by('period', 'account_id'))
+            for r in grouped:
+                acct_id   = r['account_id']
+                acct_name = r['account__accountname']
+                acct_code = r.get('account__accountcode')
+                period_dt = r['period'].date() if isinstance(r['period'], datetime) else r['period']
+                d = r['debitamount']; c = r['creditamount']
+                if amt_range and not (amt_range[0] <= d <= amt_range[1] or amt_range[0] <= c <= amt_range[1]):
+                    continue
+                desc = period_dt.strftime('%b') if aggby == 'M' else period_dt.strftime('%Y-%m-%d')
+                drcr_flag = (d - c) > 0
+                detail_rows.append({
+                    'accountname': acct_name,
+                    'accountid': acct_id,
+                    'accountcode': acct_code,
+                    'creditamount': c,
+                    'debitamount':  d,
+                    'desc': desc,
+                    'entrydate': period_dt,
+                    'transactiontype': aggby,
+                    'transactionid': -1,
+                    'drcr': drcr_flag,
+                    'displaydate': period_dt.strftime('%d-%m-%Y')
+                })
+
+        else:
+            #Non-aggregated: one row per (account, date, typ, id); compute running balance in Python.
+            values_fields = [
+                'account_id', 'account__accountname', 'account__accountcode',
+                'entrydate', 'transactiontype', 'transactionid', 'desc'
+            ]
+            if include_entry_id:
+                values_fields.append('entry_id')
+
+            base_qs = (
+                details_base
+                .values(*values_fields)
+                .annotate(
+                    debitamount=Coalesce(
+                        Sum(Case(When(drcr=True, then=F('amount')))),
+                        Decimal('0.00'),
+                        output_field=DecimalField(max_digits=18, decimal_places=2)
+                    ),
+                    creditamount=Coalesce(
+                        Sum(Case(When(drcr=False, then=F('amount')))),
+                        Decimal('0.00'),
+                        output_field=DecimalField(max_digits=18, decimal_places=2)
+                    ),
+                )
+                .order_by('entrydate', 'transactiontype', 'transactionid')
+            )
+
+            # Optional amount-range HAVING filter on the annotated sides
+            if amt_range:
+                base_qs = base_qs.filter(
+                    Q(debitamount__gte=amt_range[0], debitamount__lte=amt_range[1]) |
+                    Q(creditamount__gte=amt_range[0], creditamount__lte=amt_range[1])
+                )
+
+            # Build rows and compute running balance per account in Python (keeps Decimal)
+            running_by_acct = {}  # account_id -> Decimal
+            for r in base_qs:
+                acct_id   = r['account_id']
+                acct_name = r['account__accountname']
+                acct_code = r.get('account__accountcode')
+                d = r['debitamount'] or Decimal('0.00')
+                c = r['creditamount'] or Decimal('0.00')
+
+                running = running_by_acct.get(acct_id, Decimal('0.00')) + (d - c)
+                running_by_acct[acct_id] = running
+
+                row = {
+                    'accountname': acct_name,
+                    'accountid':   acct_id,
+                    'accountcode': acct_code,
+                    'creditamount': c,
+                    'debitamount':  d,
+                    'desc': r.get('desc') or '',
+                    'entrydate': r['entrydate'],
+                    'transactiontype': r['transactiontype'],
+                    'transactionid':   r['transactionid'],
+                    'drcr': (d - c) > 0,
+                    'displaydate': r['entrydate'].strftime('%d-%m-%Y') if isinstance(r['entrydate'], date) else str(r['entrydate']),
+                    'balance': running,  # cumulative balance
+                }
+                if include_entry_id and 'entry_id' in r:
+                    row['entry_id'] = r['entry_id']
+
+                detail_rows.append(row)
+
+        # --------------------------
+        # 3) TOTALS & ASSEMBLY
+        # --------------------------
+        per_acct = {}
+
+        # Seed opening
+        if include_opening:
+            for acct_id, row in opening_by_acct.items():
+                per_acct.setdefault(acct_id, {
+                    'accountname': row['accountname'],
+                    'accountid':   acct_id,
+                    'accountcode': row.get('accountcode'),
+                    'rows': [],
+                    'sum_debit':  Decimal('0.00'),
+                    'sum_credit': Decimal('0.00'),
+                })
+                per_acct[acct_id]['rows'].append(row)
+                per_acct[acct_id]['sum_debit']  += row['debitamount']
+                per_acct[acct_id]['sum_credit'] += row['creditamount']
+
+        # Add details
+        for r in detail_rows:
+            acct_id = r['accountid']
+            per_acct.setdefault(acct_id, {
+                'accountname': r['accountname'],
+                'accountid':   acct_id,
+                'accountcode': r.get('accountcode'),
+                'rows': [],
+                'sum_debit':  Decimal('0.00'),
+                'sum_credit': Decimal('0.00'),
+            })
+            per_acct[acct_id]['rows'].append(r)
+            per_acct[acct_id]['sum_debit']  += (r['debitamount']  if isinstance(r['debitamount'],  Decimal) else Decimal(str(r['debitamount'])))
+            per_acct[acct_id]['sum_credit'] += (r['creditamount'] if isinstance(r['creditamount'], Decimal) else Decimal(str(r['creditamount'])))
+
+        # Sort rows & compute running balance for aggregated branches; add Totals
+        type_rank = {'O': 0, 'T': 2}  # default 1 for details
+        result_payload = []
+
+        for acct_id, bucket in per_acct.items():
+            total_debit_sum  = bucket['sum_debit']
+            total_credit_sum = bucket['sum_credit']
+            net_balance      = total_debit_sum - total_credit_sum
+            net_drcr         = (net_balance > 0)
+
+            # Append Total (sum of debits/credits; balance will carry forward)
+            if include_total:
+                bucket['rows'].append({
+                    'accountname': bucket['accountname'],
+                    'accountid':   acct_id,
+                    'accountcode': bucket.get('accountcode'),
+                    'creditamount': total_credit_sum,
+                    'debitamount':  total_debit_sum,
+                    'desc': 'Total',
+                    'entrydate': edate,
+                    'transactiontype': 'T',
+                    'transactionid': -1,
+                    'drcr': net_drcr,
+                    'displaydate': edate.strftime('%d-%m-%Y')
+                })
+
+            # Order: Opening → details → Total
+            bucket['rows'].sort(
+                key=lambda r: (
+                    type_rank.get(r['transactiontype'], 1),
+                    r['entrydate'],
+                    r['transactiontype'],
+                    r['transactionid']
+                )
+            )
+
+            # Running balance:
+            # - Non-aggregated rows already have 'balance' from DB.
+            # - For Opening and aggregated rows (D/M/Q/Y), compute in Python.
+            running = Decimal('0.00')
+            for r in bucket['rows']:
+                if 'balance' in r and r['transactiontype'] not in ('O','T'):
+                    # Non-aggregated: trust DB running_balance
+                    running = Decimal(str(r['balance']))
+                elif r['transactiontype'] != 'T':
+                    running += (Decimal(str(r['debitamount'])) - Decimal(str(r['creditamount'])))
+                    r['balance'] = running
+                else:
+                    # Total carries forward; do not re-add its debit/credit
+                    r['balance'] = running
+
+            # Optionally drop zero-balance accounts with no details
+            if not include_zero:
+                has_detail = any(r['transactiontype'] not in ('O','T') for r in bucket['rows'])
+                if abs(float(running)) < 1e-9 and not has_detail:
+                    continue
+
+            result_payload.append({
+                'accountname': bucket['accountname'],
+                'accountid':   acct_id,
+                'accountcode': bucket.get('accountcode'),
+                'accounts':    bucket['rows']
+            })
+
+        # Sort accounts
+        sort_by  = p.get('sort_by','name')
+        sort_dir = p.get('sort_dir','asc')
+        reverse  = (sort_dir == 'desc')
+
+        def acct_sort_key(a):
+            if sort_by == 'name':
+                return (a['accountname'] or '').lower()
+            if sort_by == 'code':
+                return a.get('accountcode') or 0
+            tot_debit  = sum(Decimal(str(r['debitamount']))  for r in a['accounts'])
+            tot_credit = sum(Decimal(str(r['creditamount'])) for r in a['accounts'])
+            if sort_by == 'debit':  return (tot_debit,)
+            if sort_by == 'credit': return (tot_credit,)
+            if sort_by == 'net':    return (tot_debit - tot_credit,)
+            return (a['accountname'] or '').lower()
+
+        result_payload.sort(key=acct_sort_key, reverse=reverse)
+
+        out = self.get_serializer(result_payload, many=True)
+        return Response(out.data, status=200)
+
+
+class tradingaccountstatementJournaline(ListAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, *args, **kwargs):
+        entity_id  = int(self.request.query_params.get('entity'))
+        start_date = self.request.query_params.get('startdate')  # 'YYYY-MM-DD'
+        end_date   = self.request.query_params.get('enddate')    # 'YYYY-MM-DD'
+
+        data = build_trading_account_dynamic(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            # include_move_types=('OUT',), exclude_move_types=('REV',)
+        )
+        return Response(data)
+
+
+class profitandlossstatement(ListAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def _clean(self, s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    def get(self, request, *args, **kwargs):
+        entity_id  = int(request.query_params.get('entity'))
+        start_date = self._clean(request.query_params.get('startdate'))
+        end_date   = self._clean(request.query_params.get('enddate'))
+
+        level = (request.query_params.get('level') or 'head').lower()  # head|account|product|voucher
+        valuation_method = (request.query_params.get('valuation_method') or 'fifo').lower()
+
+        # Allow overriding the default group values via query if needed
+        pl_detailsingroup_values = tuple(
+            int(x) for x in (request.query_params.get('pl_detailsingroup_values') or '2').split(',')
+        )
+        trading_detailsingroup_values = tuple(
+            int(x) for x in (request.query_params.get('trading_detailsingroup_values') or '1').split(',')
+        )
+
+        data = build_profit_and_loss_statement(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            level=level,
+            pl_detailsingroup_values=pl_detailsingroup_values,          # default (2,)
+            trading_detailsingroup_values=trading_detailsingroup_values, # default (1,)
+            valuation_method=valuation_method
+        )
+        return Response(data)
+
+class balancesheetstatement(ListAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def _clean(self, s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    def get(self, request, *args, **kwargs):
+        entity_id  = int(request.query_params.get('entity'))
+        start_date = self._clean(request.query_params.get('startdate'))   # period start (for P&L)
+        end_date   = self._clean(request.query_params.get('enddate'))     # as-of date for BS
+
+        level = (request.query_params.get('level') or 'head').lower()             # head|account|voucher|product
+        inventory_source = (request.query_params.get('inventory_source') or 'valuation').lower()  # valuation|gl
+        valuation_method = (request.query_params.get('valuation_method') or 'fifo').lower()
+
+        bs_dig = tuple(int(x) for x in (request.query_params.get('bs_detailsingroup_values') or '3').split(','))
+        pl_dig = tuple(int(x) for x in (request.query_params.get('pl_detailsingroup_values') or '2').split(','))
+        tr_dig = tuple(int(x) for x in (request.query_params.get('trading_detailsingroup_values') or '1').split(','))
+
+        include_current_earnings = (request.query_params.get('include_current_earnings') or 'true').lower() != 'false'
+
+        data = build_balance_sheet_statement(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            level=level,
+            bs_detailsingroup_values=bs_dig,
+            pl_detailsingroup_values=pl_dig,
+            trading_detailsingroup_values=tr_dig,
+            include_current_earnings=include_current_earnings,
+            inventory_source=inventory_source,
+            valuation_method=valuation_method
+        )
+        return Response(data)
 
 

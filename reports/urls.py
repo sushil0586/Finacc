@@ -71,6 +71,13 @@ urlpatterns  = [
     path('cash_book/', views.CashBookAPIView.as_view(), name='sales-order-gst-summary'),
     path('trial-balance/account-ledger/', views.TrialbalanceApiViewJournalByAccountLedger.as_view(), name='sales-order-gst-summary'),
     path("ledger-summary", views.LedgerSummaryJournalline.as_view(), name="ledger-summary"),
+    path("ledger-details", views.ledgerjournaldetails.as_view(), name="ledger-details"),
+    path("trading-account", views.tradingaccountstatementJournaline.as_view(), name="ledger-details"),
+    path("profitloss-account", views.profitandlossstatement.as_view(), name="ledger-details"),
+    path("balancesheet-statement", views.balancesheetstatement.as_view(), name="ledger-details"),
+    
+
+    
 
     
     
