@@ -7038,10 +7038,24 @@ class ledgerjournaldetails(ListAPIView):
     serializer_class = LedgerAccountSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
+    # -------- helpers that ignore None/blank/"null" -----------
     @staticmethod
-    def _split_ints(v): return [int(x) for x in str(v).split(',') if x.strip()]
+    def _nz(v):
+        if v is None: return None
+        s = str(v).strip()
+        return None if s == '' or s.lower() == 'null' else v
+
     @staticmethod
-    def _split_strs(v): return [x.strip() for x in str(v).split(',') if x.strip()]
+    def _split_ints(v):
+        v = ledgerjournaldetails._nz(v)
+        if v is None: return None
+        return [int(x) for x in str(v).split(',') if x.strip()]
+
+    @staticmethod
+    def _split_strs(v):
+        v = ledgerjournaldetails._nz(v)
+        if v is None: return None
+        return [x.strip() for x in str(v).split(',') if x.strip()]
 
     def post(self, request, *args, **kwargs):
         s_in = LedgerFilterSerializer(data=request.data)
@@ -7064,52 +7078,73 @@ class ledgerjournaldetails(ListAPIView):
         fy_end   = fy.finendyear.date()   if isinstance(fy.finendyear,   datetime) else fy.finendyear
 
         # Base queryset (FY start..enddate)
-        base = JournalLine.objects.filter(
-            entity=entity, entrydate__range=(fy_start, edate)
-        ).select_related('account')
+        base = (JournalLine.objects
+                .filter(entity=entity, entrydate__range=(fy_start, edate))
+                .select_related('account'))
 
-        if p.get('include_entry_id', False):
-            base = base.select_related('entry')  # only when needed
+        # Only join entry if needed
+        if p.get('include_entry_id'):
+            base = base.select_related('entry')
 
-        # Filters
-        if p.get('accounthead'):
-            base = base.filter(accounthead_id__in=self._split_ints(p['accounthead']))
-        if p.get('account'):
-            base = base.filter(account_id__in=self._split_ints(p['account']))
-        if p.get('transactiontype'):
-            base = base.filter(transactiontype__in=self._split_strs(p['transactiontype']))
-        if p.get('transactionid'):
-            base = base.filter(transactionid__in=self._split_ints(p['transactionid']))
-        if p.get('voucherno'):
-            base = base.filter(voucherno__icontains=p['voucherno'])
-        if p.get('drcr') in ('0','1'):
-            base = base.filter(drcr=(p['drcr'] == '1'))
-        if p.get('desc'):
-            base = base.filter(desc__icontains=p['desc'])
+        # ------- Null-safe filters (only apply if provided) -------
+        ah_list = self._split_ints(p.get('accounthead'))
+        if ah_list:
+            base = base.filter(accounthead_id__in=ah_list)
+
+        a_list = self._split_ints(p.get('account'))
+        if a_list:
+            base = base.filter(account_id__in=a_list)
+
+        ttype_list = self._split_strs(p.get('transactiontype'))
+        if ttype_list:
+            base = base.filter(transactiontype__in=ttype_list)
+
+        tid_list = self._split_ints(p.get('transactionid'))
+        if tid_list:
+            base = base.filter(transactionid__in=tid_list)
+
+        vno = self._nz(p.get('voucherno'))
+        if vno is not None:
+            base = base.filter(voucherno__icontains=vno)
+
+        drcr = self._nz(p.get('drcr'))
+        if drcr in ('0', '1'):
+            base = base.filter(drcr=(drcr == '1'))
+
+        desc_txt = self._nz(p.get('desc'))  # if you later add desc in serializer
+        if desc_txt is not None:
+            base = base.filter(desc__icontains=desc_txt)
 
         # Amount range (applied after debit/credit split)
         amt_range = None
         if p.get('amountstart') is not None and p.get('amountend') is not None:
-            amt_range = (Decimal(p['amountstart']), Decimal(p['amountend']))
+            try:
+                lo = Decimal(p['amountstart'])
+                hi = Decimal(p['amountend'])
+                if lo > hi:
+                    lo, hi = hi, lo
+                amt_range = (lo, hi)
+            except Exception:
+                amt_range = None  # ignore bad numbers silently
 
         # Details window (inside start..end)
         details_base = base.filter(entrydate__gte=sdate)
         if p.get('sub_startdate') and p.get('sub_enddate'):
             details_base = details_base.filter(entrydate__range=(p['sub_startdate'], p['sub_enddate']))
 
-        # Common annotations (reuse in multiple places)
-        debit_case  = Case(When(drcr=True,  then=F('amount')))
-        credit_case = Case(When(drcr=False, then=F('amount')))
+        # Common annotations
+        debit_case   = Case(When(drcr=True,  then=F('amount')))
+        credit_case  = Case(When(drcr=False, then=F('amount')))
         debit_annot  = Coalesce(Sum(debit_case),  Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
         credit_annot = Coalesce(Sum(credit_case), Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
 
-        include_opening   = p.get('include_opening', True)
-        include_total     = p.get('include_total', True)
-        include_zero      = p.get('include_zero_balance', False)
-        include_entry_id  = p.get('include_entry_id', False)
+        include_opening   = bool(p.get('include_opening', True))
+        include_total     = bool(p.get('include_total', True))
+        include_zero      = bool(p.get('include_zero_balance', False))
+        include_entry_id  = bool(p.get('include_entry_id', False))
 
         # --------------------------
-        # 1) OPENING (FY start..sdate-1) — net split to one row
+        # 1) OPENING (FY start..sdate-1)
         # --------------------------
         opening_by_acct = {}
         if include_opening:
@@ -7122,56 +7157,45 @@ class ledgerjournaldetails(ListAPIView):
                 acct_code = r.get('account__accountcode')
                 d = r['debitamount']; c = r['creditamount']
                 bal = d - c
-                drcr_flag = (bal > 0)
-                op_debit  = bal if bal >= 0 else Decimal('0.00')
-                op_credit = (-bal) if bal < 0 else Decimal('0.00')
                 opening_by_acct[acct_id] = {
                     'accountname': acct_name,
                     'accountid': acct_id,
                     'accountcode': acct_code,
-                    'creditamount': op_credit,
-                    'debitamount':  op_debit,
+                    'creditamount': (-bal) if bal < 0 else Decimal('0.00'),
+                    'debitamount':  bal if bal >= 0 else Decimal('0.00'),
                     'desc': 'Opening',
                     'entrydate': sdate,
                     'transactiontype': 'O',
                     'transactionid': -1,
-                    'drcr': drcr_flag,
+                    'drcr': (bal > 0),
                     'displaydate': sdate.strftime('%d-%m-%Y')
                 }
 
         # --------------------------
         # 2) DETAILS
-        #     - FY-aware 'Y'
-        #     - DB window running balance for non-aggregated (no nested aggregate on alias)
         # --------------------------
-        aggby = (p.get('aggby') or '').strip().upper()
+        aggby = (p.get('aggby') or '').strip().upper() if p.get('aggby') else ''
         detail_rows = []
 
         if aggby == 'Y':
-            # One line per account for the entity FY
             grouped = (details_base
                        .values('account_id', 'account__accountname', 'account__accountcode')
                        .annotate(debitamount=debit_annot, creditamount=credit_annot))
             for r in grouped:
-                acct_id   = r['account_id']
-                acct_name = r['account__accountname']
-                acct_code = r.get('account__accountcode')
-                d = r['debitamount']; c = r['creditamount']
+                d, c = r['debitamount'], r['creditamount']
                 if amt_range and not (amt_range[0] <= d <= amt_range[1] or amt_range[0] <= c <= amt_range[1]):
                     continue
-                desc = f"FY {fy_start.strftime('%Y')}-{str(fy_end.year % 100).zfill(2)}"
-                drcr_flag = (d - c) > 0
                 detail_rows.append({
-                    'accountname': acct_name,
-                    'accountid': acct_id,
-                    'accountcode': acct_code,
+                    'accountname': r['account__accountname'],
+                    'accountid':   r['account_id'],
+                    'accountcode': r.get('account__accountcode'),
                     'creditamount': c,
                     'debitamount':  d,
-                    'desc': desc,
-                    'entrydate': fy_end,          # anchor for sort
+                    'desc': f"FY {fy_start.strftime('%Y')}-{str(fy_end.year % 100).zfill(2)}",
+                    'entrydate': fy_end,
                     'transactiontype': 'Y',
                     'transactionid': -1,
-                    'drcr': drcr_flag,
+                    'drcr': (d - c) > 0,
                     'displaydate': f"{fy_start.strftime('%d-%m-%Y')} to {fy_end.strftime('%d-%m-%Y')}"
                 })
 
@@ -7185,31 +7209,27 @@ class ledgerjournaldetails(ListAPIView):
                        .annotate(debitamount=debit_annot, creditamount=credit_annot)
                        .order_by('period', 'account_id'))
             for r in grouped:
-                acct_id   = r['account_id']
-                acct_name = r['account__accountname']
-                acct_code = r.get('account__accountcode')
-                period_dt = r['period'].date() if isinstance(r['period'], datetime) else r['period']
-                d = r['debitamount']; c = r['creditamount']
+                d, c = r['debitamount'], r['creditamount']
                 if amt_range and not (amt_range[0] <= d <= amt_range[1] or amt_range[0] <= c <= amt_range[1]):
                     continue
+                period_dt = r['period'].date() if isinstance(r['period'], datetime) else r['period']
                 desc = period_dt.strftime('%b') if aggby == 'M' else period_dt.strftime('%Y-%m-%d')
-                drcr_flag = (d - c) > 0
                 detail_rows.append({
-                    'accountname': acct_name,
-                    'accountid': acct_id,
-                    'accountcode': acct_code,
+                    'accountname': r['account__accountname'],
+                    'accountid':   r['account_id'],
+                    'accountcode': r.get('account__accountcode'),
                     'creditamount': c,
                     'debitamount':  d,
                     'desc': desc,
                     'entrydate': period_dt,
                     'transactiontype': aggby,
                     'transactionid': -1,
-                    'drcr': drcr_flag,
+                    'drcr': (d - c) > 0,
                     'displaydate': period_dt.strftime('%d-%m-%Y')
                 })
 
         else:
-            #Non-aggregated: one row per (account, date, typ, id); compute running balance in Python.
+            # Non-aggregated: one row per (account, date, typ, id); compute running in Python.
             values_fields = [
                 'account_id', 'account__accountname', 'account__accountcode',
                 'entrydate', 'transactiontype', 'transactionid', 'desc'
@@ -7219,18 +7239,12 @@ class ledgerjournaldetails(ListAPIView):
 
             base_qs = (
                 details_base
-                .values(*values_fields)
+                .values(*values_fields)               # <-- ensures GROUP BY only these fields
                 .annotate(
-                    debitamount=Coalesce(
-                        Sum(Case(When(drcr=True, then=F('amount')))),
-                        Decimal('0.00'),
-                        output_field=DecimalField(max_digits=18, decimal_places=2)
-                    ),
-                    creditamount=Coalesce(
-                        Sum(Case(When(drcr=False, then=F('amount')))),
-                        Decimal('0.00'),
-                        output_field=DecimalField(max_digits=18, decimal_places=2)
-                    ),
+                    debitamount=Coalesce(Sum(Case(When(drcr=True,  then=F('amount')))),
+                                         Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2)),
+                    creditamount=Coalesce(Sum(Case(When(drcr=False, then=F('amount')))),
+                                          Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2)),
                 )
                 .order_by('entrydate', 'transactiontype', 'transactionid')
             )
@@ -7242,22 +7256,18 @@ class ledgerjournaldetails(ListAPIView):
                     Q(creditamount__gte=amt_range[0], creditamount__lte=amt_range[1])
                 )
 
-            # Build rows and compute running balance per account in Python (keeps Decimal)
-            running_by_acct = {}  # account_id -> Decimal
+            running_by_acct = {}
             for r in base_qs:
-                acct_id   = r['account_id']
-                acct_name = r['account__accountname']
-                acct_code = r.get('account__accountcode')
                 d = r['debitamount'] or Decimal('0.00')
                 c = r['creditamount'] or Decimal('0.00')
-
-                running = running_by_acct.get(acct_id, Decimal('0.00')) + (d - c)
-                running_by_acct[acct_id] = running
+                aid = r['account_id']
+                running = running_by_acct.get(aid, Decimal('0.00')) + (d - c)
+                running_by_acct[aid] = running
 
                 row = {
-                    'accountname': acct_name,
-                    'accountid':   acct_id,
-                    'accountcode': acct_code,
+                    'accountname': r['account__accountname'],
+                    'accountid':   aid,
+                    'accountcode': r.get('account__accountcode'),
                     'creditamount': c,
                     'debitamount':  d,
                     'desc': r.get('desc') or '',
@@ -7266,11 +7276,10 @@ class ledgerjournaldetails(ListAPIView):
                     'transactionid':   r['transactionid'],
                     'drcr': (d - c) > 0,
                     'displaydate': r['entrydate'].strftime('%d-%m-%Y') if isinstance(r['entrydate'], date) else str(r['entrydate']),
-                    'balance': running,  # cumulative balance
+                    'balance': running,
                 }
                 if include_entry_id and 'entry_id' in r:
                     row['entry_id'] = r['entry_id']
-
                 detail_rows.append(row)
 
         # --------------------------
@@ -7280,52 +7289,51 @@ class ledgerjournaldetails(ListAPIView):
 
         # Seed opening
         if include_opening:
-            for acct_id, row in opening_by_acct.items():
-                per_acct.setdefault(acct_id, {
+            for aid, row in opening_by_acct.items():
+                per_acct.setdefault(aid, {
                     'accountname': row['accountname'],
-                    'accountid':   acct_id,
+                    'accountid':   aid,
                     'accountcode': row.get('accountcode'),
                     'rows': [],
                     'sum_debit':  Decimal('0.00'),
                     'sum_credit': Decimal('0.00'),
                 })
-                per_acct[acct_id]['rows'].append(row)
-                per_acct[acct_id]['sum_debit']  += row['debitamount']
-                per_acct[acct_id]['sum_credit'] += row['creditamount']
+                per_acct[aid]['rows'].append(row)
+                per_acct[aid]['sum_debit']  += row['debitamount']
+                per_acct[aid]['sum_credit'] += row['creditamount']
 
         # Add details
         for r in detail_rows:
-            acct_id = r['accountid']
-            per_acct.setdefault(acct_id, {
+            aid = r['accountid']
+            per_acct.setdefault(aid, {
                 'accountname': r['accountname'],
-                'accountid':   acct_id,
+                'accountid':   aid,
                 'accountcode': r.get('accountcode'),
                 'rows': [],
                 'sum_debit':  Decimal('0.00'),
                 'sum_credit': Decimal('0.00'),
             })
-            per_acct[acct_id]['rows'].append(r)
-            per_acct[acct_id]['sum_debit']  += (r['debitamount']  if isinstance(r['debitamount'],  Decimal) else Decimal(str(r['debitamount'])))
-            per_acct[acct_id]['sum_credit'] += (r['creditamount'] if isinstance(r['creditamount'], Decimal) else Decimal(str(r['creditamount'])))
+            per_acct[aid]['rows'].append(r)
+            per_acct[aid]['sum_debit']  += Decimal(str(r['debitamount']))
+            per_acct[aid]['sum_credit'] += Decimal(str(r['creditamount']))
 
         # Sort rows & compute running balance for aggregated branches; add Totals
         type_rank = {'O': 0, 'T': 2}  # default 1 for details
         result_payload = []
 
-        for acct_id, bucket in per_acct.items():
-            total_debit_sum  = bucket['sum_debit']
-            total_credit_sum = bucket['sum_credit']
-            net_balance      = total_debit_sum - total_credit_sum
-            net_drcr         = (net_balance > 0)
+        for aid, bucket in per_acct.items():
+            total_debit  = bucket['sum_debit']
+            total_credit = bucket['sum_credit']
+            net_balance  = total_debit - total_credit
+            net_drcr     = (net_balance > 0)
 
-            # Append Total (sum of debits/credits; balance will carry forward)
             if include_total:
                 bucket['rows'].append({
                     'accountname': bucket['accountname'],
-                    'accountid':   acct_id,
+                    'accountid':   aid,
                     'accountcode': bucket.get('accountcode'),
-                    'creditamount': total_credit_sum,
-                    'debitamount':  total_debit_sum,
+                    'creditamount': total_credit,
+                    'debitamount':  total_debit,
                     'desc': 'Total',
                     'entrydate': edate,
                     'transactiontype': 'T',
@@ -7334,7 +7342,6 @@ class ledgerjournaldetails(ListAPIView):
                     'displaydate': edate.strftime('%d-%m-%Y')
                 })
 
-            # Order: Opening → details → Total
             bucket['rows'].sort(
                 key=lambda r: (
                     type_rank.get(r['transactiontype'], 1),
@@ -7344,22 +7351,16 @@ class ledgerjournaldetails(ListAPIView):
                 )
             )
 
-            # Running balance:
-            # - Non-aggregated rows already have 'balance' from DB.
-            # - For Opening and aggregated rows (D/M/Q/Y), compute in Python.
             running = Decimal('0.00')
             for r in bucket['rows']:
                 if 'balance' in r and r['transactiontype'] not in ('O','T'):
-                    # Non-aggregated: trust DB running_balance
                     running = Decimal(str(r['balance']))
                 elif r['transactiontype'] != 'T':
                     running += (Decimal(str(r['debitamount'])) - Decimal(str(r['creditamount'])))
                     r['balance'] = running
                 else:
-                    # Total carries forward; do not re-add its debit/credit
                     r['balance'] = running
 
-            # Optionally drop zero-balance accounts with no details
             if not include_zero:
                 has_detail = any(r['transactiontype'] not in ('O','T') for r in bucket['rows'])
                 if abs(float(running)) < 1e-9 and not has_detail:
@@ -7367,14 +7368,14 @@ class ledgerjournaldetails(ListAPIView):
 
             result_payload.append({
                 'accountname': bucket['accountname'],
-                'accountid':   acct_id,
+                'accountid':   aid,
                 'accountcode': bucket.get('accountcode'),
                 'accounts':    bucket['rows']
             })
 
-        # Sort accounts
-        sort_by  = p.get('sort_by','name')
-        sort_dir = p.get('sort_dir','asc')
+        # Sorting across accounts (null-safe defaults)
+        sort_by  = (p.get('sort_by')  or 'name')
+        sort_dir = (p.get('sort_dir') or 'asc')
         reverse  = (sort_dir == 'desc')
 
         def acct_sort_key(a):
