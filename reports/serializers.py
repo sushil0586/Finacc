@@ -1354,60 +1354,49 @@ class LedgerSummaryRowSerializer(serializers.Serializer):
 
 class LedgerFilterSerializer(serializers.Serializer):
     # Required
-    entity = serializers.IntegerField()
-    startdate = serializers.DateField(format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
-    enddate = serializers.DateField(format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
+    entity     = serializers.PrimaryKeyRelatedField(queryset=Entity.objects.all())
+    startdate  = serializers.DateField()
+    enddate    = serializers.DateField()
 
-    # Optional filters
-    accounthead = serializers.CharField(required=False, allow_blank=True)
-    account = serializers.CharField(required=False, allow_blank=True)
-    transactiontype = serializers.CharField(required=False, allow_blank=True)
-    transactionid = serializers.CharField(required=False, allow_blank=True)  # comma-list
-    voucherno = serializers.CharField(required=False, allow_blank=True)
-    drcr = serializers.ChoiceField(choices=[('0','Credit'),('1','Debit')], required=False)
-    desc = serializers.CharField(required=False, allow_blank=True)
+    # Optional / nullable (accept null or blank)
+    accounthead     = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    account         = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    transactiontype = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    transactionid   = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    voucherno       = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    drcr            = serializers.ChoiceField(choices=('0','1'), required=False, allow_null=True)
 
-    # Amount range
-    amountstart = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
-    amountend   = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    amountstart     = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    amountend       = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
 
-    # Aggregation (D/M/Q/FY)
-    aggby = serializers.ChoiceField(
-        choices=[('D','Day'),('M','Month'),('Q','Quarter'),('Y','Year')],
-        required=False, allow_null=True, allow_blank=True
-    )
+    sub_startdate   = serializers.DateField(required=False, allow_null=True)
+    sub_enddate     = serializers.DateField(required=False, allow_null=True)
 
-    # Toggles
-    include_opening = serializers.BooleanField(required=False, default=True)
-    include_total   = serializers.BooleanField(required=False, default=True)
+    aggby           = serializers.ChoiceField(choices=('D','M','Q','Y'), required=False, allow_null=True)
+
+    include_opening    = serializers.BooleanField(required=False, default=True)
+    include_total      = serializers.BooleanField(required=False, default=True)
     include_zero_balance = serializers.BooleanField(required=False, default=False)
-    include_entry_id     = serializers.BooleanField(required=False, default=False)
+    include_entry_id   = serializers.BooleanField(required=False, default=False)
 
-    # Inner window for details only (must lie within start/end)
-    sub_startdate = serializers.DateField(required=False)
-    sub_enddate   = serializers.DateField(required=False)
+    sort_by         = serializers.ChoiceField(choices=('name','code','debit','credit','net'),
+                                              required=False, allow_null=True)
+    sort_dir        = serializers.ChoiceField(choices=('asc','desc'),
+                                              required=False, allow_null=True)
 
-    # Sorting
-    sort_by  = serializers.ChoiceField(choices=['name','code','debit','credit','net'], required=False, default='name')
-    sort_dir = serializers.ChoiceField(choices=['asc','desc'], required=False, default='asc')
+    def validate(self, data):
+        # If only one of the amount bounds is given, ignore both
+        a0, a1 = data.get('amountstart'), data.get('amountend')
+        if (a0 is None) ^ (a1 is None):
+            data['amountstart'] = None
+            data['amountend']   = None
 
-    def validate(self, attrs):
-        s, e = attrs.get('startdate'), attrs.get('enddate')
-        if s and e and s > e:
-            raise serializers.ValidationError("startdate cannot be after enddate.")
-        a1, a2 = attrs.get('amountstart'), attrs.get('amountend')
-        if (a1 is None) ^ (a2 is None):
-            raise serializers.ValidationError("Both amountstart and amountend must be provided together.")
-        if a1 is not None and a2 is not None and a1 > a2:
-            raise serializers.ValidationError("amountstart cannot be greater than amountend.")
-        ssub, esub = attrs.get('sub_startdate'), attrs.get('sub_enddate')
-        if (ssub and not esub) or (esub and not ssub):
-            raise serializers.ValidationError("sub_startdate and sub_enddate must be provided together.")
-        if ssub and esub and ssub > esub:
-            raise serializers.ValidationError("sub_startdate cannot be after sub_enddate.")
-        if s and e and ssub and esub and (ssub < s or esub > e):
-            raise serializers.ValidationError("sub_startdate/sub_enddate must lie within startdate/enddate.")
-        return attrs
+        # If only one of the sub dates is given, ignore both
+        s0, s1 = data.get('sub_startdate'), data.get('sub_enddate')
+        if (s0 is None) ^ (s1 is None):
+            data['sub_startdate'] = None
+            data['sub_enddate']   = None
+        return data
 
 
 class LedgerRowSerializer(serializers.Serializer):
