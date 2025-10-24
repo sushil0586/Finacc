@@ -1,7 +1,7 @@
 # services/profit_and_loss.py
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 from django.db.models import (
     Q, F, Sum, Case, When, Value as V, DecimalField,
@@ -10,10 +10,13 @@ from django.db.models import (
 
 # Adjust app labels if needed
 from invoice.models import JournalLine, InventoryMove
-from .trading_account import build_trading_account_dynamic
+from .trading_account import build_trading_account_dynamic  # safe: one-way dependency
 
+
+# --------------------------- Helpers ---------------------------
 
 def Q2(x) -> Decimal:
+    """Quantize to 2 decimals with standard rounding."""
     return Decimal(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -60,6 +63,8 @@ def _nest_under_accounthead(rows: list, *, head_field: str = "_head") -> list:
     return out
 
 
+# --------------------------- Aggregation ---------------------------
+
 def _aggregate_pl(
     *,
     entity_id: int,
@@ -68,12 +73,12 @@ def _aggregate_pl(
     level: str,
     pl_detailsingroup_values: tuple,          # e.g. (2,)
     trading_detailsingroup_values: tuple      # e.g. (1,)
-):
+) -> Tuple[List[Dict], List[Dict], Decimal, Decimal, List[Dict]]:
     """
-    Aggregate indirect P&L from JournalLine using accounthead.detailsingroup in pl_detailsingroup_values,
-    while EXCLUDING Trading heads (detailsingroup in trading_detailsingroup_values).
+    Aggregate indirect P&L from JournalLine where accounthead.detailsingroup ∈ pl_detailsingroup_values,
+    while EXCLUDING Trading heads (detailsingroup ∈ trading_detailsingroup_values).
     """
-    warnings = []
+    warnings: List[Dict] = []
 
     base = (JournalLine.objects
             .filter(
@@ -175,14 +180,16 @@ def _aggregate_pl(
     return debit_rows, credit_rows, tot_dr, tot_cr, warnings
 
 
+# --------------------------- Builder ---------------------------
+
 def build_profit_and_loss_statement(
     *,
     entity_id: int,
     startdate: str,
     enddate: str,
     level: str = 'head',                       # head | account | product | voucher
-    pl_detailsingroup_values: tuple = (2,),    # <<< P&L heads determined by detailsingroup = 2
-    trading_detailsingroup_values: tuple = (1,),   # Trading heads (exclude from P&L aggregate)
+    pl_detailsingroup_values: tuple = (2,),    # P&L heads (default: 2)
+    trading_detailsingroup_values: tuple = (1,),   # Trading heads (default: 1) — excluded from P&L aggregate
     valuation_method: str = "fifo"             # used to fetch GP/GL via Trading
 ):
     """
@@ -194,7 +201,7 @@ def build_profit_and_loss_statement(
     start = datetime.strptime(startdate, '%Y-%m-%d').date()
     end   = datetime.strptime(enddate,   '%Y-%m-%d').date()
 
-    # 1) Get Trading (for GP/GL b/d)
+    # 1) Trading → Gross Profit/Loss b/d
     trading = build_trading_account_dynamic(
         entity_id=entity_id,
         startdate=startdate,
@@ -206,25 +213,27 @@ def build_profit_and_loss_statement(
     gross_profit = Decimal(str(trading.get('gross_profit', 0) or 0))
     gross_loss   = Decimal(str(trading.get('gross_loss', 0) or 0))
 
-    # 2) Aggregate P&L by level using detailsingroup = 2
+    # 2) Aggregate P&L lines
     debit_rows, credit_rows, tot_dr, tot_cr, warns = _aggregate_pl(
         entity_id=entity_id,
         start=start,
         end=end,
         level=level,
-        pl_detailsingroup_values=pl_detailsingroup_values,          # default (2,)
-        trading_detailsingroup_values=trading_detailsingroup_values  # default (1,)
+        pl_detailsingroup_values=pl_detailsingroup_values,
+        trading_detailsingroup_values=trading_detailsingroup_values
     )
 
-    # 3) Bring down GP/GL to P&L
+    # 3) Bring down GP/GL
     if gross_profit > 0:
-        credit_rows.insert(0, {"label": "Gross Profit b/d", "amount": float(Q2(gross_profit))})
-        tot_cr += Q2(gross_profit)
+        gp = Q2(gross_profit)
+        credit_rows.insert(0, {"label": "Gross Profit b/d", "amount": float(gp)})
+        tot_cr += gp
     elif gross_loss > 0:
-        debit_rows.insert(0, {"label": "Gross Loss b/d", "amount": float(Q2(gross_loss))})
-        tot_dr += Q2(gross_loss)
+        gl = Q2(gross_loss)
+        debit_rows.insert(0, {"label": "Gross Loss b/d", "amount": float(gl)})
+        tot_dr += gl
 
-    # 4) Balance with Net Profit (DEBIT) or Net Loss (CREDIT)
+    # 4) Balance with Net Profit (DEBIT) / Net Loss (CREDIT)
     net_profit = Decimal('0')
     net_loss   = Decimal('0')
     if tot_cr >= tot_dr:
@@ -247,8 +256,8 @@ def build_profit_and_loss_statement(
         "entity_id": entity_id,
         "params": {
             "level": level,
-            "pl_detailsingroup_values": list(pl_detailsingroup_values),      # now 2 by default
-            "trading_detailsingroup_values": list(trading_detailsingroup_values),  # 1 by default
+            "pl_detailsingroup_values": list(pl_detailsingroup_values),
+            "trading_detailsingroup_values": list(trading_detailsingroup_values),
             "valuation_method": valuation_method
         },
         "debit_total": float(debit_total),
@@ -260,9 +269,9 @@ def build_profit_and_loss_statement(
         "net_profit": float(Q2(net_profit)),
         "net_loss": float(Q2(net_loss)),
 
-        # Rows in T-format
-        "debit_rows": debit_rows,   # indirect expenses + (Gross Loss b/d) + (Net Profit c/d)
-        "credit_rows": credit_rows, # incomes + (Gross Profit b/d) + (Net Loss c/d)
+        # Rows (T-format)
+        "debit_rows": debit_rows,    # expenses + (Gross Loss b/d) + (Net Profit c/d)
+        "credit_rows": credit_rows,  # income + (Gross Profit b/d) + (Net Loss c/d)
 
         "notes": [
             "P&L heads selected via accounthead.detailsingroup ∈ pl_detailsingroup_values (default: 2).",
