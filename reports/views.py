@@ -83,6 +83,15 @@ from reports.services.balance_sheet import build_balance_sheet_statement
 from reports.serializers import TrialBalanceHeadRowSerializer, LedgerFilterSerializer, LedgerAccountSerializer
 ZERO = Decimal("0.00")
 
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from io import BytesIO
+from django.utils.timezone import now
+
 
 
 class closingstockBalance(ListAPIView):
@@ -7452,6 +7461,7 @@ class profitandlossstatement(ListAPIView):
         )
         return Response(data)
 
+# views.py
 class balancesheetstatement(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
@@ -7486,6 +7496,7 @@ class balancesheetstatement(ListAPIView):
             valuation_method=valuation_method
         )
         return Response(data)
+
 
 
 def _q2f(x) -> float:
@@ -7614,4 +7625,315 @@ class BalanceSheetExcelAPIView(GenericAPIView):
         wb.save(resp)
         return resp
 
+
+
+def _q2f(x) -> float:
+    return float(round(Decimal(str(x or 0)), 2))
+
+def _clean_str(s: str) -> str:
+    return (s or "").strip().strip('"').strip("'")
+
+def _flatten_rows(rows, *, level=0, out=None):
+    """
+    Flattens nested rows like:
+      [{"label": "...", "amount": 123.45, "children": [...]}, ...]
+    into: [{"label": "...", "amount": 123.45, "level": N}, ...]
+    """
+    if out is None:
+        out = []
+    for r in rows or []:
+        out.append({"label": r.get("label", ""), "amount": _q2f(r.get("amount", 0)), "level": level})
+        kids = r.get("children") or []
+        if kids:
+            _flatten_rows(kids, level=level + 1, out=out)
+    return out
+
+# Paragraph styles
+_styles = getSampleStyleSheet()
+STYLE_TITLE   = ParagraphStyle('TITLE', parent=_styles['Title'], alignment=TA_CENTER, fontSize=16, leading=20, spaceAfter=6)
+STYLE_SUBT    = ParagraphStyle('SUBT', parent=_styles['Normal'], alignment=TA_CENTER, fontSize=9, leading=12, textColor=colors.grey)
+STYLE_HDR     = ParagraphStyle('HDR', parent=_styles['Normal'], alignment=TA_LEFT, fontSize=10, leading=14, textColor=colors.black, spaceBefore=4, spaceAfter=2)
+STYLE_CELL    = ParagraphStyle('CELL', parent=_styles['Normal'], alignment=TA_LEFT, fontSize=9, leading=12)
+STYLE_CELL_R  = ParagraphStyle('CELL_R', parent=STYLE_CELL, alignment=TA_RIGHT)
+STYLE_NOTE    = ParagraphStyle('NOTE', parent=_styles['Normal'], fontSize=8.5, leading=11, textColor=colors.grey)
+STYLE_FOOT    = ParagraphStyle('FOOT', parent=_styles['Normal'], fontSize=8, leading=10, alignment=TA_CENTER, textColor=colors.grey)
+
+def _money_fmt(v: float) -> str:
+    return f"{v:,.2f}"
+
+def _indent_label(text: str, level: int) -> Paragraph:
+    # 9pt font ~ 3.2mm per indent step looks nice; tune as needed.
+    left = max(0, level) * 5.5 * mm
+    style = ParagraphStyle(name=f'CELL_L{level}', parent=STYLE_CELL, leftIndent=left)
+    return Paragraph(text, style)
+
+# Header/footer callbacks
+def _on_page(canvas, doc, header_text: str):
+    canvas.saveState()
+    w, h = A4
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColorRGB(0.5, 0.5, 0.5)
+    canvas.drawCentredString(w / 2.0, h - 12 * mm, header_text)
+    canvas.drawCentredString(w / 2.0, 10 * mm, f"Page {doc.page}")
+    canvas.restoreState()
+
+
+# ---------------------------- PDF API view ------------------------------------
+
+PALETTE = {
+    "panel_assets": colors.Color(0.93, 0.97, 1.00),   # very light blue
+    "panel_liabs":  colors.Color(1.00, 0.96, 0.93),   # very light peach
+    "header_bg":    colors.Color(0.95, 0.95, 0.95),   # light grey
+    "stripe_a":     colors.white,
+    "stripe_b":     colors.Color(0.985, 0.985, 0.985),# ultra-light row
+    "total_bg":     colors.Color(0.92, 0.92, 0.92),
+    "note_bg":      colors.Color(0.98, 0.98, 0.98),
+    "grid_line":    colors.Color(0.85, 0.85, 0.85),
+    "text_dim":     colors.Color(0.45, 0.45, 0.45),
+}
+
+# ----------------------------- helpers -----------------------------
+def _q2f(x) -> float:
+    return float(round(Decimal(str(x or 0)), 2))
+
+def _clean_str(s: str) -> str:
+    return (s or "").strip().strip('"').strip("'")
+
+def _flatten_rows(rows, *, level=0, out=None):
+    if out is None:
+        out = []
+    for r in rows or []:
+        out.append({"label": r.get("label", ""), "amount": _q2f(r.get("amount", 0)), "level": level})
+        kids = r.get("children") or []
+        if kids:
+            _flatten_rows(kids, level=level + 1, out=out)
+    return out
+
+_styles = getSampleStyleSheet()
+STYLE_TITLE   = ParagraphStyle('TITLE', parent=_styles['Title'], alignment=TA_CENTER, fontSize=16, leading=20, spaceAfter=6)
+STYLE_SUBT    = ParagraphStyle('SUBT', parent=_styles['Normal'], alignment=TA_CENTER, fontSize=9, leading=12, textColor=PALETTE["text_dim"])
+STYLE_HDR     = ParagraphStyle('HDR', parent=_styles['Normal'], alignment=TA_LEFT, fontSize=10, leading=14, spaceBefore=2, spaceAfter=1)
+STYLE_CELL    = ParagraphStyle('CELL', parent=_styles['Normal'], alignment=TA_LEFT, fontSize=9, leading=12)
+STYLE_CELL_R  = ParagraphStyle('CELL_R', parent=STYLE_CELL, alignment=TA_RIGHT)
+STYLE_NOTE    = ParagraphStyle('NOTE', parent=_styles['Normal'], fontSize=8.5, leading=11, textColor=PALETTE["text_dim"])
+
+def _money_fmt(v: float) -> str:
+    return f"{v:,.2f}"
+
+def _indent_label(text: str, level: int) -> Paragraph:
+    left = max(0, level) * 5.5 * mm
+    style = ParagraphStyle(name=f'CELL_L{level}', parent=STYLE_CELL, leftIndent=left)
+    return Paragraph(text, style)
+
+def _on_page(canvas, doc, header_text: str):
+    canvas.saveState()
+    w, h = A4
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(PALETTE["text_dim"])
+    canvas.drawCentredString(w / 2.0, h - 12 * mm, header_text)
+    canvas.drawCentredString(w / 2.0, 10 * mm, f"Page {doc.page}")
+    canvas.restoreState()
+
+# ---------------------------- view --------------------------------
+class BalanceSheetPDFAPIView(GenericAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, *args, **kwargs):
+        # -------- query params --------
+        try:
+            entity_id  = int(request.query_params.get('entity'))
+        except (TypeError, ValueError):
+            return HttpResponse("Invalid or missing 'entity' parameter.", status=400)
+
+        start_date = _clean_str(request.query_params.get('startdate'))
+        end_date   = _clean_str(request.query_params.get('enddate'))
+        if not start_date or not end_date:
+            return HttpResponse("Both 'startdate' and 'enddate' (YYYY-MM-DD) are required.", status=400)
+
+        level = (request.query_params.get('level') or 'head').lower()
+        inventory_source = (request.query_params.get('inventory_source') or 'valuation').lower()
+        valuation_method = (request.query_params.get('valuation_method') or 'fifo').lower()
+
+        def _csv_ints(key, default_csv):
+            raw = (request.query_params.get(key) or default_csv).split(',')
+            vals = []
+            for x in raw:
+                x = x.strip()
+                if not x:
+                    continue
+                try:
+                    vals.append(int(x))
+                except ValueError:
+                    pass
+            return tuple(vals) if vals else tuple(int(x) for x in default_csv.split(','))
+
+        bs_dig = _csv_ints('bs_detailsingroup_values', '3')
+        pl_dig = _csv_ints('pl_detailsingroup_values', '2')
+        tr_dig = _csv_ints('trading_detailsingroup_values', '1')
+        include_current_earnings = (request.query_params.get('include_current_earnings') or 'true').lower() != 'false'
+
+        # -------- data --------
+        data = build_balance_sheet_statement(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            level=level,
+            bs_detailsingroup_values=bs_dig,
+            pl_detailsingroup_values=pl_dig,
+            trading_detailsingroup_values=tr_dig,
+            include_current_earnings=include_current_earnings,
+            inventory_source=inventory_source,
+            valuation_method=valuation_method
+        )
+
+        assets_flat = _flatten_rows(data.get("assets_rows", []))
+        liabs_flat  = _flatten_rows(data.get("liabilities_rows", []))
+        max_len     = max(len(assets_flat), len(liabs_flat))
+
+        # -------- build PDF --------
+        buf = BytesIO()
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=A4,
+            leftMargin=14 * mm,
+            rightMargin=14 * mm,
+            topMargin=22 * mm,
+            bottomMargin=16 * mm,
+            title="Balance Sheet",
+            author="YourApp",
+        )
+
+        story = []
+        # Title / subtitle
+        story.append(Paragraph("Balance Sheet", STYLE_TITLE))
+        story.append(Paragraph(
+            f"Entity: {entity_id}  •  Period: {data['period']['start']} to {data['period']['end']}  •  As of: {data['as_of']}",
+            STYLE_SUBT
+        ))
+        story.append(Spacer(1, 4 * mm))
+
+        # Header table (with shaded backgrounds)
+        hdr = [
+            [Paragraph("ASSETS", STYLE_HDR), "", Paragraph("LIABILITIES & EQUITY", STYLE_HDR), ""],
+            [Paragraph("Particulars", STYLE_HDR), Paragraph("Amount", STYLE_HDR),
+             Paragraph("Particulars", STYLE_HDR), Paragraph("Amount", STYLE_HDR)]
+        ]
+        col_widths = [70 * mm, 25 * mm, 70 * mm, 25 * mm]
+        hdr_tbl = Table(hdr, colWidths=col_widths)
+        hdr_tbl.setStyle(TableStyle([
+            # Panel background blocks
+            ('BACKGROUND', (0, 0), (1, 1), PALETTE["panel_assets"]),
+            ('BACKGROUND', (2, 0), (3, 1), PALETTE["panel_liabs"]),
+            # Header row subtle overlay
+            ('BACKGROUND', (0, 1), (3, 1), PALETTE["header_bg"]),
+            # Alignments
+            ('ALIGN', (1, 0), (1, 1), 'RIGHT'),
+            ('ALIGN', (3, 0), (3, 1), 'RIGHT'),
+            # Grid lines subtle
+            ('LINEBELOW', (0, 1), (3, 1), 0.6, PALETTE["grid_line"]),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story.append(hdr_tbl)
+        story.append(Spacer(1, 1.5 * mm))
+
+        # Body rows (zebra striping + panel backgrounds)
+        body = []
+        for i in range(max_len):
+            if i < len(assets_flat):
+                a = assets_flat[i]
+                a_label = _indent_label(str(a["label"]), a["level"])
+                a_amt   = Paragraph(_money_fmt(a["amount"]), STYLE_CELL_R)
+            else:
+                a_label = Paragraph("", STYLE_CELL)
+                a_amt   = Paragraph("", STYLE_CELL_R)
+
+            if i < len(liabs_flat):
+                l = liabs_flat[i]
+                l_label = _indent_label(str(l["label"]), l["level"])
+                l_amt   = Paragraph(_money_fmt(l["amount"]), STYLE_CELL_R)
+            else:
+                l_label = Paragraph("", STYLE_CELL)
+                l_amt   = Paragraph("", STYLE_CELL_R)
+
+            body.append([a_label, a_amt, l_label, l_amt])
+
+        body_tbl = Table(body, colWidths=col_widths, repeatRows=0)
+
+        # Build dynamic styles: panel backgrounds + zebra stripes
+        body_styles = [
+            # Panel soft background for entire body area
+            ('BACKGROUND', (0, 0), (1, max_len - 1), PALETTE["panel_assets"]),
+            ('BACKGROUND', (2, 0), (3, max_len - 1), PALETTE["panel_liabs"]),
+            # Right align amount columns
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('ALIGN', (3, 0), (3, -1), 'RIGHT'),
+            # Padding
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]
+
+        # Zebra striping rows across all 4 columns
+        for r in range(max_len):
+            bg = PALETTE["stripe_b"] if (r % 2) else PALETTE["stripe_a"]
+            body_styles.append(('BACKGROUND', (0, r), (3, r), bg))
+
+        # Overlay panel colors lightly by drawing stripes first then panels (keep current order)
+        body_tbl.setStyle(TableStyle(body_styles))
+        story.append(body_tbl)
+
+        # Totals (highlight bar)
+        story.append(Spacer(1, 1.5 * mm))
+        totals = [
+            [Paragraph("<b>Total</b>", STYLE_CELL), Paragraph(f"<b>{_money_fmt(_q2f(data['assets_total']))}</b>", STYLE_CELL_R),
+             Paragraph("<b>Total</b>", STYLE_CELL), Paragraph(f"<b>{_money_fmt(_q2f(data['liabilities_total']))}</b>", STYLE_CELL_R)]
+        ]
+        tot_tbl = Table(totals, colWidths=col_widths)
+        tot_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (3, 0), PALETTE["total_bg"]),
+            ('LINEABOVE', (0, 0), (3, 0), 0.8, PALETTE["grid_line"]),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+            ('ALIGN', (3, 0), (3, 0), 'RIGHT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story.append(tot_tbl)
+
+        # Notes block (soft background)
+        notes = data.get("notes") or []
+        if notes:
+            story.append(Spacer(1, 3 * mm))
+            story.append(Paragraph("<b>Notes</b>", STYLE_HDR))
+            # Build a single-column table to get a background box
+            note_rows = [[Paragraph(f"• {n}", STYLE_NOTE)] for n in notes]
+            note_tbl = Table(note_rows, colWidths=[(70+25+70+25) * mm])  # full width of main table
+            note_tbl.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), PALETTE["note_bg"]),
+                ('BOX', (0, 0), (-1, -1), 0.6, PALETTE["grid_line"]),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(note_tbl)
+
+        header_text = f"Balance Sheet • Entity {entity_id} • {data['period']['start']} to {data['period']['end']} • Generated {now().strftime('%Y-%m-%d %H:%M')}"
+        doc.build(
+            story,
+            onFirstPage=lambda c, d: _on_page(c, d, header_text),
+            onLaterPages=lambda c, d: _on_page(c, d, header_text),
+        )
+
+        # -------- response --------
+        pdf = buf.getvalue()
+        buf.close()
+        fname = f'BalanceSheet_entity{entity_id}_{data["period"]["start"]}_to_{data["period"]["end"]}.pdf'
+        resp = HttpResponse(content_type="application/pdf")
+        resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+        resp.write(pdf)
+        return resp
 

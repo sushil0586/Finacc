@@ -76,7 +76,7 @@ urlpatterns  = [
     path("profitloss-account", views.profitandlossstatement.as_view(), name="ledger-details"),
     path("balancesheet-statement", views.balancesheetstatement.as_view(), name="ledger-details"),
     path("balance-sheet.xlsx", views.BalanceSheetExcelAPIView.as_view(), name="balance-sheet-excel"),
- 
+    path("balance-sheetpdf", views.BalanceSheetPDFAPIView.as_view(), name="balance-sheet-pdf"),
     
 
     
