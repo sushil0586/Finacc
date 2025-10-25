@@ -2,6 +2,9 @@ from django.shortcuts import render
 
 # Create your views here.
 from collections import defaultdict
+from typing import Any, Dict, List
+from django.http import HttpResponse
+from rest_framework.generics import GenericAPIView
 import re
 from django.db.models import Min, Max
 from django.db.models.expressions import Window
@@ -24,6 +27,9 @@ from .serializers import CashbookUnifiedSerializer,TrialBalanceAccountRowSeriali
 from django.utils.dateparse import parse_date
 from collections import deque
 from django.utils import timezone  
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain,salereturnDetails,Purchasereturndetails
 # from invoice.serializers import SalesOderHeaderSerializer,salesOrderdetailsSerializer,purchaseorderSerializer,PurchaseOrderDetailsSerializer,POSerializer,SOSerializer,journalSerializer,SRSerializer,salesreturnSerializer,salesreturnDetailsSerializer,JournalVSerializer,PurchasereturnSerializer,\
@@ -7480,5 +7486,132 @@ class balancesheetstatement(ListAPIView):
             valuation_method=valuation_method
         )
         return Response(data)
+
+
+def _q2f(x) -> float:
+    return float(Decimal(str(x)).quantize(Decimal("0.01")))
+
+def _auto_width(ws, col_min=1, col_max=8, padding=2):
+    for col in range(col_min, col_max + 1):
+        letter = get_column_letter(col)
+        maxlen = 0
+        for cell in ws[letter]:
+            l = len(str(cell.value)) if cell.value is not None else 0
+            if l > maxlen:
+                maxlen = l
+        ws.column_dimensions[letter].width = maxlen + padding
+
+def _money(cell):
+    cell.number_format = '#,##0.00'
+    return cell
+
+def _title_cell(cell):
+    cell.font = Font(bold=True)
+    cell.fill = PatternFill('solid', fgColor='F3F4F6')
+    cell.alignment = Alignment(horizontal='center')
+    thin = Side(style='thin', color='D1D5DB')
+    cell.border = Border(top=thin, left=thin, right=thin, bottom=thin)
+
+def _flatten_rows(rows: List[Dict], level=0):
+    out = []
+    for r in rows or []:
+        out.append({"label": r.get("label"), "amount": r.get("amount", 0), "level": level})
+        if r.get("children"):
+            out.extend(_flatten_rows(r["children"], level + 1))
+    return out
+
+
+class BalanceSheetExcelAPIView(GenericAPIView):
+    """
+    GET /api/reports/balance-sheet.xlsx?entity=1&startdate=2025-04-01&enddate=2025-09-30
+         [&level=head|account|voucher|product]
+         [&inventory_source=valuation|gl]
+         [&valuation_method=fifo|lifo|mwa|latest|wac]
+         [&bs_detailsingroup_values=3]
+         [&pl_detailsingroup_values=2]
+         [&trading_detailsingroup_values=1]
+         [&include_current_earnings=true|false]
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    @staticmethod
+    def _clean(s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    def get(self, request, *args, **kwargs):
+        # Params
+        entity_id  = int(request.query_params.get('entity'))
+        start_date = self._clean(request.query_params.get('startdate'))
+        end_date   = self._clean(request.query_params.get('enddate'))
+        level = (request.query_params.get('level') or 'head').lower()
+        inventory_source = (request.query_params.get('inventory_source') or 'valuation').lower()
+        valuation_method = (request.query_params.get('valuation_method') or 'fifo').lower()
+        bs_dig = tuple(int(x) for x in (request.query_params.get('bs_detailsingroup_values') or '3').split(','))
+        pl_dig = tuple(int(x) for x in (request.query_params.get('pl_detailsingroup_values') or '2').split(','))
+        tr_dig = tuple(int(x) for x in (request.query_params.get('trading_detailsingroup_values') or '1').split(','))
+        include_current_earnings = (request.query_params.get('include_current_earnings') or 'true').lower() != 'false'
+
+        # Data
+        data = build_balance_sheet_statement(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            level=level,
+            bs_detailsingroup_values=bs_dig,
+            pl_detailsingroup_values=pl_dig,
+            trading_detailsingroup_values=tr_dig,
+            include_current_earnings=include_current_earnings,
+            inventory_source=inventory_source,
+            valuation_method=valuation_method
+        )
+
+        # Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Balance Sheet"
+
+        # Titles
+        ws.cell(row=1, column=1, value="ASSETS"); _title_cell(ws.cell(row=1, column=1))
+        ws.cell(row=1, column=3, value="LIABILITIES & EQUITY"); _title_cell(ws.cell(row=1, column=3))
+
+        ws.cell(row=2, column=1, value="Particulars").font = Font(bold=True)
+        ws.cell(row=2, column=2, value="Amount").font = Font(bold=True)
+        ws.cell(row=2, column=3, value="Particulars").font = Font(bold=True)
+        ws.cell(row=2, column=4, value="Amount").font = Font(bold=True)
+
+        a_flat = _flatten_rows(data.get("assets_rows", []))
+        l_flat = _flatten_rows(data.get("liabilities_rows", []))
+        max_len = max(len(a_flat), len(l_flat))
+
+        for i in range(max_len):
+            if i < len(a_flat):
+                a = a_flat[i]
+                ws.cell(row=3 + i, column=1, value=(" " * (a["level"] * 2)) + str(a["label"]))
+                _money(ws.cell(row=3 + i, column=2, value=_q2f(a["amount"])))
+            if i < len(l_flat):
+                l = l_flat[i]
+                ws.cell(row=3 + i, column=3, value=(" " * (l["level"] * 2)) + str(l["label"]))
+                _money(ws.cell(row=3 + i, column=4, value=_q2f(l["amount"])))
+
+        total_row = 3 + max_len
+        ws.cell(row=total_row, column=1, value="Total").font = Font(bold=True)
+        _money(ws.cell(row=total_row, column=2, value=_q2f(data["assets_total"]))).font = Font(bold=True)
+        ws.cell(row=total_row, column=3, value="Total").font = Font(bold=True)
+        _money(ws.cell(row=total_row, column=4, value=_q2f(data["liabilities_total"]))).font = Font(bold=True)
+
+        # Notes (optional)
+        notes_start = total_row + 2
+        ws.cell(row=notes_start, column=1, value="Notes").font = Font(bold=True)
+        for i, note in enumerate(data.get("notes", []), start=notes_start + 1):
+            ws.cell(row=i, column=1, value=f"• {note}")
+
+        _auto_width(ws, 1, 4)
+
+        # Response
+        fname = f'BalanceSheet_entity{entity_id}_{data["period"]["start"]}_to_{data["period"]["end"]}.xlsx'
+        resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+        wb.save(resp)
+        return resp
 
 
