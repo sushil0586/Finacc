@@ -77,8 +77,11 @@ urlpatterns  = [
     path("balancesheet-statement", views.balancesheetstatement.as_view(), name="ledger-details"),
     path("balance-sheet.xlsx", views.BalanceSheetExcelAPIView.as_view(), name="balance-sheet-excel"),
     path("balance-sheetpdf", views.BalanceSheetPDFAPIView.as_view(), name="balance-sheet-pdf"),
-    
-
+    path("trial-balance.xlsx", views.TrialbalanceExcelApiView.as_view(), name="trial-balance-excel"),
+    path("trading-account-xlsx", views.TradingAccountExcelAPIView.as_view(),name="trading-account.xlsx"),
+    path("trading-account-pdf", views.TradingAccountPDFAPIView.as_view(),name="trading-account.xlsx"),
+    path("profitloss-account-xlsx", views.ProfitAndLossExcelAPIView.as_view(),name="trading-account.xlsx"),
+    path("profitloss-account-pdf", views.ProfitAndLossPDFAPIView.as_view(),name="trading-account.xlsx"),
     
     
 
