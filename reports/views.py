@@ -28,7 +28,7 @@ from django.utils.dateparse import parse_date
 from collections import deque
 from django.utils import timezone  
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side,NamedStyle
 from openpyxl.utils import get_column_letter
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain,salereturnDetails,Purchasereturndetails
@@ -85,10 +85,10 @@ ZERO = Decimal("0.00")
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4,landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak,KeepTogether
 from io import BytesIO
 from django.utils.timezone import now
 
@@ -5855,95 +5855,68 @@ class TrialBalanceView(APIView):
 
 
 
-class TrialbalanceApiViewJournal(ListAPIView):
-    """
-    GET /api/reports/trial-balance/?entity=1&startdate=2025-04-01&enddate=2025-04-30
+DZERO = Decimal("0.00")
 
-    Trial Balance aggregated at AccountHead level with sign-based head selection:
-      - DR (>=0): group under account.accounthead
-      - CR (<0):  group under account.creditaccounthead
-      - Fallback to JournalLine.accounthead where account is missing.
-    """
+def dec(x):
+    # Coerce anything materialized (None/int/str/Decimal) to Decimal; reject expressions early.
+    if x is None:
+        return DZERO
+    if isinstance(x, Decimal):
+        return x
+    # Strings like '0', ints, Decimals are fine. F/Value/CombinedExpression never reach here if used correctly.
+    return Decimal(str(x))
+
+class TrialbalanceApiViewJournal(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = TrialBalanceHeadRowSerializer
 
-    # ---- safer ISO date parsing (trims & normalizes smart dashes) ----
     def _parse_ymd(self, s: str) -> date:
-        if s is None:
-            raise ValueError("empty")
-        s = str(s).strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
-        return date.fromisoformat(s)  # strict YYYY-MM-DD
+        s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+        return date.fromisoformat(s)
 
     def get(self, request, *args, **kwargs):
-        # ---- params ----
         entity_id = request.query_params.get("entity")
-        start_s = request.query_params.get("startdate")
-        end_s = request.query_params.get("enddate")
+        start_s   = request.query_params.get("startdate")
+        end_s     = request.query_params.get("enddate")
 
         if entity_id is None or start_s is None or end_s is None:
-            return Response(
-                {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        entity_id = str(entity_id).strip()
-        start_s = str(start_s).strip()
-        end_s = str(end_s).strip()
-
-        # ---- date parsing ----
         try:
+            entity_id = int(str(entity_id).strip())
             startdate = self._parse_ymd(start_s)
-            enddate = self._parse_ymd(end_s)
+            enddate   = self._parse_ymd(end_s)
         except Exception:
-            # echo back what we received to help spot hidden chars
-            return Response(
-                {"detail": "Dates must be YYYY-MM-DD.", "received": {"startdate": start_s, "enddate": end_s}},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Dates/entity invalid.", "received": {"entity": entity_id, "startdate": start_s, "enddate": end_s}},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         if startdate > enddate:
-            # empty range → empty TB is valid
             return Response([], status=status.HTTP_200_OK)
 
-        # ---- optional clamp to financial year (JournalLine.entrydate is a DateField) ----
-        fy = (
-            entityfinancialyear.objects
-            .filter(
-                entity_id=entity_id,
-                finstartyear__date__lte=enddate,
-                finendyear__date__gte=startdate,
-            )
-            .order_by("-finstartyear")
-            .first()
-        )
+        fy = (entityfinancialyear.objects
+              .filter(entity_id=entity_id, finstartyear__date__lte=enddate, finendyear__date__gte=startdate)
+              .order_by("-finstartyear").first())
         if fy:
             startdate = max(startdate, fy.finstartyear.date())
-            enddate = min(enddate, fy.finendyear.date())
+            enddate   = min(enddate, fy.finendyear.date())
             if startdate > enddate:
                 return Response([], status=status.HTTP_200_OK)
 
-        # =========================
-        # 1) OPENING (< startdate) PER ACCOUNT
-        # =========================
         opening_acct = (
             JournalLine.objects
             .filter(entity_id=entity_id, entrydate__lt=startdate)
             .values(
                 "account_id",
-                # account-based heads
-                "account__accounthead_id",
-                "account__accounthead__name",
-                "account__creditaccounthead_id",
-                "account__creditaccounthead__name",
-                # fallback explicit head on the line (when account is null)
-                "accounthead_id",
-                "accounthead__name",
+                "account__accounthead_id", "account__accounthead__name",
+                "account__creditaccounthead_id", "account__creditaccounthead__name",
+                "accounthead_id", "accounthead__name",
             )
             .annotate(
                 opening=Sum(
                     Case(
-                        When(drcr=True, then=F("amount")),      # Debit +
-                        When(drcr=False, then=-F("amount")),     # Credit −
+                        When(drcr=True, then=F("amount")),
+                        When(drcr=False, then=-F("amount")),
                         default=V(0),
                         output_field=DecimalField(max_digits=18, decimal_places=2),
                     ),
@@ -5953,64 +5926,48 @@ class TrialbalanceApiViewJournal(ListAPIView):
             )
         )
 
-        # =========================
-        # 2) PERIOD ([start,end]) PER ACCOUNT
-        # =========================
         period_acct = (
             JournalLine.objects
             .filter(entity_id=entity_id, entrydate__gte=startdate, entrydate__lte=enddate)
             .values(
                 "account_id",
-                "account__accounthead_id",
-                "account__accounthead__name",
-                "account__creditaccounthead_id",
-                "account__creditaccounthead__name",
-                "accounthead_id",
-                "accounthead__name",
+                "account__accounthead_id", "account__accounthead__name",
+                "account__creditaccounthead_id", "account__creditaccounthead__name",
+                "accounthead_id", "accounthead__name",
             )
             .annotate(
                 debit=Sum(
-                    Case(
-                        When(drcr=True, then=F("amount")),
-                        default=V(0),
-                        output_field=DecimalField(max_digits=18, decimal_places=2),
-                    ),
+                    Case(When(drcr=True, then=F("amount")), default=V(0),
+                         output_field=DecimalField(max_digits=18, decimal_places=2)),
                     default=V(0),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
                 credit=Sum(
-                    Case(
-                        When(drcr=False, then=F("amount")),
-                        default=V(0),
-                        output_field=DecimalField(max_digits=18, decimal_places=2),
-                    ),
+                    Case(When(drcr=False, then=F("amount")), default=V(0),
+                         output_field=DecimalField(max_digits=18, decimal_places=2)),
                     default=V(0),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
             )
         )
 
-        # =========================
-        # 3) MERGE PER-ACCOUNT
-        # =========================
-        per_acct = {}
-
         def _extract_heads(row):
-            # Prefer account.* heads; fall back to explicit JournalLine.accounthead
             ah_id = row.get("account__accounthead_id") or row.get("accounthead_id")
             ah_nm = row.get("account__accounthead__name") or row.get("accounthead__name")
             ch_id = row.get("account__creditaccounthead_id") or ah_id
             ch_nm = row.get("account__creditaccounthead__name") or ah_nm
             return ah_id, ah_nm, ch_id, ch_nm
 
+        per_acct = {}
+
         for r in opening_acct:
-            aid = r["account_id"]  # may be None if line had no account
+            aid = r["account_id"]
             ah_id, ah_nm, ch_id, ch_nm = _extract_heads(r)
             if ah_id is None and ch_id is None:
                 continue
             per_acct[aid] = dict(
-                opening=r["opening"] or ZERO,
-                debit=ZERO, credit=ZERO,
+                opening=dec(r.get("opening")),
+                debit=DZERO, credit=DZERO,
                 ah_id=ah_id, ah_name=ah_nm or "",
                 ch_id=ch_id, ch_name=ch_nm or "",
             )
@@ -6021,55 +5978,47 @@ class TrialbalanceApiViewJournal(ListAPIView):
             if ah_id is None and ch_id is None:
                 continue
             item = per_acct.setdefault(aid, dict(
-                opening=ZERO, debit=ZERO, credit=ZERO,
+                opening=DZERO, debit=DZERO, credit=DZERO,
                 ah_id=ah_id, ah_name=ah_nm or "",
                 ch_id=ch_id, ch_name=ch_nm or "",
             ))
-            item["debit"] = (item["debit"] or ZERO) + (r["debit"] or ZERO)
-            item["credit"] = (item["credit"] or ZERO) + (r["credit"] or ZERO)
+            item["debit"]  = item["debit"]  + dec(r.get("debit"))
+            item["credit"] = item["credit"] + dec(r.get("credit"))
             if not item["ah_name"] and ah_nm:
                 item["ah_name"] = ah_nm
             if not item["ch_name"] and ch_nm:
                 item["ch_name"] = ch_nm
 
-        # If no data, short-circuit
         if not per_acct:
             return Response([], status=status.HTTP_200_OK)
 
-        # =========================
-        # 4) CHOOSE DISPLAY HEAD BY CLOSING SIGN & RE-AGGREGATE
-        # =========================
-        by_head = {}  # key = head_id
-        for _, v in per_acct.items():
-            closing = (v["opening"] or ZERO) + (v["debit"] or ZERO) - (v["credit"] or ZERO)
-            if closing >= 0:
-                hid, hname = v["ah_id"], v["ah_name"]
-            else:
-                hid, hname = v["ch_id"], v["ch_name"]
-
+        by_head = {}
+        for v in per_acct.values():
+            opening = dec(v.get("opening"))
+            debit   = dec(v.get("debit"))
+            credit  = dec(v.get("credit"))
+            closing = opening + debit - credit  # pure Decimal
+            hid, hname = (v["ah_id"], v["ah_name"]) if (closing >= DZERO) else (v["ch_id"], v["ch_name"])
             if hid is None:
                 continue
-
             agg = by_head.setdefault(hid, dict(
                 accounthead=hid,
                 accountheadname=hname or "",
-                openingbalance=ZERO,
-                debit=ZERO,
-                credit=ZERO,
+                openingbalance=DZERO, debit=DZERO, credit=DZERO,
             ))
-            agg["openingbalance"] += v["opening"] or ZERO
-            agg["debit"] += v["debit"] or ZERO
-            agg["credit"] += v["credit"] or ZERO
+            agg["openingbalance"] = agg["openingbalance"] + opening
+            agg["debit"]          = agg["debit"]          + debit
+            agg["credit"]         = agg["credit"]         + credit
 
-        # =========================
-        # 5) FINALIZE & RETURN
-        # =========================
         out = []
         for hid, v in by_head.items():
-            closing = (v["openingbalance"] or ZERO) + (v["debit"] or ZERO) - (v["credit"] or ZERO)
+            opening = dec(v.get("openingbalance"))
+            debit   = dec(v.get("debit"))
+            credit  = dec(v.get("credit"))
+            closing = opening + debit - credit
             v["closingbalance"] = closing
-            v["drcr"] = "CR" if closing < 0 else "DR"
-            v["obdrcr"] = "CR" if (v["openingbalance"] or ZERO) < 0 else "DR"
+            v["drcr"]   = "CR" if closing < DZERO else "DR"
+            v["obdrcr"] = "CR" if opening < DZERO else "DR"
             out.append(v)
 
         out.sort(key=lambda x: (x["accountheadname"] or "").lower())
@@ -6434,6 +6383,21 @@ class CashBookAPIView(APIView):
 
 
 
+DZERO = Decimal("0.00")  # Python-side zero ONLY for arithmetic & comparisons
+
+
+def dec(x):
+    """
+    Coerce a materialized DB value to Decimal.
+    Avoids passing any Expressions (F/Value/CombinedExpression) here.
+    """
+    if x is None:
+        return DZERO
+    if isinstance(x, Decimal):
+        return x
+    return Decimal(str(x))
+
+
 class TrialbalanceApiViewJournalByAccount(ListAPIView):
     """
     GET /api/reports/trial-balance/accounts/?entity=1&accounthead=10&startdate=2025-04-01&enddate=2025-04-30
@@ -6455,17 +6419,22 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
         end_s     = request.query_params.get("enddate")
 
         if not (entity_id and head_id_s and start_s and end_s):
-            return Response({"detail": "Required: entity, accounthead, startdate, enddate (YYYY-MM-DD)"},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Required: entity, accounthead, startdate, enddate (YYYY-MM-DD)"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
+            entity_id = int(str(entity_id).strip())
+            head_id   = int(str(head_id_s).strip())
             startdate = self._parse_ymd(start_s)
             enddate   = self._parse_ymd(end_s)
-            head_id   = int(head_id_s)
         except Exception:
             return Response(
-                {"detail": "Invalid inputs.", "received": {"accounthead": head_id_s, "startdate": start_s, "enddate": end_s}},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"detail": "Invalid inputs.", "received": {
+                    "entity": request.query_params.get("entity"),
+                    "accounthead": head_id_s, "startdate": start_s, "enddate": end_s}},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         if startdate > enddate:
@@ -6522,46 +6491,55 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
             )
             .annotate(
                 debit=Sum(
-                    Case(When(drcr=True, then=F("amount")), default=V(0),
-                         output_field=DecimalField(max_digits=18, decimal_places=2)),
-                    default=V(0), output_field=DecimalField(max_digits=18, decimal_places=2),
+                    Case(
+                        When(drcr=True, then=F("amount")),
+                        default=V(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
                 credit=Sum(
-                    Case(When(drcr=False, then=F("amount")), default=V(0),
-                         output_field=DecimalField(max_digits=18, decimal_places=2)),
-                    default=V(0), output_field=DecimalField(max_digits=18, decimal_places=2),
+                    Case(
+                        When(drcr=False, then=F("amount")),
+                        default=V(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
             )
         )
 
-        # ---- Merge per account ----
+        # ---- Merge per account (coerce all numbers immediately) ----
         per_account = {}
+
         for r in opening_qs:
             aid = r["account_id"]
             per_account[aid] = dict(
                 account=aid,
-                accountname=r["account__accountname"] or "",
-                opening=r["opening"] or ZERO,
-                debit=ZERO, credit=ZERO,
-                ah_id=r["account__accounthead_id"],
-                ah_name=r["account__accounthead__name"] or "",
-                ch_id=r["account__creditaccounthead_id"],
-                ch_name=r["account__creditaccounthead__name"] or "",
+                accountname=r.get("account__accountname") or "",
+                opening=dec(r.get("opening")),
+                debit=DZERO, credit=DZERO,
+                ah_id=r.get("account__accounthead_id"),
+                ah_name=r.get("account__accounthead__name") or "",
+                ch_id=r.get("account__creditaccounthead_id"),
+                ch_name=r.get("account__creditaccounthead__name") or "",
             )
 
         for r in period_qs:
             aid = r["account_id"]
             item = per_account.setdefault(aid, dict(
                 account=aid,
-                accountname=r["account__accountname"] or "",
-                opening=ZERO, debit=ZERO, credit=ZERO,
-                ah_id=r["account__accounthead_id"],
-                ah_name=r["account__accounthead__name"] or "",
-                ch_id=r["account__creditaccounthead_id"],
-                ch_name=r["account__creditaccounthead__name"] or "",
+                accountname=r.get("account__accountname") or "",
+                opening=DZERO, debit=DZERO, credit=DZERO,
+                ah_id=r.get("account__accounthead_id"),
+                ah_name=r.get("account__accounthead__name") or "",
+                ch_id=r.get("account__creditaccounthead_id"),
+                ch_name=r.get("account__creditaccounthead__name") or "",
             ))
-            item["debit"]  = (item["debit"]  or ZERO) + (r["debit"]  or ZERO)
-            item["credit"] = (item["credit"] or ZERO) + (r["credit"] or ZERO)
+            item["debit"]  = item["debit"]  + dec(r.get("debit"))
+            item["credit"] = item["credit"] + dec(r.get("credit"))
 
         if not per_account:
             return Response([], status=status.HTTP_200_OK)
@@ -6569,11 +6547,14 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
         # ---- Choose head by sign; keep only requested head ----
         rows = []
         for v in per_account.values():
-            closing = (v["opening"] or ZERO) + (v["debit"] or ZERO) - (v["credit"] or ZERO)
+            opening = dec(v.get("opening"))
+            debit   = dec(v.get("debit"))
+            credit  = dec(v.get("credit"))
+            closing = opening + debit - credit                        # pure Decimal, no expressions
             disp_head_id, disp_head_name = (
-                (v["ah_id"], v["ah_name"]) if closing >= 0 else (v["ch_id"], v["ch_name"])
+                (v["ah_id"], v["ah_name"]) if (closing >= DZERO) else (v["ch_id"], v["ch_name"])
             )
-            if disp_head_id is None or disp_head_id != head_id:
+            if disp_head_id is None or int(disp_head_id) != head_id:
                 continue
 
             rows.append(dict(
@@ -6581,22 +6562,30 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
                 accountname=v["accountname"],
                 accounthead=head_id,
                 accountheadname=disp_head_name or "",
-                openingbalance=v["opening"] or ZERO,
-                debit=v["debit"] or ZERO,
-                credit=v["credit"] or ZERO,
+                openingbalance=opening,
+                debit=debit,
+                credit=credit,
                 closingbalance=closing,
-                drcr=("CR" if closing < 0 else "DR"),
-                obdrcr=("CR" if (v["opening"] or ZERO) < 0 else "DR"),
+                drcr=("CR" if closing < DZERO else "DR"),
+                obdrcr=("CR" if opening < DZERO else "DR"),
             ))
 
         rows.sort(key=lambda x: (x["accountname"] or "").lower())
 
-        # Serialize (fast — pure dicts, no DB hits)
-        data = self.serializer_class(rows, many=True).data
-        return Response(data, status=status.HTTP_200_OK)
+        return Response(self.serializer_class(rows, many=True).data, status=status.HTTP_200_OK)
 
 DEC = DecimalField(max_digits=18, decimal_places=2)               # reuse this
 VZ  = lambda: V(ZERO, output_field=DEC)                           # Decimal zero Value()
+def to_dec(x):
+    """Coerce ORM values (including Decimal, int, str, None) to Python Decimal."""
+    if x is None:
+        return DZERO
+    if isinstance(x, Decimal):
+        return x
+    # Avoid passing Django expressions here; this function is used on materialized values only.
+    return Decimal(str(x))
+
+
 class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = TrialBalanceAccountLedgerRowSerializer
@@ -6612,22 +6601,30 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
         end_s      = request.query_params.get("enddate")
 
         if not (entity_id and account_id and start_s and end_s):
-            return Response({"detail": "Required: entity, account, startdate, enddate (YYYY-MM-DD)"},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Required: entity, account, startdate, enddate (YYYY-MM-DD)"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
-            startdate = self._parse_ymd(start_s)
-            enddate   = self._parse_ymd(end_s)
-            account_id = int(account_id)
+            entity_id  = int(str(entity_id).strip())
+            account_id = int(str(account_id).strip())
+            startdate  = self._parse_ymd(start_s)
+            enddate    = self._parse_ymd(end_s)
         except Exception:
-            return Response({"detail": "Invalid inputs.", "received": {
-                "entity": entity_id, "account": request.query_params.get("account"),
-                "startdate": start_s, "enddate": end_s}},
-                status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Invalid inputs.", "received": {
+                    "entity": request.query_params.get("entity"),
+                    "account": request.query_params.get("account"),
+                    "startdate": start_s, "enddate": end_s
+                }},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if startdate > enddate:
             return Response([], status=status.HTTP_200_OK)
 
-        # ---- Clamp to FY if present ----
+        # ---- Clamp to FY, if any ----
         fy = (
             entityfinancialyear.objects
             .filter(entity_id=entity_id,
@@ -6642,26 +6639,33 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             if startdate > enddate:
                 return Response([], status=status.HTTP_200_OK)
 
-        # ---- 1) Opening balance (< startdate) ----
-        opening_sum = (
+        # =========================================
+        # 1) Opening balance (< startdate) -> Python Decimal
+        # =========================================
+        opening_sum_raw = (
             JournalLine.objects
             .filter(entity_id=entity_id, account_id=account_id, entrydate__lt=startdate)
             .aggregate(opening=Coalesce(
                 Sum(
                     Case(
-                        When(drcr=True,  then=F("amount")),
-                        When(drcr=False, then=-F("amount")),
-                        default=VZ(),
-                        output_field=DEC,
+                        When(drcr=True,  then=F("amount")),   # Debit +
+                        When(drcr=False, then=-F("amount")),  # Credit −
+                        default=V(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
                     ),
-                    output_field=DEC,
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
                 ),
-                VZ(),
-                output_field=DEC,
+                V(0),
+                output_field=DecimalField(max_digits=18, decimal_places=2),
             ))
-        )["opening"] or ZERO
+        )["opening"]
 
-        # account name
+        opening_sum = to_dec(opening_sum_raw)
+
+        # =========================================
+        # Account name (best-effort)
+        # =========================================
         name_row = (
             JournalLine.objects
             .filter(entity_id=entity_id, account_id=account_id)
@@ -6669,32 +6673,34 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
             .order_by("entrydate", "id")
             .first()
         )
-        accountname = (name_row or {}).get("account__accountname", "") or ""
+        accountname = (name_row or {}).get("account__accountname") or ""
 
-        opening_row = None
-        if opening_sum is not None:
-            obal = opening_sum
-            opening_row = dict(
-                account=account_id,
-                accountname=accountname,
-                sortdate=startdate,                             # Date object → ISO in JSON
-                entrydate=startdate.strftime("%d-%m-%Y"),       # Display string
-                narration="Opening Balance",
-                transactiontype="OPENING",
-                transactionid=0,                                # opening sentinel
-                debit=(obal if obal > 0 else ZERO),
-                credit=(obal if obal < 0 else ZERO),
-                runningbalance=obal,
-            )
+        rows = []
 
-        # ---- 2) Period lines (detail-level) ----
-        # Project fields directly present on JournalLine:
+        # Opening synthetic row (include even if zero to show running start)
+        obal = opening_sum
+        opening_row = dict(
+            account=account_id,
+            accountname=accountname,
+            sortdate=startdate,                             # date object; serializer can handle
+            entrydate=startdate.strftime("%d-%m-%Y"),       # display string
+            narration="Opening Balance",
+            transactiontype="OPENING",
+            transactionid=0,                                # sentinel
+            debit=(obal if obal > DZERO else DZERO),
+            credit=(-obal if obal < DZERO else DZERO),      # positive credit display
+            runningbalance=obal,
+        )
+        rows.append(opening_row)
+
+        # =========================================
+        # 2) Period lines (detail-level)
+        # =========================================
         values_list = [
             "id", "account_id", "account__accountname", "entrydate",
             "drcr", "amount",
-            "transactiontype", "transactionid", "voucherno",   # <-- direct fields
+            "transactiontype", "transactionid", "voucherno",
         ]
-        # Optional narration-ish fields
         for opt in ("desc", "narration", "notes"):
             try:
                 JournalLine._meta.get_field(opt)
@@ -6716,25 +6722,18 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
                     return str(row[c])
             return ""
 
-        rows = []
-        running = opening_sum if opening_sum is not None else ZERO
-        if opening_row:
-            rows.append(opening_row)
-
+        running = obal  # Decimal
         for r in lines_qs:
-            amt = r["amount"] or ZERO
+            amt = to_dec(r.get("amount"))
+
             is_dr = bool(r["drcr"])
-            debit  = amt if is_dr else ZERO
-            credit = amt if not is_dr else ZERO
-            running = running + debit - credit
+            debit  = amt if is_dr else DZERO
+            credit = amt if not is_dr else DZERO
+            running = running + debit - credit  # pure Decimal math
 
-            # narration (desc/narration/notes if present; model at least has desc)
             narration = pick_first(r, ["desc", "narration", "notes"])
-
-            # transactiontype from model (fallback to UNKNOWN if somehow empty)
             txn_type = (r.get("transactiontype") or "").strip() or "UNKNOWN"
 
-            # transactionid from model (header id); if null/blank, fallback to line id
             jl_txn_id = r.get("transactionid")
             try:
                 txn_id = int(jl_txn_id) if jl_txn_id is not None and str(jl_txn_id).strip() != "" else int(r["id"])
@@ -6748,7 +6747,7 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
                 entrydate=r["entrydate"].strftime("%d-%m-%Y"),  # display string
                 narration=narration or "",
                 transactiontype=txn_type,
-                transactionid=txn_id,                           # <-- JournalLine.transactionid (header id)
+                transactionid=txn_id,
                 debit=debit,
                 credit=credit,
                 runningbalance=running,
@@ -7935,5 +7934,1337 @@ class BalanceSheetPDFAPIView(GenericAPIView):
         resp = HttpResponse(content_type="application/pdf")
         resp['Content-Disposition'] = f'attachment; filename="{fname}"'
         resp.write(pdf)
+        return resp
+
+
+
+class TrialbalanceExcelApiView(APIView):
+    """
+    GET /api/reports/trial-balance.xlsx?entity=1&startdate=YYYY-MM-DD&enddate=YYYY-MM-DD
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    @staticmethod
+    def _parse_ymd(s: str) -> date:
+        s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+        return date.fromisoformat(s)
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get("entity")
+        start_s   = request.query_params.get("startdate")
+        end_s     = request.query_params.get("enddate")
+
+        if entity_id is None or start_s is None or end_s is None:
+            return Response(
+                {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            entity_id = int(str(entity_id).strip())
+            startdate = self._parse_ymd(start_s)
+            enddate   = self._parse_ymd(end_s)
+        except Exception:
+            return Response(
+                {"detail": "Dates/entity invalid.", "received": {"entity": entity_id, "startdate": start_s, "enddate": end_s}},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if startdate > enddate:
+            # still return an empty workbook
+            wb = self._build_workbook([], startdate, enddate, entity_id)
+            return self._xlsx_response(wb, startdate, enddate)
+
+        # Clamp to FY boundaries, if any
+        fy = (entityfinancialyear.objects
+              .filter(entity_id=entity_id, finstartyear__date__lte=enddate, finendyear__date__gte=startdate)
+              .order_by("-finstartyear").first())
+        if fy:
+            startdate = max(startdate, fy.finstartyear.date())
+            enddate   = min(enddate, fy.finendyear.date())
+            if startdate > enddate:
+                wb = self._build_workbook([], startdate, enddate, entity_id)
+                return self._xlsx_response(wb, startdate, enddate)
+
+        # --- Opening balances by account ---
+        opening_acct = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, entrydate__lt=startdate)
+            .values(
+                "account_id",
+                "account__accounthead_id", "account__accounthead__name",
+                "account__creditaccounthead_id", "account__creditaccounthead__name",
+                "accounthead_id", "accounthead__name",
+            )
+            .annotate(
+                opening=Sum(
+                    Case(
+                        When(drcr=True, then=F("amount")),
+                        When(drcr=False, then=-F("amount")),
+                        default=V(0),
+                        output_field=DecimalField(max_digits=18, decimal_places=2),
+                    ),
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
+        )
+
+        # --- Period activity by account ---
+        period_acct = (
+            JournalLine.objects
+            .filter(entity_id=entity_id, entrydate__gte=startdate, entrydate__lte=enddate)
+            .values(
+                "account_id",
+                "account__accounthead_id", "account__accounthead__name",
+                "account__creditaccounthead_id", "account__creditaccounthead__name",
+                "accounthead_id", "accounthead__name",
+            )
+            .annotate(
+                debit=Sum(
+                    Case(When(drcr=True, then=F("amount")), default=V(0),
+                         output_field=DecimalField(max_digits=18, decimal_places=2)),
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+                credit=Sum(
+                    Case(When(drcr=False, then=F("amount")), default=V(0),
+                         output_field=DecimalField(max_digits=18, decimal_places=2)),
+                    default=V(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+            )
+        )
+
+        def _extract_heads(row):
+            ah_id = row.get("account__accounthead_id") or row.get("accounthead_id")
+            ah_nm = row.get("account__accounthead__name") or row.get("accounthead__name")
+            ch_id = row.get("account__creditaccounthead_id") or ah_id
+            ch_nm = row.get("account__creditaccounthead__name") or ah_nm
+            return ah_id, ah_nm, ch_id, ch_nm
+
+        per_acct = {}
+        for r in opening_acct:
+            aid = r["account_id"]
+            ah_id, ah_nm, ch_id, ch_nm = _extract_heads(r)
+            if ah_id is None and ch_id is None:
+                continue
+            per_acct[aid] = dict(
+                opening=dec(r.get("opening")),
+                debit=DZERO, credit=DZERO,
+                ah_id=ah_id, ah_name=ah_nm or "",
+                ch_id=ch_id, ch_name=ch_nm or "",
+            )
+
+        for r in period_acct:
+            aid = r["account_id"]
+            ah_id, ah_nm, ch_id, ch_nm = _extract_heads(r)
+            if ah_id is None and ch_id is None:
+                continue
+            item = per_acct.setdefault(aid, dict(
+                opening=DZERO, debit=DZERO, credit=DZERO,
+                ah_id=ah_id, ah_name=ah_nm or "",
+                ch_id=ch_id, ch_name=ch_nm or "",
+            ))
+            item["debit"]  = item["debit"]  + dec(r.get("debit"))
+            item["credit"] = item["credit"] + dec(r.get("credit"))
+            if not item["ah_name"] and ah_nm:
+                item["ah_name"] = ah_nm
+            if not item["ch_name"] and ch_nm:
+                item["ch_name"] = ch_nm
+
+        # Aggregate by head (positive closing -> natural head, negative -> credit head)
+        rows = []
+        if per_acct:
+            by_head = {}
+            for v in per_acct.values():
+                opening = dec(v.get("opening"))
+                debit   = dec(v.get("debit"))
+                credit  = dec(v.get("credit"))
+                closing = opening + debit - credit
+                hid, hname = (v["ah_id"], v["ah_name"]) if (closing >= DZERO) else (v["ch_id"], v["ch_name"])
+                if hid is None:
+                    continue
+                agg = by_head.setdefault(hid, dict(
+                    accounthead=hid,
+                    accountheadname=hname or "",
+                    openingbalance=DZERO, debit=DZERO, credit=DZERO,
+                ))
+                agg["openingbalance"] = agg["openingbalance"] + opening
+                agg["debit"]          = agg["debit"]          + debit
+                agg["credit"]         = agg["credit"]         + credit
+
+            for hid, v in by_head.items():
+                opening = dec(v.get("openingbalance"))
+                debit   = dec(v.get("debit"))
+                credit  = dec(v.get("credit"))
+                closing = opening + debit - credit
+                rows.append({
+                    "accounthead": v["accounthead"],
+                    "accountheadname": v["accountheadname"],
+                    "obdrcr": "CR" if opening < DZERO else "DR",
+                    "openingbalance": abs(opening),
+                    "debit": debit,
+                    "credit": credit,
+                    "drcr": "CR" if closing < DZERO else "DR",
+                    "closingbalance": abs(closing),
+                })
+
+        # Sort by head name for a stable output
+        rows.sort(key=lambda x: (x["accountheadname"] or "").lower())
+
+        # Build and return Excel
+        wb = self._build_workbook(rows, startdate, enddate, entity_id)
+        return self._xlsx_response(wb, startdate, enddate)
+
+    # ---------- Excel helpers ----------
+
+    def _build_workbook(self, rows, startdate, enddate, entity_id):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Trial Balance"
+
+        # Styles
+        header_fill = PatternFill("solid", fgColor="E8EEF9")
+        header_font = Font(bold=True)
+        center = Alignment(horizontal="center", vertical="center")
+        right  = Alignment(horizontal="right",  vertical="center")
+
+        thin = Side(style="thin", color="DDDDDD")
+        border_all = Border(top=thin, bottom=thin, left=thin, right=thin)
+
+        money = NamedStyle(name="money")
+        money.number_format = "#,##0.00"
+        money.alignment = right
+        try:
+            wb.add_named_style(money)
+        except ValueError:
+            # if style already exists
+            pass
+
+        # Title
+        title = f"Trial Balance | Entity {entity_id} | Period {startdate.isoformat()} to {enddate.isoformat()}"
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+        ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=12)
+        ws.row_dimensions[1].height = 20
+
+        # Header
+        headers = [
+            "Account Head",
+            "Opening DR/CR",
+            "Opening Amount",
+            "Debit",
+            "Credit",
+            "Closing DR/CR",
+            "Closing Amount",
+            "Head ID",
+        ]
+        ws.append(headers)
+        header_row = 3
+        for col, h in enumerate(headers, start=1):
+            c = ws.cell(row=header_row, column=col, value=h)
+            c.fill = header_fill
+            c.font = header_font
+            c.alignment = center
+            c.border = border_all
+
+        # Data
+        start_data_row = header_row + 1
+        for r in rows:
+            ws.append([
+                r.get("accountheadname") or "",
+                r.get("obdrcr") or "",
+                dec(r.get("openingbalance")),
+                dec(r.get("debit")),
+                dec(r.get("credit")),
+                r.get("drcr") or "",
+                dec(r.get("closingbalance")),
+                r.get("accounthead"),
+            ])
+
+        # Apply number style & borders
+        last_row = ws.max_row
+        for row in ws.iter_rows(min_row=start_data_row, max_row=last_row, min_col=1, max_col=8):
+            for idx, cell in enumerate(row, start=1):
+                cell.border = border_all
+                if idx in (3, 4, 5, 7):  # money columns
+                    cell.style = "money"
+                elif idx in (2, 6):      # DR/CR
+                    cell.alignment = center
+                elif idx == 1:
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                else:
+                    cell.alignment = right
+
+        # Totals row
+        if last_row >= start_data_row:
+            total_row = last_row + 1
+            ws.cell(row=total_row, column=1, value="TOTAL").font = header_font
+            ws.cell(row=total_row, column=1).alignment = Alignment(horizontal="left")
+
+            def _sum(col_idx):
+                col_letter = get_column_letter(col_idx)
+                ws.cell(
+                    row=total_row, column=col_idx,
+                    value=f"=SUM({col_letter}{start_data_row}:{col_letter}{last_row})"
+                ).style = "money"
+
+            _sum(3)  # Opening Amount
+            _sum(4)  # Debit
+            _sum(5)  # Credit
+            _sum(7)  # Closing Amount
+
+            for c in range(1, 9):
+                ws.cell(row=total_row, column=c).border = border_all
+            ws.row_dimensions[total_row].height = 18
+
+        # Usability: freeze panes & autofilter
+        ws.freeze_panes = ws["A4"]
+        ws.auto_filter.ref = f"A3:H{ws.max_row}"
+
+        # Column widths
+        widths = {
+            1: 40,  # Account Head
+            2: 12,  # Opening DR/CR
+            3: 16,  # Opening Amount
+            4: 14,  # Debit
+            5: 14,  # Credit
+            6: 12,  # Closing DR/CR
+            7: 16,  # Closing Amount
+            8: 10,  # Head ID
+        }
+        for col_idx, w in widths.items():
+            ws.column_dimensions[get_column_letter(col_idx)].width = w
+
+        return wb
+
+    def _xlsx_response(self, workbook: Workbook, startdate: date, enddate: date) -> HttpResponse:
+        buf = BytesIO()
+        workbook.save(buf)
+        buf.seek(0)
+        filename = f"TrialBalance_{startdate.isoformat()}_to_{enddate.isoformat()}.xlsx"
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+
+class TradingAccountExcelAPIView(GenericAPIView):
+    """
+    GET /api/reports/trading-account.xlsx
+        ?entity=1
+        &startdate=2025-04-01
+        &enddate=2025-09-30
+        [&valuation_method=fifo|lifo|mwa|wac|latest]
+        [&level=head|account|product|voucher]
+        [&detailsingroup_values=1,2,3]
+        [&inventory_breakdown=true|false]
+        [&inventory_include_zero=false|true]
+        [&inventory_product_ids=10,20,30]
+        [&fold_returns=true|false]
+        [&round=2]
+
+    Returns a styled Excel with Debit/Credit schedules side-by-side and totals.
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # --------- helpers ----------
+    @staticmethod
+    def _clean(s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    @staticmethod
+    def _to_bool(v: Optional[str], default=False) -> bool:
+        if v is None:
+            return default
+        v = str(v).strip().lower()
+        return v in ("1", "true", "yes", "y", "on")
+
+    @staticmethod
+    def _to_int_list(v: Optional[str]) -> Optional[List[int]]:
+        if v is None or str(v).strip() == "":
+            return None
+        return [int(x) for x in str(v).split(",") if x.strip()]
+
+    @staticmethod
+    def _to_tuple_ints(v: Optional[str], default=(1,)) -> tuple:
+        if v is None or str(v).strip() == "":
+            return default
+        return tuple(int(x) for x in str(v).split(",") if x.strip())
+
+    # --------- excel styling ----------
+    @staticmethod
+    def _build_styles(wb: Workbook):
+        # Number format style
+        if "money" not in wb.named_styles:
+            money = NamedStyle(name="money")
+            money.number_format = "#,##0.00"
+            money.font = Font(name="Calibri", size=11)
+            wb.add_named_style(money)
+        if "small" not in wb.named_styles:
+            small = NamedStyle(name="small")
+            small.font = Font(name="Calibri", size=10)
+            wb.add_named_style(small)
+
+        th_fill = PatternFill("solid", fgColor="E9EEF7")   # light blue header
+        sec_fill = PatternFill("solid", fgColor="F8F9FA")  # soft gray for section band
+        total_fill = PatternFill("solid", fgColor="FFF2CC")  # pale yellow for totals
+
+        thin = Side(style="thin", color="D0D7E2")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        return {
+            "th_fill": th_fill,
+            "sec_fill": sec_fill,
+            "total_fill": total_fill,
+            "border": border,
+            "h_left": Alignment(horizontal="left"),
+            "h_right": Alignment(horizontal="right"),
+            "h_center": Alignment(horizontal="center"),
+            "wrap": Alignment(wrap_text=True),
+            "money": "money",
+            "small": "small",
+        }
+
+    @staticmethod
+    def _autosize(ws):
+        for col in range(1, ws.max_column + 1):
+            letter = get_column_letter(col)
+            max_len = 0
+            for row in range(1, ws.max_row + 1):
+                v = ws.cell(row=row, column=col).value
+                if v is None:
+                    continue
+                l = len(str(v))
+                if l > max_len:
+                    max_len = l
+            ws.column_dimensions[letter].width = min(max(10, max_len + 2), 60)
+
+    # Recursively write rows with optional children; indent children with prefix spaces
+    def _write_rows(self, ws, start_row, col_label, col_amt, rows, styles, band=False, level=0):
+        r = start_row
+        indent = "  " * level  # simple indent
+        for item in rows:
+            label = f"{indent}{item.get('label','')}"
+            ws.cell(r, col_label, label)
+            ws.cell(r, col_amt, item.get("amount", 0))
+            ws.cell(r, col_amt).style = styles["money"]
+
+            # banded background for readability
+            if band:
+                ws.cell(r, col_label).fill = styles["sec_fill"]
+                ws.cell(r, col_amt).fill = styles["sec_fill"]
+
+            # light borders
+            ws.cell(r, col_label).border = styles["border"]
+            ws.cell(r, col_amt).border = styles["border"]
+
+            # children (for opening/closing stock product-wise, and for 'account' grouped children)
+            children = item.get("children") or []
+            if children:
+                r = self._write_rows(ws, r + 1, col_label, col_amt, children, styles, band=False, level=level + 1)
+            else:
+                r += 1
+        return r
+
+    def get(self, request, *args, **kwargs):
+        # --------- parse params ----------
+        try:
+            entity_id = int(self.request.query_params.get("entity"))
+            start_date = self._clean(self.request.query_params.get("startdate"))
+            end_date = self._clean(self.request.query_params.get("enddate"))
+            if not (entity_id and start_date and end_date):
+                return Response(
+                    {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception:
+            return Response({"detail": "Invalid 'entity' or dates."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valuation_method = (self.request.query_params.get("valuation_method") or "fifo").lower()
+        level = (self.request.query_params.get("level") or "head").lower()
+
+        detailsingroup_values = self._to_tuple_ints(
+            self.request.query_params.get("detailsingroup_values"),
+            default=(1,),
+        )
+
+        inventory_breakdown = self._to_bool(self.request.query_params.get("inventory_breakdown"), True)
+        inventory_include_zero = self._to_bool(self.request.query_params.get("inventory_include_zero"), False)
+        inventory_product_ids = self._to_int_list(self.request.query_params.get("inventory_product_ids"))
+        fold_returns = self._to_bool(self.request.query_params.get("fold_returns"), True)
+
+        round_decimals = int(self.request.query_params.get("round") or 2)
+
+        # --------- build trading data ----------
+        data = build_trading_account_dynamic(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            valuation_method=valuation_method,
+            detailsingroup_values=detailsingroup_values,
+            level=level,
+            fold_returns=fold_returns,
+            round_decimals=round_decimals,
+            inventory_breakdown=inventory_breakdown,
+            inventory_include_zero=inventory_include_zero,
+            inventory_product_ids=inventory_product_ids,
+        )
+
+        # --------- workbook ----------
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Trading Account"
+
+        styles = self._build_styles(wb)
+
+        # Header block
+        title = "Trading Account"
+        period = f"For the period {data['period']['start']} to {data['period']['end']}"
+        entity_line = f"Entity: {data['entity_id']}"
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=6)
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=6)
+
+        ws["A1"] = title
+        ws["A2"] = period
+        ws["A3"] = entity_line
+
+        ws["A1"].font = Font(size=14, bold=True)
+        ws["A2"].font = Font(size=12)
+        ws["A3"].font = Font(size=11)
+        ws["A1"].alignment = styles["h_center"]
+        ws["A2"].alignment = styles["h_center"]
+        ws["A3"].alignment = styles["h_center"]
+
+        # Params row
+        params_line = (
+            f"Valuation: {data['params']['valuation_method'].upper()} | "
+            f"Level: {data['params']['level']} | "
+            f"Groups: {','.join(str(x) for x in data['params']['detailsingroup'])} | "
+            f"Breakdown: {data['params']['inventory_breakdown']} | "
+            f"Zero-items: {data['params']['inventory_include_zero']}"
+        )
+        ws.merge_cells(start_row=5, start_column=1, end_row=5, end_column=6)
+        ws["A5"] = params_line
+        ws["A5"].style = styles["small"]
+
+        # Table headers (Debit | Credit)
+        ws["A7"] = "Debit"
+        ws["B7"] = "Amount"
+        ws["D7"] = "Credit"
+        ws["E7"] = "Amount"
+
+        for cell in ("A7", "B7", "D7", "E7"):
+            ws[cell].font = Font(bold=True)
+            ws[cell].fill = styles["th_fill"]
+            ws[cell].border = styles["border"]
+            ws[cell].alignment = styles["h_center"]
+
+        # Write debit rows (A,B) and credit rows (D,E)
+        row_start = 8
+        r_debit_end = self._write_rows(ws, row_start, 1, 2, data["debit_rows"], styles, band=True)
+        r_credit_end = self._write_rows(ws, row_start, 4, 5, data["credit_rows"], styles, band=True)
+
+        # Totals
+        total_row = max(r_debit_end, r_credit_end) + 1
+
+        ws.cell(total_row, 1, "Total")
+        ws.cell(total_row, 2, data.get("debit_total", 0))
+        ws.cell(total_row, 4, "Total")
+        ws.cell(total_row, 5, data.get("credit_total", 0))
+
+        for c in (1, 2, 4, 5):
+            ws.cell(total_row, c).font = Font(bold=True)
+            ws.cell(total_row, c).fill = styles["total_fill"]
+            ws.cell(total_row, c).border = styles["border"]
+            if c in (2, 5):
+                ws.cell(total_row, c).style = styles["money"]
+
+        # Summary box (right side, below totals)
+        note_row = total_row + 2
+        ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=6)
+        ws.cell(note_row, 1, "Summary").font = Font(bold=True)
+
+        ws.cell(note_row + 1, 1, "Opening Stock"); ws.cell(note_row + 1, 2, data.get("opening_stock", 0))
+        ws.cell(note_row + 2, 1, "Closing Stock"); ws.cell(note_row + 2, 2, data.get("closing_stock", 0))
+        ws.cell(note_row + 3, 1, "Gross Profit");  ws.cell(note_row + 3, 2, data.get("gross_profit", 0))
+        ws.cell(note_row + 4, 1, "Gross Loss");    ws.cell(note_row + 4, 2, data.get("gross_loss", 0))
+        ws.cell(note_row + 5, 1, "COGS (issues)"); ws.cell(note_row + 5, 2, data.get("cogs_from_issues", 0))
+
+        for rr in range(note_row + 1, note_row + 6):
+            ws.cell(rr, 1).border = styles["border"]
+            ws.cell(rr, 2).border = styles["border"]
+            ws.cell(rr, 2).style = styles["money"]
+
+        # Notes (if any)
+        notes = data.get("notes", [])
+        warn = data.get("warnings", [])
+        if notes or warn:
+            notes_row = note_row + 7
+            ws.cell(notes_row, 1, "Notes").font = Font(bold=True)
+            r = notes_row + 1
+            for n in notes:
+                ws.cell(r, 1, f"• {n}")
+                r += 1
+            for w in warn:
+                ws.cell(r, 1, f"⚠ {w.get('msg')}")
+                r += 1
+
+        # Freeze panes (keep headers visible)
+        ws.freeze_panes = "A8"
+
+        # Autosize
+        self._autosize(ws)
+
+        # --------- return file ----------
+        bio = BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+
+        filename = f"TradingAccount_{entity_id}_{start_date}_to_{end_date}.xlsx"
+        resp = HttpResponse(
+            bio.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+
+class TradingAccountPDFAPIView(GenericAPIView):
+    """
+    GET /api/reports/trading-account.pdf
+        ?entity=1
+        &startdate=2025-04-01
+        &enddate=2025-09-30
+        [&valuation_method=fifo|lifo|mwa|wac|latest]
+        [&level=head|account|product|voucher]
+        [&detailsingroup_values=1,2,3]
+        [&inventory_breakdown=true|false]
+        [&inventory_include_zero=false|true]
+        [&inventory_product_ids=10,20,30]
+        [&fold_returns=true|false]
+        [&round=2]
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # ---------- helpers ----------
+    @staticmethod
+    def _clean(s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    @staticmethod
+    def _to_bool(v: Optional[str], default=False) -> bool:
+        if v is None:
+            return default
+        v = str(v).strip().lower()
+        return v in ("1", "true", "yes", "y", "on")
+
+    @staticmethod
+    def _to_int_list(v: Optional[str]) -> Optional[List[int]]:
+        if v is None or str(v).strip() == "":
+            return None
+        return [int(x) for x in str(v).split(",") if x.strip()]
+
+    @staticmethod
+    def _to_tuple_ints(v: Optional[str], default=(1,)) -> tuple:
+        if v is None or str(v).strip() == "":
+            return default
+        return tuple(int(x) for x in str(v).split(",") if x.strip())
+
+    @staticmethod
+    def _fmt_money(x) -> str:
+        try:
+            return f"{Decimal(str(x)):.2f}"
+        except Exception:
+            return "0.00"
+
+    def _flatten_rows(self, rows: List[dict], level: int = 0) -> List[Tuple[str, str]]:
+        """
+        Flatten nested rows into (label_with_indent, amount_str) tuples.
+        Indent using non-breaking spaces; ensure consistent alignment in PDF.
+        """
+        out: List[Tuple[str, str]] = []
+        prefix = "&nbsp;" * (level * 4)
+        for r in rows:
+            label = r.get("label", "")
+            amount = self._fmt_money(r.get("amount", 0))
+            out.append((f"{prefix}{label}", amount))
+            children = r.get("children") or []
+            if children:
+                out.extend(self._flatten_rows(children, level + 1))
+        return out
+
+    # Header/Footer on each page
+    def _on_page(self, canvas, doc, title: str, entity_line: str):
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 11)
+        canvas.drawString(15 * mm, doc.height + doc.topMargin + 6 * mm, title)
+        canvas.setFont("Helvetica", 9)
+        canvas.drawRightString(
+            doc.width + doc.leftMargin,
+            doc.height + doc.topMargin + 6 * mm,
+            entity_line
+        )
+        # Footer with page number
+        canvas.setFont("Helvetica", 8)
+        canvas.drawRightString(
+            doc.width + doc.leftMargin,
+            10 * mm,
+            f"Page {doc.page}"
+        )
+        canvas.restoreState()
+
+    def get(self, request, *args, **kwargs):
+        # ---------- parse params ----------
+        try:
+            entity_id = int(self.request.query_params.get("entity"))
+            start_date = self._clean(self.request.query_params.get("startdate"))
+            end_date = self._clean(self.request.query_params.get("enddate"))
+            if not (entity_id and start_date and end_date):
+                return Response(
+                    {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception:
+            return Response({"detail": "Invalid 'entity' or dates."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valuation_method = (self.request.query_params.get("valuation_method") or "fifo").lower()
+        level = (self.request.query_params.get("level") or "head").lower()
+
+        detailsingroup_values = self._to_tuple_ints(
+            self.request.query_params.get("detailsingroup_values"),
+            default=(1,),
+        )
+        inventory_breakdown = self._to_bool(self.request.query_params.get("inventory_breakdown"), True)
+        inventory_include_zero = self._to_bool(self.request.query_params.get("inventory_include_zero"), False)
+        inventory_product_ids = self._to_int_list(self.request.query_params.get("inventory_product_ids"))
+        fold_returns = self._to_bool(self.request.query_params.get("fold_returns"), True)
+        round_decimals = int(self.request.query_params.get("round") or 2)
+
+        # ---------- fetch data ----------
+        data = build_trading_account_dynamic(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            valuation_method=valuation_method,
+            detailsingroup_values=detailsingroup_values,
+            level=level,
+            fold_returns=fold_returns,
+            round_decimals=round_decimals,
+            inventory_breakdown=inventory_breakdown,
+            inventory_include_zero=inventory_include_zero,
+            inventory_product_ids=inventory_product_ids,
+        )
+
+        # ---------- build PDF ----------
+        buffer = BytesIO()
+        pagesize = landscape(A4)  # wide table
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=pagesize,
+            leftMargin=15 * mm,
+            rightMargin=15 * mm,
+            topMargin=18 * mm,
+            bottomMargin=15 * mm,
+            title="Trading Account",
+            author="Finacc",
+        )
+
+        styles = getSampleStyleSheet()
+        h1 = styles["Heading1"]
+        h2 = styles["Heading2"]
+        normal = styles["BodyText"]
+
+        # Smaller paragraph for params
+        params_style = ParagraphStyle(
+            "params",
+            parent=normal,
+            fontSize=9,
+            leading=11,
+            textColor=colors.HexColor("#444444"),
+        )
+
+        story: List = []
+
+        title = "Trading Account"
+        period = f"For the period {data['period']['start']} to {data['period']['end']}"
+        entity_line = f"Entity: {data['entity_id']}"
+
+        # Top title block
+        story.append(Paragraph(title, h1))
+        story.append(Paragraph(period, h2))
+        story.append(Paragraph(entity_line, normal))
+        story.append(Spacer(1, 6))
+
+        # Params ribbon
+        params_line = (
+            f"<b>Valuation:</b> {data['params']['valuation_method'].upper()} &nbsp;&nbsp; "
+            f"<b>Level:</b> {data['params']['level']} &nbsp;&nbsp; "
+            f"<b>Groups:</b> {', '.join(str(x) for x in data['params']['detailsingroup'])} &nbsp;&nbsp; "
+            f"<b>Breakdown:</b> {data['params']['inventory_breakdown']} &nbsp;&nbsp; "
+            f"<b>Zero-items:</b> {data['params']['inventory_include_zero']}"
+        )
+        story.append(Paragraph(params_line, params_style))
+        story.append(Spacer(1, 8))
+
+        # Build table body: we’ll align Debit and Credit columns side-by-side
+        debit_flat = self._flatten_rows(data["debit_rows"])
+        credit_flat = self._flatten_rows(data["credit_rows"])
+
+        # Keep row counts aligned by padding the shorter side
+        max_rows = max(len(debit_flat), len(credit_flat))
+        debit_flat += [("", "")] * (max_rows - len(debit_flat))
+        credit_flat += [("", "")] * (max_rows - len(credit_flat))
+
+        # Table header
+        table_data = [
+            ["Debit", "Amount", "Credit", "Amount"]
+        ]
+        # Table rows
+        for i in range(max_rows):
+            dl, da = debit_flat[i]
+            cl, ca = credit_flat[i]
+            table_data.append([Paragraph(dl, normal), self._fmt_money(da),
+                               Paragraph(cl, normal), self._fmt_money(ca)])
+
+        # Totals row
+        table_data.append([
+            Paragraph("<b>Total</b>", normal),
+            self._fmt_money(data.get("debit_total", 0)),
+            Paragraph("<b>Total</b>", normal),
+            self._fmt_money(data.get("credit_total", 0)),
+        ])
+
+        # Column widths: label wider, amount narrower
+        page_width = pagesize[0] - (doc.leftMargin + doc.rightMargin)
+        col_w = [page_width * 0.32, page_width * 0.18, page_width * 0.32, page_width * 0.18]
+
+        t = Table(table_data, colWidths=col_w, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 10),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0B3D91")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E9EEF7")),
+            ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -2), 0.25, colors.HexColor("#D0D7E2")),
+            ("LINEABOVE", (0, -1), (-1, -1), 0.75, colors.HexColor("#A6A6A6")),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FFF2CC")),
+            ("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+
+        story.append(t)
+        story.append(Spacer(1, 10))
+
+        # Summary box
+        summary_data = [
+            ["Opening Stock", self._fmt_money(data.get("opening_stock", 0))],
+            ["Closing Stock", self._fmt_money(data.get("closing_stock", 0))],
+            ["Gross Profit",  self._fmt_money(data.get("gross_profit", 0))],
+            ["Gross Loss",    self._fmt_money(data.get("gross_loss", 0))],
+            ["COGS (issues)", self._fmt_money(data.get("cogs_from_issues", 0))],
+        ]
+        st = Table(summary_data, colWidths=[page_width * 0.30, page_width * 0.20])
+        st.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D0D7E2")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F8F9FA")),
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 10),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(KeepTogether(st))
+        story.append(Spacer(1, 8))
+
+        # Notes
+        notes = data.get("notes", [])
+        warnings = data.get("warnings", [])
+        if notes or warnings:
+            story.append(Paragraph("<b>Notes</b>", normal))
+            for n in notes:
+                story.append(Paragraph(f"• {n}", params_style))
+            for w in warnings:
+                story.append(Paragraph(f"⚠ {w.get('msg')}", params_style))
+
+        # Build document with header/footer
+        def on_page(canvas, doc_local):
+            self._on_page(canvas, doc_local, "Trading Account", entity_line)
+
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+
+        # ---------- return response ----------
+        pdf_bytes = buffer.getvalue()
+        buffer.close()
+        filename = f"TradingAccount_{entity_id}_{start_date}_to_{end_date}.pdf"
+        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+
+class ProfitAndLossExcelAPIView(GenericAPIView):
+    """
+    GET /api/reports/profit-and-loss.xlsx
+        ?entity=1
+        &startdate=2025-04-01
+        &enddate=2025-09-30
+        [&level=head|account|product|voucher]
+        [&valuation_method=fifo|lifo|mwa|wac|latest]      # used for Trading GP/GL
+        [&pl_detailsingroup_values=2]
+        [&trading_detailsingroup_values=1]
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # -------- helpers --------
+    @staticmethod
+    def _clean(s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    @staticmethod
+    def _to_tuple_ints(v: Optional[str], default=(2,)) -> tuple:
+        if v is None or str(v).strip() == "":
+            return default
+        return tuple(int(x) for x in str(v).split(",") if x.strip())
+
+    # -------- styles --------
+    @staticmethod
+    def _build_styles(wb: Workbook):
+        # number format
+        if "money" not in wb.named_styles:
+            money = NamedStyle(name="money")
+            money.number_format = "#,##0.00"
+            money.font = Font(name="Calibri", size=11)
+            wb.add_named_style(money)
+        if "small" not in wb.named_styles:
+            small = NamedStyle(name="small")
+            small.font = Font(name="Calibri", size=10)
+            wb.add_named_style(small)
+
+        th_fill    = PatternFill("solid", fgColor="E9EEF7")   # header
+        band_fill  = PatternFill("solid", fgColor="F8F9FA")   # band rows
+        total_fill = PatternFill("solid", fgColor="FFF2CC")   # totals
+
+        thin = Side(style="thin", color="D0D7E2")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        return dict(
+            th_fill=th_fill, band_fill=band_fill, total_fill=total_fill,
+            border=border,
+            h_center=Alignment(horizontal="center"),
+            h_right=Alignment(horizontal="right"),
+            money="money",
+            small="small",
+        )
+
+    @staticmethod
+    def _autosize(ws):
+        for col in range(1, ws.max_column + 1):
+            letter = get_column_letter(col)
+            max_len = 0
+            for row in range(1, ws.max_row + 1):
+                v = ws.cell(row=row, column=col).value
+                if v is None:
+                    continue
+                max_len = max(max_len, len(str(v)))
+            ws.column_dimensions[letter].width = min(max(10, max_len + 2), 60)
+
+    # write rows with optional nested children (indented via leading spaces)
+    def _write_rows(self, ws, start_row: int, col_label: int, col_amt: int, rows: list, styles, band=True, level=0):
+        r = start_row
+        indent = "  " * level
+        for item in rows:
+            label = f"{indent}{item.get('label','')}"
+            ws.cell(r, col_label, label)
+            ws.cell(r, col_amt, item.get("amount", 0))
+            ws.cell(r, col_amt).style = styles["money"]
+
+            if band:
+                ws.cell(r, col_label).fill = styles["band_fill"]
+                ws.cell(r, col_amt).fill = styles["band_fill"]
+
+            ws.cell(r, col_label).border = styles["border"]
+            ws.cell(r, col_amt).border = styles["border"]
+
+            # nested children (present when level='account' due to grouping)
+            children = item.get("children") or []
+            if children:
+                r = self._write_rows(ws, r + 1, col_label, col_amt, children, styles, band=False, level=level + 1)
+            else:
+                r += 1
+        return r
+
+    def get(self, request, *args, **kwargs):
+        # ---- parse params ----
+        try:
+            entity_id  = int(request.query_params.get("entity"))
+            start_date = self._clean(request.query_params.get("startdate"))
+            end_date   = self._clean(request.query_params.get("enddate"))
+            if not (entity_id and start_date and end_date):
+                return Response({"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                                status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"detail": "Invalid 'entity' or dates."}, status=status.HTTP_400_BAD_REQUEST)
+
+        level = (request.query_params.get("level") or "head").lower()
+        valuation_method = (request.query_params.get("valuation_method") or "fifo").lower()
+
+        pl_detailsingroup_values = self._to_tuple_ints(
+            request.query_params.get("pl_detailsingroup_values"), default=(2,)
+        )
+        trading_detailsingroup_values = self._to_tuple_ints(
+            request.query_params.get("trading_detailsingroup_values"), default=(1,)
+        )
+
+        # ---- fetch PL data ----
+        data = build_profit_and_loss_statement(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            level=level,
+            pl_detailsingroup_values=pl_detailsingroup_values,
+            trading_detailsingroup_values=trading_detailsingroup_values,
+            valuation_method=valuation_method,
+        )
+
+        # ---- workbook ----
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Profit & Loss"
+        styles = self._build_styles(wb)
+
+        # Header block
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=6)
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=6)
+
+        ws["A1"] = "Profit & Loss"
+        ws["A2"] = f"For the period {data['period']['start']} to {data['period']['end']}"
+        ws["A3"] = f"Entity: {data['entity_id']}"
+
+        ws["A1"].font = Font(size=14, bold=True)
+        ws["A2"].font = Font(size=12)
+        ws["A3"].font = Font(size=11)
+        ws["A1"].alignment = styles["h_center"]
+        ws["A2"].alignment = styles["h_center"]
+        ws["A3"].alignment = styles["h_center"]
+
+        # Params line
+        params_line = (
+            f"Level: {data['params']['level']} | "
+            f"P&L Groups: {','.join(str(x) for x in data['params']['pl_detailsingroup_values'])} | "
+            f"Trading Groups (excluded): {','.join(str(x) for x in data['params']['trading_detailsingroup_values'])} | "
+            f"Trading valuation: {data['params']['valuation_method'].upper()}"
+        )
+        ws.merge_cells(start_row=5, start_column=1, end_row=5, end_column=6)
+        ws["A5"] = params_line
+        ws["A5"].style = styles["small"]
+
+        # Table headers
+        ws["A7"] = "Debit"
+        ws["B7"] = "Amount"
+        ws["D7"] = "Credit"
+        ws["E7"] = "Amount"
+        for c in ("A7", "B7", "D7", "E7"):
+            ws[c].font = Font(bold=True)
+            ws[c].fill = styles["th_fill"]
+            ws[c].border = styles["border"]
+            ws[c].alignment = styles["h_center"]
+
+        # Write rows
+        row_start = 8
+        r_debits_end = self._write_rows(ws, row_start, 1, 2, data["debit_rows"], styles, band=True)
+        r_credits_end = self._write_rows(ws, row_start, 4, 5, data["credit_rows"], styles, band=True)
+
+        # Totals
+        total_row = max(r_debits_end, r_credits_end) + 1
+        ws.cell(total_row, 1, "Total")
+        ws.cell(total_row, 2, data.get("debit_total", 0)).style = styles["money"]
+        ws.cell(total_row, 4, "Total")
+        ws.cell(total_row, 5, data.get("credit_total", 0)).style = styles["money"]
+
+        for c in (1, 2, 4, 5):
+            ws.cell(total_row, c).font = Font(bold=True)
+            ws.cell(total_row, c).fill = styles["total_fill"]
+            ws.cell(total_row, c).border = styles["border"]
+
+        # Summary box (GP/GL b/d and Net P/L)
+        note_row = total_row + 2
+        ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=6)
+        ws.cell(note_row, 1, "Summary").font = Font(bold=True)
+
+        ws.cell(note_row + 1, 1, "Gross Profit b/d")
+        ws.cell(note_row + 1, 2, data.get("gross_profit_brought_down", 0)).style = styles["money"]
+        ws.cell(note_row + 2, 1, "Gross Loss b/d")
+        ws.cell(note_row + 2, 2, data.get("gross_loss_brought_down", 0)).style = styles["money"]
+        ws.cell(note_row + 3, 1, "Net Profit")
+        ws.cell(note_row + 3, 2, data.get("net_profit", 0)).style = styles["money"]
+        ws.cell(note_row + 4, 1, "Net Loss")
+        ws.cell(note_row + 4, 2, data.get("net_loss", 0)).style = styles["money"]
+
+        for rr in range(note_row + 1, note_row + 5):
+            ws.cell(rr, 1).border = styles["border"]
+            ws.cell(rr, 2).border = styles["border"]
+
+        # Notes / warnings
+        notes = data.get("notes", [])
+        warns = data.get("warnings", [])
+        if notes or warns:
+            notes_row = note_row + 6
+            ws.cell(notes_row, 1, "Notes").font = Font(bold=True)
+            r = notes_row + 1
+            for n in notes:
+                ws.cell(r, 1, f"• {n}")
+                r += 1
+            for w in warns:
+                ws.cell(r, 1, f"⚠ {w.get('msg')}")
+                r += 1
+
+        # Freeze and autosize
+        ws.freeze_panes = "A8"
+        self._autosize(ws)
+
+        # ---- return file ----
+        bio = BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        filename = f"ProfitAndLoss_{entity_id}_{start_date}_to_{end_date}.xlsx"
+        resp = HttpResponse(
+            bio.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+
+class ProfitAndLossPDFAPIView(GenericAPIView):
+    """
+    GET /api/reports/profit-and-loss.pdf
+        ?entity=1
+        &startdate=2025-04-01
+        &enddate=2025-09-30
+        [&level=head|account|product|voucher]
+        [&valuation_method=fifo|lifo|mwa|wac|latest]      # used to bring GP/GL from Trading
+        [&pl_detailsingroup_values=2]
+        [&trading_detailsingroup_values=1]
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # -------- helpers --------
+    @staticmethod
+    def _clean(s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    @staticmethod
+    def _to_tuple_ints(v: Optional[str], default=(2,)) -> tuple:
+        if v is None or str(v).strip() == "":
+            return default
+        return tuple(int(x) for x in str(v).split(",") if x.strip())
+
+    @staticmethod
+    def _fmt_money(x) -> str:
+        try:
+            return f"{Decimal(str(x)):.2f}"
+        except Exception:
+            return "0.00"
+
+    # Flatten nested rows (for 'account' level children), indent using nbsp
+    def _flatten_rows(self, rows: List[dict], level: int = 0) -> List[Tuple[str, str]]:
+        out: List[Tuple[str, str]] = []
+        prefix = "&nbsp;" * (level * 4)
+        for r in rows:
+            label = r.get("label", "")
+            amount = self._fmt_money(r.get("amount", 0))
+            out.append((f"{prefix}{label}", amount))
+            children = r.get("children") or []
+            if children:
+                out.extend(self._flatten_rows(children, level + 1))
+        return out
+
+    # Header/Footer
+    def _on_page(self, canvas, doc, title: str, entity_line: str):
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 11)
+        canvas.drawString(15 * mm, doc.height + doc.topMargin + 6 * mm, title)
+        canvas.setFont("Helvetica", 9)
+        canvas.drawRightString(doc.width + doc.leftMargin,
+                               doc.height + doc.topMargin + 6 * mm,
+                               entity_line)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawRightString(doc.width + doc.leftMargin, 10 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    def get(self, request, *args, **kwargs):
+        # ---- parse params ----
+        try:
+            entity_id  = int(request.query_params.get("entity"))
+            start_date = self._clean(request.query_params.get("startdate"))
+            end_date   = self._clean(request.query_params.get("enddate"))
+            if not (entity_id and start_date and end_date):
+                return Response(
+                    {"detail": "Query params required: entity, startdate, enddate (YYYY-MM-DD)"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Exception:
+            return Response({"detail": "Invalid 'entity' or dates."}, status=status.HTTP_400_BAD_REQUEST)
+
+        level = (request.query_params.get("level") or "head").lower()
+        valuation_method = (request.query_params.get("valuation_method") or "fifo").lower()
+
+        pl_detailsingroup_values = self._to_tuple_ints(
+            request.query_params.get("pl_detailsingroup_values"), default=(2,)
+        )
+        trading_detailsingroup_values = self._to_tuple_ints(
+            request.query_params.get("trading_detailsingroup_values"), default=(1,)
+        )
+
+        # ---- fetch P&L ----
+        data = build_profit_and_loss_statement(
+            entity_id=entity_id,
+            startdate=start_date,
+            enddate=end_date,
+            level=level,
+            pl_detailsingroup_values=pl_detailsingroup_values,
+            trading_detailsingroup_values=trading_detailsingroup_values,
+            valuation_method=valuation_method,
+        )
+
+        # ---- build PDF ----
+        buf = BytesIO()
+        pagesize = landscape(A4)
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=pagesize,
+            leftMargin=15 * mm,
+            rightMargin=15 * mm,
+            topMargin=18 * mm,
+            bottomMargin=15 * mm,
+            title="Profit & Loss",
+            author="Finacc",
+        )
+
+        styles = getSampleStyleSheet()
+        h1 = styles["Heading1"]
+        h2 = styles["Heading2"]
+        normal = styles["BodyText"]
+        params_style = ParagraphStyle(
+            "params",
+            parent=normal,
+            fontSize=9,
+            leading=11,
+            textColor=colors.HexColor("#444444"),
+        )
+
+        story: List = []
+        title = "Profit & Loss"
+        period = f"For the period {data['period']['start']} to {data['period']['end']}"
+        entity_line = f"Entity: {data['entity_id']}"
+
+        # Title block
+        story.append(Paragraph(title, h1))
+        story.append(Paragraph(period, h2))
+        story.append(Paragraph(entity_line, normal))
+        story.append(Spacer(1, 6))
+
+        # Params ribbon
+        params_line = (
+            f"<b>Level:</b> {data['params']['level']} &nbsp;&nbsp; "
+            f"<b>P&L Groups:</b> {', '.join(str(x) for x in data['params']['pl_detailsingroup_values'])} &nbsp;&nbsp; "
+            f"<b>Trading Groups (excluded):</b> {', '.join(str(x) for x in data['params']['trading_detailsingroup_values'])} &nbsp;&nbsp; "
+            f"<b>Trading valuation:</b> {data['params']['valuation_method'].upper()}"
+        )
+        story.append(Paragraph(params_line, params_style))
+        story.append(Spacer(1, 8))
+
+        # Flatten rows and align counts
+        debit_flat = self._flatten_rows(data["debit_rows"])
+        credit_flat = self._flatten_rows(data["credit_rows"])
+        max_rows = max(len(debit_flat), len(credit_flat))
+        debit_flat += [("", "")] * (max_rows - len(debit_flat))
+        credit_flat += [("", "")] * (max_rows - len(credit_flat))
+
+        # Table data (header + rows + totals)
+        table_data = [["Debit", "Amount", "Credit", "Amount"]]
+        for i in range(max_rows):
+            dl, da = debit_flat[i]
+            cl, ca = credit_flat[i]
+            table_data.append([
+                Paragraph(dl, normal), self._fmt_money(da),
+                Paragraph(cl, normal), self._fmt_money(ca)
+            ])
+        table_data.append([
+            Paragraph("<b>Total</b>", normal),
+            self._fmt_money(data.get("debit_total", 0)),
+            Paragraph("<b>Total</b>", normal),
+            self._fmt_money(data.get("credit_total", 0)),
+        ])
+
+        # Column widths
+        page_width = pagesize[0] - (doc.leftMargin + doc.rightMargin)
+        col_w = [page_width * 0.32, page_width * 0.18, page_width * 0.32, page_width * 0.18]
+
+        t = Table(table_data, colWidths=col_w, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 10),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0B3D91")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E9EEF7")),
+            ("ALIGN", (1, 1), (1, -2), "RIGHT"),
+            ("ALIGN", (3, 1), (3, -2), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -2), 0.25, colors.HexColor("#D0D7E2")),
+            ("LINEABOVE", (0, -1), (-1, -1), 0.75, colors.HexColor("#A6A6A6")),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FFF2CC")),
+            ("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 10))
+
+        # Summary / KPIs (GP/GL b/d & Net P/L)
+        summary_data = [
+            ["Gross Profit b/d",  self._fmt_money(data.get("gross_profit_brought_down", 0))],
+            ["Gross Loss b/d",    self._fmt_money(data.get("gross_loss_brought_down", 0))],
+            ["Net Profit",        self._fmt_money(data.get("net_profit", 0))],
+            ["Net Loss",          self._fmt_money(data.get("net_loss", 0))],
+        ]
+        st = Table(summary_data, colWidths=[page_width * 0.30, page_width * 0.20])
+        st.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D0D7E2")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F8F9FA")),
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 10),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(KeepTogether(st))
+        story.append(Spacer(1, 8))
+
+        # Notes / warnings
+        notes = data.get("notes", [])
+        warns = data.get("warnings", [])
+        if notes or warns:
+            story.append(Paragraph("<b>Notes</b>", normal))
+            for n in notes:
+                story.append(Paragraph(f"• {n}", params_style))
+            for w in warns:
+                story.append(Paragraph(f"⚠ {w.get('msg')}", params_style))
+
+        # Build with header/footer
+        def on_page(c, d):
+            self._on_page(c, d, "Profit & Loss", entity_line)
+
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+
+        # ---- response ----
+        pdf_bytes = buf.getvalue()
+        buf.close()
+        filename = f"ProfitAndLoss_{entity_id}_{start_date}_to_{end_date}.pdf"
+        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename=\"{filename}\"'
         return resp
 
