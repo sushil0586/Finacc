@@ -84,6 +84,8 @@ urlpatterns  = [
     path("profitloss-account-pdf", views.ProfitAndLossPDFAPIView.as_view(),name="trading-account.xlsx"),
     path("cashbook-xlsx", views.CashBookExcelAPIView.as_view(), name="cashbook-excel"),
     path("cashbook-pdf", views.CashBookPDFAPIView.as_view(), name="cashbook-excel"),
+    path("ledger-details-xlsx", views.LedgerJournalExcelAPIView.as_view(), name="ledger-details"),
+    path("ledger-details-pdf", views.LedgerJournalPDFAPIView.as_view(), name="ledger-details"),
 
     
     
