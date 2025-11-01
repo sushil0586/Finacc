@@ -4,9 +4,12 @@ from django.shortcuts import render
 from collections import defaultdict
 from typing import Any, Dict, List
 from math import isfinite
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib.units import inch
 from django.http import HttpResponse
 from rest_framework.generics import GenericAPIView
+from rest_framework.request import Request
+from rest_framework.test import APIRequestFactory
 import re
 from django.db.models import Min, Max
 from django.db.models.expressions import Window
@@ -9912,4 +9915,574 @@ class ProfitAndLossPDFAPIView(GenericAPIView):
         resp = HttpResponse(pdf_bytes, content_type="application/pdf")
         resp["Content-Disposition"] = f'attachment; filename=\"{filename}\"'
         return resp
+
+
+class LedgerJournalExcelAPIView(APIView):
+    """
+    POST /api/reports/ledger-journal.xlsx
+
+    Body (JSON) — same keys you already accept in `ledgerjournaldetails`, all optional except entity/startdate/enddate:
+    {
+      "entity": 50,
+      "startdate": "2025-04-01",
+      "enddate":   "2026-03-31",
+      "account": "12,34",                 # <-- pass account(s) here (id or comma list)
+      "accounthead": "10,11",
+      "transactiontype": "S,P,R",
+      "transactionid": "1001,1002",
+      "voucherno": "INV-",
+      "drcr": "0|1",
+      "desc": "some text",
+      "include_opening": true,
+      "include_total": true,
+      "include_zero_balance": false,
+      "include_entry_id": false,
+      "sub_startdate": null,
+      "sub_enddate": null,
+      "aggby": null,                      # Non-aggregated export (row detail) is implemented and recommended for Excel
+      "sort_by": "name|code|debit|credit|net",
+      "sort_dir": "asc|desc"
+    }
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # ---------- helpers copied/simplified from your view ----------
+    @staticmethod
+    def _nz(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return None if s == '' or s.lower() == 'null' else v
+
+    @staticmethod
+    def _split_ints(v):
+        v = LedgerJournalExcelAPIView._nz(v)
+        if v is None: return None
+        return [int(x) for x in str(v).split(',') if x.strip()]
+
+    @staticmethod
+    def _split_strs(v):
+        v = LedgerJournalExcelAPIView._nz(v)
+        if v is None: return None
+        return [x.strip() for x in str(v).split(',') if x.strip()]
+
+    @staticmethod
+    def _dateobj(d):
+        if isinstance(d, (datetime, date)):
+            return d.date() if isinstance(d, datetime) else d
+        return date.fromisoformat(str(d))
+
+    # ---------- Excel helpers ----------
+    @staticmethod
+    def _auto_width(ws, min_width=8, max_width=50):
+        dims = {}
+        for row in ws.iter_rows(values_only=True):
+            for i, val in enumerate(row, 1):
+                if val is None:
+                    ln = 0
+                else:
+                    s = str(val)
+                    # consider multi-line cell width
+                    ln = max((len(part) for part in s.splitlines()), default=0)
+                dims[i] = max(dims.get(i, 0), ln)
+        for col_idx, width in dims.items():
+            width = min(max(width + 2, min_width), max_width)
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    @staticmethod
+    def _styles(wb: Workbook):
+        # Header
+        hdr = NamedStyle(name="hdr")
+        hdr.font = Font(bold=True)
+        hdr.alignment = Alignment(horizontal="center", vertical="center")
+        hdr.fill = PatternFill("solid", fgColor="F2F2F2")
+        hdr.border = Border(left=Side(style="thin"), right=Side(style="thin"),
+                            top=Side(style="thin"), bottom=Side(style="thin"))
+
+        # Money
+        money = NamedStyle(name="money")
+        money.number_format = '#,##0.00'
+        money.border = Border(left=Side(style="thin"), right=Side(style="thin"),
+                              top=Side(style="thin"), bottom=Side(style="thin"))
+
+        # Normal cell border
+        cell = NamedStyle(name="cell")
+        cell.border = Border(left=Side(style="thin"), right=Side(style="thin"),
+                             top=Side(style="thin"), bottom=Side(style="thin"))
+
+        for st in (hdr, money, cell):
+            if st.name not in wb.named_styles:
+                wb.add_named_style(st)
+        return hdr, money, cell
+
+    def post(self, request, *args, **kwargs):
+        p = request.data or {}
+
+        # --- required params
+        try:
+            entity = int(p.get('entity'))
+            sdate  = self._dateobj(p.get('startdate'))
+            edate  = self._dateobj(p.get('enddate'))
+        except Exception:
+            return HttpResponse(
+                content='{"detail":"Required JSON body: entity (int), startdate (YYYY-MM-DD), enddate (YYYY-MM-DD)"}',
+                content_type="application/json",
+                status=400
+            )
+
+        # Resolve FY
+        fy = (entityfinancialyear.objects
+              .filter(entity=entity, finstartyear__lte=edate, finendyear__gte=sdate)
+              .first())
+        if not fy:
+            return HttpResponse(
+                content='{"detail":"Financial year not found for the given range."}',
+                content_type="application/json",
+                status=400
+            )
+
+        fy_start = self._dateobj(fy.finstartyear)
+        # fy_end   = self._dateobj(fy.finendyear)  # not needed in export
+
+        # Base (FY start .. edate)
+        base = (JournalLine.objects
+                .filter(entity=entity, entrydate__range=(fy_start, edate))
+                .select_related('account'))
+
+        include_entry_id = bool(p.get('include_entry_id', False))
+        if include_entry_id:
+            base = base.select_related('entry')
+
+        # Optional filters
+        ah_list   = self._split_ints(p.get('accounthead'))
+        acct_list = self._split_ints(p.get('account'))           # <--- pass account(s) here
+        ttypes    = self._split_strs(p.get('transactiontype'))
+        tids      = self._split_ints(p.get('transactionid'))
+        vno       = self._nz(p.get('voucherno'))
+        drcr      = self._nz(p.get('drcr'))
+        desc_txt  = self._nz(p.get('desc'))
+
+        if ah_list:
+            base = base.filter(accounthead_id__in=ah_list)
+        if acct_list:
+            base = base.filter(account_id__in=acct_list)
+        if ttypes:
+            base = base.filter(transactiontype__in=ttypes)
+        if tids:
+            base = base.filter(transactionid__in=tids)
+        if vno is not None:
+            base = base.filter(voucherno__icontains=vno)
+        if drcr in ('0', '1'):
+            base = base.filter(drcr=(drcr == '1'))
+        if desc_txt is not None:
+            base = base.filter(desc__icontains=desc_txt)
+
+        # Sub-window for details
+        details_base = base.filter(entrydate__gte=sdate)
+        if p.get('sub_startdate') and p.get('sub_enddate'):
+            try:
+                sub_s = self._dateobj(p['sub_startdate'])
+                sub_e = self._dateobj(p['sub_enddate'])
+                details_base = details_base.filter(entrydate__range=(sub_s, sub_e))
+            except Exception:
+                pass  # ignore bad sub dates
+
+        # Annotations
+        debit_case   = Case(When(drcr=True,  then=F('amount')))
+        credit_case  = Case(When(drcr=False, then=F('amount')))
+        debit_annot  = Coalesce(Sum(debit_case),  Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
+        credit_annot = Coalesce(Sum(credit_case), Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
+
+        include_opening   = bool(p.get('include_opening', True))
+        include_total     = bool(p.get('include_total', True))
+        include_zero      = bool(p.get('include_zero_balance', False))
+
+        # 1) OPENING (FY start .. sdate-1)
+        opening_by_acct = {}
+        if include_opening:
+            open_qs = (base.filter(entrydate__lt=sdate)
+                           .values('account_id', 'account__accountname', 'account__accountcode')
+                           .annotate(debitamount=debit_annot, creditamount=credit_annot))
+            for r in open_qs:
+                aid = r['account_id']
+                d, c = r['debitamount'], r['creditamount']
+                bal = (d or Decimal('0')) - (c or Decimal('0'))
+                opening_by_acct[aid] = {
+                    'accountname': r['account__accountname'],
+                    'accountcode': r.get('account__accountcode'),
+                    'debitamount':  bal if bal >= 0 else Decimal('0'),
+                    'creditamount': -bal if bal < 0  else Decimal('0'),
+                    'entrydate': sdate,
+                    'desc': 'Opening',
+                    'transactiontype': 'O',
+                    'transactionid': -1,
+                }
+
+        # 2) DETAILS (non-aggregated; grouped per account/date/type/id)
+        values_fields = [
+            'account_id', 'account__accountname', 'account__accountcode',
+            'entrydate', 'transactiontype', 'transactionid', 'desc'
+        ]
+        if include_entry_id:
+            values_fields.append('entry_id')
+
+        details_qs = (
+            details_base
+            .values(*values_fields)
+            .annotate(
+                debitamount=Coalesce(Sum(Case(When(drcr=True,  then=F('amount')))),
+                                     Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2)),
+                creditamount=Coalesce(Sum(Case(When(drcr=False, then=F('amount')))),
+                                      Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2)),
+            )
+            .order_by('account_id', 'entrydate', 'transactiontype', 'transactionid')
+        )
+
+        # Bucket rows per account & compute running
+        per_acct: Dict[int, Dict] = {}
+        # seed opening
+        if include_opening:
+            for aid, op in opening_by_acct.items():
+                per_acct.setdefault(aid, {
+                    'accountname': op['accountname'],
+                    'accountcode': op.get('accountcode'),
+                    'rows': [],
+                    'sum_debit':  Decimal('0'),
+                    'sum_credit': Decimal('0')
+                })
+                per_acct[aid]['rows'].append({
+                    **op,
+                    'displaydate': op['entrydate'].strftime('%d-%m-%Y'),
+                    'balance': (op['debitamount'] - op['creditamount'])
+                })
+                per_acct[aid]['sum_debit']  += op['debitamount']
+                per_acct[aid]['sum_credit'] += op['creditamount']
+
+        for r in details_qs:
+            aid = r['account_id']
+            per_acct.setdefault(aid, {
+                'accountname': r['account__accountname'],
+                'accountcode': r.get('account__accountcode'),
+                'rows': [],
+                'sum_debit':  Decimal('0'),
+                'sum_credit': Decimal('0')
+            })
+            row = {
+                'entrydate': r['entrydate'],
+                'displaydate': (r['entrydate'].strftime('%d-%m-%Y')
+                                if isinstance(r['entrydate'], (datetime, date))
+                                else str(r['entrydate'])),
+                'transactiontype': r['transactiontype'],
+                'transactionid': r['transactionid'],
+                'desc': r.get('desc') or '',
+                'debitamount': r['debitamount'],
+                'creditamount': r['creditamount'],
+            }
+            if include_entry_id and 'entry_id' in r:
+                row['entry_id'] = r['entry_id']
+
+            per_acct[aid]['rows'].append(row)
+            per_acct[aid]['sum_debit']  += r['debitamount'] or Decimal('0')
+            per_acct[aid]['sum_credit'] += r['creditamount'] or Decimal('0')
+
+        # Totals row + running balance fixup + zero filtering
+        result = []
+        for aid, bucket in per_acct.items():
+            # Running balance
+            running = Decimal('0')
+            for row in bucket['rows']:
+                running += (row['debitamount'] or Decimal('0')) - (row['creditamount'] or Decimal('0'))
+                row['balance'] = running
+
+            # Totals row
+            if include_total:
+                bucket['rows'].append({
+                    'entrydate': edate,
+                    'displaydate': edate.strftime('%d-%m-%Y'),
+                    'transactiontype': 'T',
+                    'transactionid': -1,
+                    'desc': 'Total',
+                    'debitamount':  bucket['sum_debit'],
+                    'creditamount': bucket['sum_credit'],
+                    'balance': running
+                })
+
+            if not include_zero:
+                if len(bucket['rows']) == (1 if include_opening else 0):  # only opening and nothing else
+                    if abs(float(running)) < 1e-9:
+                        continue
+
+            result.append({
+                'accountid': aid,
+                'accountname': bucket['accountname'],
+                'accountcode': bucket.get('accountcode'),
+                'rows': bucket['rows']
+            })
+
+        # Sort accounts (optional)
+        sort_by  = (p.get('sort_by')  or 'name').lower()
+        sort_dir = (p.get('sort_dir') or 'asc').lower()
+        reverse  = (sort_dir == 'desc')
+
+        def acct_key(a):
+            if sort_by == 'code':
+                return a.get('accountcode') or 0
+            if sort_by in ('debit', 'credit', 'net'):
+                d = sum((r['debitamount']  or Decimal('0')) for r in a['rows'])
+                c = sum((r['creditamount'] or Decimal('0')) for r in a['rows'])
+                if sort_by == 'debit':  return d
+                if sort_by == 'credit': return c
+                return d - c
+            return (a['accountname'] or '').lower()
+
+        result.sort(key=acct_key, reverse=reverse)
+
+        # ---------- Build Excel ----------
+        wb = Workbook()
+        hdr, money, cell = self._styles(wb)
+
+        # Cover sheet
+        ws0 = wb.active
+        ws0.title = "Summary"
+        ws0.append(["Ledger Journal", None, None, None])
+        ws0.append([f"Entity: {entity}", None, None, None])
+        ws0.append([f"Period: {sdate:%d-%m-%Y} to {edate:%d-%m-%Y}", None, None, None])
+        ws0.append([])
+        ws0.append(["Account", "Code", "Total Debit", "Total Credit", "Net (Dr - Cr)"])
+        for c in ws0[5]:
+            c.style = hdr
+
+        for acct in result:
+            d = sum((r['debitamount']  or Decimal('0')) for r in acct['rows'])
+            c = sum((r['creditamount'] or Decimal('0')) for r in acct['rows'])
+            ws0.append([acct['accountname'], acct.get('accountcode'), d, c, d - c])
+            ws0.cell(ws0.max_row, 3).style = money
+            ws0.cell(ws0.max_row, 4).style = money
+            ws0.cell(ws0.max_row, 5).style = money
+
+        self._auto_width(ws0)
+
+        # One sheet per account
+        for acct in result:
+            title = (acct['accountname'] or f"Acct-{acct['accountid']}")[:31]
+            ws = wb.create_sheet(title=title)
+
+            ws.append([acct['accountname']])
+            ws.append([f"Code: {acct.get('accountcode') or ''}"])
+            ws.append([f"Period: {sdate:%d-%m-%Y} to {edate:%d-%m-%Y}"])
+            ws.append([])
+
+            ws.append(["Date", "Type", "Txn Id", "Narration", "Debit", "Credit", "Balance"])
+            for c in ws[5]:
+                c.style = hdr
+
+            for r in acct['rows']:
+                ws.append([
+                    r['displaydate'],
+                    r['transactiontype'],
+                    r['transactionid'],
+                    r.get('desc') or '',
+                    r['debitamount'] or Decimal('0'),
+                    r['creditamount'] or Decimal('0'),
+                    r.get('balance') or Decimal('0'),
+                ])
+                # money styles
+                ws.cell(ws.max_row, 5).style = money
+                ws.cell(ws.max_row, 6).style = money
+                ws.cell(ws.max_row, 7).style = money
+
+            # Freeze header
+            ws.freeze_panes = "A6"
+            self._auto_width(ws)
+
+        # Response
+        fname = f"LedgerJournal_{entity}_{sdate:%Y%m%d}_{edate:%Y%m%d}.xlsx"
+        resp = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+        wb.save(resp)
+        return resp
+
+
+class LedgerJournalPDFAPIView(APIView):
+    """
+    POST /api/reports/ledger-journal.pdf
+    Body: same JSON as your ledger Excel/JSON APIs (entity, startdate, enddate, account,...)
+
+    Prints ONLY the per-account Details section (no grand summary).
+    """
+    permission_classes =  (permissions.IsAuthenticated,)
+
+    def post(self, request: Request, *args, **kwargs):
+        # 1) Pull ledger rows by internally invoking your JSON view
+        factory = APIRequestFactory()
+        proxy_req = factory.post("/internal/ledgerjournaldetails", data=request.data, format='json')
+        proxy_req.user = request.user
+        # Forward the original auth header (keeps JWT intact)
+        proxy_req.META["HTTP_AUTHORIZATION"] = request.META.get("HTTP_AUTHORIZATION", "")
+
+        json_view = ledgerjournaldetails.as_view()
+        resp = json_view(proxy_req)
+        if hasattr(resp, "status_code") and resp.status_code != 200:
+            return resp
+
+        payload = resp.data  # list of accounts
+
+        # 2) Collect header info (accounts & dates)
+        def _D(x) -> Decimal:
+            try:
+                return Decimal(str(x or "0"))
+            except Exception:
+                return Decimal("0")
+
+        entity = request.data.get("entity")
+        sdate  = request.data.get("startdate")
+        edate  = request.data.get("enddate")
+
+        # Try to derive selected account names from payload (falls back to IDs filter)
+        selected_names = [a.get("accountname") for a in payload if a.get("accountname")]
+        if selected_names:
+            if len(selected_names) <= 4:
+                accounts_label = ", ".join(selected_names)
+            else:
+                accounts_label = f"Multiple accounts ({len(selected_names)})"
+        else:
+            accounts_label = str(request.data.get("account") or "All")
+
+        # 3) Prepare PDF
+        buf = BytesIO()
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=landscape(A4),
+            rightMargin=28, leftMargin=28, topMargin=66, bottomMargin=40
+        )
+
+        styles = getSampleStyleSheet()
+        st_title = ParagraphStyle("title", parent=styles["Heading1"], alignment=1, fontSize=14, leading=17, spaceAfter=4)
+        st_sub   = ParagraphStyle("sub", parent=styles["Normal"], alignment=1, fontSize=9.5, leading=12, textColor=colors.grey)
+        st_h3    = ParagraphStyle("h3", parent=styles["Heading3"], fontSize=12, spaceBefore=4, spaceAfter=4)
+        st_th    = ParagraphStyle("th", parent=styles["Normal"], fontSize=10, alignment=1, leading=12)
+        st_td    = ParagraphStyle("td", parent=styles["Normal"], fontSize=9, leading=11)
+
+        elems = []
+        # Top centered header (title + account + date filter)
+        elems.append(Paragraph("Ledger Journal – Details", st_title))
+        elems.append(Paragraph(f"Accounts: {accounts_label}", st_sub))
+        elems.append(Paragraph(f"Period: {sdate} to {edate}", st_sub))
+        elems.append(Spacer(1, 10))
+
+        # 4) Per-account sections (ONLY details, page per account)
+        for i, acct in enumerate(payload):
+            name = acct.get("accountname") or f"Account {acct.get('accountid')}"
+            code = acct.get("accountcode") or ""
+            if i > 0:
+                elems.append(PageBreak())
+
+            header_line = ""
+            elems.append(Paragraph(header_line, st_h3))
+            elems.append(Spacer(1, 4))
+
+            # Table header
+            tdata = [[
+                "Date", "Type", "Txn Id", "Narration",
+                "Debit (₹)", "Credit (₹)", "Balance (₹)"
+            ]]
+
+            # Rows (keep only details you already provide)
+            total_debit = Decimal("0")
+            total_credit = Decimal("0")
+
+            for r in acct.get("accounts", []):
+                d = _D(r.get("debitamount"))
+                c = _D(r.get("creditamount"))
+                b = _D(r.get("balance"))
+
+                total_debit += d
+                total_credit += c
+
+                tdata.append([
+                    str(r.get("displaydate") or ""),
+                    str(r.get("transactiontype") or ""),
+                    str(r.get("transactionid") or ""),
+                    Paragraph((r.get("desc") or ""), st_td),
+                    f"{d:.2f}",
+                    f"{c:.2f}",
+                    f"{b:.2f}",
+                ])
+
+            # Optional Totals row (kept minimal; comment out if you truly want only raw rows)
+            tdata.append([
+                "", "", "", Paragraph("<b>Totals</b>", st_th),
+                f"{total_debit:.2f}",
+                f"{total_credit:.2f}",
+                f"{(total_debit - total_credit):.2f}",
+            ])
+
+            table = Table(
+                tdata,
+                repeatRows=1,
+                colWidths=[1.1*inch, 0.8*inch, 0.9*inch, 3.7*inch, 1.1*inch, 1.1*inch, 1.2*inch]
+            )
+            table.setStyle(TableStyle([
+                # Header
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2f4f7")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 9.5),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.6, colors.HexColor("#cfd8e3")),
+
+                # Body
+                ("ALIGN", (4, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("FONTSIZE", (0, 1), (-1, -2), 9),
+
+                # Zebra rows for readability
+                ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#fbfdff")]),
+
+                # Grid & borders
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d6dde6")),
+
+                # Totals row styling
+                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#fafafa")),
+            ]))
+            elems.append(table)
+
+        # 5) Build with nice header/footer
+        doc.build(elems,
+                  onFirstPage=lambda c, d: _pdf_header_footer(c, d, title="Ledger Journal – Details",
+                                                              subtitle=f"Accounts: {accounts_label} | {sdate} → {edate}"),
+                  onLaterPages=lambda c, d: _pdf_header_footer(c, d, title="Ledger Journal – Details",
+                                                               subtitle=f"Accounts: {accounts_label} | {sdate} → {edate}"))
+
+        buf.seek(0)
+        http = HttpResponse(buf.getvalue(), content_type="application/pdf")
+        fname = f"LedgerJournal_{entity}_{sdate}_{edate}.pdf"
+        http["Content-Disposition"] = f'attachment; filename="{fname}"'
+        return http
+
+
+# ---------- centered header + page number footer ----------
+def _pdf_header_footer(canvas, doc, title: str, subtitle: str):
+    canvas.saveState()
+    width, height = landscape(A4)
+
+    # Top center: Title
+    canvas.setFont("Helvetica-Bold", 10.5)
+    t_w = stringWidth(title, "Helvetica-Bold", 10.5)
+    canvas.drawString((width - t_w) / 2.0, height - 26, title)
+
+    # Top center: Subtitle (accounts + date filter)
+    canvas.setFont("Helvetica", 9)
+    s_w = stringWidth(subtitle, "Helvetica", 9)
+    canvas.setFillColor(colors.grey)
+    canvas.drawString((width - s_w) / 2.0, height - 40, subtitle)
+    canvas.setFillColor(colors.black)
+
+    # Footer: page x
+    canvas.setFont("Helvetica", 8)
+    canvas.drawRightString(width - 28, 26, f"Page {canvas.getPageNumber()}")
+    canvas.restoreState()
 
