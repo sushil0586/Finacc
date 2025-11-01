@@ -3,6 +3,8 @@ from django.shortcuts import render
 # Create your views here.
 from collections import defaultdict
 from typing import Any, Dict, List
+from math import isfinite
+from reportlab.lib.units import inch
 from django.http import HttpResponse
 from rest_framework.generics import GenericAPIView
 import re
@@ -6025,10 +6027,41 @@ class TrialbalanceApiViewJournal(ListAPIView):
         return Response(self.serializer_class(out, many=True).data, status=status.HTTP_200_OK)
 
 
-# ---- numeric constants (avoid Decimal/Integer mixed types in aggregates) ----
+# ---- numeric constants ----
 ZERO = Decimal("0.00")
 DEC0 = V(Decimal("0.00"), output_field=DecimalField(max_digits=18, decimal_places=2))
 
+# ----------------------
+# Safe Decimal caster
+# ----------------------
+def _D(x) -> Decimal:
+    """
+    Coerce arbitrary input to Decimal safely:
+    None/''/'—'/'NaN'/float NaN/Inf → 0
+    '1,234.56' → 1234.56
+    Decimal passthrough (guard bad states)
+    """
+    if x is None:
+        return Decimal("0")
+    if isinstance(x, Decimal):
+        try:
+            _ = x + Decimal(0)
+            return x
+        except Exception:
+            return Decimal("0")
+    if isinstance(x, int):
+        return Decimal(x)
+    if isinstance(x, float):
+        if not isfinite(x):
+            return Decimal("0")
+        return Decimal(str(x))
+    s = str(x).strip().replace(",", "")
+    if not s or s in {"—", "-", "NaN", "nan", "None"}:
+        return Decimal("0")
+    try:
+        return Decimal(s)
+    except Exception:
+        return Decimal("0")
 
 # ----------------------
 # Helper functions
@@ -6046,7 +6079,7 @@ def _bool(s: Optional[str], default: bool = False) -> bool:
     return str(s).strip().lower() in {"1", "true", "yes", "y", "t"}
 
 def _fy_covering_date(entity_id: int, d: date):
-    """Return FY row covering date d (entityfinancialyear has finstartyear/finendyear, often DateTimeFields)."""
+    """Return FY row covering date d (entityfinancialyear has finstartyear/finendyear)."""
     return (
         entityfinancialyear.objects
         .filter(entity_id=entity_id, finstartyear__date__lte=d, finendyear__date__gte=d)
@@ -6078,7 +6111,7 @@ def _aggregate_opening(base_qs, before_date: date) -> Decimal:
         dr=Coalesce(Sum("amount", filter=Q(drcr=True)), DEC0),
         cr=Coalesce(Sum("amount", filter=Q(drcr=False)), DEC0),
     )
-    return Decimal(agg["dr"]) - Decimal(agg["cr"])
+    return _D(agg["dr"]) - _D(agg["cr"])
 
 def _fetch_period_rows(base_qs, d1: date, d2: date):
     return list(
@@ -6088,13 +6121,13 @@ def _fetch_period_rows(base_qs, d1: date, d2: date):
     )
 
 def _build_lines_and_totals(rows, opening: Decimal):
-    running = opening
+    running = _D(opening)
     out = []
     tot_dr = ZERO
     tot_cr = ZERO
 
     for r in rows:
-        amt = Decimal(r["amount"])
+        amt = _D(r["amount"])
         if r["drcr"]:
             debit, credit = amt, ZERO
             running += amt
@@ -6105,22 +6138,24 @@ def _build_lines_and_totals(rows, opening: Decimal):
             tot_cr += amt
 
         out.append({
-            "date": r["entrydate"],
-            "voucherno": r["voucherno"] or "",
-            "desc": r["desc"] or "",
-            "debit": debit,
-            "credit": credit,
-            "balance": running,
+            "date": r["entrydate"],              # ← serializer wants 'date'
+            "voucherno": r.get("voucherno") or "",
+            "desc": r.get("desc") or "",
+            "debit": _D(debit),                  # ← 'debit'
+            "credit": _D(credit),                # ← 'credit'
+            "balance": _D(running),
+            # Optional: keep txn if you have it upstream; harmless if absent.
+            "transactiontype": r.get("transactiontype") or "",
         })
 
-    closing = opening + tot_dr - tot_cr
-    return out, tot_dr, tot_cr, closing
+    closing = _D(opening) + _D(tot_dr) - _D(tot_cr)
+    return out, _D(tot_dr), _D(tot_cr), _D(closing)
 
 def _build_day_sections(lines, opening: Decimal, include_empty_days: bool, d1: date, d2: date):
     from collections import defaultdict as _dd
     buckets = _dd(list)
     for row in lines:
-        buckets[row["date"]].append(row)
+        buckets[row["date"]].append(row)   # ← use 'date'
 
     if include_empty_days:
         days = []
@@ -6132,28 +6167,27 @@ def _build_day_sections(lines, opening: Decimal, include_empty_days: bool, d1: d
         days = sorted(buckets.keys())
 
     sections = []
-    carry = opening
+    carry = _D(opening)
     for d in days:
         items = buckets.get(d, [])
-        day_dr = sum((i["debit"] for i in items), ZERO)
-        day_cr = sum((i["credit"] for i in items), ZERO)
+        day_dr = sum((_D(i["debit"]) for i in items), ZERO)    # ← debit
+        day_cr = sum((_D(i["credit"]) for i in items), ZERO)   # ← credit
         day_open = carry
         day_close = day_open + day_dr - day_cr
         sections.append({
             "date": d,
-            "day_opening": day_open,
+            "day_opening": _D(day_open),
             "items": items,
-            "day_receipts": day_dr,
-            "day_payments": day_cr,
-            "day_closing_balance": day_close,
+            "day_receipts": _D(day_dr),
+            "day_payments": _D(day_cr),
+            "day_closing_balance": _D(day_close),
         })
         carry = day_close
 
     return sections
 
-
 # ----------------------
-# API View
+# JSON API View
 # ----------------------
 class CashBookAPIView(APIView):
     """
@@ -6161,44 +6195,37 @@ class CashBookAPIView(APIView):
 
     GET /api/reports/cashbook?entity=1&from=YYYY-MM-DD&to=YYYY-MM-DD
       Optional:
-        - account_id=INT                (default: const.getcashid(entity))
-        - voucherno=JV123               (exact)
-        - txn=Sale,Receipt              (IN-list)
-        - desc_contains=rent            (icontains)
+        - account_id=INT
+        - voucherno=JV123
+        - txn=Sale,Receipt
+        - desc_contains=rent
         - min_amount=100.00
         - max_amount=5000
         - include_empty_days=true|false (default false)
-        - posted_only=true|false        (default true; filters entry__is_posted=True)
-        - strict_fy=true|false          (default false; if true and FY missing → 400)
+        - posted_only=true|false        (default true)
+        - strict_fy=true|false          (default false)
     """
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
-        # ---- required params ----
+        # required params
         entity_raw = request.query_params.get("entity")
         from_raw   = request.query_params.get("from")
         to_raw     = request.query_params.get("to")
         if entity_raw is None or from_raw is None or to_raw is None:
-            return Response(
-                {"detail": "Query params required: entity, from, to (YYYY-MM-DD)"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
+            return Response({"detail": "Query params required: entity, from, to (YYYY-MM-DD)"},
+                            status=status.HTTP_400_BAD_REQUEST)
         try:
             entity_id = int(str(entity_raw).strip())
             from_dt   = _parse_iso_date(from_raw)
             to_dt     = _parse_iso_date(to_raw)
         except Exception:
-            return Response(
-                {"detail": "Dates must be YYYY-MM-DD.",
-                 "received": {"from": from_raw, "to": to_raw}},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "Dates must be YYYY-MM-DD.",
+                             "received": {"from": from_raw, "to": to_raw}}, status=400)
         if to_dt < from_dt:
             return Response({"detail": "'to' must be >= 'from'."}, status=400)
 
-        # ---- resolve account (default: cash for entity) ----
-        account_pk: Optional[int] = None
+        # resolve account (default cash)
         account_q = request.query_params.get("account_id")
         if account_q:
             try:
@@ -6208,7 +6235,7 @@ class CashBookAPIView(APIView):
         else:
             try:
                 const = stocktransconstant()
-                acct = const.getcashid(entity_id)  # may return model or int
+                acct = const.getcashid(entity_id)
                 account_pk = int(acct.pk) if hasattr(acct, "pk") else int(acct)
             except Exception as ex:
                 return Response({"detail": f"Unable to resolve cash account for entity={entity_id}: {ex}"}, status=400)
@@ -6217,12 +6244,11 @@ class CashBookAPIView(APIView):
         posted_only        = _bool(request.query_params.get("posted_only"), default=True)
         strict_fy          = _bool(request.query_params.get("strict_fy"), default=False)
 
-        # ---- base queryset ----
+        # base queryset
         base = JournalLine.objects.filter(entity_id=entity_id, account_id=account_pk)
-        # if posted_only:
-        #     base = base.filter(entry__is_posted=True)  # remove if your header lacks this flag
+        # if posted_only: base = base.filter(entry__is_posted=True)
 
-        # ---- optional filters ----
+        # optional filters
         voucherno = request.query_params.get("voucherno")
         if voucherno:
             base = base.filter(voucherno=voucherno)
@@ -6240,147 +6266,766 @@ class CashBookAPIView(APIView):
         min_amount = request.query_params.get("min_amount")
         if min_amount:
             try:
-                base = base.filter(amount__gte=Decimal(min_amount))
-            except (InvalidOperation, ValueError):
+                base = base.filter(amount__gte=_D(min_amount))
+            except Exception:
                 return Response({"detail": "Invalid min_amount."}, status=400)
 
         max_amount = request.query_params.get("max_amount")
         if max_amount:
             try:
-                base = base.filter(amount__lte=Decimal(max_amount))
-            except (InvalidOperation, ValueError):
+                base = base.filter(amount__lte=_D(max_amount))
+            except Exception:
                 return Response({"detail": "Invalid max_amount."}, status=400)
 
-        # ---- financial year handling (soft fallback) ----
+        # FY handling
         fy_from = _fy_covering_date(entity_id, from_dt)
         fy_to   = _fy_covering_date(entity_id, to_dt)
 
-        # If FY rows missing → fallback to a single non-FY section unless strict_fy=true
-        if not fy_from or not fy_to:
-            if strict_fy:
-                return Response(
-                    {"detail": "Requested dates are not fully covered by financial year setup.",
-                     "hint": "Add FY rows for these dates or call without strict_fy."},
-                    status=400
-                )
-
+        def _single_section_payload() -> dict:
             grand_opening = _aggregate_opening(base, from_dt)
             rows = _fetch_period_rows(base, from_dt, to_dt)
             lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, grand_opening)
             day_sections = _build_day_sections(lines, grand_opening, include_empty_days, from_dt, to_dt)
+            return {
+                "entity": entity_id,
+                "account_id": account_pk,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_opening": _D(grand_opening),
+                "grand_total_receipts": _D(tot_dr),
+                "grand_total_payments": _D(tot_cr),
+                "grand_closing": _D(closing),
+                "sections": [{
+                    "from_date": from_dt,
+                    "to_date": to_dt,
+                    "opening_balance": _D(grand_opening),
+                    "total_receipts": _D(tot_dr),
+                    "total_payments": _D(tot_cr),
+                    "closing_balance": _D(closing),
+                    "lines": lines,
+                    "day_sections": day_sections,
+                    "fy_name": (_fy_name(fy_from) if fy_from and fy_to and fy_from.id == fy_to.id else None),
+                    "fy_start": fy_from.finstartyear.date() if fy_from else None,
+                    "fy_end": fy_from.finendyear.date() if fy_from else None,
+                }],
+            }
+
+        if not fy_from or not fy_to:
+            if strict_fy:
+                return Response({"detail": "Requested dates are not fully covered by financial year setup.",
+                                 "hint": "Add FY rows for these dates or call without strict_fy."}, status=400)
+            payload = _single_section_payload()
+            payload = _recompute_grands(payload)  # <— ADD THIS LINE
+
+        elif fy_from.id == fy_to.id:
+            payload = _single_section_payload()
+            payload = _recompute_grands(payload)  # <— ADD THIS LINE
+
+        else:
+            # multi-FY
+            fys = _fys_overlapping_range(entity_id, from_dt, to_dt)
+            if not fys:
+                return Response({"detail": "No financial year overlaps the requested range."}, status=400)
+
+            sections = []
+            rolling_opening = _D(_aggregate_opening(base, from_dt))
+            grand_dr = _D(0)
+            grand_cr = _D(0)
+            last_closing = rolling_opening
+
+            for fy in fys:
+                sub_from, sub_to = _clip_to_fy(from_dt, to_dt, fy)
+                rows = _fetch_period_rows(base, sub_from, sub_to)
+                lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, rolling_opening)
+                day_sections = _build_day_sections(lines, rolling_opening, include_empty_days, sub_from, sub_to)
+
+                sections.append({
+                    "fy_name": _fy_name(fy),
+                    "fy_start": fy.finstartyear.date(),
+                    "fy_end": fy.finendyear.date(),
+                    "from_date": sub_from,
+                    "to_date": sub_to,
+                    "opening_balance": _D(rolling_opening),
+                    "total_receipts": _D(tot_dr),
+                    "total_payments": _D(tot_cr),
+                    "closing_balance": _D(closing),
+                    "lines": lines,
+                    "day_sections": day_sections,
+                })
+                grand_dr += _D(tot_dr)
+                grand_cr += _D(tot_cr)
+                rolling_opening = _D(closing)
+                last_closing = _D(closing)
 
             payload = {
                 "entity": entity_id,
                 "account_id": account_pk,
                 "from_date": from_dt,
                 "to_date": to_dt,
-                "spans_multiple_fy": False,
-                "grand_opening": grand_opening,
-                "grand_total_receipts": tot_dr,
-                "grand_total_payments": tot_cr,
-                "grand_closing": closing,
-                "sections": [
-                    {
-                        # FY metadata omitted when FY rows are absent
-                        "from_date": from_dt,
-                        "to_date": to_dt,
-                        "opening_balance": grand_opening,
-                        "total_receipts": tot_dr,
-                        "total_payments": tot_cr,
-                        "closing_balance": closing,
-                        "lines": lines,
-                        "day_sections": day_sections,
-                    }
-                ],
+                "spans_multiple_fy": True,
+                "grand_opening": _D(_aggregate_opening(base, from_dt)),
+                "grand_total_receipts": _D(grand_dr),
+                "grand_total_payments": _D(grand_cr),
+                "grand_closing": _D(last_closing),
+                "sections": sections,
             }
-            return Response(CashbookUnifiedSerializer(payload).data, status=200)
 
-        # ---- same-FY fast path ----
-        grand_opening = _aggregate_opening(base, from_dt)
+            payload = _recompute_grands(payload)  # <— ADD
 
-        if fy_from.id == fy_to.id:
+        return Response(CashbookUnifiedSerializer(payload).data, status=200)
+
+# ----------------------
+# Excel helpers & view
+# ----------------------
+_HEADER_FILL = PatternFill("solid", fgColor="F2F2F2")
+_THIN = Side(style="thin", color="D9D9D9")
+_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+_BOLD = Font(bold=True)
+_CENTER = Alignment(horizontal="center", vertical="center")
+_RIGHT = Alignment(horizontal="right", vertical="center")
+_LEFT = Alignment(horizontal="left", vertical="center")
+DATE_FMT = "yyyy-mm-dd"
+AMT_FMT = "#,##0.00;[Red]-#,##0.00"
+COLS = [
+    ("Date", 12),
+    ("Voucher No", 16),
+    ("Transaction", 16),
+    ("Description", 50),
+    ("Receipt (Dr)", 16),
+    ("Payment (Cr)", 16),
+    ("Running Balance", 18),
+]
+
+def _auto_width(ws, extra_pad: int = 1):
+    for i, (_, w) in enumerate(COLS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w + extra_pad
+
+def _write_header(ws):
+    ws.append([c[0] for c in COLS])
+    for cell in ws[1]:
+        cell.font = _BOLD
+        cell.fill = _HEADER_FILL
+        cell.alignment = _CENTER
+        cell.border = _BORDER
+
+def _fmt_amount(cell):
+    cell.number_format = AMT_FMT
+    cell.alignment = _RIGHT
+
+def _fmt_date(cell):
+    cell.number_format = DATE_FMT
+    cell.alignment = _CENTER
+
+def _open_row(ws, opening):
+    opening = _D(opening)
+    ws.append([None, None, None, "Opening Balance",
+               opening if opening >= 0 else None,
+               None if opening >= 0 else -opening,
+               opening])
+    row = ws.max_row
+    if opening >= 0:
+        _fmt_amount(ws.cell(row=row, column=5))
+    else:
+        _fmt_amount(ws.cell(row=row, column=6))
+    _fmt_amount(ws.cell(row=row, column=7))
+    ws.cell(row=row, column=4).font = _BOLD
+
+def _subtotal_row(ws, label: str, tot_dr, tot_cr, closing):
+    tot_dr = _D(tot_dr)
+    tot_cr = _D(tot_cr)
+    closing = _D(closing)
+    ws.append([None, None, None, label, tot_dr, tot_cr, closing])
+    row = ws.max_row
+    ws.cell(row=row, column=4).font = _BOLD
+    for col in (5, 6, 7):
+        c = ws.cell(row=row, column=col)
+        _fmt_amount(c)
+        c.font = _BOLD
+
+def _write_lines(ws, lines: List[dict], opening):
+    bal = _D(opening)
+    for ln in (lines or []):
+        d  = ln.get("date")                         # ← was 'entrydate'
+        dr = _D(ln.get("debit"))                    # ← was 'debitamount'
+        cr = _D(ln.get("credit"))                   # ← was 'creditamount'
+        dr_cell = None if dr == 0 else dr
+        cr_cell = None if cr == 0 else cr
+        bal = bal + dr - cr
+
+        ws.append([
+            d,
+            ln.get("voucherno") or "",
+            ln.get("transactiontype") or "",        # safe if missing
+            ln.get("desc") or "",
+            dr_cell,
+            cr_cell,
+            bal
+        ])
+        row = ws.max_row
+        if d:
+            _fmt_date(ws.cell(row=row, column=1))
+        _fmt_amount(ws.cell(row=row, column=5))
+        _fmt_amount(ws.cell(row=row, column=6))
+        _fmt_amount(ws.cell(row=row, column=7))
+
+def _sheet_title_for_section(idx: int, sec: dict) -> str:
+    base = f"{idx:02d}-" + (sec.get("fy_name") or f"{sec['from_date']}..{sec['to_date']}")
+    return base[:31]
+
+def _write_section_sheet(wb, idx: int, section: dict):
+    ws = wb.create_sheet(title=_sheet_title_for_section(idx, section))
+    _write_header(ws)
+    ws.freeze_panes = "A2"
+
+    opening = _D(section.get("opening_balance"))
+    _open_row(ws, opening)
+
+    _write_lines(ws, section.get("lines") or [], opening)
+
+    tot_dr  = _D(section.get("total_receipts"))
+    tot_cr  = _D(section.get("total_payments"))
+    closing = _D(section.get("closing_balance"))
+    _subtotal_row(ws, "Section Total / Closing", tot_dr, tot_cr, closing)
+
+    _auto_width(ws)
+
+def _recompute_grands(payload: dict) -> dict:
+    """
+    Ensure payload has correct grand_* fields.
+    Uses section totals if present; if a section is missing totals, derives from its lines.
+    """
+    secs = payload.get("sections") or []
+    if not secs:
+        # nothing to do
+        payload["grand_opening"] = _D(payload.get("grand_opening"))
+        payload["grand_total_receipts"] = _D(payload.get("grand_total_receipts"))
+        payload["grand_total_payments"] = _D(payload.get("grand_total_payments"))
+        payload["grand_closing"] = _D(payload.get("grand_closing"))
+        return payload
+
+    grand_opening = _D(secs[0].get("opening_balance"))
+
+    def _sec_totals(sec: dict):
+        # Prefer section totals; if missing/zero with non-empty lines, compute from lines
+        tr = _D(sec.get("total_receipts"))
+        tp = _D(sec.get("total_payments"))
+
+        if (tr == 0 and tp == 0) and (sec.get("lines")):
+            # Derive from lines
+            ls = sec.get("lines") or []
+            tr = sum((_D(x.get("debit")) for x in ls), _D(0))
+            tp = sum((_D(x.get("credit")) for x in ls), _D(0))
+        return tr, tp
+
+    tot_receipts = _D(0)
+    tot_payments = _D(0)
+    for s in secs:
+        sr, sp = _sec_totals(s)
+        tot_receipts += sr
+        tot_payments += sp
+
+    # closing: prefer last section's closing_balance; else compute
+    last_sec = secs[-1]
+    grand_closing = _D(last_sec.get("closing_balance"))
+    if grand_closing == 0:
+        grand_closing = grand_opening + tot_receipts - tot_payments
+
+    payload["grand_opening"] = grand_opening
+    payload["grand_total_receipts"] = tot_receipts
+    payload["grand_total_payments"] = tot_payments
+    payload["grand_closing"] = grand_closing
+    return payload
+
+def _section_numbers(sec: dict):
+    """
+    Returns (opening, receipts, payments, closing) for a section.
+    If section totals are missing/zero but lines exist, compute from lines.
+    Also derives closing from last line balance if available.
+    """
+    open_bal = _D(sec.get("opening_balance"))
+    rec = _D(sec.get("total_receipts"))
+    pay = _D(sec.get("total_payments"))
+    cls = _D(sec.get("closing_balance"))
+
+    lines = sec.get("lines") or []
+
+    # If both receipts & payments are zero while we have lines, compute from lines
+    if (rec == 0 and pay == 0) and lines:
+        rec = sum((_D(l.get("debit")) for l in lines), _D(0))
+        pay = sum((_D(l.get("credit")) for l in lines), _D(0))
+
+    # Closing: prefer given, else last line balance, else opening + rec - pay
+    if cls == 0 and lines:
+        last_bal = _D(lines[-1].get("balance"))
+        cls = last_bal if last_bal != 0 else (open_bal + rec - pay)
+    elif cls == 0:
+        cls = open_bal + rec - pay
+
+    return open_bal, rec, pay, cls
+
+def _write_summary_sheet(wb, payload: dict):
+    ws = wb.active
+    ws.title = "Summary"
+
+    ws.append(["Cash Book Summary"])
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].alignment = _LEFT
+
+    # ------------------------
+    # Header metadata
+    # ------------------------
+    ws.append([])
+    meta_rows = [
+        ("Entity", payload.get("entity")),
+        ("Account ID", payload.get("account_id")),
+        ("From", payload.get("from_date")),
+        ("To", payload.get("to_date")),
+        ("Spans Multiple FY", "Yes" if payload.get("spans_multiple_fy") else "No"),
+    ]
+    for k, v in meta_rows:
+        ws.append([k, v])
+
+    # ------------------------
+    # Grand Totals (top row)
+    # ------------------------
+    ws.append([])
+    ws.append(["Grand Opening", "Total Receipts", "Total Payments", "Grand Closing"])
+    for c in ws[ws.max_row]:
+        c.font = _BOLD
+        c.fill = _HEADER_FILL
+        c.border = _BORDER
+        c.alignment = _CENTER
+
+    ws.append([
+        _D(payload.get("grand_opening")),
+        _D(payload.get("grand_total_receipts")),
+        _D(payload.get("grand_total_payments")),
+        _D(payload.get("grand_closing")),
+    ])
+    r = ws.max_row
+    for c in range(1, 5):
+        _fmt_amount(ws.cell(row=r, column=c))
+
+    # ------------------------
+    # Per-FY / Section Table
+    # ------------------------
+    ws.append([])
+    ws.append(["#", "FY", "From", "To", "Opening", "Receipts", "Payments", "Closing"])
+    for c in ws[ws.max_row]:
+        c.font = _BOLD
+        c.fill = _HEADER_FILL
+        c.border = _BORDER
+        c.alignment = _CENTER
+
+    sections = payload.get("sections") or []
+    for idx, sec in enumerate(sections, start=1):
+        open_bal, receipts, payments, closing = _section_numbers(sec)
+
+        ws.append([
+            idx,
+            sec.get("fy_name") or "-",
+            sec.get("from_date"),
+            sec.get("to_date"),
+            open_bal,
+            receipts,
+            payments,
+            closing,
+        ])
+        r = ws.max_row
+        ws.cell(row=r, column=1).alignment = _CENTER
+        ws.cell(row=r, column=3).number_format = DATE_FMT; ws.cell(row=r, column=3).alignment = _CENTER
+        ws.cell(row=r, column=4).number_format = DATE_FMT; ws.cell(row=r, column=4).alignment = _CENTER
+        for col in (5, 6, 7, 8):
+            _fmt_amount(ws.cell(row=r, column=col))
+
+    # ------------------------
+    # Widths
+    # ------------------------
+    for col, w in zip("ABCDEFGH", [6, 22, 12, 12, 15, 15, 15, 15]):
+        ws.column_dimensions[col].width = w
+
+
+class CashBookExcelAPIView(APIView):
+    """
+    GET /api/reports/cashbook-xlsx?entity=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+      (same optional params as JSON view)
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        # required
+        entity_raw = request.query_params.get("entity")
+        from_raw   = request.query_params.get("from")
+        to_raw     = request.query_params.get("to")
+        if entity_raw is None or from_raw is None or to_raw is None:
+            return Response({"detail": "Query params required: entity, from, to (YYYY-MM-DD)"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            entity_id = int(str(entity_raw).strip())
+            from_dt   = _parse_iso_date(from_raw)
+            to_dt     = _parse_iso_date(to_raw)
+        except Exception:
+            return Response({"detail": "Dates must be YYYY-MM-DD.",
+                             "received": {"from": from_raw, "to": to_raw}}, status=400)
+        if to_dt < from_dt:
+            return Response({"detail": "'to' must be >= 'from'."}, status=400)
+
+        # resolve account
+        account_q = request.query_params.get("account_id")
+        if account_q:
+            try:
+                account_pk = int(account_q)
+            except ValueError:
+                return Response({"detail": "Invalid account_id."}, status=400)
+        else:
+            try:
+                const = stocktransconstant()
+                acct = const.getcashid(entity_id)
+                account_pk = int(acct.pk) if hasattr(acct, "pk") else int(acct)
+            except Exception as ex:
+                return Response({"detail": f"Unable to resolve cash account for entity={entity_id}: {ex}"}, status=400)
+
+        include_empty_days = _bool(request.query_params.get("include_empty_days"), default=False)
+        posted_only        = _bool(request.query_params.get("posted_only"), default=True)
+        strict_fy          = _bool(request.query_params.get("strict_fy"), default=False)
+
+        # base
+        base = JournalLine.objects.filter(entity_id=entity_id, account_id=account_pk)
+        # if posted_only: base = base.filter(entry__is_posted=True)
+
+        # filters
+        voucherno = request.query_params.get("voucherno")
+        if voucherno:
+            base = base.filter(voucherno=voucherno)
+        txn_raw = request.query_params.get("txn")
+        if txn_raw:
+            txns = [t.strip() for t in txn_raw.split(",") if t.strip()]
+            if txns:
+                base = base.filter(transactiontype__in=txns)
+        desc_contains = request.query_params.get("desc_contains")
+        if desc_contains:
+            base = base.filter(desc__icontains=desc_contains)
+        min_amount = request.query_params.get("min_amount")
+        if min_amount:
+            try:
+                base = base.filter(amount__gte=_D(min_amount))
+            except Exception:
+                return Response({"detail": "Invalid min_amount."}, status=400)
+        max_amount = request.query_params.get("max_amount")
+        if max_amount:
+            try:
+                base = base.filter(amount__lte=_D(max_amount))
+            except Exception:
+                return Response({"detail": "Invalid max_amount."}, status=400)
+
+        # FY logic → payload
+        fy_from = _fy_covering_date(entity_id, from_dt)
+        fy_to   = _fy_covering_date(entity_id, to_dt)
+
+        def _single_section_payload() -> dict:
+            grand_opening = _aggregate_opening(base, from_dt)
             rows = _fetch_period_rows(base, from_dt, to_dt)
             lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, grand_opening)
             day_sections = _build_day_sections(lines, grand_opening, include_empty_days, from_dt, to_dt)
+            return {
+                "entity": entity_id,
+                "account_id": account_pk,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_opening": _D(grand_opening),
+                "grand_total_receipts": _D(tot_dr),
+                "grand_total_payments": _D(tot_cr),
+                "grand_closing": _D(closing),
+                "sections": [{
+                    "from_date": from_dt,
+                    "to_date": to_dt,
+                    "opening_balance": _D(grand_opening),
+                    "total_receipts": _D(tot_dr),
+                    "total_payments": _D(tot_cr),
+                    "closing_balance": _D(closing),
+                    "lines": lines,
+                    "day_sections": day_sections,
+                    "fy_name": (_fy_name(fy_from) if fy_from and fy_to and fy_from.id == fy_to.id else None),
+                    "fy_start": fy_from.finstartyear.date() if fy_from else None,
+                    "fy_end": fy_from.finendyear.date() if fy_from else None,
+                }],
+            }
+
+        if not fy_from or not fy_to:
+            if strict_fy:
+                return Response({"detail": "Requested dates are not fully covered by financial year setup.",
+                                 "hint": "Add FY rows for these dates or call without strict_fy."}, status=400)
+            payload = _single_section_payload()
+            payload = _recompute_grands(payload)  # <— ADD THIS LINE
+
+        elif fy_from.id == fy_to.id:
+            payload = _single_section_payload()
+            payload = _recompute_grands(payload)  # <— ADD THIS LINE
+
+        else:
+            fys = _fys_overlapping_range(entity_id, from_dt, to_dt)
+            if not fys:
+                return Response({"detail": "No financial year overlaps the requested range."}, status=400)
+
+            sections = []
+            rolling_opening = _D(_aggregate_opening(base, from_dt))
+            grand_dr = _D(0); grand_cr = _D(0)
+            last_closing = rolling_opening
+
+            for fy in fys:
+                sub_from, sub_to = _clip_to_fy(from_dt, to_dt, fy)
+                rows = _fetch_period_rows(base, sub_from, sub_to)
+                lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, rolling_opening)
+                day_sections = _build_day_sections(lines, rolling_opening, include_empty_days, sub_from, sub_to)
+                sections.append({
+                    "fy_name": _fy_name(fy),
+                    "fy_start": fy.finstartyear.date(),
+                    "fy_end": fy.finendyear.date(),
+                    "from_date": sub_from,
+                    "to_date": sub_to,
+                    "opening_balance": _D(rolling_opening),
+                    "total_receipts": _D(tot_dr),
+                    "total_payments": _D(tot_cr),
+                    "closing_balance": _D(closing),
+                    "lines": lines,
+                    "day_sections": day_sections,
+                })
+                grand_dr += _D(tot_dr); grand_cr += _D(tot_cr)
+                rolling_opening = _D(closing); last_closing = _D(closing)
 
             payload = {
                 "entity": entity_id,
                 "account_id": account_pk,
                 "from_date": from_dt,
                 "to_date": to_dt,
-                "spans_multiple_fy": False,
-                "grand_opening": grand_opening,
-                "grand_total_receipts": tot_dr,
-                "grand_total_payments": tot_cr,
-                "grand_closing": closing,
-                "sections": [
-                    {
-                        "fy_name": _fy_name(fy_from),
-                        "fy_start": fy_from.finstartyear.date(),
-                        "fy_end": fy_from.finendyear.date(),
-                        "from_date": from_dt,
-                        "to_date": to_dt,
-                        "opening_balance": grand_opening,
-                        "total_receipts": tot_dr,
-                        "total_payments": tot_cr,
-                        "closing_balance": closing,
-                        "lines": lines,
-                        "day_sections": day_sections,
-                    }
-                ],
+                "spans_multiple_fy": True,
+                "grand_opening": _D(_aggregate_opening(base, from_dt)),
+                "grand_total_receipts": _D(grand_dr),
+                "grand_total_payments": _D(grand_cr),
+                "grand_closing": _D(last_closing),
+                "sections": sections,
             }
-            return Response(CashbookUnifiedSerializer(payload).data, status=200)
 
-        # ---- multi-FY path ----
-        fys = _fys_overlapping_range(entity_id, from_dt, to_dt)
-        if not fys:
-            return Response({"detail": "No financial year overlaps the requested range."}, status=400)
+            payload = _recompute_grands(payload)  # <— ADD
 
-        sections = []
-        rolling_opening = grand_opening
-        grand_dr = ZERO
-        grand_cr = ZERO
-        last_closing = rolling_opening
+        # ----- Build workbook & return -----
+        wb = Workbook()  # normal mode
+        _write_summary_sheet(wb, payload)
+        for i, sec in enumerate(payload["sections"], start=1):
+            _write_section_sheet(wb, i, sec)
 
-        for fy in fys:
-            sub_from, sub_to = _clip_to_fy(from_dt, to_dt, fy)
-            rows = _fetch_period_rows(base, sub_from, sub_to)
-            lines, tot_dr, tot_cr, closing = _build_lines_and_totals(rows, rolling_opening)
-            day_sections = _build_day_sections(lines, rolling_opening, include_empty_days, sub_from, sub_to)
+        fname = f"CashBook_{entity_id}_{from_dt}_to_{to_dt}.xlsx"
+        resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        resp["Content-Disposition"] = f'attachment; filename="{fname}"'
+        wb.save(resp)
+        return resp
 
-            sections.append({
-                "fy_name": _fy_name(fy),
-                "fy_start": fy.finstartyear.date(),
-                "fy_end": fy.finendyear.date(),
-                "from_date": sub_from,
-                "to_date": sub_to,
-                "opening_balance": rolling_opening,
-                "total_receipts": tot_dr,
-                "total_payments": tot_cr,
-                "closing_balance": closing,
-                "lines": lines,
-                "day_sections": day_sections,
-            })
 
-            grand_dr += tot_dr
-            grand_cr += tot_cr
-            rolling_opening = closing
-            last_closing = closing
+def _section_numbers(sec: dict):
+    """
+    Returns (opening, receipts, payments, closing) for a section.
+    Uses section totals if present; if missing/zero with lines present, derive from lines.
+    Closing prefers provided; else last line.balance; else open + receipts - payments.
+    """
+    def D(x): return _D(x)
 
-        multi_payload = {
-            "entity": entity_id,
-            "account_id": account_pk,
-            "from_date": from_dt,
-            "to_date": to_dt,
-            "spans_multiple_fy": True,
-            "grand_opening": grand_opening,
-            "grand_total_receipts": grand_dr,
-            "grand_total_payments": grand_cr,
-            "grand_closing": last_closing,
-            "sections": sections,
-        }
-        return Response(CashbookUnifiedSerializer(multi_payload).data, status=200)
+    open_bal = D(sec.get("opening_balance"))
+    rec = D(sec.get("total_receipts"))
+    pay = D(sec.get("total_payments"))
+    cls = D(sec.get("closing_balance"))
+    lines = sec.get("lines") or []
 
+    if (rec == 0 and pay == 0) and lines:
+        rec = sum((D(l.get("debit")) for l in lines), D(0))
+        pay = sum((D(l.get("credit")) for l in lines), D(0))
+
+    if cls == 0:
+        if lines:
+            last_bal = D(lines[-1].get("balance"))
+            cls = last_bal if last_bal != 0 else (open_bal + rec - pay)
+        else:
+            cls = open_bal + rec - pay
+
+    return open_bal, rec, pay, cls
+
+
+def _fmt2(x: Decimal) -> str:
+    """#,##0.00 with minus sign if negative."""
+    return f"{_D(x):,.2f}"
+
+
+def _cashbook_pdf_header_footer(canvas, doc):
+    canvas.saveState()
+    w, h = landscape(A4)
+    canvas.setFont("Helvetica-Bold", 9)
+    canvas.drawString(40, h - 25, "Cash Book Report")
+    canvas.setFont("Helvetica", 8)
+    canvas.drawRightString(w - 40, 25, f"Page {canvas.getPageNumber()}")
+    canvas.restoreState()
+
+
+class CashBookPDFAPIView(APIView):
+    """
+    GET /api/reports/cashbook-pdf?entity=1&from=YYYY-MM-DD&to=YYYY-MM-DD[&print=grand|sections|both]
+
+    - print=grand     → only summary page
+    - print=sections  → only per-section detail tables
+    - print=both      → both (default)
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, *args, **kwargs):
+        # 1) Build payload by reusing your JSON view logic
+        cb_view = CashBookAPIView()
+        resp = cb_view.get(request)
+        if resp.status_code != 200:
+            return resp
+        payload = resp.data
+
+        # 2) Ensure grand_* totals are correct (derive from sections/lines if needed)
+        payload = _recompute_grands(payload)
+
+        print_mode = (request.query_params.get("print") or "both").strip().lower()
+        if print_mode not in {"grand", "sections", "both"}:
+            print_mode = "both"
+
+        # 3) Prepare PDF doc
+        buf = BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            leftMargin=30, rightMargin=30, topMargin=40, bottomMargin=40
+        )
+        styles = getSampleStyleSheet()
+        style_title = ParagraphStyle("title", parent=styles["Heading1"],
+                                     alignment=1, fontSize=14, leading=16, spaceAfter=12)
+        style_h3 = ParagraphStyle("h3", parent=styles["Heading3"], fontSize=11, spaceAfter=6)
+        style_norm = ParagraphStyle("norm", parent=styles["Normal"], fontSize=9, leading=11)
+        style_th = ParagraphStyle("th", parent=styles["Normal"], alignment=1, fontSize=9)
+
+        elems = []
+
+        # ---------- Summary (Grand totals) ----------
+        if print_mode in {"grand", "both"}:
+            title = f"Cash Book - Entity {payload['entity']}"
+            elems.append(Paragraph(title, style_title))
+            elems.append(Paragraph(f"From {payload['from_date']} to {payload['to_date']}", style_norm))
+            elems.append(Spacer(1, 10))
+
+            # Grand totals row — these are guaranteed correct by _recompute_grands
+            grand = [
+                ["Grand Opening", "Total Receipts", "Total Payments", "Grand Closing"],
+                [
+                    _fmt2(payload["grand_opening"]),
+                    _fmt2(payload["grand_total_receipts"]),
+                    _fmt2(payload["grand_total_payments"]),
+                    _fmt2(payload["grand_closing"]),
+                ],
+            ]
+            t = Table(grand, colWidths=[2.0*inch]*4)
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ]))
+            elems.append(t)
+            elems.append(Spacer(1, 14))
+
+            # Per-section summary table
+            sections = payload.get("sections") or []
+            if sections:
+                data = [["#", "FY", "From", "To", "Opening", "Receipts", "Payments", "Closing"]]
+                for i, sec in enumerate(sections, start=1):
+                    open_bal, rec, pay, cls = _section_numbers(sec)
+                    data.append([
+                        i,
+                        sec.get("fy_name") or "-",
+                        str(sec.get("from_date") or ""),
+                        str(sec.get("to_date") or ""),
+                        _fmt2(open_bal),
+                        _fmt2(rec),
+                        _fmt2(pay),
+                        _fmt2(cls),
+                    ])
+                st = Table(data, repeatRows=1,
+                           colWidths=[0.5*inch, 1.6*inch, 1.1*inch, 1.1*inch, 1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch])
+                st.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                    ("ALIGN", (4, 1), (-1, -1), "RIGHT"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ]))
+                elems.append(st)
+
+            # If we are also printing sections, new page after summary
+            if print_mode == "both":
+                elems.append(PageBreak())
+
+        # ---------- Sections (detail tables) ----------
+        if print_mode in {"sections", "both"}:
+            sections = payload.get("sections") or []
+            for idx, sec in enumerate(sections, start=1):
+                elems.append(Paragraph(
+                    f"Section {idx}: {sec.get('fy_name') or '-'}",
+                    style_h3
+                ))
+                elems.append(Paragraph(
+                    f"Period: {sec.get('from_date')} to {sec.get('to_date')}",
+                    style_norm
+                ))
+                elems.append(Spacer(1, 6))
+
+                # Build table rows (repeat header on each page automatically)
+                header = ["Date", "Voucher No", "Description", "Debit (₹)", "Credit (₹)", "Running Balance (₹)"]
+                rows = [header]
+
+                for ln in sec.get("lines") or []:
+                    rows.append([
+                        str(ln.get("date") or ""),
+                        ln.get("voucherno") or "",
+                        Paragraph(ln.get("desc") or "", style_norm),
+                        _fmt2(ln.get("debit")),
+                        _fmt2(ln.get("credit")),
+                        _fmt2(ln.get("balance")),
+                    ])
+
+                # Section totals (computed robustly)
+                open_bal, rec, pay, cls = _section_numbers(sec)
+                rows.append(["", "", Paragraph("<b>Totals:</b>", style_th),
+                             _fmt2(rec), _fmt2(pay), _fmt2(cls)])
+
+                tbl = Table(
+                    rows, repeatRows=1,
+                    colWidths=[1.0*inch, 1.2*inch, 4.0*inch, 1.1*inch, 1.1*inch, 1.3*inch]
+                )
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]))
+                elems.append(tbl)
+
+                # Page break between sections
+                if idx < len(sections):
+                    elems.append(PageBreak())
+
+        # 4) Build and return
+        doc.build(elems, onFirstPage=_cashbook_pdf_header_footer, onLaterPages=_cashbook_pdf_header_footer)
+        buf.seek(0)
+        filename = f"cashbook_{payload['entity']}_{payload['from_date']}_{payload['to_date']}.pdf"
+        resp = HttpResponse(buf.getvalue(), content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename=\"{filename}\"'
+        return resp
 
 
 DZERO = Decimal("0.00")  # Python-side zero ONLY for arithmetic & comparisons
