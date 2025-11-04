@@ -7048,10 +7048,12 @@ def dec(x):
 
 class TrialbalanceApiViewJournalByAccount(ListAPIView):
     """
-    GET /api/reports/trial-balance/accounts/?entity=1&accounthead=10&startdate=2025-04-01&enddate=2025-04-30
+    GET /api/reports/trial-balance/accounts/?entity=1[&accounthead=10]&startdate=2025-04-01&enddate=2025-04-30
 
-    Emits Trial Balance rows *per account* whose chosen display head equals ?accounthead.
-    Head rule (per account): closing >= 0 → account.accounthead, else → account.creditaccounthead.
+    Emits Trial Balance rows *per account*. Display head is chosen per-account:
+      closing >= 0 → account.accounthead, else → account.creditaccounthead.
+
+    If ?accounthead is passed → filter to that head; else → include all heads.
     """
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = TrialBalanceAccountRowSerializer
@@ -7062,19 +7064,20 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
 
     def get(self, request, *args, **kwargs):
         entity_id = request.query_params.get("entity")
-        head_id_s = request.query_params.get("accounthead")
+        head_id_s = request.query_params.get("accounthead")  # optional now
         start_s   = request.query_params.get("startdate")
         end_s     = request.query_params.get("enddate")
 
-        if not (entity_id and head_id_s and start_s and end_s):
+        # --- Validate required params (head is optional) ---
+        if not (entity_id and start_s and end_s):
             return Response(
-                {"detail": "Required: entity, accounthead, startdate, enddate (YYYY-MM-DD)"},
+                {"detail": "Required: entity, startdate, enddate (YYYY-MM-DD). Optional: accounthead"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
             entity_id = int(str(entity_id).strip())
-            head_id   = int(str(head_id_s).strip())
+            head_id   = int(str(head_id_s).strip()) if head_id_s not in (None, "",) else None
             startdate = self._parse_ymd(start_s)
             enddate   = self._parse_ymd(end_s)
         except Exception:
@@ -7088,7 +7091,7 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
         if startdate > enddate:
             return Response([], status=status.HTTP_200_OK)
 
-        # Clamp to FY if present
+        # --- Clamp to FY if present ---
         fy = (
             entityfinancialyear.objects
             .filter(entity_id=entity_id,
@@ -7159,9 +7162,8 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
             )
         )
 
-        # ---- Merge per account (coerce all numbers immediately) ----
+        # ---- Merge per account ----
         per_account = {}
-
         for r in opening_qs:
             aid = r["account_id"]
             per_account[aid] = dict(
@@ -7192,23 +7194,28 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
         if not per_account:
             return Response([], status=status.HTTP_200_OK)
 
-        # ---- Choose head by sign; keep only requested head ----
+        # ---- Choose head by sign; optionally filter by ?accounthead ----
         rows = []
         for v in per_account.values():
             opening = dec(v.get("opening"))
             debit   = dec(v.get("debit"))
             credit  = dec(v.get("credit"))
-            closing = opening + debit - credit                        # pure Decimal, no expressions
+            closing = opening + debit - credit
+
             disp_head_id, disp_head_name = (
                 (v["ah_id"], v["ah_name"]) if (closing >= DZERO) else (v["ch_id"], v["ch_name"])
             )
-            if disp_head_id is None or int(disp_head_id) != head_id:
-                continue
+
+            # If caller passed a head → filter; else include all
+            if head_id is not None:
+                if disp_head_id is None or int(disp_head_id) != head_id:
+                    continue
 
             rows.append(dict(
                 account=v["account"],
                 accountname=v["accountname"],
-                accounthead=head_id,
+                # if head_id was not passed, emit the chosen head for this row
+                accounthead=(int(disp_head_id) if disp_head_id is not None else None),
                 accountheadname=disp_head_name or "",
                 openingbalance=opening,
                 debit=debit,
@@ -7219,7 +7226,6 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
             ))
 
         rows.sort(key=lambda x: (x["accountname"] or "").lower())
-
         return Response(self.serializer_class(rows, many=True).data, status=status.HTTP_200_OK)
 
 DEC = DecimalField(max_digits=18, decimal_places=2)               # reuse this
