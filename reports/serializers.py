@@ -1255,6 +1255,64 @@ class CashbookUnifiedSerializer(serializers.Serializer):
     sections = CashbookUnifiedSectionSerializer(many=True)
 
 
+class DaybookLineSerializer(serializers.Serializer):
+    date       = serializers.DateField()
+    voucherno  = serializers.CharField(allow_blank=True)
+    voucher    = serializers.CharField(allow_blank=True, required=False)  # voucher type/name if you have it
+    account_id = serializers.IntegerField()
+    account    = serializers.CharField(allow_blank=True)
+    contra_ac  = serializers.CharField(allow_blank=True, required=False)  # optional: other side caption if you keep it
+    desc       = serializers.CharField(allow_blank=True)
+    debit      = serializers.DecimalField(max_digits=16, decimal_places=2)
+    credit     = serializers.DecimalField(max_digits=16, decimal_places=2)
+
+class DaybookDaySectionSerializer(serializers.Serializer):
+    date          = serializers.DateField()
+    day_debits    = serializers.DecimalField(max_digits=16, decimal_places=2)
+    day_credits   = serializers.DecimalField(max_digits=16, decimal_places=2)
+    day_net       = serializers.DecimalField(max_digits=16, decimal_places=2)
+    items         = DaybookLineSerializer(many=True)
+
+    # NEW (optional): cash-only stats for this date
+    cash_day_opening  = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    cash_day_receipts = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    cash_day_payments = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    cash_day_closing  = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+
+class DaybookUnifiedSectionSerializer(serializers.Serializer):
+    fy_name  = serializers.CharField(allow_blank=True, required=False)
+    fy_start = serializers.DateField(required=False)
+    fy_end   = serializers.DateField(required=False)
+    from_date = serializers.DateField()
+    to_date   = serializers.DateField()
+    total_debits  = serializers.DecimalField(max_digits=16, decimal_places=2)
+    total_credits = serializers.DecimalField(max_digits=16, decimal_places=2)
+    net_movement  = serializers.DecimalField(max_digits=16, decimal_places=2)
+    day_sections  = DaybookDaySectionSerializer(many=True)
+
+    # NEW (optional): cash-only stats for this section
+    cash_opening        = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    cash_total_receipts = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    cash_total_payments = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    cash_closing        = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+
+class DaybookUnifiedSerializer(serializers.Serializer):
+    entity     = serializers.IntegerField()
+    from_date  = serializers.DateField()
+    to_date    = serializers.DateField()
+    spans_multiple_fy = serializers.BooleanField()
+    grand_total_debits  = serializers.DecimalField(max_digits=16, decimal_places=2)
+    grand_total_credits = serializers.DecimalField(max_digits=16, decimal_places=2)
+    grand_net_movement  = serializers.DecimalField(max_digits=16, decimal_places=2)
+    sections = DaybookUnifiedSectionSerializer(many=True)
+
+    # NEW (optional): cash-only grand stats across whole range
+    grand_cash_opening        = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    grand_cash_total_receipts = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    grand_cash_total_payments = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+    grand_cash_closing        = serializers.DecimalField(max_digits=16, decimal_places=2, required=False)
+
+
 class TrialBalanceAccountRowSerializer(serializers.Serializer):
     account = serializers.IntegerField()
     accountname = serializers.CharField(allow_blank=True)

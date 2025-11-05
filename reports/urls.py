@@ -69,8 +69,17 @@ urlpatterns  = [
     path('trial-balance/', views.TrialbalanceApiViewJournal.as_view(), name='sales-order-gst-summary'),
     path('trial-balance/accounts/', views.TrialbalanceApiViewJournalByAccount.as_view(), name='sales-order-gst-summary'),
     path('cash_book/', views.CashBookAPIView.as_view(), name='sales-order-gst-summary'),
+    path('day_book/', views.DayBookAPIView.as_view(), name='sales-order-gst-summary'),
+    path('day_book-xlsx/', views.DayBookExcelAPIView.as_view(), name='sales-order-gst-summary'),
+    path('day_book-pdf/', views.DayBookPDFAPIView.as_view(), name='sales-order-gst-summary'),
+
+    
+    
+    
     path('trial-balance/account-ledger/', views.TrialbalanceApiViewJournalByAccountLedger.as_view(), name='sales-order-gst-summary'),
     path("ledger-summary", views.LedgerSummaryJournalline.as_view(), name="ledger-summary"),
+    path("ledger-summary-excel", views.LedgerSummaryExcelAPIView.as_view(), name="ledger-summary"),
+    path("ledger-summary-pdf", views.LedgerSummaryPDFAPIView.as_view(), name="ledger-summary"),
     path("ledger-details", views.ledgerjournaldetails.as_view(), name="ledger-details"),
     path("trading-account", views.tradingaccountstatementJournaline.as_view(), name="ledger-details"),
     path("profitloss-account", views.profitandlossstatement.as_view(), name="ledger-details"),
