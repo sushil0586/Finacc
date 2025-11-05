@@ -2,6 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 from collections import defaultdict
+from decimal import Decimal as D
 from typing import Any, Dict, List
 from math import isfinite
 from reportlab.pdfbase.pdfmetrics import stringWidth
@@ -33,7 +34,7 @@ from django.utils.dateparse import parse_date
 from collections import deque
 from django.utils import timezone  
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side,NamedStyle
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side,NamedStyle,numbers
 from openpyxl.utils import get_column_letter
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import StockTransactions,closingstock,salesOrderdetails,entry,SalesOderHeader,PurchaseReturn,purchaseorder,salereturn,journalmain,salereturnDetails,Purchasereturndetails
@@ -85,7 +86,7 @@ from helpers.utils.emi import calculate_emi
 from reports.services.trading_account import build_trading_account_dynamic
 from reports.services.profit_and_loss import build_profit_and_loss_statement
 from reports.services.balance_sheet import build_balance_sheet_statement
-from reports.serializers import TrialBalanceHeadRowSerializer, LedgerFilterSerializer, LedgerAccountSerializer
+from reports.serializers import TrialBalanceHeadRowSerializer, LedgerFilterSerializer, LedgerAccountSerializer,DaybookUnifiedSerializer
 ZERO = Decimal("0.00")
 
 from reportlab.lib import colors
@@ -93,7 +94,7 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.lib.pagesizes import A4,landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak,KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak,KeepTogether,PageTemplate,BaseDocTemplate,Frame,LongTable
 from io import BytesIO
 from django.utils.timezone import now
 
@@ -6154,40 +6155,52 @@ def _build_lines_and_totals(rows, opening: Decimal):
     closing = _D(opening) + _D(tot_dr) - _D(tot_cr)
     return out, _D(tot_dr), _D(tot_cr), _D(closing)
 
-def _build_day_sections(lines, opening: Decimal, include_empty_days: bool, d1: date, d2: date):
-    from collections import defaultdict as _dd
-    buckets = _dd(list)
-    for row in lines:
-        buckets[row["date"]].append(row)   # ← use 'date'
+def _build_day_sections(lines, grand_opening, include_empty_days, from_dt, to_dt):
+    """
+    Builds daily summaries with correct day_opening, day_receipts, day_payments, and day_closing_balance.
+    """
 
+    # Group transactions by date
+    grouped = defaultdict(list)
+    for l in lines:
+        grouped[l["date"]].append(l)
+
+    # Sort the days
+    all_days = sorted(grouped.keys())
+
+    # If include_empty_days=True, fill missing days with empty items
     if include_empty_days:
-        days = []
-        cur = d1
-        while cur <= d2:
-            days.append(cur)
-            cur += timedelta(days=1)
-    else:
-        days = sorted(buckets.keys())
+        from datetime import timedelta
+        day = from_dt
+        while day <= to_dt:
+            d_str = day.strftime("%d-%m-%Y")
+            if d_str not in grouped:
+                grouped[d_str] = []
+                all_days.append(d_str)
+            day += timedelta(days=1)
+        all_days.sort()
 
-    sections = []
-    carry = _D(opening)
-    for d in days:
-        items = buckets.get(d, [])
-        day_dr = sum((_D(i["debit"]) for i in items), ZERO)    # ← debit
-        day_cr = sum((_D(i["credit"]) for i in items), ZERO)   # ← credit
-        day_open = carry
-        day_close = day_open + day_dr - day_cr
-        sections.append({
-            "date": d,
-            "day_opening": _D(day_open),
+    results = []
+    current_balance = D(grand_opening)
+
+    for day in all_days:
+        items = grouped[day]
+        day_receipts = D(sum(D(x.get("debit", 0) or 0) for x in items))
+        day_payments = D(sum(D(x.get("credit", 0) or 0) for x in items))
+        day_closing = current_balance + day_receipts - day_payments
+
+        results.append({
+            "date": day,
+            "day_opening": D(current_balance),
+            "day_receipts": D(day_receipts),
+            "day_payments": D(day_payments),
+            "day_closing_balance": D(day_closing),
             "items": items,
-            "day_receipts": _D(day_dr),
-            "day_payments": _D(day_cr),
-            "day_closing_balance": _D(day_close),
         })
-        carry = day_close
 
-    return sections
+        current_balance = day_closing
+
+    return results
 
 # ----------------------
 # JSON API View
@@ -7695,6 +7708,863 @@ class LedgerSummaryJournalline(APIView):
         }
         return paginator.get_paginated_response(out_ser.data, totals=totals, meta_echo=meta_echo)
 
+class LedgerSummaryExcelAPIView(APIView):
+    """
+    POST /api/reports/ledger-summary.xlsx
+
+    Request body must match LedgerSummaryRequestSerializer (same as JSON API):
+    {
+      "entity": 1,
+      "startdate": "2025-04-01",
+      "enddate":   "2025-04-30",
+      "group_by": "head|account|head_account",
+      "order_by": "...",                 # optional (same keys as JSON API)
+      "txn_in": "SALE,PURCHASE",         # optional CSV
+      "voucherno": "SO-0001",            # optional
+      "vno_contains": "SO-",             # optional
+      "desc_contains": "freight",        # optional
+      "accounthead": "1,2,3",            # optional CSV
+      "account": "10,12",                # optional CSV
+      "sign": "ALL|DR|CR",               # optional
+      "include_zero": false,             # optional
+      "min_activity": 0,                 # optional
+      "amount_min": null,                # optional
+      "amount_max": null,                # optional
+      "range_min": null,                 # optional
+      "range_max": null,                 # optional
+      "pagesize": 50                     # ignored here (no pagination in Excel)
+    }
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    ORDER_MAP = {
+        "accountname": "account__accountname",
+        "-accountname": "-account__accountname",
+        "head_name": "account__accounthead__name",
+        "-head_name": "-account__accounthead__name",
+        "opening": "openingbalance",
+        "-opening": "-openingbalance",
+        "debit": "debit",
+        "-debit": "-debit",
+        "credit": "credit",
+        "-credit": "-credit",
+        "period_net": "period_net",
+        "-period_net": "-period_net",
+        "abs_movement": "abs_movement",
+        "-abs_movement": "-abs_movement",
+        "balancetotal": "balancetotal",
+        "-balancetotal": "-balancetotal",
+    }
+
+    def post(self, request, *_args, **_kwargs):
+        # -----------------------------
+        # 1) Validate input (reuse same serializer)
+        # -----------------------------
+        in_ser = LedgerSummaryRequestSerializer(data=request.data)
+        in_ser.is_valid(raise_exception=True)
+        p = in_ser.validated_data
+
+        entity_id = p["entity"]
+        startdate = p["startdate"]
+        enddate   = p["enddate"]
+        group_by  = p["group_by"]
+
+        # -----------------------------
+        # 2) Base queryset up to enddate + common filters
+        # -----------------------------
+        qs = JournalLine.objects.filter(
+            entity_id=entity_id,
+            account__isnull=False,
+            entrydate__lte=enddate,
+        )
+
+        include_txn = None
+        if p.get("txn_in"):
+            include_txn = [x.strip() for x in str(p["txn_in"]).split(",") if x.strip()]
+            qs = qs.filter(transactiontype__in=include_txn)
+
+        if p.get("voucherno"):
+            qs = qs.filter(voucherno=str(p["voucherno"]))
+        if p.get("vno_contains"):
+            qs = qs.filter(voucherno__icontains=str(p["vno_contains"]))
+        if p.get("desc_contains"):
+            qs = qs.filter(desc__icontains=str(p["desc_contains"]))
+
+        ah_ids = None
+        if p.get("accounthead"):
+            ah_ids = [int(x) for x in str(p["accounthead"]).split(",") if x.strip()]
+            qs = qs.filter(account__accounthead_id__in=ah_ids)
+
+        acc_ids = None
+        if p.get("account"):
+            acc_ids = [int(x) for x in str(p["account"]).split(",") if x.strip()]
+            qs = qs.filter(account_id__in=acc_ids)
+
+        # -----------------------------
+        # 3) Aggregations
+        # -----------------------------
+        period_f = Q(entrydate__gte=startdate, entrydate__lte=enddate)
+
+        opening_expr = Coalesce(
+            Sum(
+                Case(
+                    When(drcr=True, then=F("amount")),
+                    When(drcr=False, then=-F("amount")),
+                    default=V(0),
+                    output_field=DEC18_2,
+                ),
+                filter=Q(entrydate__lt=startdate),
+                output_field=DEC18_2,
+            ),
+            ZERO,
+        )
+        debit_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=True), output_field=DEC18_2),
+            ZERO,
+        )
+        credit_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=False), output_field=DEC18_2),
+            ZERO,
+        )
+        period_net_expr = ExpressionWrapper(F("debit") - F("credit"), output_field=DEC18_2)
+        abs_mov_expr    = ExpressionWrapper(F("debit") + F("credit"), output_field=DEC18_2)
+        closing_expr    = ExpressionWrapper(F("openingbalance") + F("debit") - F("credit"), output_field=DEC18_2)
+
+        if group_by == "head":
+            group_vals = ["account__accounthead_id", "account__accounthead__name"]
+        else:
+            group_vals = [
+                "account_id",
+                "account__accountname",
+                "account__accounthead_id",
+                "account__accounthead__name",
+            ]
+
+        qs = (
+            qs.values(*group_vals)
+              .annotate(
+                  openingbalance=opening_expr,
+                  debit=debit_expr,
+                  credit=credit_expr,
+              )
+              .annotate(
+                  period_net=period_net_expr,
+                  abs_movement=abs_mov_expr,
+                  balancetotal=closing_expr,
+                  txn_count=Count("id", filter=period_f),
+                  last_txn_date=Max("entrydate", filter=period_f),
+              )
+              .annotate(
+                  drcr=Case(When(balancetotal__lt=0, then=V("CR")), default=V("DR")),
+                  obdrcr=Case(When(openingbalance__lt=0, then=V("CR")), default=V("DR")),
+              )
+        )
+
+        # -----------------------------
+        # 4) Summary-focused filters
+        # -----------------------------
+        sign = p.get("sign", "ALL")
+        if sign == "DR":
+            qs = qs.filter(balancetotal__gt=0)
+        elif sign == "CR":
+            qs = qs.filter(balancetotal__lt=0)
+
+        if not p.get("include_zero", False):
+            qs = qs.exclude(balancetotal=ZERO_D)
+
+        if p.get("min_activity") is not None:
+            qs = qs.filter(abs_movement__gte=p["min_activity"])
+
+        if p.get("amount_min") is not None:
+            qs = qs.filter(balancetotal__gte=p["amount_min"])
+        if p.get("amount_max") is not None:
+            qs = qs.filter(balancetotal__lte=p["amount_max"])
+
+        if p.get("range_min") is not None:
+            qs = qs.filter(balancetotal__gte=p["range_min"])
+        if p.get("range_max") is not None:
+            qs = qs.filter(balancetotal__lte=p["range_max"])
+
+        # -----------------------------
+        # 5) Ordering
+        # -----------------------------
+        order_key = (p.get("order_by") or "").strip() or ("head_name" if group_by == "head" else "accountname")
+        order_field = self.ORDER_MAP.get(order_key)
+        if group_by == "head" and order_field in ("account__accountname", "-account__accountname"):
+            order_field = "account__accounthead__name"
+        if not order_field:
+            order_field = "account__accounthead__name" if group_by == "head" else "account__accountname"
+        qs = qs.order_by(order_field)
+
+        rows = list(qs)
+
+        # -----------------------------
+        # 6) Grand totals (same as JSON API, recomputed from base JournalLine)
+        # -----------------------------
+        totals_qs = JournalLine.objects.filter(
+            entity_id=entity_id,
+            account__isnull=False,
+            entrydate__lte=enddate,
+        )
+        if include_txn:
+            totals_qs = totals_qs.filter(transactiontype__in=include_txn)
+        if p.get("voucherno"):
+            totals_qs = totals_qs.filter(voucherno=str(p["voucherno"]))
+        if p.get("vno_contains"):
+            totals_qs = totals_qs.filter(voucherno__icontains=str(p["vno_contains"]))
+        if p.get("desc_contains"):
+            totals_qs = totals_qs.filter(desc__icontains=str(p["desc_contains"]))
+        if ah_ids:
+            totals_qs = totals_qs.filter(account__accounthead_id__in=ah_ids)
+        if acc_ids:
+            totals_qs = totals_qs.filter(account_id__in=acc_ids)
+
+        opening_total_expr = Coalesce(
+            Sum(
+                Case(
+                    When(drcr=True, then=F("amount")),
+                    When(drcr=False, then=-F("amount")),
+                    default=V(0),
+                    output_field=DEC18_2,
+                ),
+                filter=Q(entrydate__lt=startdate),
+                output_field=DEC18_2,
+            ),
+            ZERO,
+        )
+        debit_total_expr = Coalesce(
+            Sum(F("amount"), filter=Q(entrydate__gte=startdate, entrydate__lte=enddate) & Q(drcr=True), output_field=DEC18_2),
+            ZERO,
+        )
+        credit_total_expr = Coalesce(
+            Sum(F("amount"), filter=Q(entrydate__gte=startdate, entrydate__lte=enddate) & Q(drcr=False), output_field=DEC18_2),
+            ZERO,
+        )
+        totals_raw = totals_qs.aggregate(
+            opening=opening_total_expr,
+            debit=debit_total_expr,
+            credit=credit_total_expr,
+        )
+        opening_t = totals_raw["opening"] or ZERO_D
+        debit_t   = totals_raw["debit"]   or ZERO_D
+        credit_t  = totals_raw["credit"]  or ZERO_D
+        closing_t = opening_t + debit_t - credit_t
+
+        # -----------------------------
+        # 7) Build Excel
+        # -----------------------------
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Ledger Summary"
+
+        # Styles
+        thin = Side(style="thin", color="CCCCCC")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        hdr_fill = PatternFill("solid", fgColor="F2F2F2")
+        h1 = NamedStyle(name="h1")
+        h1.font = Font(bold=True, size=14)
+        h1.alignment = Alignment(horizontal="center")
+        try:
+            wb.add_named_style(h1)
+        except ValueError:
+            pass
+
+        hdr = NamedStyle(name="hdr")
+        hdr.font = Font(bold=True)
+        hdr.fill = hdr_fill
+        hdr.border = border
+        hdr.alignment = Alignment(horizontal="center", vertical="center")
+        try:
+            wb.add_named_style(hdr)
+        except ValueError:
+            pass
+
+        money = NamedStyle(name="money")
+        money.number_format = '#,##0.00;[Red]-#,##0.00'
+        money.border = border
+        try:
+            wb.add_named_style(money)
+        except ValueError:
+            pass
+
+        norm = NamedStyle(name="norm")
+        norm.border = border
+        try:
+            wb.add_named_style(norm)
+        except ValueError:
+            pass
+
+        # Header / Meta block
+        title = f"Ledger Summary ({group_by.replace('_', ' ').title()})"
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=12)
+        ws.cell(row=1, column=1, value=title).style = "h1"
+
+        meta_rows = [
+            ["Entity", entity_id, "", "Period From", str(startdate), "", "To", str(enddate)],
+            ["Group By", group_by, "", "Sign", sign, "", "Include Zero", str(bool(p.get("include_zero", False)))],
+            ["Filters",
+             f"AH={','.join(map(str, ah_ids)) if ah_ids else '-'}; "
+             f"AC={','.join(map(str, acc_ids)) if acc_ids else '-'}; "
+             f"Txn={','.join(include_txn) if include_txn else '-'}; "
+             f"VNo={p.get('voucherno') or '-'}; "
+             f"VNo*={p.get('vno_contains') or '-'}; "
+             f"Desc*={p.get('desc_contains') or '-'}; "
+             f"MinAct={p.get('min_activity') if p.get('min_activity') is not None else '-'}; "
+             f"Amt[min..max]={p.get('amount_min') or '-'}..{p.get('amount_max') or '-'}; "
+             f"Range[min..max]={p.get('range_min') or '-'}..{p.get('range_max') or '-'}",
+             "", "", "", ""]
+        ]
+        r = 3
+        for mr in meta_rows:
+            for c, val in enumerate(mr, start=1):
+                ws.cell(row=r, column=c, value=val)
+            r += 1
+        r += 1  # blank line before table
+
+        # Table headers (depend on group_by)
+        cols = []
+        if group_by == "head":
+            cols = [
+                ("Head ID", 10),
+                ("Head Name", 35),
+            ]
+        else:
+            cols = [
+                ("Head ID", 10),
+                ("Head Name", 35),
+                ("Account ID", 12),
+                ("Account Name", 40),
+            ]
+        # common numeric cols
+        cols += [
+            ("Opening", 16),
+            ("O/B DRCR", 9),
+            ("Debit", 16),
+            ("Credit", 16),
+            ("Period Net", 16),
+            ("Abs Movement", 16),
+            ("Closing", 16),
+            ("DRCR", 8),
+            ("Txn Count", 11),
+            ("Last Txn Date", 16),
+        ]
+
+        # write header row
+        for c_idx, (title, width) in enumerate(cols, start=1):
+            cell = ws.cell(row=r, column=c_idx, value=title)
+            cell.style = "hdr"
+            ws.column_dimensions[get_column_letter(c_idx)].width = width
+        ws.freeze_panes = ws.cell(row=r+1, column=1)
+        r += 1
+
+        # Data rows
+        def to_number(x):
+            # openpyxl handles Decimal, but explicit float keeps formatting consistent
+            return float(x) if x is not None else 0.0
+
+        for rec in rows:
+            if group_by == "head":
+                head_id   = rec.get("account__accounthead_id")
+                head_name = rec.get("account__accounthead__name")
+                account_id = None
+                account_name = None
+                fixed = [head_id, head_name]
+            else:
+                head_id    = rec.get("account__accounthead_id")
+                head_name  = rec.get("account__accounthead__name")
+                account_id = rec.get("account_id")
+                account_nm = rec.get("account__accountname") or ""
+                fixed = [head_id, head_name, account_id, account_nm]
+
+            opening = rec["openingbalance"]
+            debit   = rec["debit"]
+            credit  = rec["credit"]
+            periodn = rec["period_net"]
+            absmov  = rec["abs_movement"]
+            closing = rec["balancetotal"]
+            drcr    = rec["drcr"]
+            obdrcr  = rec["obdrcr"]
+            txn_ct  = rec["txn_count"]
+            last_dt = rec["last_txn_date"]
+
+            row_vals = fixed + [
+                to_number(opening), obdrcr,
+                to_number(debit), to_number(credit),
+                to_number(periodn), to_number(absmov),
+                to_number(closing), drcr,
+                int(txn_ct or 0),
+                last_dt.isoformat() if last_dt else None
+            ]
+
+            for idx, val in enumerate(row_vals, start=1):
+                cell = ws.cell(row=r, column=idx, value=val)
+                # numeric columns get money style
+                if idx >= (len(fixed) + 1) and idx <= (len(fixed) + 7) and idx != (len(fixed) + 2):  # all amount cols except O/B DRCR text
+                    cell.style = "money"
+                else:
+                    cell.style = "norm"
+                if idx == len(cols):  # Last Txn Date - set number format for ISO text? keep as text
+                    cell.number_format = numbers.FORMAT_TEXT
+            r += 1
+
+        # Totals row
+        # We only show totals for amount columns (Opening, Debit, Credit, Period Net, Abs Movement, Closing)
+        totals_row_start = r + 1
+        ws.cell(row=totals_row_start, column=1, value="GRAND TOTALS").style = "hdr"
+        # figure offsets for amount columns based on group_by
+        base = 0 if group_by == "head" else 2  # extra two columns (Account ID/Name) when grouped by account/head_account
+        opening_col = 1 + (2 + base)  # Opening is after Head/Account cols
+        debit_col   = opening_col + 2
+        credit_col  = debit_col + 1
+        pnet_col    = credit_col + 1
+        absm_col    = pnet_col + 1
+        close_col   = absm_col + 1
+
+        ws.cell(row=totals_row_start, column=opening_col, value=float(opening_t)).style = "money"
+        ws.cell(row=totals_row_start, column=debit_col,   value=float(debit_t)).style   = "money"
+        ws.cell(row=totals_row_start, column=credit_col,  value=float(credit_t)).style  = "money"
+        ws.cell(row=totals_row_start, column=pnet_col,    value=float(debit_t - credit_t)).style = "money"
+        # Abs Movement grand total is NOT simply debit+credit per-account summed signlessly;
+        # it's the sum over accounts of (debit + credit). Compute explicitly if you want exact:
+        # For performance, we can approximate as debit+credit across all lines in period:
+        ws.cell(row=totals_row_start, column=absm_col,    value=float(debit_t + credit_t)).style = "money"
+        ws.cell(row=totals_row_start, column=close_col,   value=float(closing_t)).style  = "money"
+
+        # thin border for totals row cells
+        for cidx in range(1, len(cols) + 1):
+            ws.cell(row=totals_row_start, column=cidx).border = border
+
+        # Autofilter
+        header_row_idx = (totals_row_start - (len(rows) + 1)) + (len(meta_rows) + 2)  # safe: just set over the whole table area
+        ws.auto_filter.ref = f"A{(header_row_idx)}:{get_column_letter(len(cols))}{r-1}"
+
+        # -----------------------------
+        # 8) Return XLSX
+        # -----------------------------
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        fname = f"ledger-summary_{group_by}_{startdate}_{enddate}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{fname}"'
+        return resp
+
+
+class LedgerSummaryPDFAPIView(APIView):
+    """
+    POST /api/reports/ledger-summary.pdf
+    Body: same LedgerSummaryRequestSerializer payload as your JSON endpoint.
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    ORDER_MAP = {
+        "accountname": "account__accountname",
+        "-accountname": "-account__accountname",
+        "head_name": "account__accounthead__name",
+        "-head_name": "-account__accounthead__name",
+        "opening": "openingbalance",
+        "-opening": "-openingbalance",
+        "debit": "debit",
+        "-debit": "-debit",
+        "credit": "credit",
+        "-credit": "-credit",
+        "period_net": "period_net",
+        "-period_net": "-period_net",
+        "abs_movement": "abs_movement",
+        "-abs_movement": "-abs_movement",
+        "balancetotal": "balancetotal",
+        "-balancetotal": "-balancetotal",
+    }
+
+    # ---------- helpers ----------
+    def _fmt_money(self, x):
+        if x is None:
+            return "0.00"
+        # Comma-separated with 2 decimals; negatives show with minus (you can switch to DR/CR if you prefer)
+        return f"{x:,.2f}"
+
+    def _make_header_footer(self, title, subline):
+        def on_page(canvas, doc):
+            canvas.saveState()
+            w, h = landscape(A4)
+            canvas.setFont("Helvetica-Bold", 11)
+            canvas.drawString(0.6*inch, h - 0.55*inch, title)
+            canvas.setFont("Helvetica", 9)
+            canvas.drawRightString(w - 0.6*inch, h - 0.55*inch, subline)
+            canvas.restoreState()
+
+        def on_footer(canvas, doc):
+            canvas.saveState()
+            w, h = landscape(A4)
+            canvas.setFont("Helvetica", 8)
+            canvas.setFillGray(0.4)
+            canvas.drawRightString(
+                w - 0.6*inch, 0.4*inch,
+                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  Page {doc.page}"
+            )
+            canvas.restoreState()
+
+        return on_page, on_footer
+
+    # ---------- main ----------
+    def post(self, request, *_args, **_kwargs):
+        # 1) Validate (reuse serializer)
+        in_ser = LedgerSummaryRequestSerializer(data=request.data)
+        in_ser.is_valid(raise_exception=True)
+        p = in_ser.validated_data
+
+        entity_id = p["entity"]
+        startdate = p["startdate"]
+        enddate   = p["enddate"]
+        group_by  = p["group_by"]
+
+        # 2) Base queryset + filters
+        qs = JournalLine.objects.filter(
+            entity_id=entity_id,
+            account__isnull=False,
+            entrydate__lte=enddate,
+        )
+
+        include_txn = None
+        if p.get("txn_in"):
+            include_txn = [x.strip() for x in str(p["txn_in"]).split(",") if x.strip()]
+            qs = qs.filter(transactiontype__in=include_txn)
+
+        if p.get("voucherno"):
+            qs = qs.filter(voucherno=str(p["voucherno"]))
+        if p.get("vno_contains"):
+            qs = qs.filter(voucherno__icontains=str(p["vno_contains"]))
+        if p.get("desc_contains"):
+            qs = qs.filter(desc__icontains=str(p["desc_contains"]))
+
+        ah_ids = None
+        if p.get("accounthead"):
+            ah_ids = [int(x) for x in str(p["accounthead"]).split(",") if x.strip()]
+            qs = qs.filter(account__accounthead_id__in=ah_ids)
+
+        acc_ids = None
+        if p.get("account"):
+            acc_ids = [int(x) for x in str(p["account"]).split(",") if x.strip()]
+            qs = qs.filter(account_id__in=acc_ids)
+
+        # 3) Aggregations
+        period_f = Q(entrydate__gte=startdate, entrydate__lte=enddate)
+
+        opening_expr = Coalesce(
+            Sum(
+                Case(
+                    When(drcr=True, then=F("amount")),
+                    When(drcr=False, then=-F("amount")),
+                    default=V(0),
+                    output_field=DEC18_2,
+                ),
+                filter=Q(entrydate__lt=startdate),
+                output_field=DEC18_2,
+            ),
+            ZERO,
+        )
+        debit_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=True), output_field=DEC18_2),
+            ZERO,
+        )
+        credit_expr = Coalesce(
+            Sum(F("amount"), filter=period_f & Q(drcr=False), output_field=DEC18_2),
+            ZERO,
+        )
+        period_net_expr = ExpressionWrapper(F("debit") - F("credit"), output_field=DEC18_2)
+        abs_mov_expr    = ExpressionWrapper(F("debit") + F("credit"), output_field=DEC18_2)
+        closing_expr    = ExpressionWrapper(F("openingbalance") + F("debit") - F("credit"), output_field=DEC18_2)
+
+        if group_by == "head":
+            group_vals = ["account__accounthead_id", "account__accounthead__name"]
+        else:
+            group_vals = [
+                "account_id",
+                "account__accountname",
+                "account__accounthead_id",
+                "account__accounthead__name",
+            ]
+
+        qs = (
+            qs.values(*group_vals)
+              .annotate(
+                  openingbalance=opening_expr,
+                  debit=debit_expr,
+                  credit=credit_expr,
+              )
+              .annotate(
+                  period_net=period_net_expr,
+                  abs_movement=abs_mov_expr,
+                  balancetotal=closing_expr,
+                  txn_count=Count("id", filter=period_f),
+                  last_txn_date=Max("entrydate", filter=period_f),
+              )
+              .annotate(
+                  drcr=Case(When(balancetotal__lt=0, then=V("CR")), default=V("DR")),
+                  obdrcr=Case(When(openingbalance__lt=0, then=V("CR")), default=V("DR")),
+              )
+        )
+
+        # 4) Summary filters
+        sign = p.get("sign", "ALL")
+        if sign == "DR":
+            qs = qs.filter(balancetotal__gt=0)
+        elif sign == "CR":
+            qs = qs.filter(balancetotal__lt=0)
+
+        if not p.get("include_zero", False):
+            qs = qs.exclude(balancetotal=ZERO_D)
+
+        if p.get("min_activity") is not None:
+            qs = qs.filter(abs_movement__gte=p["min_activity"])
+
+        if p.get("amount_min") is not None:
+            qs = qs.filter(balancetotal__gte=p["amount_min"])
+        if p.get("amount_max") is not None:
+            qs = qs.filter(balancetotal__lte=p["amount_max"])
+
+        if p.get("range_min") is not None:
+            qs = qs.filter(balancetotal__gte=p["range_min"])
+        if p.get("range_max") is not None:
+            qs = qs.filter(balancetotal__lte=p["range_max"])
+
+        # 5) Ordering
+        order_key = (p.get("order_by") or "").strip() or ("head_name" if group_by == "head" else "accountname")
+        order_field = self.ORDER_MAP.get(order_key)
+        if group_by == "head" and order_field in ("account__accountname", "-account__accountname"):
+            order_field = "account__accounthead__name"
+        if not order_field:
+            order_field = "account__accounthead__name" if group_by == "head" else "account__accountname"
+        qs = qs.order_by(order_field)
+
+        rows = list(qs)
+
+        # 6) Grand totals
+        totals_qs = JournalLine.objects.filter(
+            entity_id=entity_id,
+            account__isnull=False,
+            entrydate__lte=enddate,
+        )
+        if include_txn:
+            totals_qs = totals_qs.filter(transactiontype__in=include_txn)
+        if p.get("voucherno"):
+            totals_qs = totals_qs.filter(voucherno=str(p["voucherno"]))
+        if p.get("vno_contains"):
+            totals_qs = totals_qs.filter(voucherno__icontains=str(p["vno_contains"]))
+        if p.get("desc_contains"):
+            totals_qs = totals_qs.filter(desc__icontains=str(p["desc_contains"]))
+        if ah_ids:
+            totals_qs = totals_qs.filter(account__accounthead_id__in=ah_ids)
+        if acc_ids:
+            totals_qs = totals_qs.filter(account_id__in=acc_ids)
+
+        opening_total_expr = Coalesce(
+            Sum(
+                Case(
+                    When(drcr=True, then=F("amount")),
+                    When(drcr=False, then=-F("amount")),
+                    default=V(0),
+                    output_field=DEC18_2,
+                ),
+                filter=Q(entrydate__lt=startdate),
+                output_field=DEC18_2,
+            ),
+            ZERO,
+        )
+        debit_total_expr = Coalesce(
+            Sum(F("amount"), filter=Q(entrydate__gte=startdate, entrydate__lte=enddate) & Q(drcr=True), output_field=DEC18_2),
+            ZERO,
+        )
+        credit_total_expr = Coalesce(
+            Sum(F("amount"), filter=Q(entrydate__gte=startdate, entrydate__lte=enddate) & Q(drcr=False), output_field=DEC18_2),
+            ZERO,
+        )
+        totals_raw = totals_qs.aggregate(
+            opening=opening_total_expr,
+            debit=debit_total_expr,
+            credit=credit_total_expr,
+        )
+        opening_t = totals_raw["opening"] or ZERO_D
+        debit_t   = totals_raw["debit"]   or ZERO_D
+        credit_t  = totals_raw["credit"]  or ZERO_D
+        closing_t = opening_t + debit_t - credit_t
+
+        # 7) Build PDF
+        buf = BytesIO()
+        pagesize = landscape(A4)
+        doc = BaseDocTemplate(
+            buf, pagesize=pagesize,
+            leftMargin=0.5*inch, rightMargin=0.5*inch,
+            topMargin=0.8*inch, bottomMargin=0.6*inch
+        )
+        frame = Frame(
+            doc.leftMargin, doc.bottomMargin,
+            doc.width, doc.height - 0.1*inch,
+            id="normal"
+        )
+
+        title = f"Ledger Summary ({group_by.replace('_', ' ').title()})"
+        subline = f"Entity: {entity_id} | Period: {startdate} to {enddate}"
+        on_page, on_footer = self._make_header_footer(title, subline)
+        doc.addPageTemplates([PageTemplate(id="lpage", frames=[frame], onPage=on_page, onPageEnd=on_footer)])
+
+        styles = getSampleStyleSheet()
+        p_meta = ParagraphStyle(
+            "meta",
+            parent=styles["Normal"],
+            fontSize=9,
+            leading=11,
+            textColor=colors.HexColor("#333333")
+        )
+        p_hdr = ParagraphStyle(
+            "hdr",
+            parent=styles["Normal"],
+            fontSize=10,
+            leading=12,
+            textColor=colors.black
+        )
+
+        story = []
+        # a) Meta block
+        filters_text = (
+            f"<b>Sign</b>: {p.get('sign','ALL')} &nbsp;&nbsp; "
+            f"<b>Include Zero</b>: {bool(p.get('include_zero', False))} &nbsp;&nbsp; "
+            f"<b>AH</b>: {','.join(map(str, ah_ids)) if ah_ids else '-'} &nbsp;&nbsp; "
+            f"<b>AC</b>: {','.join(map(str, acc_ids)) if acc_ids else '-'} &nbsp;&nbsp; "
+            f"<b>Txn</b>: {','.join(include_txn) if include_txn else '-'} &nbsp;&nbsp; "
+            f"<b>VNo</b>: {p.get('voucherno') or '-'} &nbsp;&nbsp; "
+            f"<b>VNo*</b>: {p.get('vno_contains') or '-'} &nbsp;&nbsp; "
+            f"<b>Desc*</b>: {p.get('desc_contains') or '-'} &nbsp;&nbsp; "
+            f"<b>MinAct</b>: {p.get('min_activity') if p.get('min_activity') is not None else '-'} &nbsp;&nbsp; "
+            f"<b>Amt[min..max]</b>: {p.get('amount_min') or '-'}..{p.get('amount_max') or '-'} &nbsp;&nbsp; "
+            f"<b>Range[min..max]</b>: {p.get('range_min') or '-'}..{p.get('range_max') or '-'}"
+        )
+        story.append(Paragraph(filters_text, p_meta))
+        story.append(Spacer(1, 0.15*inch))
+
+        # b) Build table header according to grouping
+        if group_by == "head":
+            headers = ["Head ID", "Head Name",
+                       "Opening", "O/B DRCR", "Debit", "Credit",
+                       "Period Net", "Abs Movement", "Closing", "DRCR",
+                       "Txn Count", "Last Txn Date"]
+            col_widths = [0.9*inch, 2.9*inch,
+                          1.1*inch, 0.85*inch, 1.1*inch, 1.1*inch,
+                          1.1*inch, 1.2*inch, 1.1*inch, 0.75*inch,
+                          0.85*inch, 1.2*inch]
+            fixed_keys = ("account__accounthead_id", "account__accounthead__name")
+        else:
+            headers = ["Head ID", "Head Name", "Account ID", "Account Name",
+                       "Opening", "O/B DRCR", "Debit", "Credit",
+                       "Period Net", "Abs Movement", "Closing", "DRCR",
+                       "Txn Count", "Last Txn Date"]
+            col_widths = [0.9*inch, 2.4*inch, 0.95*inch, 2.7*inch,
+                          1.1*inch, 0.85*inch, 1.1*inch, 1.1*inch,
+                          1.1*inch, 1.2*inch, 1.1*inch, 0.75*inch,
+                          0.85*inch, 1.2*inch]
+            fixed_keys = ("account__accounthead_id", "account__accounthead__name",
+                          "account_id", "account__accountname")
+
+        data = [headers]
+
+        # c) Data rows
+        for rec in rows:
+            fixed_vals = [rec.get(k) or "" for k in fixed_keys]
+            opening = rec["openingbalance"]
+            debit   = rec["debit"]
+            credit  = rec["credit"]
+            periodn = rec["period_net"]
+            absmov  = rec["abs_movement"]
+            closing = rec["balancetotal"]
+            drcr    = rec["drcr"]
+            obdrcr  = rec["obdrcr"]
+            txn_ct  = rec["txn_count"]
+            last_dt = rec["last_txn_date"].isoformat() if rec["last_txn_date"] else ""
+
+            row = list(fixed_vals) + [
+                self._fmt_money(opening), obdrcr,
+                self._fmt_money(debit), self._fmt_money(credit),
+                self._fmt_money(periodn), self._fmt_money(absmov),
+                self._fmt_money(closing), drcr,
+                int(txn_ct or 0), last_dt
+            ]
+            data.append(row)
+
+        # d) Totals row (band)
+        totals_label = "GRAND TOTALS"
+        # compute period net = debit - credit; abs movement proxy = debit + credit
+        totals_row = []
+        if group_by == "head":
+            prefix_len = 2
+            totals_row = ["", totals_label]
+        else:
+            prefix_len = 4
+            totals_row = ["", totals_label, "", ""]
+
+        totals_row += [
+            self._fmt_money(opening_t), "",  # Opening, O/B DRCR is blank
+            self._fmt_money(debit_t), self._fmt_money(credit_t),
+            self._fmt_money(debit_t - credit_t),
+            self._fmt_money(debit_t + credit_t),  # proxy for abs movement
+            self._fmt_money(closing_t), "", "", ""  # DRCR/Txn/Date blank
+        ]
+        data.append(totals_row)
+
+        # e) Table + styling
+        tbl = Table(data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+        # figure out numeric columns to right-align
+        # For both variants, numeric columns start after the fixed fields:
+        # [Opening, O/B DRCR(text), Debit, Credit, Period Net, Abs Movement, Closing, DRCR(text), Txn Count, Last Date]
+        ncols = len(headers)
+        table_style_cmds = [
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#F2F2F2")),  # header bg
+            ("TEXTCOLOR",  (0,0), (-1,0), colors.HexColor("#000000")),
+            ("GRID",       (0,0), (-1,-1), 0.25, colors.HexColor("#CCCCCC")),
+            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",   (0,0), (-1,0), 9),
+            ("FONTSIZE",   (0,1), (-1,-1), 8),
+            ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN",      (0,0), (-1,0), "CENTER"),
+        ]
+
+        # Right align: all amounts + Txn Count
+        first_amt_col = prefix_len  # 0-based: after fixed cols
+        amt_cols = [
+            first_amt_col + 0,  # Opening
+            first_amt_col + 2,  # Debit
+            first_amt_col + 3,  # Credit
+            first_amt_col + 4,  # Period Net
+            first_amt_col + 5,  # Abs Movement
+            first_amt_col + 6,  # Closing
+        ]
+        for c in amt_cols + [ncols - 2]:  # txn count column
+            table_style_cmds.append(("ALIGN", (c,1), (c,-1), "RIGHT"))
+
+        # Totals band: bold + light background
+        totals_row_idx = len(data) - 1
+        table_style_cmds += [
+            ("BACKGROUND", (0, totals_row_idx), (-1, totals_row_idx), colors.HexColor("#FFF8E1")),
+            ("FONTNAME",   (0, totals_row_idx), (-1, totals_row_idx), "Helvetica-Bold"),
+        ]
+
+        tbl.setStyle(TableStyle(table_style_cmds))
+
+        story.append(tbl)
+
+        # 8) Build & respond
+        doc.build(story)
+        pdf = buf.getvalue()
+        buf.close()
+
+        fname = f"ledger-summary_{group_by}_{startdate}_{enddate}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+        resp = HttpResponse(pdf, content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename="{fname}"'
+        return resp
 
 class ledgerjournaldetails(ListAPIView):
     """
@@ -10492,3 +11362,1186 @@ def _pdf_header_footer(canvas, doc, title: str, subtitle: str):
     canvas.drawRightString(width - 28, 26, f"Page {canvas.getPageNumber()}")
     canvas.restoreState()
 
+
+
+
+class DayBookAPIView(APIView):
+    """
+    Unified Day Book API (single or multi-FY via `sections[]`)
+
+    GET /api/reports/day_book?entity=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+      Optional:
+        - account_id=INT
+        - accounthead=INT
+        - voucherno=JV123,PV45
+        - vouchertype=Sales,Receipt,...
+        - desc_contains=rent
+        - min_amount=100.00
+        - max_amount=5000
+        - posted_only=true|false         (default true)
+        - include_empty_days=true|false  (default false)
+        - strict_fy=true|false           (default false)
+
+    Output mirrors Cash Book structure but lists ALL transactions.
+    Adds CASH-only opening/receipts/payments/closing at grand, section, and per-day levels.
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # -------- cash helpers --------
+
+    def _resolve_cash_account_id(self, entity_id: int) -> int:
+        const = stocktransconstant()
+        acct = const.getcashid(entity_id)
+        return int(acct.pk) if hasattr(acct, "pk") else int(acct)
+
+    def _sum_dc(self, qs):
+        deb = qs.aggregate(
+            s=Coalesce(Sum(
+                Case(
+                    When(Q(drcr=True) | Q(drcr__iexact='D'), then=F("amount")),
+                    default=Value(Decimal("0.00")),
+                    output_field=DecimalField(max_digits=16, decimal_places=2),
+                )
+            ), Value(Decimal("0.00")))
+        )["s"] or Decimal("0.00")
+
+        crd = qs.aggregate(
+            s=Coalesce(Sum(
+                Case(
+                    When(Q(drcr=False) | Q(drcr__iexact='C'), then=F("amount")),
+                    default=Value(Decimal("0.00")),
+                    output_field=DecimalField(max_digits=16, decimal_places=2),
+                )
+            ), Value(Decimal("0.00")))
+        )["s"] or Decimal("0.00")
+
+        return _D(deb), _D(crd)
+
+    def _cash_opening(self, entity_id: int, cash_id: int, start_date: date) -> Decimal:
+        qs = JournalLine.objects.filter(
+            entity_id=entity_id, account_id=cash_id, entrydate__lt=start_date
+        )
+        deb, crd = self._sum_dc(qs)
+        return _D(deb - crd)
+
+    def _cash_totals_in_range(self, entity_id: int, cash_id: int, d1: date, d2: date):
+        qs = JournalLine.objects.filter(
+            entity_id=entity_id, account_id=cash_id,
+            entrydate__gte=d1, entrydate__lte=d2
+        )
+        deb, crd = self._sum_dc(qs)
+        return _D(deb), _D(crd)
+
+    # -------- data fetchers --------
+
+    def _fetch_rows(self, qs, sub_from: date, sub_to: date):
+        """
+        Fetch journal lines for [sub_from, sub_to], annotate debit/credit from (drcr, amount).
+        Works whether drcr is Boolean or 'D'/'C' Char.
+        """
+        return (
+            qs.filter(entrydate__gte=sub_from, entrydate__lte=sub_to)
+              .select_related("account")  # add accounthead if you need it
+              .annotate(
+                  debit=Coalesce(
+                      Case(
+                          When(Q(drcr=True) | Q(drcr__iexact='D'), then=F("amount")),
+                          default=Value(Decimal("0.00")),
+                          output_field=DecimalField(max_digits=16, decimal_places=2),
+                      ),
+                      Value(Decimal("0.00"))
+                  ),
+                  credit=Coalesce(
+                      Case(
+                          When(Q(drcr=False) | Q(drcr__iexact='C'), then=F("amount")),
+                          default=Value(Decimal("0.00")),
+                          output_field=DecimalField(max_digits=16, decimal_places=2),
+                      ),
+                      Value(Decimal("0.00"))
+                  ),
+                  account_name = F("account__accountname"),
+                  voucher_name = F("transactiontype"),
+              )
+              .order_by("entrydate", "id")
+        )
+
+    def _build_day_sections_all(self, rows, include_empty: bool, sub_from: date, sub_to: date):
+        """
+        Group rows by entrydate; compute per-day debit/credit totals and return:
+            (day_sections: list, section_total_debit: Decimal, section_total_credit: Decimal)
+        """
+        by_date = defaultdict(list)
+        for r in rows:
+            by_date[r.entrydate].append(r)
+
+        day_cursor = sub_from
+        day_sections = []
+        total_deb = Decimal("0.00")
+        total_cr  = Decimal("0.00")
+
+        while day_cursor <= sub_to:
+            items = []
+            d_deb = Decimal("0.00")
+            d_cr  = Decimal("0.00")
+
+            for r in by_date.get(day_cursor, []):
+                debit  = _D(r.debit or 0)
+                credit = _D(r.credit or 0)
+                d_deb += debit
+                d_cr  += credit
+                items.append({
+                    "date": r.entrydate,                 # serializer expects 'date'
+                    "voucherno": r.voucherno or "",
+                    "voucher": r.voucher_name or "",
+                    "account_id": r.account_id,
+                    "account": r.account_name or "",
+                    "contra_ac": "",                     # fill if you store it
+                    "desc": r.desc or "",
+                    "debit": debit,
+                    "credit": credit,
+                })
+
+            if items or include_empty:
+                day_sections.append({
+                    "date": day_cursor,
+                    "day_debits": _D(d_deb),
+                    "day_credits": _D(d_cr),
+                    "day_net": _D(d_deb - d_cr),
+                    "items": items,
+                })
+
+            total_deb += d_deb
+            total_cr  += d_cr
+            day_cursor = date.fromordinal(day_cursor.toordinal() + 1)
+
+        return day_sections, total_deb, total_cr
+
+    # -------- main GET --------
+
+    def get(self, request):
+        # required params
+        entity_raw = request.query_params.get("entity")
+        from_raw   = request.query_params.get("from")
+        to_raw     = request.query_params.get("to")
+        if entity_raw is None or from_raw is None or to_raw is None:
+            return Response({"detail": "Query params required: entity, from, to (YYYY-MM-DD)"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            entity_id = int(str(entity_raw).strip())
+            from_dt   = _parse_iso_date(from_raw)
+            to_dt     = _parse_iso_date(to_raw)
+        except Exception:
+            return Response({"detail": "Dates must be YYYY-MM-DD.",
+                             "received": {"from": from_raw, "to": to_raw}}, status=400)
+        if to_dt < from_dt:
+            return Response({"detail": "'to' must be >= 'from'."}, status=400)
+
+        # toggles
+        posted_only        = _bool(request.query_params.get("posted_only"), default=True)
+        include_empty_days = _bool(request.query_params.get("include_empty_days"), default=False)
+        strict_fy          = _bool(request.query_params.get("strict_fy"), default=False)
+
+        # base queryset for ALL entries in date range (entity scope)
+        base = JournalLine.objects.filter(
+            entity_id=entity_id,
+            entrydate__gte=from_dt,
+            entrydate__lte=to_dt
+        )
+        # if posted_only:
+        #     base = base.filter(entry__is_posted=True)
+
+        # optional filters
+        account_q = request.query_params.get("account_id")
+        if account_q:
+            try:
+                base = base.filter(account_id=int(account_q))
+            except ValueError:
+                return Response({"detail": "Invalid account_id."}, status=400)
+
+        head_q = request.query_params.get("accounthead")
+        if head_q:
+            try:
+                base = base.filter(accounthead_id=int(head_q))
+            except ValueError:
+                return Response({"detail": "Invalid accounthead."}, status=400)
+
+        vno_q = request.query_params.get("voucherno")
+        if vno_q:
+            vnos = [x.strip() for x in vno_q.split(",") if x.strip()]
+            if vnos:
+                base = base.filter(voucherno__in=vnos)
+
+        vtype_q = request.query_params.get("vouchertype")
+        if vtype_q:
+            vtypes = [x.strip() for x in vtype_q.split(",") if x.strip()]
+            if vtypes:
+                base = base.filter(transactiontype__in=vtypes)
+
+        desc_contains = request.query_params.get("desc_contains")
+        if desc_contains:
+            base = base.filter(desc__icontains=desc_contains)
+
+        min_amount = request.query_params.get("min_amount")
+        if min_amount:
+            try:
+                base = base.filter(amount__gte=_D(min_amount))
+            except Exception:
+                return Response({"detail": "Invalid min_amount."}, status=400)
+
+        max_amount = request.query_params.get("max_amount")
+        if max_amount:
+            try:
+                base = base.filter(amount__lte=_D(max_amount))
+            except Exception:
+                return Response({"detail": "Invalid max_amount."}, status=400)
+
+        # FY handling
+        fy_from = _fy_covering_date(entity_id, from_dt)
+        fy_to   = _fy_covering_date(entity_id, to_dt)
+
+        # cash setup
+        cash_id = self._resolve_cash_account_id(entity_id)
+
+        # ---- single-section builder (with cash grand/section/day stats) ----
+        def _single_section_payload():
+            rows = self._fetch_rows(base, from_dt, to_dt)
+            day_sections, sec_deb, sec_cr = self._build_day_sections_all(rows, include_empty_days, from_dt, to_dt)
+
+            # cash grand/section
+            cash_opening = self._cash_opening(entity_id, cash_id, from_dt)
+            cash_rec, cash_pay = self._cash_totals_in_range(entity_id, cash_id, from_dt, to_dt)
+            cash_closing = _D(cash_opening + cash_rec - cash_pay)
+
+            # per-day cash (pre-aggregated)
+            per_day_cash_qs = (
+                JournalLine.objects
+                .filter(
+                    entity_id=entity_id,
+                    account_id=cash_id,
+                    entrydate__gte=from_dt,   # use from_dt in single-section; sub_from in multi-FY
+                    entrydate__lte=to_dt      # use to_dt in single-section;   sub_to   in multi-FY
+                )
+                .values("entrydate")
+                .annotate(
+                    day_dr=Coalesce(Sum(
+                        Case(
+                            When(Q(drcr=True) | Q(drcr__iexact='D'), then=F("amount")),
+                            default=Value(Decimal("0.00")),
+                            output_field=DecimalField(max_digits=16, decimal_places=2),
+                        )
+                    ), Value(Decimal("0.00"))),
+                    day_cr=Coalesce(Sum(
+                        Case(
+                            When(Q(drcr=False) | Q(drcr__iexact='C'), then=F("amount")),
+                            default=Value(Decimal("0.00")),
+                            output_field=DecimalField(max_digits=16, decimal_places=2),
+                        )
+                    ), Value(Decimal("0.00"))),
+                )
+                .values_list("entrydate", "day_dr", "day_cr")
+            )
+
+            per_day_cash = { d: (_D(dr or 0), _D(cr or 0)) for d, dr, cr in per_day_cash_qs }
+
+            running = _D(cash_opening)
+            for ds in day_sections:
+                d = ds["date"]
+                dr = _D(0); cr = _D(0)
+                if d in per_day_cash:
+                    dr = _D(per_day_cash[d][0] or 0)
+                    cr = _D(per_day_cash[d][1] or 0)
+                ds["cash_day_opening"]  = _D(running)
+                ds["cash_day_receipts"] = _D(dr)
+                ds["cash_day_payments"] = _D(cr)
+                running = _D(running + dr - cr)
+                ds["cash_day_closing"]  = _D(running)
+
+            section_obj = {
+                "fy_name": (_fy_name(fy_from) if fy_from and fy_to and fy_from.id == fy_to.id else ""),
+                "fy_start": fy_from.finstartyear.date() if fy_from else None,
+                "fy_end": fy_from.finendyear.date() if fy_from else None,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "total_debits": _D(sec_deb),
+                "total_credits": _D(sec_cr),
+                "net_movement": _D(sec_deb - sec_cr),
+                "day_sections": day_sections,
+                # cash fields
+                "cash_opening": _D(cash_opening),
+                "cash_total_receipts": _D(cash_rec),
+                "cash_total_payments": _D(cash_pay),
+                "cash_closing": _D(cash_closing),
+            }
+
+            return {
+                "entity": entity_id,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_total_debits": _D(sec_deb),
+                "grand_total_credits": _D(sec_cr),
+                "grand_net_movement": _D(sec_deb - sec_cr),
+                "sections": [section_obj],
+                # cash grand (same as section in single-FY)
+                "grand_cash_opening": _D(cash_opening),
+                "grand_cash_total_receipts": _D(cash_rec),
+                "grand_cash_total_payments": _D(cash_pay),
+                "grand_cash_closing": _D(cash_closing),
+            }
+
+        # ---- choose single vs multi-FY ----
+        if not fy_from or not fy_to:
+            if strict_fy:
+                return Response(
+                    {"detail": "Requested dates are not fully covered by financial year setup.",
+                     "hint": "Add FY rows for these dates or call without strict_fy."},
+                    status=400,
+                )
+            payload = _single_section_payload()
+
+        elif fy_from.id == fy_to.id:
+            payload = _single_section_payload()
+
+        else:
+            # multi-FY
+            fys = _fys_overlapping_range(entity_id, from_dt, to_dt)
+            if not fys:
+                return Response({"detail": "No financial year overlaps the requested range."}, status=400)
+
+            sections = []
+            grand_deb = Decimal("0.00")
+            grand_cr  = Decimal("0.00")
+
+            grand_cash_open  = self._cash_opening(entity_id, cash_id, from_dt)
+            grand_cash_rece  = _D(0)
+            grand_cash_pay   = _D(0)
+            running_cash     = _D(grand_cash_open)
+
+            for fy in fys:
+                sub_from, sub_to = _clip_to_fy(from_dt, to_dt, fy)
+
+                rows = self._fetch_rows(base, sub_from, sub_to)
+                day_sections, sec_deb, sec_cr = self._build_day_sections_all(
+                    rows, include_empty_days, sub_from, sub_to
+                )
+
+                # cash per-section
+                sec_cash_open = _D(running_cash)
+                sec_cash_rec, sec_cash_pay = self._cash_totals_in_range(entity_id, cash_id, sub_from, sub_to)
+                sec_cash_close = _D(sec_cash_open + sec_cash_rec - sec_cash_pay)
+
+                # per-day cash aggregate for this FY window
+                per_day_cash_qs = (
+                    JournalLine.objects
+                    .filter(
+                        entity_id=entity_id,
+                        account_id=cash_id,
+                        entrydate__gte=sub_from,   # use from_dt in single-section; sub_from in multi-FY
+                        entrydate__lte=sub_to      # use to_dt in single-section;   sub_to   in multi-FY
+                    )
+                    .values("entrydate")
+                    .annotate(
+                        day_dr=Coalesce(Sum(
+                            Case(
+                                When(Q(drcr=True) | Q(drcr__iexact='D'), then=F("amount")),
+                                default=Value(Decimal("0.00")),
+                                output_field=DecimalField(max_digits=16, decimal_places=2),
+                            )
+                        ), Value(Decimal("0.00"))),
+                        day_cr=Coalesce(Sum(
+                            Case(
+                                When(Q(drcr=False) | Q(drcr__iexact='C'), then=F("amount")),
+                                default=Value(Decimal("0.00")),
+                                output_field=DecimalField(max_digits=16, decimal_places=2),
+                            )
+                        ), Value(Decimal("0.00"))),
+                    )
+                    .values_list("entrydate", "day_dr", "day_cr")
+                )
+
+                per_day_cash = { d: (_D(dr or 0), _D(cr or 0)) for d, dr, cr in per_day_cash_qs }
+
+                # attach per-day cash
+                local_running = _D(sec_cash_open)
+                for ds in day_sections:
+                    d = ds["date"]
+                    dr = _D(0); cr = _D(0)
+                    if d in per_day_cash:
+                        dr = _D(per_day_cash[d][0] or 0)
+                        cr = _D(per_day_cash[d][1] or 0)
+                    ds["cash_day_opening"]  = _D(local_running)
+                    ds["cash_day_receipts"] = _D(dr)
+                    ds["cash_day_payments"] = _D(cr)
+                    local_running = _D(local_running + dr - cr)
+                    ds["cash_day_closing"]  = _D(local_running)
+
+                sections.append({
+                    "fy_name": _fy_name(fy),
+                    "fy_start": fy.finstartyear.date(),
+                    "fy_end": fy.finendyear.date(),
+                    "from_date": sub_from,
+                    "to_date": sub_to,
+                    "total_debits": _D(sec_deb),
+                    "total_credits": _D(sec_cr),
+                    "net_movement": _D(sec_deb - sec_cr),
+                    "day_sections": day_sections,
+                    # cash section
+                    "cash_opening": _D(sec_cash_open),
+                    "cash_total_receipts": _D(sec_cash_rec),
+                    "cash_total_payments": _D(sec_cash_pay),
+                    "cash_closing": _D(sec_cash_close),
+                })
+
+                # rollups
+                grand_deb += sec_deb
+                grand_cr  += sec_cr
+                grand_cash_rece += sec_cash_rec
+                grand_cash_pay  += sec_cash_pay
+                running_cash     = _D(sec_cash_close)
+
+            payload = {
+                "entity": entity_id,
+                "from_date": from_dt,
+                "to_date": to_dt,
+                "spans_multiple_fy": True,
+                "grand_total_debits": _D(grand_deb),
+                "grand_total_credits": _D(grand_cr),
+                "grand_net_movement": _D(grand_deb - grand_cr),
+                "sections": sections,
+                # cash grand
+                "grand_cash_opening": _D(grand_cash_open),
+                "grand_cash_total_receipts": _D(grand_cash_rece),
+                "grand_cash_total_payments": _D(grand_cash_pay),
+                "grand_cash_closing": _D(running_cash),
+            }
+
+        return Response(DaybookUnifiedSerializer(payload).data, status=200)
+
+
+class DayBookExcelAPIView(APIView):
+    """
+    Download Day Book as Excel (Summary + Detail)
+    Mirrors DayBookAPIView logic including cash stats at grand/section/day levels.
+
+    GET /api/reports/day_book.xlsx?entity=1&from=YYYY-MM-DD&to=YYYY-MM-DD
+         [&account_id=..&accounthead=..&voucherno=..&vouchertype=..&desc_contains=..]
+         [&min_amount=..&max_amount=..]
+         [&posted_only=true|false]        (default true)
+         [&include_empty_days=true|false] (default false)
+         [&strict_fy=true|false]          (default false)
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    # ---------- tiny copies of your common helpers (same signatures/behavior) ----------
+    def _parse_iso_date(self, s: str) -> date:
+        s = str(s or "").strip().replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+        return date.fromisoformat(s)  # strict YYYY-MM-DD
+
+    def _bool(self, s, default=False) -> bool:
+        if s is None:
+            return default
+        s = str(s).strip().lower()
+        return s in ("1", "true", "t", "yes", "y", "on")
+
+    # ---------- payload builder: delegates to DayBookAPIView methods to stay in sync ----------
+    def _build_payload(self, request):
+        """
+        Rebuild the exact DayBook payload by reusing DayBookAPIView's helpers and logic.
+        """
+        # Parse core params
+        entity_raw = request.query_params.get("entity")
+        from_raw   = request.query_params.get("from")
+        to_raw     = request.query_params.get("to")
+        if entity_raw is None or from_raw is None or to_raw is None:
+            return {"error": {"detail": "Query params required: entity, from, to (YYYY-MM-DD)"}}, 400
+
+        try:
+            entity_id = int(str(entity_raw).strip())
+            from_dt   = self._parse_iso_date(from_raw)
+            to_dt     = self._parse_iso_date(to_raw)
+        except Exception:
+            return {"error": {"detail": "Dates must be YYYY-MM-DD.", "received": {"from": from_raw, "to": to_raw}}}, 400
+
+        if to_dt < from_dt:
+            return {"error": {"detail": "'to' must be >= 'from'."}}, 400
+
+        posted_only        = self._bool(request.query_params.get("posted_only"), default=True)
+        include_empty_days = self._bool(request.query_params.get("include_empty_days"), default=False)
+        strict_fy          = self._bool(request.query_params.get("strict_fy"), default=False)
+
+        # Instantiate the JSON view so we can reuse its private methods 1:1
+        core = DayBookAPIView()
+
+        # Build the same base queryset and filters (copy from DayBookAPIView.get)
+        base = JournalLine.objects.filter(
+            entity_id=entity_id,
+            entrydate__gte=from_dt,
+            entrydate__lte=to_dt
+        )
+        # if posted_only:
+        #     base = base.filter(entry__is_posted=True)
+
+        account_q = request.query_params.get("account_id")
+        if account_q:
+            try:
+                base = base.filter(account_id=int(account_q))
+            except ValueError:
+                return {"error": {"detail": "Invalid account_id."}}, 400
+
+        head_q = request.query_params.get("accounthead")
+        if head_q:
+            try:
+                base = base.filter(accounthead_id=int(head_q))
+            except ValueError:
+                return {"error": {"detail": "Invalid accounthead."}}, 400
+
+        vno_q = request.query_params.get("voucherno")
+        if vno_q:
+            vnos = [x.strip() for x in vno_q.split(",") if x.strip()]
+            if vnos:
+                base = base.filter(voucherno__in=vnos)
+
+        vtype_q = request.query_params.get("vouchertype")
+        if vtype_q:
+            vtypes = [x.strip() for x in vtype_q.split(",") if x.strip()]
+            if vtypes:
+                base = base.filter(transactiontype__in=vtypes)
+
+        desc_contains = request.query_params.get("desc_contains")
+        if desc_contains:
+            base = base.filter(desc__icontains=desc_contains)
+
+        min_amount = request.query_params.get("min_amount")
+        if min_amount:
+            try:
+                base = base.filter(amount__gte=_D(min_amount))
+            except Exception:
+                return {"error": {"detail": "Invalid min_amount."}}, 400
+
+        max_amount = request.query_params.get("max_amount")
+        if max_amount:
+            try:
+                base = base.filter(amount__lte=_D(max_amount))
+            except Exception:
+                return {"error": {"detail": "Invalid max_amount."}}, 400
+
+        # FY + Cash setup
+        fy_from = _fy_covering_date(entity_id, from_dt)
+        fy_to   = _fy_covering_date(entity_id, to_dt)
+        cash_id = core._resolve_cash_account_id(entity_id)
+
+        # Helper to build per-day cash dict (alias-safe)
+        def per_day_cash_map(win_from, win_to):
+            per_day_cash_qs = (
+                JournalLine.objects
+                .filter(entity_id=entity_id, account_id=cash_id,
+                        entrydate__gte=win_from, entrydate__lte=win_to)
+                .values("entrydate")
+                .annotate(
+                    day_dr=Coalesce(Sum(
+                        Case(
+                            When(Q(drcr=True) | Q(drcr__iexact='D'), then=F("amount")),
+                            default=Value(Decimal("0.00")),
+                            output_field=DecimalField(max_digits=16, decimal_places=2),
+                        )
+                    ), Value(Decimal("0.00"))),
+                    day_cr=Coalesce(Sum(
+                        Case(
+                            When(Q(drcr=False) | Q(drcr__iexact='C'), then=F("amount")),
+                            default=Value(Decimal("0.00")),
+                            output_field=DecimalField(max_digits=16, decimal_places=2),
+                        )
+                    ), Value(Decimal("0.00"))),
+                )
+                .values_list("entrydate", "day_dr", "day_cr")
+            )
+            return {d: (_D(dr or 0), _D(cr or 0)) for d, dr, cr in per_day_cash_qs}
+
+        # Build payload (same as DayBookAPIView)
+        if not fy_from or not fy_to:
+            if strict_fy:
+                return {"error": {"detail": "Requested dates are not fully covered by financial year setup.",
+                                  "hint": "Add FY rows or call without strict_fy."}}, 400
+
+            rows = core._fetch_rows(base, from_dt, to_dt)
+            day_sections, sec_deb, sec_cr = core._build_day_sections_all(rows, include_empty_days, from_dt, to_dt)
+            cash_opening = core._cash_opening(entity_id, cash_id, from_dt)
+            cash_rec, cash_pay = core._cash_totals_in_range(entity_id, cash_id, from_dt, to_dt)
+            cash_closing = _D(cash_opening + cash_rec - cash_pay)
+
+            pdc = per_day_cash_map(from_dt, to_dt)
+            running = _D(cash_opening)
+            for ds in day_sections:
+                d = ds["date"]
+                dr, cr = pdc.get(d, (_D(0), _D(0)))
+                ds["cash_day_opening"]  = running
+                ds["cash_day_receipts"] = dr
+                ds["cash_day_payments"] = cr
+                running = _D(running + dr - cr)
+                ds["cash_day_closing"]  = running
+
+            section_obj = {
+                "fy_name": (_fy_name(fy_from) if fy_from and fy_to and fy_from.id == fy_to.id else ""),
+                "fy_start": fy_from.finstartyear.date() if fy_from else None,
+                "fy_end": fy_from.finendyear.date() if fy_from else None,
+                "from_date": from_dt, "to_date": to_dt,
+                "total_debits": _D(sec_deb), "total_credits": _D(sec_cr),
+                "net_movement": _D(sec_deb - sec_cr),
+                "day_sections": day_sections,
+                "cash_opening": cash_opening, "cash_total_receipts": cash_rec,
+                "cash_total_payments": cash_pay, "cash_closing": cash_closing,
+            }
+
+            payload = {
+                "entity": entity_id, "from_date": from_dt, "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_total_debits": _D(sec_deb),
+                "grand_total_credits": _D(sec_cr),
+                "grand_net_movement": _D(sec_deb - sec_cr),
+                "sections": [section_obj],
+                "grand_cash_opening": cash_opening,
+                "grand_cash_total_receipts": cash_rec,
+                "grand_cash_total_payments": cash_pay,
+                "grand_cash_closing": cash_closing,
+            }
+            return payload, 200
+
+        if fy_from.id == fy_to.id:
+            rows = core._fetch_rows(base, from_dt, to_dt)
+            day_sections, sec_deb, sec_cr = core._build_day_sections_all(rows, include_empty_days, from_dt, to_dt)
+
+            cash_opening = core._cash_opening(entity_id, cash_id, from_dt)
+            cash_rec, cash_pay = core._cash_totals_in_range(entity_id, cash_id, from_dt, to_dt)
+            cash_closing = _D(cash_opening + cash_rec - cash_pay)
+
+            pdc = per_day_cash_map(from_dt, to_dt)
+            running = _D(cash_opening)
+            for ds in day_sections:
+                d = ds["date"]
+                dr, cr = pdc.get(d, (_D(0), _D(0)))
+                ds["cash_day_opening"]  = running
+                ds["cash_day_receipts"] = dr
+                ds["cash_day_payments"] = cr
+                running = _D(running + dr - cr)
+                ds["cash_day_closing"]  = running
+
+            section_obj = {
+                "fy_name": (_fy_name(fy_from) if fy_from and fy_to and fy_from.id == fy_to.id else ""),
+                "fy_start": fy_from.finstartyear.date() if fy_from else None,
+                "fy_end": fy_from.finendyear.date() if fy_from else None,
+                "from_date": from_dt, "to_date": to_dt,
+                "total_debits": _D(sec_deb), "total_credits": _D(sec_cr),
+                "net_movement": _D(sec_deb - sec_cr),
+                "day_sections": day_sections,
+                "cash_opening": cash_opening, "cash_total_receipts": cash_rec,
+                "cash_total_payments": cash_pay, "cash_closing": cash_closing,
+            }
+
+            payload = {
+                "entity": entity_id, "from_date": from_dt, "to_date": to_dt,
+                "spans_multiple_fy": False,
+                "grand_total_debits": _D(sec_deb),
+                "grand_total_credits": _D(sec_cr),
+                "grand_net_movement": _D(sec_deb - sec_cr),
+                "sections": [section_obj],
+                "grand_cash_opening": cash_opening,
+                "grand_cash_total_receipts": cash_rec,
+                "grand_cash_total_payments": cash_pay,
+                "grand_cash_closing": cash_closing,
+            }
+            return payload, 200
+
+        # multi-FY
+        fys = _fys_overlapping_range(entity_id, from_dt, to_dt)
+        if not fys:
+            return {"error": {"detail": "No financial year overlaps the requested range."}}, 400
+
+        sections = []
+        grand_deb = Decimal("0.00")
+        grand_cr  = Decimal("0.00")
+        grand_cash_open  = core._cash_opening(entity_id, cash_id, from_dt)
+        grand_cash_rece  = _D(0)
+        grand_cash_pay   = _D(0)
+        running_cash     = _D(grand_cash_open)
+
+        for fy in fys:
+            sub_from, sub_to = _clip_to_fy(from_dt, to_dt, fy)
+
+            rows = core._fetch_rows(base, sub_from, sub_to)
+            day_sections, sec_deb, sec_cr = core._build_day_sections_all(rows, include_empty_days, sub_from, sub_to)
+
+            sec_cash_open = _D(running_cash)
+            sec_cash_rec, sec_cash_pay = core._cash_totals_in_range(entity_id, cash_id, sub_from, sub_to)
+            sec_cash_close = _D(sec_cash_open + sec_cash_rec - sec_cash_pay)
+
+            pdc = per_day_cash_map(sub_from, sub_to)
+            local_running = _D(sec_cash_open)
+            for ds in day_sections:
+                d = ds["date"]
+                dr, cr = pdc.get(d, (_D(0), _D(0)))
+                ds["cash_day_opening"]  = local_running
+                ds["cash_day_receipts"] = dr
+                ds["cash_day_payments"] = cr
+                local_running = _D(local_running + dr - cr)
+                ds["cash_day_closing"]  = local_running
+
+            sections.append({
+                "fy_name": _fy_name(fy),
+                "fy_start": fy.finstartyear.date(),
+                "fy_end": fy.finendyear.date(),
+                "from_date": sub_from, "to_date": sub_to,
+                "total_debits": _D(sec_deb), "total_credits": _D(sec_cr),
+                "net_movement": _D(sec_deb - sec_cr),
+                "day_sections": day_sections,
+                "cash_opening": sec_cash_open,
+                "cash_total_receipts": sec_cash_rec,
+                "cash_total_payments": sec_cash_pay,
+                "cash_closing": sec_cash_close,
+            })
+
+            grand_deb += sec_deb
+            grand_cr  += sec_cr
+            grand_cash_rece += sec_cash_rec
+            grand_cash_pay  += sec_cash_pay
+            running_cash     = _D(sec_cash_close)
+
+        payload = {
+            "entity": entity_id, "from_date": from_dt, "to_date": to_dt,
+            "spans_multiple_fy": True,
+            "grand_total_debits": _D(grand_deb),
+            "grand_total_credits": _D(grand_cr),
+            "grand_net_movement": _D(grand_deb - grand_cr),
+            "sections": sections,
+            "grand_cash_opening": _D(grand_cash_open),
+            "grand_cash_total_receipts": _D(grand_cash_rece),
+            "grand_cash_total_payments": _D(grand_cash_pay),
+            "grand_cash_closing": _D(running_cash),
+        }
+        return payload, 200
+
+    # ---------- Excel helpers ----------
+    def _styles(self, wb: Workbook):
+        thin = Side(style="thin", color="000000")
+        hdr = NamedStyle(name="hdr")
+        hdr.font = Font(bold=True)
+        hdr.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        hdr.border = Border(top=thin, left=thin, right=thin, bottom=thin)
+
+        num = NamedStyle(name="num")
+        num.number_format = numbers.BUILTIN_FORMATS[4]  # "#,##0.00"
+        num.border = Border(top=thin, left=thin, right=thin, bottom=thin)
+
+        txt = NamedStyle(name="txt")
+        txt.alignment = Alignment(vertical="top", wrap_text=True)
+        txt.border = Border(top=thin, left=thin, right=thin, bottom=thin)
+
+        for st in (hdr, num, txt):
+            if st.name not in wb.named_styles:
+                wb.add_named_style(st)
+        return hdr, num, txt
+
+    def _autosize(self, ws):
+        for col in range(1, ws.max_column + 1):
+            maxlen = 10
+            for row in range(1, ws.max_row + 1):
+                v = ws.cell(row=row, column=col).value
+                if v is None:
+                    continue
+                l = len(str(v))
+                if l > maxlen:
+                    maxlen = l
+            ws.column_dimensions[get_column_letter(col)].width = min(maxlen + 2, 60)
+
+    # ---------- GET ----------
+    def get(self, request, *_args, **_kwargs):
+        payload, code = self._build_payload(request)
+        if code != 200:
+            return Response(payload.get("error", payload), status=code)
+
+        # If you want, validate via serializer to normalize types:
+        # ser = DaybookUnifiedSerializer(data=payload)
+        # ser.is_valid(raise_exception=True)
+        # data = ser.validated_data
+        data = payload
+
+        wb = Workbook()
+        hdr, num, txt = self._styles(wb)
+
+        # ---------------- Summary sheet ----------------
+        ws = wb.active
+        ws.title = "Summary"
+
+        ws.append(["Entity", data["entity"]])
+        ws.append(["From", data["from_date"]])
+        ws.append(["To",   data["to_date"]])
+        ws.append([])
+        ws.append(["Grand Totals"])
+        ws.append(["Total Debits", "Total Credits", "Net Movement",
+                   "Cash Opening", "Cash Receipts", "Cash Payments", "Cash Closing"])
+        ws.append([
+            data["grand_total_debits"],
+            data["grand_total_credits"],
+            data["grand_total_debits"] - data["grand_total_credits"],
+            data.get("grand_cash_opening", Decimal("0.00")),
+            data.get("grand_cash_total_receipts", Decimal("0.00")),
+            data.get("grand_cash_total_payments", Decimal("0.00")),
+            data.get("grand_cash_closing", Decimal("0.00")),
+        ])
+        for c in ws[6]:
+            c.style = hdr
+        for c in ws[7]:
+            c.style = num
+
+        ws.append([])
+        ws.append(["Sections"])
+        ws.append([
+            "FY Name", "Period From", "Period To",
+            "Total Debits", "Total Credits", "Net Movement",
+            "Cash Opening", "Cash Receipts", "Cash Payments", "Cash Closing"
+        ])
+        for c in ws[9]:
+            c.style = hdr
+
+        for s in data["sections"]:
+            ws.append([
+                s.get("fy_name", ""),
+                s["from_date"], s["to_date"],
+                s["total_debits"], s["total_credits"],
+                s["net_movement"],
+                s.get("cash_opening", Decimal("0.00")),
+                s.get("cash_total_receipts", Decimal("0.00")),
+                s.get("cash_total_payments", Decimal("0.00")),
+                s.get("cash_closing", Decimal("0.00")),
+            ])
+            # apply numeric style to numeric columns
+            for idx in (4, 5, 6, 7, 8, 9, 10):
+                ws.cell(row=ws.max_row, column=idx).style = num
+
+        self._autosize(ws)
+
+        # ---------------- Detail sheet ----------------
+        wd = wb.create_sheet("Detail")
+        wd.append([
+            "Date", "Voucher No", "Voucher Type",
+            "Account ID", "Account", "Description",
+            "Debit", "Credit",
+            "Cash Day Opening", "Cash Day Receipts", "Cash Day Payments", "Cash Day Closing"
+        ])
+        for c in wd[1]:
+            c.style = hdr
+
+        # Flatten day sections
+        for s in data["sections"]:
+            for ds in s["day_sections"]:
+                # Row for the day header (with cash day numbers)
+                wd.append([
+                    ds["date"], "", "",
+                    "", "", "Day Totals",
+                    ds["day_debits"], ds["day_credits"],
+                    ds.get("cash_day_opening", Decimal("0.00")),
+                    ds.get("cash_day_receipts", Decimal("0.00")),
+                    ds.get("cash_day_payments", Decimal("0.00")),
+                    ds.get("cash_day_closing", Decimal("0.00")),
+                ])
+                # numeric styling
+                for idx in (7, 8, 9, 10, 11, 12):
+                    wd.cell(row=wd.max_row, column=idx).style = num
+
+                # Lines for that day
+                for it in ds["items"]:
+                    wd.append([
+                        it["date"], it.get("voucherno", ""), it.get("voucher", ""),
+                        it.get("account_id", ""), it.get("account", ""), it.get("desc", ""),
+                        it["debit"], it["credit"],
+                        "", "", "", ""
+                    ])
+                    wd.cell(row=wd.max_row, column=7).style = num
+                    wd.cell(row=wd.max_row, column=8).style = num
+
+                # spacer
+                wd.append([])
+
+        self._autosize(wd)
+
+        # finalize response
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        filename = f"DayBook_{data['entity']}_{data['from_date']}_{data['to_date']}.xlsx"
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+
+class DayBookPDFAPIView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def _fmt(self, x):
+        if x is None or x == "":
+            return ""
+        try:
+            return f"{Decimal(x):,.2f}"
+        except Exception:
+            return str(x)
+
+    def _payload(self, request):
+        core = DayBookExcelAPIView()
+        return core._build_payload(request)   # -> (payload, status_code)
+
+    # ---------- page chrome ----------
+    def _header_footer(self, canvas, doc, entity, from_d, to_d):
+        canvas.saveState()
+        w, h = landscape(A4)
+        canvas.setFont("Helvetica-Bold", 10)
+        canvas.drawString(doc.leftMargin, h - 0.45*inch, f"Entity: {entity}")
+        canvas.drawCentredString(w/2,     h - 0.45*inch, "Day Book (Landscape)")
+        canvas.drawRightString(w - doc.rightMargin, h - 0.45*inch, f"{from_d} to {to_d}")
+        canvas.setFont("Helvetica", 9)
+        canvas.drawRightString(w - doc.rightMargin, 0.35*inch, f"Page {doc.page}")
+        canvas.restoreState()
+
+    # ---------- building blocks ----------
+    def _styles(self):
+        styles = getSampleStyleSheet()
+        h1 = ParagraphStyle("h1", parent=styles["Heading1"], alignment=1, spaceAfter=6)
+        h2 = ParagraphStyle("h2", parent=styles["Heading2"], spaceBefore=6, spaceAfter=4)
+        small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, leading=11)
+        tiny  = ParagraphStyle("tiny",  parent=styles["Normal"], fontSize=8, leading=10)
+        tiny_wrap = ParagraphStyle("tiny_wrap", parent=tiny, wordWrap='CJK',  # robust wrapping
+                                   allowOrphans=1, allowWidows=1)
+        return h1, h2, small, tiny_wrap
+
+    def _p(self, s, style):
+        return Paragraph("" if s is None else str(s).replace("\n", "<br/>"), style)
+
+    def _make_summary(self, payload, styles, avail_w):
+        _, h2, small, tiny = styles
+        elems = []
+
+        # Grand totals
+        elems.append(Paragraph("Grand Totals", h2))
+        data = [
+            ["Total Debits", "Total Credits", "Net Movement",
+             "Cash Opening", "Cash Receipts", "Cash Payments", "Cash Closing"],
+            [ self._fmt(payload["grand_total_debits"]),
+              self._fmt(payload["grand_total_credits"]),
+              self._fmt(payload["grand_total_debits"] - payload["grand_total_credits"]),
+              self._fmt(payload.get("grand_cash_opening", 0)),
+              self._fmt(payload.get("grand_cash_total_receipts", 0)),
+              self._fmt(payload.get("grand_cash_total_payments", 0)),
+              self._fmt(payload.get("grand_cash_closing", 0)) ],
+        ]
+        # 7 columns -> distribute evenly
+        col_w = [avail_w/7.0]*7
+        t = LongTable(data, colWidths=col_w, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("ALIGN",      (0,0), (-1,0), "CENTER"),
+            ("ALIGN",      (0,1), (-1,-1), "RIGHT"),
+            ("GRID",       (0,0), (-1,-1), 0.4, colors.grey),
+            ("VALIGN",     (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING",(0,0), (-1,-1), 3),
+            ("RIGHTPADDING",(0,0),(-1,-1), 3),
+        ]))
+        elems += [t, Spacer(1, 6)]
+
+        # Sections
+        elems.append(Paragraph("Sections", h2))
+        sec_head = ["FY", "From", "To", "Total Dr", "Total Cr", "Net",
+                    "Cash Open", "Cash Rec", "Cash Pay", "Cash Close"]
+        # fixed widths so it fits; a bit wider for dates
+        col_w = [
+            0.9*inch, 0.9*inch, 0.9*inch,
+            0.9*inch, 0.9*inch, 0.8*inch,
+            0.9*inch, 0.9*inch, 0.9*inch, 0.9*inch
+        ]
+        data = [sec_head]
+        for s in payload["sections"]:
+            data.append([
+                s.get("fy_name","") or "-",
+                s["from_date"], s["to_date"],
+                self._fmt(s["total_debits"]),
+                self._fmt(s["total_credits"]),
+                self._fmt(s["net_movement"]),
+                self._fmt(s.get("cash_opening", 0)),
+                self._fmt(s.get("cash_total_receipts", 0)),
+                self._fmt(s.get("cash_total_payments", 0)),
+                self._fmt(s.get("cash_closing", 0)),
+            ])
+        t2 = LongTable(data, colWidths=col_w, repeatRows=1)
+        t2.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("ALIGN",      (0,0), (-1,0), "CENTER"),
+            ("ALIGN",      (3,1), (-1,-1), "RIGHT"),
+            ("GRID",       (0,0), (-1,-1), 0.4, colors.grey),
+            ("VALIGN",     (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING",(0,0), (-1,-1), 3),
+            ("RIGHTPADDING",(0,0),(-1,-1), 3),
+        ]))
+        elems += [t2, Spacer(1, 8)]
+        return elems
+
+    def _make_detail(self, payload, styles, avail_w):
+        h1, h2, small, tiny_wrap = styles
+        elems = []
+
+        # Column set chosen to fit on landscape with wrapping
+        headers = ["Date", "Voucher No", "Type", "Account", "Description",
+                   "Debit", "Credit", "Cash Open", "Cash Rec", "Cash Pay", "Cash Close"]
+        # measured widths that fit within avail_w (~10.6-10.9in typically)
+        col_w = [
+            0.85*inch,  # Date
+            0.95*inch,  # VNo
+            1.00*inch,  # Type
+            1.60*inch,  # Account
+            2.80*inch,  # Description (largest; wraps)
+            0.85*inch,  # Dr
+            0.85*inch,  # Cr
+            0.95*inch,  # Cash Open
+            0.95*inch,  # Cash Rec
+            0.95*inch,  # Cash Pay
+            0.95*inch,  # Cash Close
+        ]
+        # Ensure they fit: if sum slightly over, shave a bit off description
+        total_w = sum(col_w)
+        if total_w > avail_w:
+            delta = total_w - avail_w
+            col_w[4] = max(1.4*inch, col_w[4] - delta)
+
+        # Iterate sections and days
+        for idx, s in enumerate(payload["sections"], start=1):
+            sec_hdr = f"Section {idx} — FY: {s.get('fy_name','-')} | {s['from_date']} → {s['to_date']}"
+            elems += [Paragraph(sec_hdr, small), Spacer(1, 3)]
+
+            # Section cash line
+            cdata = [
+                ["Cash Opening", "Cash Receipts", "Cash Payments", "Cash Closing"],
+                [ self._fmt(s.get("cash_opening", 0)),
+                  self._fmt(s.get("cash_total_receipts", 0)),
+                  self._fmt(s.get("cash_total_payments", 0)),
+                  self._fmt(s.get("cash_closing", 0)) ],
+            ]
+            ctab = LongTable(cdata, colWidths=[1.2*inch]*4, repeatRows=1)
+            ctab.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+                ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                ("ALIGN",      (0,0), (-1,0), "CENTER"),
+                ("ALIGN",      (0,1), (-1,1), "RIGHT"),
+                ("GRID",       (0,0), (-1,-1), 0.4, colors.grey),
+                ("VALIGN",     (0,0), (-1,-1), "TOP"),
+            ]))
+            elems += [ctab, Spacer(1, 4)]
+
+            # For each day, build a LongTable: header + 1 day total row + N item rows
+            for ds in s["day_sections"]:
+                rows = [headers]  # header (repeated)
+                # day total row (first line)
+                rows.append([
+                    ds["date"], "", "", "", "Day Totals",
+                    self._fmt(ds["day_debits"]), self._fmt(ds["day_credits"]),
+                    self._fmt(ds.get("cash_day_opening", 0)),
+                    self._fmt(ds.get("cash_day_receipts", 0)),
+                    self._fmt(ds.get("cash_day_payments", 0)),
+                    self._fmt(ds.get("cash_day_closing", 0)),
+                ])
+
+                # transaction lines
+                for it in ds["items"]:
+                    rows.append([
+                        it["date"],
+                        it.get("voucherno", ""),
+                        it.get("voucher", ""),
+                        self._p(it.get("account",""), tiny_wrap),
+                        self._p(it.get("desc",""), tiny_wrap),
+                        self._fmt(it["debit"]),
+                        self._fmt(it["credit"]),
+                        "", "", "", ""
+                    ])
+
+                lt = LongTable(rows, colWidths=col_w, repeatRows=1, splitByRow=1)
+                lt.setStyle(TableStyle([
+                    ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+                    ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                    ("ALIGN",      (0,0), (-1,0), "CENTER"),
+                    ("GRID",       (0,0), (-1,-1), 0.3, colors.grey),
+                    ("VALIGN",     (0,0), (-1,-1), "TOP"),
+                    ("ALIGN",      (5,1), (6,-1), "RIGHT"),
+                    ("ALIGN",      (7,1), (-1,-1), "RIGHT"),
+                    ("LEFTPADDING",(0,0), (-1,-1), 3),
+                    ("RIGHTPADDING",(0,0),(-1,-1), 3),
+                ]))
+                elems += [lt, Spacer(1, 6)]
+
+            elems += [Spacer(1, 8)]
+
+        return elems
+
+    # ---------- GET ----------
+    def get(self, request, *_args, **_kwargs):
+        payload, code = self._payload(request)
+        if code != 200:
+            return HttpResponse(str(payload), status=code, content_type="application/json")
+
+        entity = payload["entity"]
+        from_d = payload["from_date"]
+        to_d   = payload["to_date"]
+        mode = (request.query_params.get("mode") or "both").lower()
+        show_summary = mode in ("both", "summary")
+        show_detail  = mode in ("both", "detail")
+
+        buf = BytesIO()
+
+        # Page setup (landscape A4)
+        pagesize = landscape(A4)
+        left, right, top, bottom = 0.5*inch, 0.5*inch, 0.7*inch, 0.5*inch
+        doc = BaseDocTemplate(
+            buf,
+            pagesize=pagesize,
+            leftMargin=left, rightMargin=right,
+            topMargin=top, bottomMargin=bottom,
+            title="Day Book (Landscape)"
+        )
+        frame = Frame(
+            doc.leftMargin, doc.bottomMargin,
+            doc.width, doc.height,
+            id='normal'
+        )
+        template = PageTemplate(
+            id='daybook',
+            frames=[frame],
+            onPage=lambda c, d: self._header_footer(c, d, entity, from_d, to_d),
+        )
+        doc.addPageTemplates([template])
+
+        styles = self._styles()
+        avail_w = doc.width
+
+        elems = []
+        # Title (flowable)
+        h1, h2, small, _ = styles
+        elems += [Paragraph("Day Book", h1),
+                  Paragraph(f"Entity: <b>{entity}</b> &nbsp;&nbsp; Period: <b>{from_d}</b> to <b>{to_d}</b>", small),
+                  Spacer(1, 6)]
+
+        if show_summary:
+            elems += self._make_summary(payload, styles, avail_w)
+            if show_detail:
+                elems.append(PageBreak())
+
+        if show_detail:
+            elems += self._make_detail(payload, styles, avail_w)
+
+        doc.build(elems)
+
+        buf.seek(0)
+        filename = f"DayBook_{entity}_{from_d}_{to_d}.pdf"
+        resp = HttpResponse(buf.getvalue(), content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
