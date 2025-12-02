@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'simple_history',
     'errorlogger',
     'numbering',
+    'catalog',
     
 ]
 
