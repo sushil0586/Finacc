@@ -17,7 +17,8 @@ from .views import (
     HsnSacRetrieveUpdateDestroyAPIView,
     PriceListListCreateAPIView,
     PriceListRetrieveUpdateDestroyAPIView,
-    GstTypeListAPIView
+    GstTypeListAPIView,
+    ProductPageBootstrapAPIView
 )
 
 urlpatterns = [
@@ -35,6 +36,12 @@ urlpatterns = [
         "gst-types/",
         GstTypeListAPIView.as_view(),
         name="gst-types",
+    ),
+
+    path(
+        "product-page-all/",
+        ProductPageBootstrapAPIView.as_view(),
+        name="product-page-bootstrap",
     ),
 
     path(
