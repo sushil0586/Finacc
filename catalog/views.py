@@ -10,6 +10,8 @@ from .models import (
     HsnSac,
     PriceList,
     GstType,
+    CessType,
+    ProductStatus,
 )
 from catalog.serializers import (
     ProductCategorySerializer,
@@ -19,6 +21,8 @@ from catalog.serializers import (
     HsnSacSerializer,
     PriceListSerializer,
     GstTypeChoiceSerializer,
+    CessTypeChoiceSerializer,
+    ProductStatusChoiceSerializer,
 )
 
 from rest_framework.views import APIView
@@ -202,6 +206,34 @@ class GstTypeListAPIView(APIView):
         return Response(serializer.data)
     
 
+class CessTypeListAPIView(APIView):
+    def get(self, request):
+        data = [{"value": c.value, "label": c.label} for c in CessType]
+        serializer = CessTypeChoiceSerializer(data, many=True)
+        return Response(serializer.data)
+    
+
+class ProductStatusListAPIView(APIView):
+    """
+    Returns product status choices:
+    [
+        {"value": "active", "label": "Active"},
+        {"value": "discontinued", "label": "Discontinued"},
+        {"value": "blocked", "label": "Blocked"},
+        {"value": "upcoming", "label": "Upcoming"}
+    ]
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        data = [
+            {"value": choice.value, "label": choice.label}
+            for choice in ProductStatus
+        ]
+        serializer = ProductStatusChoiceSerializer(data, many=True)
+        return Response(serializer.data)
+    
+
 class ProductPageBootstrapAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -222,10 +254,22 @@ class ProductPageBootstrapAPIView(APIView):
 
         data = {
             "product": product,
+
             "gst_types": [
                 {"value": choice.value, "label": choice.label}
                 for choice in GstType
             ],
+
+            "cess_types": [
+                {"value": choice.value, "label": choice.label}
+                for choice in CessType
+            ],
+
+            "product_statuses": [
+                {"value": choice.value, "label": choice.label}
+                for choice in ProductStatus
+            ],
+
             "product_categories": ProductCategorySerializer(categories, many=True).data,
             "brands": BrandSerializer(brands, many=True).data,
             "uoms": UnitOfMeasureSerializer(uoms, many=True).data,

@@ -18,7 +18,9 @@ from .views import (
     PriceListListCreateAPIView,
     PriceListRetrieveUpdateDestroyAPIView,
     GstTypeListAPIView,
-    ProductPageBootstrapAPIView
+    ProductPageBootstrapAPIView,
+    CessTypeListAPIView,
+    ProductStatusListAPIView
 )
 
 urlpatterns = [
@@ -39,9 +41,21 @@ urlpatterns = [
     ),
 
     path(
+        "product-statuses/",
+        ProductStatusListAPIView.as_view(),
+        name="product-statuses",
+    ),
+
+    path(
         "product-page-all/",
         ProductPageBootstrapAPIView.as_view(),
         name="product-page-bootstrap",
+    ),
+
+    path(
+        "cess-types/",
+        CessTypeListAPIView.as_view(),
+        name="cess-types",
     ),
 
     path(
