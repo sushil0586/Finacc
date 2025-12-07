@@ -93,15 +93,17 @@ class UnitOfMeasure(EntityScopedModel):
 
     def __str__(self):
         return self.code
+    
+
+class ProductStatus(models.TextChoices):
+    ACTIVE = 'active', _('Active')
+    DISCONTINUED = 'discontinued', _('Discontinued')
+    BLOCKED = 'blocked', _('Blocked')
+    UPCOMING = 'upcoming', _('Upcoming')
 
 
 class Product(EntityScopedModel):
-    PRODUCT_STATUS_CHOICES = (
-        ('active', 'Active'),
-        ('discontinued', 'Discontinued'),
-        ('blocked', 'Blocked'),
-        ('upcoming', 'Upcoming'),
-    )
+   
 
     productname = models.CharField(max_length=200)
     sku = models.CharField(max_length=100)
@@ -150,8 +152,8 @@ class Product(EntityScopedModel):
 
     product_status = models.CharField(
         max_length=20,
-        choices=PRODUCT_STATUS_CHOICES,
-        default='active'
+        choices=ProductStatus.choices,
+        default=ProductStatus.ACTIVE,
     )
     launch_date = models.DateField(null=True, blank=True)
     discontinue_date = models.DateField(null=True, blank=True)
@@ -207,6 +209,13 @@ class GstType(models.TextChoices):
     COMPOSITION = 'composition', _('Composition')
 
 
+class CessType(models.TextChoices):
+    NONE = 'none', _('None')                    # default / no cess
+    AD_VALOREM = 'ad_valorem', _('Ad valorem')  # % of value
+    SPECIFIC = 'specific', _('Specific')        # per unit (qty-based)
+    COMPOSITE = 'composite', _('Composite')     # % + specific
+
+
 class ProductGstRate(TimeStampedModel):
     """
     GST rate for a product, with validity period and type.
@@ -246,9 +255,10 @@ class ProductGstRate(TimeStampedModel):
     # CESS
     cess = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     cess_type = models.CharField(
-        max_length=50,
-        blank=True,
-        help_text="Optional CESS type (e.g. Ad valorem, Specific)"
+        max_length=20,
+        choices=CessType.choices,
+        default=CessType.NONE,
+        help_text="Type of CESS (if any)",
     )
 
     valid_from = models.DateField(null=True, blank=True)
