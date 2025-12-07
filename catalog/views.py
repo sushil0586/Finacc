@@ -200,3 +200,37 @@ class GstTypeListAPIView(APIView):
 
         serializer = GstTypeChoiceSerializer(data, many=True)
         return Response(serializer.data)
+    
+
+class ProductPageBootstrapAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        entity_id = request.query_params.get("entity")
+        product_id = request.query_params.get("product_id")
+
+        product = None
+        if product_id:
+            product_obj = Product.objects.get(pk=product_id, entity_id=entity_id)
+            product = ProductSerializer(product_obj).data
+
+        categories = ProductCategory.objects.filter(entity_id=entity_id, isactive=True)
+        brands = Brand.objects.filter(entity_id=entity_id, isactive=True)
+        uoms = UnitOfMeasure.objects.filter(entity_id=entity_id, isactive=True)
+        hsn_sac = HsnSac.objects.filter(entity_id=entity_id, isactive=True)
+        pricelists = PriceList.objects.filter(entity_id=entity_id, isactive=True)
+
+        data = {
+            "product": product,
+            "gst_types": [
+                {"value": choice.value, "label": choice.label}
+                for choice in GstType
+            ],
+            "product_categories": ProductCategorySerializer(categories, many=True).data,
+            "brands": BrandSerializer(brands, many=True).data,
+            "uoms": UnitOfMeasureSerializer(uoms, many=True).data,
+            "hsn_sac": HsnSacSerializer(hsn_sac, many=True).data,
+            "pricelists": PriceListSerializer(pricelists, many=True).data,
+        }
+
+        return Response(data)
