@@ -206,7 +206,14 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'Authentication.jwt.JwtAuthentication',
     ],
-    'EXCEPTION_HANDLER': 'errorlogger.drf_exception_handler.custom_exception_handler'
+    'EXCEPTION_HANDLER': 'errorlogger.drf_exception_handler.custom_exception_handler',
+    "DATE_INPUT_FORMATS": [
+        "%Y-%m-%d",                 # Standard DRF date format
+        "%Y-%m-%dT%H:%M:%S.%fZ",    # 2025-12-20T00:00:00.000Z
+        "%Y-%m-%dT%H:%M:%SZ",       # 2025-12-20T00:00:00Z
+        "%Y-%m-%dT%H:%M:%S.%f",     # 2025-12-20T00:00:00.000 (no Z)
+        "%Y-%m-%dT%H:%M:%S",        # 2025-12-20T00:00:00 (no ms, no Z)
+    ],
 
 }
 # Internationalization
