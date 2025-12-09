@@ -343,19 +343,23 @@ class ProductSerializer(serializers.ModelSerializer):
                            child_data_list, fk_name, existing_qs):
         """
         Generic helper for 1:M nested lists:
-        - update existing by id
-        - create new when id missing
+        - update existing by id (id > 0)
+        - create new when id is missing or <= 0
         - delete missing ones
         """
         sent_ids = []
 
         for item_data in child_data_list:
-            item_id = item_data.get("id", None)
+            raw_id = item_data.get("id", None)
+            # id <= 0 or None should be treated as "no id"
+            item_id = raw_id if raw_id not in (None, 0, "0") else None
+
             # do not allow client to override product/entity directly
             item_data.pop("product", None)
             item_data.pop("entity", None)
 
             if item_id:
+                # UPDATE EXISTING
                 try:
                     child_obj = existing_qs.get(id=item_id)
                 except child_model.DoesNotExist:
@@ -366,12 +370,15 @@ class ProductSerializer(serializers.ModelSerializer):
                         **{fk_name: parent_instance},
                     )
                 else:
+                    # normal update
                     for attr, value in item_data.items():
                         if attr != "id":
                             setattr(child_obj, attr, value)
                     child_obj.save()
                 sent_ids.append(child_obj.id)
             else:
+                # NEW ROW: make sure we don't pass id=0
+                item_data.pop("id", None)
                 child_obj = child_model.objects.create(
                     **item_data,
                     **{fk_name: parent_instance},
@@ -397,6 +404,19 @@ class ProductSerializer(serializers.ModelSerializer):
         planning_data = validated_data.pop("planning", None)
         attributes_data = validated_data.pop("attributes", [])
         images_data = validated_data.pop("images", [])
+
+        # ---- strip id from all nested data (id=0 / any id) ----
+        for lst in (
+            gst_rates_data,
+            barcodes_data,
+            uom_conversions_data,
+            opening_stocks_data,
+            prices_data,
+            attributes_data,
+            images_data,
+        ):
+            for item in lst:
+                item.pop("id", None)
 
         # Create product
         product = Product.objects.create(**validated_data)
@@ -427,6 +447,8 @@ class ProductSerializer(serializers.ModelSerializer):
 
         # Planning (1:1)
         if planning_data:
+            # if planning_data has an id=0/malformed, strip it
+            planning_data.pop("id", None)
             ProductPlanning.objects.create(product=product, **planning_data)
 
         # Attributes
@@ -507,6 +529,9 @@ class ProductSerializer(serializers.ModelSerializer):
 
         # planning 1:1 via unique constraint on product
         if planning_data is not None:
+            # id=0 should be treated as new
+            planning_data.pop("id", None)
+
             existing_planning_obj = (
                 instance.planning.first()
                 if hasattr(instance, "planning")
@@ -539,6 +564,7 @@ class ProductSerializer(serializers.ModelSerializer):
             )
 
         return instance
+
     
 
 class GstTypeChoiceSerializer(serializers.Serializer):
