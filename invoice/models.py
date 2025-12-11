@@ -5,9 +5,8 @@ from django.forms import DateField
 from helpers.models import TrackingModel
 from Authentication.models import User
 from financial.models import account,accountHead,ShippingDetails,accounttype
-from inventory.models import Product
 from entity.models import Entity,entityfinancialyear,subentity
-from inventory.models import Product
+from catalog.models import Product
 from django.db.models import Sum,Q, CheckConstraint, UniqueConstraint
 import datetime
 from django.core.exceptions import ValidationError

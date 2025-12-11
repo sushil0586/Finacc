@@ -7,6 +7,21 @@ from django.utils.translation import gettext_lazy as _
 from entity.models import Entity, subentity, entityfinancialyear
 from financial.models import account
 
+from io import BytesIO
+from django.core.files.base import ContentFile
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+from PIL import Image, ImageDraw, ImageFont  # ⬅️ NEW
+
+try:
+    from barcode import Code128
+    from barcode.writer import ImageWriter
+except ImportError:
+    Code128 = None
+    ImageWriter = None
+
+
 
 # ----------------------------------------------------------------------
 # Abstract base classes
@@ -289,7 +304,9 @@ class ProductBarcode(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name='barcode_details'
     )
-    barcode = models.CharField(max_length=50)
+    # Auto-generated; do NOT send from frontend
+    barcode = models.CharField(max_length=50, blank=True)
+
     uom = models.ForeignKey(
         UnitOfMeasure,
         on_delete=models.PROTECT,
@@ -297,6 +314,14 @@ class ProductBarcode(TimeStampedModel):
     )
     isprimary = models.BooleanField(default=False)
     pack_size = models.PositiveIntegerField(null=True, blank=True)
+
+    # Auto-generated barcode image
+    barcode_image = models.ImageField(
+        upload_to='barcodes/',
+        blank=True,
+        null=True,
+        help_text="Auto-generated barcode image",
+    )
 
     class Meta:
         constraints = [
@@ -307,7 +332,135 @@ class ProductBarcode(TimeStampedModel):
         ]
 
     def __str__(self):
-        return self.barcode
+        return self.barcode or f"Barcode for {self.product_id}"
+
+    def _generate_barcode_value(self):
+        """
+        Generate a deterministic, unique barcode string.
+        You can change this format as needed.
+        """
+        product_id = self.product_id or 0
+        self_id = self.pk or 0
+        return f"PRD-{product_id:06d}-{self_id:06d}"
+
+    def _generate_barcode_image(self):
+        """
+        Generate barcode image + overlay key product info as text
+        (Product name, SKU, UOM, Pack size) at the bottom.
+        """
+        if Code128 is None or ImageWriter is None:
+            return
+        if not self.barcode:
+            return
+
+        # 1) Generate raw barcode PNG into memory
+        buffer = BytesIO()
+        barcode_obj = Code128(self.barcode, writer=ImageWriter())
+        barcode_obj.write(buffer)
+        buffer.seek(0)
+
+        # 2) Open with Pillow
+        base_img = Image.open(buffer).convert("RGB")
+
+        # 3) Prepare text with necessary information
+        product_name = (self.product.productname or "").strip()
+        sku = (self.product.sku or "").strip()
+        uom_code = (self.uom.code or "").strip()
+        pack = self.pack_size or 1
+
+        if len(product_name) > 40:
+            product_name = product_name[:37] + "..."
+
+        text = f"Product: {product_name} | SKU: {sku} | UOM: {uom_code} | Pack: {pack}"
+
+        # 4) Create new image with extra space for text
+        font = ImageFont.load_default()
+        dummy_draw = ImageDraw.Draw(base_img)
+
+        # ✅ Use textbbox for newer Pillow; fallback to textsize if available
+        if hasattr(dummy_draw, "textbbox"):
+            bbox = dummy_draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        else:
+            # Older Pillow
+            text_width, text_height = dummy_draw.textsize(text, font=font)
+
+        padding = 10
+        extra_height = text_height + 2 * padding
+        new_width = max(base_img.width, text_width + 2 * padding)
+        new_height = base_img.height + extra_height
+
+        new_img = Image.new("RGB", (new_width, new_height), "white")
+        draw = ImageDraw.Draw(new_img)
+
+        # 5) Paste barcode centered horizontally
+        barcode_x = (new_width - base_img.width) // 2
+        new_img.paste(base_img, (barcode_x, 0))
+
+        # 6) Draw text centered at bottom
+        text_x = (new_width - text_width) // 2
+        text_y = base_img.height + padding
+        draw.text((text_x, text_y), text, fill="black", font=font)
+
+        # 7) Save final composite image to ImageField
+        final_buffer = BytesIO()
+        new_img.save(final_buffer, format="PNG")
+        final_buffer.seek(0)
+
+        filename = f"barcode_{self.pk}.png"
+        file_content = ContentFile(final_buffer.getvalue())
+        self.barcode_image.save(filename, file_content, save=False)
+
+
+    def save(self, *args, **kwargs):
+        """
+        Flow:
+        - First save: get PK.
+        - If barcode is empty → generate barcode and image → save again.
+        - Later saves: keep existing barcode, only generate image if missing.
+        """
+        is_new = self.pk is None
+
+        # First save: ensure we have a PK
+        super().save(*args, **kwargs)
+
+        updated_fields = []
+
+        # Generate barcode if missing
+        if not self.barcode:
+            self.barcode = self._generate_barcode_value()
+            updated_fields.append('barcode')
+
+        # Generate image if missing
+        if not self.barcode_image and self.barcode:
+            self._generate_barcode_image()
+            updated_fields.append('barcode_image')
+
+        if updated_fields:
+            super().save(update_fields=updated_fields)
+
+
+
+@receiver(post_save, sender=Product)
+def create_default_barcode_for_product(sender, instance, created, **kwargs):
+    """
+    When a Product is created:
+    - If it has a base_uom
+    - And no barcode exists yet
+    → create one primary barcode automatically.
+    """
+    if not created:
+        return
+
+    if instance.base_uom and not instance.barcode_details.exists():
+        ProductBarcode.objects.create(
+            product=instance,
+            uom=instance.base_uom,
+            isprimary=True,
+            pack_size=1,
+        )
+
 
 
 class ProductUomConversion(TimeStampedModel):

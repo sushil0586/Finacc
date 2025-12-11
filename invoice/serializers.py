@@ -12,7 +12,7 @@ from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader,DetailKind,VoucherType 
 from financial.models import account,accountHead,ShippingDetails,staticacounts,staticacountsmapping
-from inventory.models import Product
+from catalog.models import Product
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
 from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
@@ -2979,15 +2979,25 @@ def _recompute_header_totals(hdr):
 
 class salesOrderdetailsSerializer(serializers.ModelSerializer):
     # nested other charges
-    otherchargesdetail = serializers.ListSerializer(child=serializers.DictField(), required=False)
+    otherchargesdetail = serializers.ListSerializer(
+        child=serializers.DictField(),
+        required=False,
+    )
 
     id = serializers.IntegerField(required=False)
 
-    # read-only convenience fields from related product
-    productname = serializers.CharField(source='product.productname', read_only=True, allow_null=True)
-    hsn         = serializers.CharField(source='product.hsn.hsnCode', read_only=True, allow_null=True)
-    mrp         = serializers.DecimalField(source='product.mrp', max_digits=14, decimal_places=2,
-                                           read_only=True, allow_null=True)
+    # Read-only convenience fields from related product (new structure)
+    productname = serializers.CharField(
+        source='product.productname',
+        read_only=True,
+        allow_null=True,
+    )
+
+    # Derived via ProductGstRate -> HsnSac.code
+    hsn = serializers.SerializerMethodField(read_only=True)
+
+    # MRP from related ProductPrice (or similar) instead of old product.mrp
+    mrp = serializers.SerializerMethodField(read_only=True)
 
     # validators (still optional; model defaults handle omissions)
     orderqty = serializers.DecimalField(max_digits=14, decimal_places=4, required=False)
@@ -3019,12 +3029,82 @@ class salesOrderdetailsSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'product', 'productname', 'hsn', 'mrp', 'productdesc',
             'orderqty', 'pieces',
-            'befDiscountProductAmount', 'ratebefdiscount', 'orderDiscount', 'orderDiscountValue',
+            'befDiscountProductAmount', 'ratebefdiscount',
+            'orderDiscount', 'orderDiscountValue',
             'rate', 'amount', 'othercharges',
-            'cgst', 'sgst', 'igst', 'isigst', 'cgstpercent', 'sgstpercent', 'igstpercent', 'cess',
+            'cgst', 'sgst', 'igst', 'isigst',
+            'cgstpercent', 'sgstpercent', 'igstpercent', 'cess',
             'linetotal', 'subentity', 'entity',
             'otherchargesdetail',
         )
+
+    # --------------------------
+    # Helpers for new GST/HSN
+    # --------------------------
+
+    def _get_default_gst_rate(self, product):
+        """
+        Uses the prefetched gst_rates (from product__gst_rates__hsn)
+        purely in Python, no extra DB hits.
+        """
+        rates_manager = getattr(product, 'gst_rates', None)
+        if not rates_manager:
+            return None
+
+        # This uses the prefetch cache if available
+        rates = list(rates_manager.all())
+        if not rates:
+            return None
+
+        # Prefer default rate if flagged
+        for r in rates:
+            if getattr(r, "isdefault", False):
+                return r
+
+        # Fallback to first
+        return rates[0]
+
+    def get_hsn(self, obj):
+        product = getattr(obj, 'product', None)
+        if not product:
+            return None
+
+        rate = self._get_default_gst_rate(product)
+        if not rate or not rate.hsn:
+            return None
+
+        # HsnSac.code
+        return rate.hsn.code
+
+    def get_mrp(self, obj):
+        """
+        Best-effort MRP:
+        - Assumes product.prices is prefetched (product__prices).
+        - Returns price_obj.mrp if present, else price_obj.price, else None.
+        """
+        product = getattr(obj, 'product', None)
+        if not product:
+            return None
+
+        prices_manager = getattr(product, 'prices', None)
+        if not prices_manager:
+            return None
+
+        prices = list(prices_manager.all())
+        if not prices:
+            return None
+
+        price_obj = prices[0]
+
+        if hasattr(price_obj, 'mrp'):
+            return price_obj.mrp
+        if hasattr(price_obj, 'price'):
+            return price_obj.price
+        return None
+
+    # --------------------------
+    # Validation / linetotal
+    # --------------------------
 
     def validate(self, attrs):
         # Non-negative sanity (DB constraints also protect this)
@@ -3361,7 +3441,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
     originalinvoice_number = serializers.SerializerMethodField()
     einvoice_details       = serializers.SerializerMethodField()
 
-    # ---------- optional numeric fields (model defaults still apply) ----------
+    # ---------- optional numeric fields ----------
     stbefdiscount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     discount      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     subtotal      = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
@@ -3442,6 +3522,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         return rep
 
     # ===== validation (pass-through; no state/logic) ==========================
+
     def validate(self, attrs):
         return attrs
 
@@ -3521,46 +3602,69 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         expdtls_data     = adddetails_data.get('expdtls')
         addldocdtls_list = adddetails_data.get('addldocdtls', [])
 
+        # ---------- PayDtls ----------
         if paydtls_data:
             paydtls_data.pop('id', None)
-            (PayDtls.objects.update_or_create if is_update else PayDtls.objects.create)(
-                invoice=order, defaults=paydtls_data
-            ) if is_update else PayDtls.objects.create(invoice=order, **paydtls_data)
+            if is_update:
+                PayDtls.objects.update_or_create(
+                    invoice=order,
+                    defaults=paydtls_data,
+                )
+            else:
+                PayDtls.objects.create(invoice=order, **paydtls_data)
 
+        # ---------- RefDtls ----------
         if refdtls_data:
             refdtls_data.pop('id', None)
-            (RefDtls.objects.update_or_create if is_update else RefDtls.objects.create)(
-                invoice=order, defaults=refdtls_data
-            ) if is_update else RefDtls.objects.create(invoice=order, **refdtls_data)
+            if is_update:
+                RefDtls.objects.update_or_create(
+                    invoice=order,
+                    defaults=refdtls_data,
+                )
+            else:
+                RefDtls.objects.create(invoice=order, **refdtls_data)
 
+        # ---------- EwbDtls ----------
         if ewbdtls_data:
             ewbdtls_data.pop('id', None)
-            (EwbDtls.objects.update_or_create if is_update else EwbDtls.objects.create)(
-                invoice=order, defaults=ewbdtls_data
-            ) if is_update else EwbDtls.objects.create(invoice=order, **ewbdtls_data)
+            if is_update:
+                EwbDtls.objects.update_or_create(
+                    invoice=order,
+                    defaults=ewbdtls_data,
+                )
+            else:
+                EwbDtls.objects.create(invoice=order, **ewbdtls_data)
 
+        # ---------- ExpDtls ----------
         if expdtls_data:
             expdtls_data.pop('id', None)
-            (ExpDtls.objects.update_or_create if is_update else ExpDtls.objects.create)(
-                invoice=order, defaults=expdtls_data
-            ) if is_update else ExpDtls.objects.create(invoice=order, **expdtls_data)
+            if is_update:
+                ExpDtls.objects.update_or_create(
+                    invoice=order,
+                    defaults=expdtls_data,
+                )
+            else:
+                ExpDtls.objects.create(invoice=order, **expdtls_data)
 
-        # AddlDocDtls diff on update; plain create on insert
+        # ---------- AddlDocDtls ----------
         if is_update:
             existing = AddlDocDtls.objects.filter(invoice=order)
             existing_ids = {d.id for d in existing}
             incoming_ids = set()
+
             for doc in addldocdtls_list:
                 doc_id = self._pk_or_none(doc.get('id'))
+                clean = {k: v for k, v in doc.items() if k != "id"}
+
                 if doc_id and doc_id in existing_ids:
                     obj = AddlDocDtls.objects.get(id=doc_id, invoice=order)
-                    for k, v in doc.items():
-                        if k != "id":
-                            setattr(obj, k, v)
+                    for k, v in clean.items():
+                        setattr(obj, k, v)
                     obj.save()
                     incoming_ids.add(doc_id)
                 else:
-                    AddlDocDtls.objects.create(invoice=order, **{k: v for k, v in doc.items() if k != "id"})
+                    AddlDocDtls.objects.create(invoice=order, **clean)
+
             to_delete = existing_ids - incoming_ids
             if to_delete:
                 AddlDocDtls.objects.filter(id__in=to_delete).delete()
@@ -3621,7 +3725,9 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             if other_charges:
                 for oc in other_charges:
                     oc['salesorderdetail'] = d
-                saleothercharges.objects.bulk_create([saleothercharges(**oc) for oc in other_charges])
+                saleothercharges.objects.bulk_create([
+                    saleothercharges(**oc) for oc in other_charges
+                ])
 
         # delete removed detail lines
         ids_to_delete = existing_ids - seen_ids
@@ -3670,7 +3776,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         # authoritative posting
         self._post_once_via_shim(order, entrytype='I')
 
-        # e-invoice / e-way (unchanged)
+        # e-invoice / e-way (unchanged business logic)
         mode = _mode(order)
         if mode == 'eway':
             serializer = EwaybillFullSerializer(order)
@@ -3731,7 +3837,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         # authoritative posting
         self._post_once_via_shim(instance, entrytype='U')
 
-        # eWay / eInvoice (unchanged)
+        # eWay / eInvoice (unchanged business logic)
         mode = _mode(instance)
         if mode == 'eway':
             ct = ContentType.objects.get_for_model(instance)
@@ -7831,86 +7937,152 @@ class SalesOrderItemSerializer(serializers.ModelSerializer):
         model = salesOrderdetails
         fields = [
             "SlNo", "IsServc", "PrdDesc", "HsnCd", "Qty", "Unit", "UnitPrice",
-            "TotAmt", "Discount", "PreTaxVal", "AssAmt", "GstRt", "SgstAmt", "IgstAmt", "CgstAmt",
-            "CesAmt", "TotItemVal", "OrdLineRef"
+            "TotAmt", "Discount", "PreTaxVal", "AssAmt", "GstRt",
+            "SgstAmt", "IgstAmt", "CgstAmt", "CesAmt", "TotItemVal", "OrdLineRef"
         ]
 
+    # ---------------------------------------------------------------------
+    # Optional fields (batch, attributes, barcode, etc.)
+    # ---------------------------------------------------------------------
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # Optional fields from object
         optional_fields = {
             "BchDtls": self.get_BchDtls(instance),
             "AttribDtls": self.get_AttribDtls(instance),
-            "Barcde": instance.barcode if hasattr(instance, 'barcode') else None,
-            "OrgCntry": instance.org_country if hasattr(instance, 'org_country') else None,
-            "PrdSlNo": instance.product_serial_no if hasattr(instance, 'product_serial_no') else None,
+            "Barcde": getattr(instance, "barcode", None),
+            "OrgCntry": getattr(instance, "org_country", None),
+            "PrdSlNo": getattr(instance, "product_serial_no", None),
         }
 
-        # Only include optional fields if not None
         for key, value in optional_fields.items():
             if value is not None:
                 data[key] = value
 
         return data
 
-    # Example get methods (you may customize these)
     def get_BchDtls(self, obj):
-        if hasattr(obj, 'batch') and obj.batch:
+        batch = getattr(obj, "batch", None)
+        if batch:
             return {
-                "Nm": obj.batch.batchcode,
-                "Expdt": obj.batch.expirydate.strftime("%d/%m/%Y") if obj.batch.expirydate else None,
-                "wrDt": obj.batch.warehousedate.strftime("%d/%m/%Y") if obj.batch.warehousedate else None
+                "Nm": batch.batchcode,
+                "Expdt": batch.expirydate.strftime("%d/%m/%Y") if batch.expirydate else None,
+                "wrDt": batch.warehousedate.strftime("%d/%m/%Y") if batch.warehousedate else None,
             }
         return None
 
     def get_AttribDtls(self, obj):
-        if hasattr(obj, 'attributes') and obj.attributes.exists():
-            return [{"Nm": attr.name, "Val": attr.value} for attr in obj.attributes.all()]
+        attrs = getattr(obj, "attributes", None)
+        if attrs and hasattr(attrs, "all") and attrs.exists():
+            return [{"Nm": attr.name, "Val": attr.value} for attr in attrs.all()]
         return None
 
+    # ---------------------------------------------------------------------
+    # Helpers for new GST/HSN structure (ProductGstRate / HsnSac)
+    # ---------------------------------------------------------------------
+    def _get_default_gst_rate(self, product):
+        """
+        Use prefetched product.gst_rates (from product__gst_rates__hsn)
+        without extra DB hits.
+        """
+        rates_manager = getattr(product, "gst_rates", None)
+        if not rates_manager:
+            return None
+
+        rates = list(rates_manager.all())
+        if not rates:
+            return None
+
+        # Prefer default if flagged
+        for r in rates:
+            if getattr(r, "isdefault", False):
+                return r
+
+        # Fallback to first
+        return rates[0]
+
+    # ---------------------------------------------------------------------
+    # Basic fields
+    # ---------------------------------------------------------------------
     def get_SlNo(self, obj):
-        return str(self.context.get('slno', 1))
+        return str(self.context.get("slno", 1))
 
     def get_IsServc(self, obj):
-        return "Y" if obj.isService else "N"
+        product = getattr(obj, "product", None)
+        if product is not None and hasattr(product, "is_service"):
+            return "Y" if product.is_service else "N"
+        # fallback to detail flag if you had one earlier
+        if hasattr(obj, "isService"):
+            return "Y" if obj.isService else "N"
+        return "N"
 
     def get_PrdDesc(self, obj):
-        return obj.productdesc
+        # Prefer line description, else product name
+        if getattr(obj, "productdesc", None):
+            return obj.productdesc
+        product = getattr(obj, "product", None)
+        if product:
+            return getattr(product, "productname", None)
+        return None
 
     def get_HsnCd(self, obj):
-        return obj.product.hsn.hsnCode if obj.product and obj.product.hsn else None
+        product = getattr(obj, "product", None)
+        if not product:
+            return None
 
-   
+        rate = self._get_default_gst_rate(product)
+        if not rate or not rate.hsn:
+            return None
 
-    
+        # new HsnSac.code
+        return rate.hsn.code
 
     def get_Qty(self, obj):
         return float(obj.orderqty or 0)
 
-    def get_FreeQty(self, obj):
-        return None
-
     def get_Unit(self, obj):
-        return obj.product.unitofmeasurement.unitcode if obj.product and obj.product.unitofmeasurement else None
+        """
+        Use Product.base_uom from new model.
+        Tries common field names: code / unitcode / name / symbol.
+        """
+        product = getattr(obj, "product", None)
+        if not product:
+            return None
+        uom = getattr(product, "base_uom", None)
+        if not uom:
+            return None
+
+        for attr in ("code", "unitcode", "name", "symbol"):
+            if hasattr(uom, attr):
+                return getattr(uom, attr)
+        return None
 
     def get_UnitPrice(self, obj):
         return float(obj.rate or 0)
 
     def get_TotAmt(self, obj):
+        # value before discount
         return float(obj.befDiscountProductAmount or 0)
 
     def get_Discount(self, obj):
         return float(obj.orderDiscountValue or 0)
 
     def get_PreTaxVal(self, obj):
-        return float(obj.amount or 1)
+        # value after discount, before tax
+        return float(obj.amount or 0)
 
     def get_AssAmt(self, obj):
+        # assessable amount (usually same as PreTaxVal in your logic)
         return float(obj.amount or 0)
 
     def get_GstRt(self, obj):
-        return float(obj.igstpercent if obj.isigst else (obj.cgstpercent or 0) + (obj.sgstpercent or 0))
+        """
+        Total GST rate: IGST if isigst, else CGST+SGST.
+        Uses line-level percentages (already computed and stored).
+        """
+        if getattr(obj, "isigst", False):
+            return float(obj.igstpercent or 0)
+        return float((obj.cgstpercent or 0) + (obj.sgstpercent or 0))
 
     def get_SgstAmt(self, obj):
         return float(obj.sgst or 0)
@@ -7921,32 +8093,15 @@ class SalesOrderItemSerializer(serializers.ModelSerializer):
     def get_CgstAmt(self, obj):
         return float(obj.cgst or 0)
 
-    def get_CesRt(self, obj):
-        return None
-
     def get_CesAmt(self, obj):
         return float(obj.cess or 0)
-
-    def get_CesNonAdvlAmt(self, obj):
-        return None
-
-    def get_StateCesRt(self, obj):
-        return None
-
-    def get_StateCesAmt(self, obj):
-        return None
-
-    def get_StateCesNonAdvlAmt(self, obj):
-        return None
-
-    def get_OthChrg(self, obj):
-        return float(obj.othercharges or 0)
 
     def get_TotItemVal(self, obj):
         return float(obj.linetotal or 0)
 
     def get_OrdLineRef(self, obj):
         return str(obj.id or "")
+
 
    
 
@@ -7969,18 +8124,16 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
     RefDtls = serializers.SerializerMethodField()
     AddlDocDtls = serializers.SerializerMethodField()
     EwbDtls = serializers.SerializerMethodField()
-  #  ExpDtls = serializers.SerializerMethodField()
-
+    # ExpDtls = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOderHeader
         fields = [
             "TranDtls", "DocDtls", "SellerDtls", "BuyerDtls",
             "DispDtls", "ShipDtls", "ItemList", "ValDtls",
-            "PayDtls", "RefDtls", "AddlDocDtls", "EwbDtls"
+            "PayDtls", "RefDtls", "AddlDocDtls", "EwbDtls",
         ]
 
-    
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
@@ -7989,43 +8142,38 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
 
         final_data = {"Version": "1.1", **data}
 
-        mode = self.context.get("mode", "both") 
+        mode = self.context.get("mode", "both")
 
         if mode == "einvoice":
             final_data.pop("EwbDtls", None)
         elif mode == "eway":
-            # Keep only EwbDtls and Version
             ewb = final_data.get("EwbDtls")
             final_data = {"Version": "1.1"}
             if ewb:
                 final_data["EwbDtls"] = ewb
         elif mode == "none":
-            # Only Version at top
             final_data = {"Version": "1.1"}
 
         return final_data
 
-
-
+    # --- Header-level structures (unchanged) ---
 
     def get_TranDtls(self, obj):
         return {
             "TaxSch": "GST",
             "SupTyp": obj.invoicetype.invoicetypecode if obj.invoicetype else None,
             "RegRev": "Y" if obj.reversecharge else "N",
-            "EcmGstin": obj.ecom.gstno if obj.ecom else None,
-            "IgstOnIntra": "Y" if obj.isigst else "N"
+            "EcmGstin": obj.ecom.gstno if getattr(obj, "ecom", None) else None,
+            "IgstOnIntra": "Y" if obj.isigst else "N",
         }
-
 
     def get_DocDtls(self, obj):
         return {
             "Typ": "INV",
             "No": obj.invoicenumber,
-            "Dt": obj.sorderdate.strftime("%d/%m/%Y") if obj.sorderdate else None
+            "Dt": obj.sorderdate.strftime("%d/%m/%Y") if obj.sorderdate else None,
         }
 
-   
     def get_SellerDtls(self, obj):
         entity = obj.entity
         return {
@@ -8038,10 +8186,9 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "Pin": int(entity.city.pincode) if entity.city and entity.city.pincode else None,
             "Stcd": entity.state.statecode if entity.state else None,
             "Ph": entity.phoneoffice,
-            "Em": entity.email
+            "Em": entity.email,
         }
 
-    
     def get_BuyerDtls(self, obj):
         account = obj.accountid
         return {
@@ -8055,9 +8202,9 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "Pin": int(account.city.pincode) if account.city and account.city.pincode else None,
             "Stcd": account.state.statecode if account.state else None,
             "Ph": getattr(account, "phoneno", None),
-            "Em": getattr(account, "emailid", None)
+            "Em": getattr(account, "emailid", None),
         }
-    
+
     def get_DispDtls(self, obj):
         dispatch = obj.subentity
         return {
@@ -8066,31 +8213,31 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "Addr2": dispatch.address if dispatch else None,
             "Loc": dispatch.city.cityname if dispatch and dispatch.city else None,
             "Pin": int(dispatch.pincode) if dispatch and dispatch.pincode else None,
-            "Stcd": dispatch.state.statecode if dispatch and dispatch.state else None
+            "Stcd": dispatch.state.statecode if dispatch and dispatch.state else None,
         }
-    
-    def get_ShipDtls(self, obj):
-        ShippingDetails = obj.shippedto
-        return {
-            "Gstin": ShippingDetails.gstno if ShippingDetails else None,
-            "LglNm": ShippingDetails.full_name if ShippingDetails else None,
-            "TrdNm": ShippingDetails.full_name if ShippingDetails else None,
-            "Addr1": ShippingDetails.address1 if ShippingDetails else None,
-            "Addr2": ShippingDetails.address2 if ShippingDetails else None,
-            "Loc": ShippingDetails.city.cityname if ShippingDetails and ShippingDetails.city else None,
-            "Pin": int(ShippingDetails.pincode) if ShippingDetails and ShippingDetails.pincode else None,
-            "Stcd": ShippingDetails.state.statecode if ShippingDetails and ShippingDetails.state else None
-        }
-    
-    def get_ItemList(self, obj):
-        return [
 
-            SalesOrderItemSerializer(item, context={'slno': idx + 1}).data
+    def get_ShipDtls(self, obj):
+        shipping = obj.shippedto
+        return {
+            "Gstin": shipping.gstno if shipping else None,
+            "LglNm": shipping.full_name if shipping else None,
+            "TrdNm": shipping.full_name if shipping else None,
+            "Addr1": shipping.address1 if shipping else None,
+            "Addr2": shipping.address2 if shipping else None,
+            "Loc": shipping.city.cityname if shipping and shipping.city else None,
+            "Pin": int(shipping.pincode) if shipping and shipping.pincode else None,
+            "Stcd": shipping.state.statecode if shipping and shipping.state else None,
+        }
+
+    def get_ItemList(self, obj):
+        # Uses updated SalesOrderItemSerializer (new Product/GST model aware)
+        return [
+            SalesOrderItemSerializer(item, context={"slno": idx + 1}).data
             for idx, item in enumerate(obj.saleInvoiceDetails.all())
         ]
-    
+
     def get_ValDtls(self, obj):
-        val = {
+        return {
             "AssVal": obj.stbefdiscount,
             "CgstVal": obj.cgst,
             "SgstVal": obj.sgst,
@@ -8103,10 +8250,9 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "TotInvVal": obj.gtotal,
             "TotInvValFc": obj.gtotal,
         }
-        return val
-    
+
     def get_PayDtls(self, obj):
-        pay = getattr(obj, 'paydtls', None)
+        pay = getattr(obj, "paydtls", None)
         if not pay:
             return None
         return {
@@ -8118,30 +8264,35 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "DirDr": pay.DirDr,
             "CrDay": pay.CrDay,
             "PaidAmt": float(pay.PaidAmt) if pay.PaidAmt else None,
-            "PayRefNo": pay.PayRefNo
+            "PayRefNo": pay.PayRefNo,
         }
 
     def get_RefDtls(self, obj):
-        ref = getattr(obj, 'refdtls', None)
+        ref = getattr(obj, "refdtls", None)
         if not ref:
             return None
         return {
             "InvRm": ref.InvRm,
-            "PrecDocDtls": [{
-                "InvNo": ref.PrecDocNo,
-                "InvDt": ref.PrecDocDt.strftime("%d/%m/%Y") if ref.PrecDocDt else None
-            }] if ref.PrecDocNo else [],
-            "ContrRefr": ref.ContrRefr
+            "PrecDocDtls": [
+                {
+                    "InvNo": ref.PrecDocNo,
+                    "InvDt": ref.PrecDocDt.strftime("%d/%m/%Y") if ref.PrecDocDt else None,
+                }
+            ] if ref.PrecDocNo else [],
+            "ContrRefr": ref.ContrRefr,
         }
 
     def get_AddlDocDtls(self, obj):
-        docs = obj.addldocdtls.all()
+        docs = getattr(obj, "addldocdtls", None)
         if not docs:
             return None
-        return [{"Url": d.Url, "Docs": d.Docs, "Info": d.Info} for d in docs]
+        qs = docs.all()
+        if not qs:
+            return None
+        return [{"Url": d.Url, "Docs": d.Docs, "Info": d.Info} for d in qs]
 
     def get_EwbDtls(self, obj):
-        ewb = getattr(obj, 'ewbdtls', None)
+        ewb = getattr(obj, "ewbdtls", None)
         if not ewb:
             return None
         return {
@@ -8152,7 +8303,7 @@ class SalesOrderFullSerializer(serializers.ModelSerializer):
             "TransMode": ewb.TransMode,
             "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
             "VehNo": ewb.VehNo,
-            "VehType": ewb.VehType
+            "VehType": ewb.VehType,
         }
 
     # def get_ExpDtls(self, obj):

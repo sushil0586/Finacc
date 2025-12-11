@@ -1,6 +1,7 @@
 # catalog/views.py
 
 from rest_framework import generics, permissions
+from rest_framework import status
 
 from .models import (
     ProductCategory,
@@ -278,3 +279,59 @@ class ProductPageBootstrapAPIView(APIView):
         }
 
         return Response(data)
+
+
+
+
+class ProductImportantListAPIView(APIView):
+    """
+    Returns lightweight flat list of products for main product screen.
+    GET /api/catalog/entity/<entity_id>/products/list/
+    """
+
+    def get(self, request, entity_id):
+        items = []
+
+        # Preload related objects
+        qs = (
+            Product.objects
+            .filter(entity_id=entity_id, isactive=True)
+            .select_related("brand", "productcategory", "base_uom")
+            .order_by("productname")
+        )
+
+        for p in qs:
+            # Get latest GST rate (if exists)
+            latest_gst = (
+                p.gst_rates.order_by("-valid_from").first()
+                if hasattr(p, "gst_rates")
+                else None
+            )
+
+            gst_rate = (
+                latest_gst.gst_rate if latest_gst else None
+            )
+
+            # Get default selling price
+            default_price = (
+                p.prices.filter(pricelist__isdefault=True)
+                .order_by("-effective_from")
+                .first()
+            )
+
+            selling_price = default_price.selling_price if default_price else None
+
+            items.append({
+                "id": p.id,
+                "productname": p.productname,
+                "sku": p.sku,
+                "brand": p.brand.name if p.brand else None,
+                "category": p.productcategory.pcategoryname if p.productcategory else None,
+                "uom": p.base_uom.code if p.base_uom else None,
+                "hsn": p.hsn_sac.code if hasattr(p, "hsn_sac") and p.hsn_sac else None,
+                "gst": float(gst_rate) if gst_rate is not None else None,
+                "selling_price": selling_price,
+                "isactive": p.isactive
+            })
+
+        return Response(items, status=status.HTTP_200_OK)
