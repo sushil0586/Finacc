@@ -20,7 +20,8 @@ from .views import (
     GstTypeListAPIView,
     ProductPageBootstrapAPIView,
     CessTypeListAPIView,
-    ProductStatusListAPIView
+    ProductStatusListAPIView,
+    ProductImportantListAPIView
 )
 
 urlpatterns = [
@@ -59,7 +60,8 @@ urlpatterns = [
     ),
 
     path(
-        "products/<int:pk>/",
+        ""
+        "/<int:pk>/",
         ProductRetrieveUpdateDestroyAPIView.as_view(),
         name="product-detail",
     ),
@@ -132,5 +134,11 @@ urlpatterns = [
         "pricelists/<int:pk>/",
         PriceListRetrieveUpdateDestroyAPIView.as_view(),
         name="pricelist-detail",
+    ),
+
+    path(
+        "entity/<int:entity_id>/list/",
+        ProductImportantListAPIView.as_view(),
+        name="product-important-list"
     ),
 ]

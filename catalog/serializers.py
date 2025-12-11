@@ -127,20 +127,38 @@ class ProductGstRateSerializer(serializers.ModelSerializer):
 
 class ProductBarcodeSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    # Read-only URL for the generated image
+    barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ProductBarcode
         fields = (
             "id",
-            "product",   # parent sets
-            "barcode",
+            "product",           # parent sets
+            "barcode",           # auto-generated, read-only
             "uom",
             "isprimary",
             "pack_size",
+            "barcode_image_url", # derived from ImageField
             "createdon",
             "modifiedon",
         )
-        read_only_fields = ("product", "createdon", "modifiedon")
+        read_only_fields = (
+            "product",
+            "barcode",           # don’t allow client to send/override
+            "barcode_image_url",
+            "createdon",
+            "modifiedon",
+        )
+
+    def get_barcode_image_url(self, obj):
+        request = self.context.get("request")
+        if obj.barcode_image and hasattr(obj.barcode_image, "url"):
+            if request is not None:
+                return request.build_absolute_uri(obj.barcode_image.url)
+            return obj.barcode_image.url
+        return None
+
 
 
 class ProductUomConversionSerializer(serializers.ModelSerializer):
@@ -358,6 +376,9 @@ class ProductSerializer(serializers.ModelSerializer):
             item_data.pop("product", None)
             item_data.pop("entity", None)
 
+            item_data.pop("barcode", None)
+            item_data.pop("barcode_image", None)
+
             if item_id:
                 # UPDATE EXISTING
                 try:
@@ -427,6 +448,8 @@ class ProductSerializer(serializers.ModelSerializer):
 
         # Barcodes
         for bd in barcodes_data:
+            bd.pop("barcode", None)
+            bd.pop("barcode_image", None)
             ProductBarcode.objects.create(product=product, **bd)
 
         # UOM conversions

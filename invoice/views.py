@@ -894,7 +894,7 @@ class GetAddDetailsAPIViewPR(APIView):
 
 
 class SalesOderHeaderApiView(ListCreateAPIView):
-    serializer_class = SalesOderHeaderSerializer
+    serializer_class = SalesOderHeaderSerializer  # set below after serializer class definition
     permission_classes = (permissions.IsAuthenticated,)
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = ['billno', 'sorderdate', 'entityfinid']
@@ -916,34 +916,50 @@ class SalesOderHeaderApiView(ListCreateAPIView):
 
     def get_queryset(self):
         """
-        - Filter by ?entity=<id> if present; otherwise return empty list (safer than dumping all entities).
-        - Optimize nested serialization access with select_related/prefetch_related.
+        - Filter by ?entity=<id> if present; otherwise return empty list.
+        - Optimize nested serialization with select_related/prefetch_related.
+        - Works with new Product / HsnSac / ProductGstRate models.
         """
         if self._entity_id is None:
-            # no entity specified → return nothing (or change to .all() if you really want global listing)
+            # no entity specified → return nothing (or change to .all() if you want global listing)
             return SalesOderHeader.objects.none()
 
-        # Base queryset with the entity filter
-        qs = (SalesOderHeader.objects
-              .filter(entity_id=self._entity_id)
-              .select_related(
-                  'accountid', 'invoicetypeid', 'invoicetype',
-                  'state', 'district', 'city',
-                  'subentity', 'entity', 'entityfinid',
-                  'shippedto', 'shippedto__state',
-                  'createdby'
-              )
-              .prefetch_related(
-                  Prefetch(
-                      'saleInvoiceDetails',
-                      queryset=(salesOrderdetails.objects
-                               .select_related('product', 'product__hsn', 'entity', 'subentity', 'createdby')
-                               .prefetch_related('otherchargesdetail'))
-                  ),
-                  # If you add related_name on these models, you can prefetch them too:
-                  # 'paydtls_set', 'refdtls_set', 'ewbdtls_set', 'expdtls_set', 'addldocdtls_set'
-              ))
-
+        qs = (
+            SalesOderHeader.objects
+            .filter(entity_id=self._entity_id)
+            .select_related(
+                'accountid', 'invoicetypeid', 'invoicetype',
+                'state', 'district', 'city',
+                'subentity', 'entity', 'entityfinid',
+                'shippedto', 'shippedto__state',
+                'createdby',
+            )
+            .prefetch_related(
+                Prefetch(
+                    'saleInvoiceDetails',
+                    queryset=(
+                        salesOrderdetails.objects
+                        .select_related(
+                            'product',
+                            'product__productcategory',
+                            'product__brand',
+                            'product__base_uom',
+                            'entity',
+                            'subentity',
+                            'createdby',
+                        )
+                        .prefetch_related(
+                            'otherchargesdetail',
+                            # new GST structure
+                            'product__gst_rates__hsn',
+                            # prices for MRP
+                            'product__prices',
+                        )
+                    )
+                ),
+                # TODO: add paydtls/refdtls/ewb/exp/addldoc when you wire them
+            )
+        )
         return qs
 
 
