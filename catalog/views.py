@@ -2,6 +2,7 @@
 
 from rest_framework import generics, permissions
 from rest_framework import status
+from django.db.models import Q
 
 from .models import (
     ProductCategory,
@@ -279,6 +280,97 @@ class ProductPageBootstrapAPIView(APIView):
         }
 
         return Response(data)
+
+
+
+class InvoiceProductListAPIView(APIView):
+    """
+    Lightweight product list for invoice page.
+
+    GET /api/catalog/entity/<entity_id>/invoice-products/
+    Optional: ?search=<text>  (search by name or sku)
+    """
+
+    def get(self, request, entity_id, format=None):
+        search = (request.query_params.get("search") or "").strip()
+
+        # Base queryset: entity + active
+        qs = (
+            Product.objects
+            .filter(entity_id=entity_id, isactive=True)
+            .select_related("base_uom")
+            .prefetch_related("gst_rates", "prices")
+            .order_by("productname")
+        )
+
+        if search:
+            qs = qs.filter(
+                Q(productname__icontains=search) |
+                Q(sku__icontains=search)
+            )
+
+        items = []
+
+        for p in qs:
+            # ---------- GST / HSN (pick default, else latest) ----------
+            default_gst = (
+                p.gst_rates.filter(isdefault=True).order_by("-valid_from").first()
+                or p.gst_rates.order_by("-valid_from").first()
+            )
+
+            if default_gst:
+                hsn_code = default_gst.hsn.code
+                cgst = default_gst.cgst
+                sgst = default_gst.sgst
+                igst = default_gst.igst
+                cess = default_gst.cess
+                cess_type = default_gst.cess_type
+            else:
+                hsn_code = None
+                cgst = sgst = igst = cess = None
+                cess_type = None
+
+            # ---------- Prices (pick default pricelist, else latest) ----------
+            default_price = (
+                p.prices.filter(pricelist__isdefault=True)
+                .order_by("-effective_from")
+                .first()
+                or p.prices.order_by("-effective_from").first()
+            )
+
+            if default_price:
+                mrp = default_price.mrp
+                salesprice = default_price.selling_price
+                purchaserate = default_price.purchase_rate
+            else:
+                mrp = salesprice = purchaserate = None
+
+            # ---------- UOM ----------
+            uom_code = p.base_uom.code if p.base_uom else None
+
+            # ---------- Build response row ----------
+            items.append({
+                "id": p.id,
+                "productname": p.productname,
+                "productdesc": p.productdesc,
+                "sku": p.sku,
+                "uom": uom_code,
+                "is_service": p.is_service,
+                "is_pieces": p.is_pieces,
+
+                "mrp": float(mrp) if mrp is not None else None,
+                "salesprice": float(salesprice) if salesprice is not None else None,
+                "purchaserate": float(purchaserate) if purchaserate is not None else None,
+
+                "hsn": hsn_code,
+                "cgst": float(cgst) if cgst is not None else None,
+                "sgst": float(sgst) if sgst is not None else None,
+                "igst": float(igst) if igst is not None else None,
+                "cess": float(cess) if cess is not None else None,
+                "cesstype": cess_type,
+            })
+
+        return Response(items, status=status.HTTP_200_OK)
 
 
 
