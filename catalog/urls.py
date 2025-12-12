@@ -21,7 +21,8 @@ from .views import (
     ProductPageBootstrapAPIView,
     CessTypeListAPIView,
     ProductStatusListAPIView,
-    ProductImportantListAPIView
+    ProductImportantListAPIView,
+    InvoiceProductListAPIView
 )
 
 urlpatterns = [
@@ -140,5 +141,11 @@ urlpatterns = [
         "entity/<int:entity_id>/list/",
         ProductImportantListAPIView.as_view(),
         name="product-important-list"
+    ),
+
+    path(
+        "invoice-products/<int:entity_id>/",
+        InvoiceProductListAPIView.as_view(),
+        name="invoice-product-list",
     ),
 ]

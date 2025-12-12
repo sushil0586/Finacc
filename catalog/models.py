@@ -160,6 +160,11 @@ class Product(EntityScopedModel):
         related_name='base_products'
     )
 
+    is_pieces = models.BooleanField(
+        default=True,
+        help_text="If true, quantity is treated as pieces (integer). Otherwise, allows decimals."
+    )
+
     is_service = models.BooleanField(default=False)
     is_batch_managed = models.BooleanField(default=False)
     is_serialized = models.BooleanField(default=False)
