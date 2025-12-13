@@ -237,7 +237,7 @@ class Poster:
             return list(
                 salesOrderdetails.objects
                 .filter(salesorderheader=header)
-                .select_related("product", "product__saleaccount", "product__purchaseaccount")
+                .select_related("product", "product__sales_account", "product__purchase_account")
                 .prefetch_related("otherchargesdetail")
             )
 

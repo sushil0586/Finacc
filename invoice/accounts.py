@@ -2,10 +2,10 @@
 from .stocktransconstant import stocktransconstant  # adjust import path to where you define this
 
 def get_sales_account_for_product(product):
-    return product.saleaccount
+    return product.sales_account
 
 def get_purchase_account_for_product(product):
-    return product.purchaseaccount
+    return product.purchase_account
 
 def get_cash_account(entity):
     const = stocktransconstant()
