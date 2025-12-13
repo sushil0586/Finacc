@@ -36,6 +36,13 @@ urlpatterns = [
         name="product-list-create",
     ),
 
+
+    path(
+        "products/<int:pk>/",
+        ProductRetrieveUpdateDestroyAPIView.as_view(),
+        name="product-list-create",
+    ),
+
     path(
         "gst-types/",
         GstTypeListAPIView.as_view(),
