@@ -4,6 +4,7 @@ from django.shortcuts import render
 from collections import defaultdict
 from django.utils.encoding import smart_str
 from math import radians, sin, cos, sqrt, atan2
+from django.utils import timezone
 import io
 import calendar
 from rest_framework.exceptions import ValidationError
@@ -12,6 +13,8 @@ from helpers.utils.pdf import render_to_pdf
 from django.utils.functional import cached_property
 from rest_framework.filters import OrderingFilter
 from django.utils.dateparse import parse_date
+
+from catalog.models import ProductPrice,ProductGstRate
 
 
 import json
@@ -1103,8 +1106,14 @@ class salesOrderpdfview(RetrieveAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     lookup_field = "id"
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["pricelist_id"] = self.request.query_params.get("pricelist_id")
+        # If you want to force base_uom pricing, keep uom_id empty.
+        # ctx["uom_id"] = self.request.query_params.get("uom_id")
+        return ctx
+
     def get_queryset(self):
-        # Parse query params safely (avoid implicit type casting & joins)
         entity = self.request.query_params.get("entity")
         entityfinid = self.request.query_params.get("entityfinid")
 
@@ -1118,7 +1127,44 @@ class salesOrderpdfview(RetrieveAPIView):
         except (TypeError, ValueError):
             entityfinid = None
 
-        # Shape the query to avoid N+1
+        today = timezone.localdate()
+
+        # Prefetch ONLY relevant prices (active + latest) to reduce payload
+        price_qs = (
+            ProductPrice.objects
+            .only(
+                "id", "product_id", "pricelist_id", "uom_id",
+                "mrp", "purchase_rate", "selling_price",
+                "effective_from", "effective_to"
+            )
+            .filter(effective_from__lte=today)
+            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=today))
+            .order_by("-effective_from")
+        )
+
+        gst_qs = (
+            ProductGstRate.objects
+            .select_related("hsn")
+            .only(
+                "id", "product_id", "hsn_id", "isdefault",
+                "valid_from", "valid_to",
+                "gst_rate", "cgst", "sgst", "igst", "cess", "cess_type"
+            )
+            .order_by("-valid_from")
+        )
+
+        detail_qs = (
+            salesOrderdetails.objects
+            .select_related(
+                "product",
+                "product__base_uom",
+            )
+            .prefetch_related(
+                Prefetch("product__prices", queryset=price_qs),
+                Prefetch("product__gst_rates", queryset=gst_qs),
+            )
+        )
+
         qs = (
             SalesOderHeader.objects
             .select_related(
@@ -1128,10 +1174,7 @@ class salesOrderpdfview(RetrieveAPIView):
                 "transport", "createdby"
             )
             .prefetch_related(
-                Prefetch(
-                    "saleInvoiceDetails",
-                    queryset=salesOrderdetails.objects.select_related("product")
-                )
+                Prefetch("saleInvoiceDetails", queryset=detail_qs)
             )
         )
 
@@ -1536,19 +1579,31 @@ class PurchaseReturnlatestview(ListCreateAPIView):
 
 
 class purchaseorderApiView(ListCreateAPIView):
-
     serializer_class = purchaseorderSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['voucherno','voucherdate','entityfinid']
-    @transaction.atomic
+    filterset_fields = ["voucherno", "voucherdate", "entityfinid"]
+
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return purchaseorder.objects.filter(entity = entity)
+        entity = self.request.query_params.get("entity")
+
+        qs = purchaseorder.objects.filter(entity=entity)
+
+        # ✅ eager load nested details + products + prices
+        qs = qs.prefetch_related(
+            Prefetch(
+                "purchaseInvoiceDetails",
+                queryset=PurchaseOrderDetailsSerializer.setup_eager_loading(
+                    PurchaseOrderDetails.objects.all()
+                ),
+            ),
+            "attachments",
+        )
+        return qs
 
 class newpurchaseorderApiView(ListCreateAPIView):
 
