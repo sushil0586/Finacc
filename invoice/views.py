@@ -1513,19 +1513,30 @@ class purchasereturnlatestview(ListAPIView):
 
 
 class PurchaseReturnApiView(ListCreateAPIView):
-
     serializer_class = PurchasereturnSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['billno','sorderdate','entityfinid']
+    filterset_fields = ["billno", "sorderdate", "entityfinid"]
 
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return PurchaseReturn.objects.filter(entity = entity)
+        entity = self.request.query_params.get("entity")
+
+        qs = PurchaseReturn.objects.filter(entity=entity)
+
+        # ✅ eager load nested details + products (+ whatever your details serializer loads)
+        qs = qs.prefetch_related(
+            Prefetch(
+                "purchasereturndetails",
+                queryset=purchasereturndetailsSerializer.setup_eager_loading(
+                    Purchasereturndetails.objects.all()
+                ),
+            ),
+        )
+        return qs
 
 
 class PurchaseReturnupdatedelview(RetrieveUpdateDestroyAPIView):
@@ -2004,20 +2015,30 @@ class cashordelatestview(ListCreateAPIView):
 
 
 class salesreturnApiView(ListCreateAPIView):
-
     serializer_class = salesreturnSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['voucherno','voucherdate','entityfinid']
+    filterset_fields = ["voucherno", "voucherdate", "entityfinid"]
 
-    @transaction.atomic
     def perform_create(self, serializer):
-        return serializer.save(createdby = self.request.user)
-    
+        return serializer.save(createdby=self.request.user)
+
     def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        return salereturn.objects.filter(entity = entity)
+        entity = self.request.query_params.get("entity")
+
+        qs = salereturn.objects.filter(entity=entity)
+
+        # ✅ eager load nested details + products + prices
+        qs = qs.prefetch_related(
+            Prefetch(
+                "salereturndetails",
+                queryset=salesreturnDetailsSerializer.setup_eager_loading(
+                    salereturnDetails.objects.all()
+                ),
+            ),
+        )
+        return qs
 
 def _entity_from_request(request) -> int:
     entity = request.query_params.get("entity")
