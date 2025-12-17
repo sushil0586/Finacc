@@ -160,12 +160,30 @@ class Poster:
 
     # ---------- builders ----------
     def _account_head(self, account, is_debit: bool):
+        """
+        Safer AccountHead resolution:
+        - Prefer side-specific head (debitaccounthead / creditaccounthead)
+        - If missing OR wrong, fall back to the other side head
+        - Else fall back to accounthead
+        """
         if account is None:
             return None
-        return (
-            getattr(account, "debitaccounthead" if is_debit else "creditaccounthead", None)
-            or getattr(account, "accounthead", None)
-        )
+
+        debit_head  = getattr(account, "debitaccounthead", None)
+        credit_head = getattr(account, "creditaccounthead", None)
+        base_head   = getattr(account, "accounthead", None)
+
+        # normal preference
+        preferred = debit_head if is_debit else credit_head
+        if preferred:
+            return preferred
+
+        # fallback to the other side head (this fixes your SR case)
+        other = credit_head if is_debit else debit_head
+        if other:
+            return other
+
+        return base_head
 
     def _jl(self, *, account, desc="", dr=None, cr=None, accounthead=None, detailid=None):
         amt_dr = q2(dr or ZERO2)
@@ -416,6 +434,234 @@ class Poster:
         else:
             setattr(mv, "ext_cost", ext_val)
 
+
+        # ======================================================
+    # PURCHASE RETURN
+    # ======================================================
+    @transaction.atomic
+    def post_purchase_return(self, header, details, extra_charges_map: Optional[dict] = None):
+        """
+        Purchase Return posting (PR) = reverse of Purchase:
+        - Cr Purchase/Expense (reverse purchase)
+        - Cr Input GST (reverse ITC) ONLY if reversecharge=False
+          ✅ UPDATE-PROOF: if header tax fields are 0, fallback to sum(detail taxes)
+        - Cr other charges reversal (reverse of purchase other-charge debits)
+        - Dr Supplier/Cash (debit note / refund)
+        - Inventory OUT
+        """
+        self.header = header
+        self.clear_existing()
+
+        jl: List[JournalLine] = []
+        im: List[InventoryMove] = []
+
+        # -----------------------------
+        # 1) Ensure we have saved PR details
+        # -----------------------------
+        try:
+            details = list(details or [])
+            if (not details) or any(getattr(d, "pk", None) is None for d in details):
+                raise ValueError("unsaved/empty")
+        except Exception:
+            # If your purchase return uses a different related_name, change this:
+            details = list(
+                getattr(header, "purchasereturndetails")
+                .select_related("product", "product__sales_account", "product__purchase_account")
+                .prefetch_related("otherchargesdetail")
+                .all()
+            )
+
+        if not details:
+            return
+
+        cash_acct = get_cash_account(self.entity)
+        tax_in    = get_input_tax_accounts(self.entity)  # {"igst":..,"cgst":..,"sgst":..,"cess":..}
+        ro_income, ro_expense = get_roundoff_accounts(self.entity)
+
+        # fallback account if other-charge has no account
+        misc_exp_acct = get_purchase_misc_expense_account(self.entity)
+
+        gtotal_base = q2(getattr(header, "gtotal", ZERO2))
+        roundoff    = q2(getattr(header, "roundOff", ZERO2))
+        expenses    = q2(getattr(header, "expenses", ZERO2))
+        is_cash     = (getattr(header, "billcash", None) in (0, 2))
+
+        supplier_acct = getattr(header, "account", None) or getattr(header, "accountid", None)
+
+        first_purch_acct = None
+        base_total = ZERO2  # total purchase base (without taxes/charges)
+
+        last_purch_acct = None
+        last_detail_id  = None
+
+        # -----------------------------
+        # 2) Reverse purchase base + reverse other-charges + Stock OUT
+        # -----------------------------
+        for d in details:
+            prod = getattr(d, "product", None)
+
+            line_amt      = q2(getattr(d, "amount", ZERO2))
+            other_on_line  = q2(getattr(d, "othercharges", ZERO2))
+            base           = q2(line_amt - other_on_line)
+
+            # Cr Purchase/Expense (reverse purchase)
+            if base > ZERO2 and prod:
+                purch_acct = get_purchase_account_for_product(prod)
+                if purch_acct is None:
+                    raise ValueError(f"Purchase account not set for product {getattr(prod,'id',None)}")
+
+                if first_purch_acct is None:
+                    first_purch_acct = purch_acct
+                last_purch_acct = purch_acct
+                last_detail_id  = getattr(d, "id", None)
+
+                jl.append(self._jl(
+                    account=purch_acct,
+                    accounthead=(
+                        getattr(purch_acct, "creditaccounthead", None)
+                        or getattr(purch_acct, "debitaccounthead", None)   # fallback safe
+                        or getattr(purch_acct, "accounthead", None)
+                    ),
+                    cr=base,
+                    desc=f"Purchase Return line #{getattr(d,'id',None)}",
+                    detailid=getattr(d, "id", None)
+                ))
+                base_total = q2(base_total + base)
+
+            # Reverse Other charges (Purchase debited these → PR credits them)
+            charges = []
+            rel = getattr(d, "otherchargesdetail", None)
+            if rel is not None:
+                try:
+                    charges.extend(list(rel.all()))
+                except Exception:
+                    pass
+            if extra_charges_map and getattr(d, "id", None) in extra_charges_map:
+                charges.extend(extra_charges_map[d.id])
+
+            for oc in charges:
+                amt = q2(getattr(oc, "amount", ZERO2))
+                if amt > ZERO2:
+                    acct = getattr(oc, "account", None) or misc_exp_acct
+                    jl.append(self._jl(
+                        account=acct,
+                        cr=amt,
+                        desc=f"PR other charge reversal line #{getattr(d,'id',None)}",
+                        detailid=getattr(d, "id", None)
+                    ))
+
+            # Inventory OUT
+            qty = getattr(d, "orderqty", None)
+            qty = getattr(d, "pieces", 0) if q4(qty) == ZERO4 else qty
+            qty = q4(qty)
+
+            if prod and qty != ZERO4:
+                # For PR OUT, you can use purchase rate as unit_cost
+                rate_val = getattr(d, "rate", None)
+                if rate_val is None or q4(rate_val) == ZERO4:
+                    # fallback: base/qty (base excludes othercharges)
+                    unit_cost = q4((base / qty) if qty != ZERO4 else ZERO4)
+                else:
+                    unit_cost = q4(rate_val)
+
+                mv = self._im(
+                    product=prod,
+                    qty=-qty,               # -ve for OUT
+                    unit_cost=unit_cost,
+                    move_type="OUT",
+                    detailid=getattr(d, "id", None),
+                )
+                self._assign_move_detail_and_links(mv, header, d)
+                self._ensure_move_costs(mv, qty=-qty, unit_cost=unit_cost)
+                im.append(mv)
+
+        # -----------------------------
+        # 3) Taxes reversal (Cr input GST) ONLY if reversecharge=False
+        #    ✅ UPDATE-PROOF fallback to detail sums if header tax fields are 0
+        # -----------------------------
+        if not getattr(header, "reversecharge", False):
+            t = _derive_purchase_taxes(header, details)
+            igst, cgst, sgst, cess = t["igst"], t["cgst"], t["sgst"], t["cess"]
+
+            if igst > ZERO2 and tax_in.get("igst"):
+                jl.append(self._jl(account=tax_in["igst"], cr=igst, desc="Input IGST (PR reversal)"))
+            if cgst > ZERO2 and tax_in.get("cgst"):
+                jl.append(self._jl(account=tax_in["cgst"], cr=cgst, desc="Input CGST (PR reversal)"))
+            if sgst > ZERO2 and tax_in.get("sgst"):
+                jl.append(self._jl(account=tax_in["sgst"], cr=sgst, desc="Input SGST (PR reversal)"))
+            if cess > ZERO2 and tax_in.get("cess"):
+                jl.append(self._jl(account=tax_in["cess"], cr=cess, desc="Input CESS (PR reversal)"))
+
+        # Header expenses reversal (credit, because purchase posted it as debit)
+        if expenses > ZERO2:
+            jl.append(self._jl(account=misc_exp_acct, cr=expenses, desc="Expenses (PR header reversal)"))
+
+        # Roundoff (keep same convention as your other methods)
+        if roundoff != ZERO2:
+            if roundoff > ZERO2:
+                jl.append(self._jl(account=ro_expense, dr=roundoff, desc="Round-off (PR)"))
+            else:
+                jl.append(self._jl(account=ro_income,  cr=abs(roundoff), desc="Round-off (PR)"))
+
+        final_total = apply_roundoff_to_total(gtotal_base, roundoff)
+        header.gtotal = final_total
+
+        # -----------------------------
+        # 4) Supplier/Cash DEBIT (Debit Note / Refund receivable)
+        # -----------------------------
+        # Compute net debit to supplier = credits so far - debits so far
+        dr_before = q2(sum(l.amount for l in jl if l and l.drcr))
+        cr_before = q2(sum(l.amount for l in jl if l and not l.drcr))
+        supplier_debit = q2(cr_before - dr_before)
+
+        if supplier_debit <= ZERO2:
+            raise ValueError("Purchase Return computed debit is not positive (check amounts/taxes).")
+
+        if is_cash:
+            jl.append(self._jl(account=cash_acct, dr=supplier_debit, desc="Cash refund receivable (PR)"))
+        else:
+            if supplier_acct is None:
+                raise ValueError("Supplier account not set on purchase return header.")
+            jl.append(self._jl(account=supplier_acct, dr=supplier_debit, desc="Supplier debit note (PR)"))
+
+        # -----------------------------
+        # 5) Final balancing guard (tiny residual)
+        # -----------------------------
+        dr_mem = q2(sum(l.amount for l in jl if l and l.drcr))
+        cr_mem = q2(sum(l.amount for l in jl if l and not l.drcr))
+        if dr_mem != cr_mem:
+            missing = q2(dr_mem - cr_mem)
+            # choose a sensible target
+            target_acct = last_purch_acct or first_purch_acct or misc_exp_acct
+            if missing > ZERO2:
+                # Need extra CR
+                jl.append(self._jl(account=target_acct, cr=missing, desc="PR adjustment", detailid=last_detail_id))
+            else:
+                # Need extra DR
+                jl.append(self._jl(account=(cash_acct if is_cash else supplier_acct),
+                                   dr=abs(missing), desc="PR adjustment"))
+
+        # -----------------------------
+        # 6) Final check + persist
+        # -----------------------------
+        dr_mem = q2(sum(l.amount for l in jl if l and l.drcr))
+        cr_mem = q2(sum(l.amount for l in jl if l and not l.drcr))
+        if dr_mem != cr_mem:
+            detail = [("DR" if l.drcr else "CR",
+                       getattr(getattr(l, "account", None), "accountname", str(getattr(l, "account", None))),
+                       f"{l.amount:.2f}", l.desc) for l in jl if l]
+            raise ValueError(f"Pre-save imbalance: DR {dr_mem:.2f} != CR {cr_mem:.2f}; lines={detail}")
+
+        JournalLine.objects.bulk_create([l for l in jl if l is not None])
+        if im:
+            InventoryMove.objects.bulk_create(im)
+
+        # PR should not create tdsmain; if any old rows exist, delete them
+        tdsmain.objects.filter(entityid=self.entity, transactiontype=self.txntype, transactionno=self.txnid).delete()
+
+        self._assert_balanced()
+
+
     @transaction.atomic
     def post_sales(self, header, details, extra_charges_map: Optional[dict] = None):
         self.header = header
@@ -624,16 +870,212 @@ class Poster:
             InventoryMove.objects.bulk_create(im)
         self._assert_balanced()
 
+
+    
+
     @transaction.atomic
-    def post_sales_return(self, header, details):
+    def post_sales_return(self, header, details, extra_charges_map: Optional[dict] = None):
+        """
+        Sales Return posting (SR) = reverse of Sales:
+        - Dr Sales (reverse revenue)
+        - Dr Output GST (reverse liability) ONLY if reversecharge=False
+        ✅ UPDATE-PROOF: if header tax fields are 0, fallback to sum(detail taxes)
+        - Dr other charges reversal (reverse of sales other-charge credits)
+        - Cr Customer/Cash (credit note)
+        - Inventory IN`
+        """
+        self.header = header
         self.clear_existing()
-        self.post_sales(header, details)
-        JournalLine.objects.filter(entity=self.entity, transactiontype=self.txntype, transactionid=self.txnid)\
-            .update(drcr=~models.F('drcr'))
-        InventoryMove.objects.filter(entity=self.entity, transactiontype=self.txntype, transactionid=self.txnid)\
-            .update(qty=-models.F('qty'))
+
+        jl: List[JournalLine] = []
+        im: List[InventoryMove] = []
+
+        # -----------------------------
+        # 1) Ensure we have saved SR details
+        # -----------------------------
+        try:
+            details = list(details or [])
+            if (not details) or any(getattr(d, "pk", None) is None for d in details):
+                raise ValueError("unsaved/empty")
+        except Exception:
+            details = list(
+                getattr(header, "salereturndetails")
+                .select_related("product", "product__sales_account", "product__purchase_account")
+                .prefetch_related("otherchargesdetail")
+                .all()
+            )
+
+        if not details:
+            return
+
+        cash_acct = get_cash_account(self.entity)
+        tax_out   = get_tax_accounts(self.entity)  # {"igst":..,"cgst":..,"sgst":..,"cess":..}
+        ro_income, ro_expense = get_roundoff_accounts(self.entity)
+
+        # if other-charge line has no account, use misc expense
+        misc_exp_acct = get_purchase_misc_expense_account(self.entity)
+
+        gtotal_base = q2(getattr(header, "gtotal", ZERO2))
+        roundoff    = q2(getattr(header, "roundOff", ZERO2))
+        expenses    = q2(getattr(header, "expenses", ZERO2))
+        is_cash     = (getattr(header, "billcash", None) in (0, 2))
+
+        cust_acct = getattr(header, "account", None) or getattr(header, "accountid", None)
+
+        first_sale_acct = None
+        last_sale_acct  = None
+        last_detail_id  = None
+
+        # -----------------------------
+        # 2) Reverse revenue + reverse other-charges + Stock IN
+        # -----------------------------
+        for d in details:
+            prod = getattr(d, "product", None)
+
+            line_amt      = q2(getattr(d, "amount", ZERO2))
+            other_on_line  = q2(getattr(d, "othercharges", ZERO2))
+            rev            = q2(line_amt - other_on_line)
+
+            # Dr Sales (reverse revenue)
+            if rev > ZERO2 and prod:
+                sale_acct = get_sales_account_for_product(prod)
+                if sale_acct is None:
+                    raise ValueError(f"Sales account not set for product {getattr(prod,'id',None)}")
+
+                if first_sale_acct is None:
+                    first_sale_acct = sale_acct
+                last_sale_acct = sale_acct
+                last_detail_id = getattr(d, "id", None)
+
+                jl.append(self._jl(
+                    account=sale_acct,
+                    accounthead=(
+                    getattr(sale_acct, "debitaccounthead", None)
+                    or getattr(sale_acct, "creditaccounthead", None)   # ✅ SR-safe fallback
+                    or getattr(sale_acct, "accounthead", None)
+                ),
+                    dr=rev,
+                    desc=f"Sales Return line #{getattr(d,'id',None)}",
+                    detailid=getattr(d, "id", None)
+                ))
+
+            # Reverse Other charges (Sales credited these → SR debits them)
+            charges = []
+            rel = getattr(d, "otherchargesdetail", None)
+            if rel is not None:
+                try:
+                    charges.extend(list(rel.all()))
+                except Exception:
+                    pass
+            if extra_charges_map and getattr(d, "id", None) in extra_charges_map:
+                charges.extend(extra_charges_map[d.id])
+
+            for oc in charges:
+                amt = q2(getattr(oc, "amount", ZERO2))
+                if amt > ZERO2:
+                    acct = getattr(oc, "account", None) or misc_exp_acct
+                    jl.append(self._jl(
+                        account=acct,
+                        dr=amt,
+                        desc=f"SR other charge line #{getattr(d,'id',None)}",
+                        detailid=getattr(d, "id", None)
+                    ))
+
+            # Inventory IN
+            qty = getattr(d, "orderqty", None)
+            qty = getattr(d, "pieces", 0) if q4(qty) == ZERO4 else qty
+            qty = q4(qty)
+
+            if prod and qty != ZERO4:
+                unit_cost = self._issue_unit_cost(d)
+                mv = self._im(
+                    product=prod,
+                    qty=qty,                 # +ve for IN
+                    unit_cost=unit_cost,
+                    move_type="IN",
+                    detailid=getattr(d, "id", None),
+                )
+                self._assign_move_detail_and_links(mv, header, d)
+                self._ensure_move_costs(mv, qty=qty, unit_cost=unit_cost)
+                im.append(mv)
+
+        # -----------------------------
+        # 3) Taxes reversal (Dr output GST) ONLY if reversecharge=False
+        #    ✅ UPDATE-PROOF fallback to detail sums if header tax fields are 0
+        # -----------------------------
+        if not getattr(header, "reversecharge", False):
+            igst = q2(getattr(header, "igst", ZERO2))
+            cgst = q2(getattr(header, "cgst", ZERO2))
+            sgst = q2(getattr(header, "sgst", ZERO2))
+            cess = q2(getattr(header, "cess", ZERO2))
+
+            if igst == ZERO2 and cgst == ZERO2 and sgst == ZERO2 and cess == ZERO2:
+                sums = _sum_taxes_from_detail_objs(details)
+                igst, cgst, sgst, cess = sums["igst"], sums["cgst"], sums["sgst"], sums["cess"]
+
+            if igst > ZERO2 and tax_out.get("igst"):
+                jl.append(self._jl(account=tax_out["igst"], dr=igst, desc="IGST (SR reversal)"))
+            if cgst > ZERO2 and tax_out.get("cgst"):
+                jl.append(self._jl(account=tax_out["cgst"], dr=cgst, desc="CGST (SR reversal)"))
+            if sgst > ZERO2 and tax_out.get("sgst"):
+                jl.append(self._jl(account=tax_out["sgst"], dr=sgst, desc="SGST (SR reversal)"))
+            if cess > ZERO2 and tax_out.get("cess"):
+                jl.append(self._jl(account=tax_out["cess"], dr=cess, desc="CESS (SR reversal)"))
+
+        # Header expenses (if used)
+        if expenses > ZERO2:
+            jl.append(self._jl(account=misc_exp_acct, dr=expenses, desc="Expenses (SR header)"))
+
+        # Roundoff
+        if roundoff != ZERO2:
+            if roundoff > ZERO2:
+                jl.append(self._jl(account=ro_expense, dr=roundoff, desc="Round-off (SR)"))
+            else:
+                jl.append(self._jl(account=ro_income,  cr=abs(roundoff), desc="Round-off (SR)"))
+
+        final_total = apply_roundoff_to_total(gtotal_base, roundoff)
+        header.gtotal = final_total
+
+        # -----------------------------
+        # 4) Customer/Cash CREDIT (Credit Note)
+        # -----------------------------
+        dr_before = q2(sum(l.amount for l in jl if l and l.drcr))
+        cr_before = q2(sum(l.amount for l in jl if l and not l.drcr))
+        customer_credit = q2(dr_before - cr_before)
+
+        if customer_credit <= ZERO2:
+            raise ValueError("Sales Return computed credit is not positive (check amounts/taxes).")
+
+        if is_cash:
+            jl.append(self._jl(account=cash_acct, cr=customer_credit, desc="Cash refund (SR)"))
+        else:
+            if cust_acct is None:
+                raise ValueError("Customer account not set on sales return header.")
+            jl.append(self._jl(account=cust_acct, cr=customer_credit, desc="Customer credit note (SR)"))
+
+        # -----------------------------
+        # 5) Final balancing guard (tiny residual)
+        # -----------------------------
+        dr_mem = q2(sum(l.amount for l in jl if l and l.drcr))
+        cr_mem = q2(sum(l.amount for l in jl if l and not l.drcr))
+        if dr_mem != cr_mem:
+            missing = q2(dr_mem - cr_mem)
+            target_acct = last_sale_acct or first_sale_acct or misc_exp_acct
+            if missing > ZERO2:
+                jl.append(self._jl(account=target_acct, cr=missing, desc="SR adjustment", detailid=last_detail_id))
+            else:
+                jl.append(self._jl(account=(cash_acct if is_cash else cust_acct),
+                                dr=abs(missing), desc="SR adjustment"))
+
+        JournalLine.objects.bulk_create([l for l in jl if l is not None])
+        if im:
+            InventoryMove.objects.bulk_create(im)
+
+        # SR should not create tdsmain; if any old rows exist, delete them
         tdsmain.objects.filter(entityid=self.entity, transactiontype=self.txntype, transactionno=self.txnid).delete()
+
         self._assert_balanced()
+
 
     # ======================================================
     # PURCHASE

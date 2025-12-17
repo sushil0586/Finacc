@@ -2,10 +2,20 @@
 from .stocktransconstant import stocktransconstant  # adjust import path to where you define this
 
 def get_sales_account_for_product(product):
-    return product.sales_account
+    # product-level override else entity default
+    if getattr(product, "sales_account", None):
+        return product.sales_account
+    const = stocktransconstant()
+    # if you have a default sales ledger getter use it; else fallback to something safe
+    getter = getattr(const, "getsalesid", None)
+    return getter(product.entity) if getter else None
 
 def get_purchase_account_for_product(product):
-    return product.purchase_account
+    if getattr(product, "purchase_account", None):
+        return product.purchase_account
+    const = stocktransconstant()
+    getter = getattr(const, "getpurchaseid", None)
+    return getter(product.entity) if getter else None
 
 def get_cash_account(entity):
     const = stocktransconstant()
