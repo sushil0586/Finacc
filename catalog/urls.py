@@ -22,7 +22,10 @@ from .views import (
     CessTypeListAPIView,
     ProductStatusListAPIView,
     ProductImportantListAPIView,
-    InvoiceProductListAPIView
+    InvoiceProductListAPIView,
+    ProductBarcodeListCreateAPIView,
+    ProductBarcodeRUDAPIView,
+    ProductBarcodeDownloadPDFAPIView,
 )
 
 urlpatterns = [
@@ -154,5 +157,25 @@ urlpatterns = [
         "invoice-products/<int:entity_id>/",
         InvoiceProductListAPIView.as_view(),
         name="invoice-product-list",
+    ),
+
+    path(
+        "products/<int:product_id>/barcodes/",
+        ProductBarcodeListCreateAPIView.as_view(),
+        name="product-barcode-list-create",
+    ),
+
+    # Barcode CRUD
+    path(
+        "barcodes/<int:pk>/",
+        ProductBarcodeRUDAPIView.as_view(),
+        name="barcode-detail",
+    ),
+
+    # Download PDF (4/10/16 per page)
+    path(
+        "barcodes/download/",
+        ProductBarcodeDownloadPDFAPIView.as_view(),
+        name="barcode-download-pdf",
     ),
 ]

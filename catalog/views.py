@@ -2,6 +2,11 @@
 
 from rest_framework import generics, permissions
 from rest_framework import status
+from django.shortcuts import get_object_or_404
+from django.http import FileResponse
+from django.db import transaction
+import math
+from io import BytesIO
 from django.db.models import Q
 
 from .models import (
@@ -29,6 +34,15 @@ from catalog.serializers import (
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
+
+
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
+
+from catalog.models import Product, ProductBarcode
+from catalog.serializers.product_barcode_manage import ProductBarcodeManageSerializer
 
 
 # ----------------------------------------------------------------------
@@ -427,3 +441,153 @@ class ProductImportantListAPIView(APIView):
             })
 
         return Response(items, status=status.HTTP_200_OK)
+    
+
+
+
+class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    serializer_class = ProductBarcodeManageSerializer
+
+    def get_product(self):
+        return get_object_or_404(Product, pk=self.kwargs["product_id"])
+
+    def get_queryset(self):
+        product = self.get_product()
+        return (
+            ProductBarcode.objects.filter(product=product)
+            .select_related("product", "uom")
+            .order_by("-isprimary", "id")
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["product"] = self.get_product()
+        return ctx
+
+
+# ---------------------------------------------------------
+# GET    /api/barcodes/<id>/
+# PATCH  /api/barcodes/<id>/
+# DELETE /api/barcodes/<id>/
+# ---------------------------------------------------------
+class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductBarcodeManageSerializer
+    queryset = ProductBarcode.objects.select_related("product", "uom")
+
+
+# ---------------------------------------------------------
+# GET /api/barcodes/download/?product_id=123&layout=16
+# GET /api/barcodes/download/?ids=1,2,3&layout=4
+# layout must be 4 or 10 or 16
+# ---------------------------------------------------------
+class ProductBarcodeDownloadPDFAPIView(APIView):
+    permission_classes =[permissions.IsAuthenticated]
+
+    def get(self, request):
+        # validate layout
+        try:
+            layout = int(request.query_params.get("layout", 16))
+        except Exception:
+            return Response({"detail": "layout must be 4, 10, or 16"}, status=400)
+
+        if layout not in (4, 10, 16):
+            return Response({"detail": "layout must be one of 4, 10, 16"}, status=400)
+
+        ids = request.query_params.get("ids")
+        product_id = request.query_params.get("product_id")
+        include_primary_only = request.query_params.get("include_primary_only") in ("1", "true", "True")
+
+        qs = ProductBarcode.objects.select_related("product", "uom")
+
+        if ids:
+            id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+            if not id_list:
+                return Response({"detail": "ids is empty/invalid"}, status=400)
+            qs = qs.filter(id__in=id_list).order_by("id")
+            filename = "barcodes_selected.pdf"
+        elif product_id:
+            qs = qs.filter(product_id=product_id).order_by("-isprimary", "id")
+            if include_primary_only:
+                qs = qs.filter(isprimary=True)
+            filename = f"barcodes_product_{product_id}.pdf"
+        else:
+            return Response({"detail": "Provide either ids=1,2,3 or product_id=123"}, status=400)
+
+        barcodes = list(qs)
+        if not barcodes:
+            return Response({"detail": "No barcodes found."}, status=404)
+
+        # ensure images exist (your model save() generates them)
+        with transaction.atomic():
+            for b in barcodes:
+                if not b.barcode_image:
+                    b.save()
+
+        pdf_file = self._build_pdf(barcodes, layout=layout)
+        return FileResponse(pdf_file, as_attachment=True, filename=filename, content_type="application/pdf")
+
+    def _build_pdf(self, barcode_objects, layout: int):
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+        page_w, page_h = A4
+
+        margin = 18
+        gap = 10
+
+        if layout == 4:
+            cols, rows = 2, 2
+        elif layout == 16:
+            cols, rows = 4, 4
+        else:  # 10
+            cols, rows = 2, 5
+
+        cell_w = (page_w - 2 * margin - (cols - 1) * gap) / cols
+        cell_h = (page_h - 2 * margin - (rows - 1) * gap) / rows
+
+        per_page = cols * rows
+        total_pages = math.ceil(len(barcode_objects) / per_page)
+
+        idx = 0
+        for _ in range(total_pages):
+            for r in range(rows):
+                for col in range(cols):
+                    if idx >= len(barcode_objects):
+                        break
+
+                    b = barcode_objects[idx]
+                    idx += 1
+
+                    x = margin + col * (cell_w + gap)
+                    y = page_h - margin - (r + 1) * cell_h - r * gap
+
+                    # If you want border for labels, uncomment:
+                    # c.rect(x, y, cell_w, cell_h, stroke=1, fill=0)
+
+                    if b.barcode_image:
+                        img = ImageReader(b.barcode_image.path)
+
+                        pad = 6
+                        img_w = cell_w - 2 * pad
+                        img_h = cell_h - 2 * pad
+
+                        c.drawImage(
+                            img,
+                            x + pad,
+                            y + pad,
+                            width=img_w,
+                            height=img_h,
+                            preserveAspectRatio=True,
+                            anchor="c",
+                        )
+                    else:
+                        c.setFont("Helvetica", 9)
+                        c.drawString(x + 8, y + (cell_h / 2), f"Missing image: {b.barcode}")
+
+            c.showPage()
+
+        c.save()
+        buffer.seek(0)
+        return buffer
