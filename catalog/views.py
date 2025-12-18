@@ -42,7 +42,10 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from catalog.models import Product, ProductBarcode
-from catalog.serializers.product_barcode_manage import ProductBarcodeManageSerializer
+from catalog.serializers import ProductBarcodeManageSerializer
+
+
+
 
 
 # ----------------------------------------------------------------------
@@ -483,74 +486,54 @@ class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
 # GET /api/barcodes/download/?ids=1,2,3&layout=4
 # layout must be 4 or 10 or 16
 # ---------------------------------------------------------
+def _fit_font_size(c, text, max_width, start_size=8.0, min_size=5.5):
+    """Reduce font size until text fits max_width."""
+    size = start_size
+    while size >= min_size:
+        c.setFont("Helvetica", size)
+        if c.stringWidth(text, "Helvetica", size) <= max_width:
+            return size
+        size -= 0.3
+    return min_size
+
+
 class ProductBarcodeDownloadPDFAPIView(APIView):
-    permission_classes =[permissions.IsAuthenticated]
+    # ... keep your class as-is, only replace _build_pdf below ...
 
-    def get(self, request):
-        # validate layout
-        try:
-            layout = int(request.query_params.get("layout", 16))
-        except Exception:
-            return Response({"detail": "layout must be 4, 10, or 16"}, status=400)
-
-        if layout not in (4, 10, 16):
-            return Response({"detail": "layout must be one of 4, 10, 16"}, status=400)
-
-        ids = request.query_params.get("ids")
-        product_id = request.query_params.get("product_id")
-        include_primary_only = request.query_params.get("include_primary_only") in ("1", "true", "True")
-
-        qs = ProductBarcode.objects.select_related("product", "uom")
-
-        if ids:
-            id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
-            if not id_list:
-                return Response({"detail": "ids is empty/invalid"}, status=400)
-            qs = qs.filter(id__in=id_list).order_by("id")
-            filename = "barcodes_selected.pdf"
-        elif product_id:
-            qs = qs.filter(product_id=product_id).order_by("-isprimary", "id")
-            if include_primary_only:
-                qs = qs.filter(isprimary=True)
-            filename = f"barcodes_product_{product_id}.pdf"
-        else:
-            return Response({"detail": "Provide either ids=1,2,3 or product_id=123"}, status=400)
-
-        barcodes = list(qs)
-        if not barcodes:
-            return Response({"detail": "No barcodes found."}, status=404)
-
-        # ensure images exist (your model save() generates them)
-        with transaction.atomic():
-            for b in barcodes:
-                if not b.barcode_image:
-                    b.save()
-
-        pdf_file = self._build_pdf(barcodes, layout=layout)
-        return FileResponse(pdf_file, as_attachment=True, filename=filename, content_type="application/pdf")
-
-    def _build_pdf(self, barcode_objects, layout: int):
+    def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool):
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
         page_w, page_h = A4
 
+        cols, rows = self.GRID_MAP[layout]
+        per_page = cols * rows
+
+        # Sticker sheet tuning
         margin = 18
         gap = 10
-
-        if layout == 4:
-            cols, rows = 2, 2
-        elif layout == 16:
-            cols, rows = 4, 4
-        else:  # 10
-            cols, rows = 2, 5
+        pad = 7
+        corner_radius = 10  # rounded corners
+        show_cut_lines = True  # change to False if you don't want guides
 
         cell_w = (page_w - 2 * margin - (cols - 1) * gap) / cols
         cell_h = (page_h - 2 * margin - (rows - 1) * gap) / rows
 
-        per_page = cols * rows
-        total_pages = math.ceil(len(barcode_objects) / per_page)
+        # More room for text for large labels, less for small ones
+        if layout in (1, 2, 4):
+            text_area_h = 48
+            base_font = 8.6
+        elif layout in (8, 10, 12):
+            text_area_h = 38
+            base_font = 7.4
+        else:  # 16, 20
+            text_area_h = 30
+            base_font = 6.6
 
+        img_area_h = max(40, cell_h - text_area_h - 2 * pad)
+
+        total_pages = math.ceil(len(barcode_objects) / per_page)
         idx = 0
+
         for _ in range(total_pages):
             for r in range(rows):
                 for col in range(cols):
@@ -563,28 +546,104 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     x = margin + col * (cell_w + gap)
                     y = page_h - margin - (r + 1) * cell_h - r * gap
 
-                    # If you want border for labels, uncomment:
-                    # c.rect(x, y, cell_w, cell_h, stroke=1, fill=0)
+                    # ---------- Sticker border (rounded) ----------
+                    c.setLineWidth(0.6)
+                    c.roundRect(x, y, cell_w, cell_h, corner_radius, stroke=1, fill=0)
 
+                    # Optional light cut guide (dashed)
+                    if show_cut_lines:
+                        c.saveState()
+                        c.setDash(2, 2)
+                        c.setLineWidth(0.3)
+                        c.roundRect(x + 1.5, y + 1.5, cell_w - 3, cell_h - 3, corner_radius, stroke=1, fill=0)
+                        c.restoreState()
+
+                    # ---------- PRIMARY badge ----------
+                    if getattr(b, "isprimary", False):
+                        badge_w, badge_h = 46, 14
+                        bx = x + cell_w - badge_w - pad
+                        by = y + cell_h - badge_h - pad
+                        c.saveState()
+                        c.setLineWidth(0.8)
+                        c.roundRect(bx, by, badge_w, badge_h, 6, stroke=1, fill=0)
+                        c.setFont("Helvetica-Bold", max(6, base_font))
+                        c.drawCentredString(bx + badge_w / 2, by + 4, "PRIMARY")
+                        c.restoreState()
+
+                    # ---------- Barcode image ----------
                     if b.barcode_image:
                         img = ImageReader(b.barcode_image.path)
 
-                        pad = 6
+                        img_x = x + pad
+                        img_y = y + text_area_h + pad
                         img_w = cell_w - 2 * pad
-                        img_h = cell_h - 2 * pad
+                        img_h = img_area_h
 
                         c.drawImage(
                             img,
-                            x + pad,
-                            y + pad,
+                            img_x,
+                            img_y,
                             width=img_w,
                             height=img_h,
                             preserveAspectRatio=True,
                             anchor="c",
                         )
-                    else:
-                        c.setFont("Helvetica", 9)
-                        c.drawString(x + 8, y + (cell_h / 2), f"Missing image: {b.barcode}")
+
+                    # ---------- Text (centered) ----------
+                    product_name = ((b.product.productname or "").strip() if b.product_id else "")
+                    sku = ((b.product.sku or "").strip() if b.product_id else "")
+                    uom_code = ((b.uom.code or "").strip() if b.uom_id else "")
+                    pack = b.pack_size or 1
+                    barcode_val = b.barcode or ""
+
+                    # Trim & clean
+                    if len(product_name) > 34:
+                        product_name = product_name[:31] + "..."
+
+                    line1 = product_name
+                    line2 = f"SKU: {sku}   UOM: {uom_code}   Pack: {pack}"
+                    line3 = f"{barcode_val}"
+
+                    extra = None
+                    if show_createdon and getattr(b, "createdon", None):
+                        extra = f"Created: {b.createdon.date().isoformat()}"
+
+                    lines = [line1, line2, line3] + ([extra] if extra else [])
+
+                    # Text box region
+                    tx_left = x + pad
+                    tx_right = x + cell_w - pad
+                    tx_width = tx_right - tx_left
+                    ty_bottom = y + pad
+                    ty_top = y + text_area_h - pad
+
+                    # Start from top, go down
+                    line_gap = 2
+                    current_y = ty_top
+
+                    # Product name (fit)
+                    if line1:
+                        s = _fit_font_size(c, line1, tx_width, start_size=base_font + 0.8, min_size=base_font - 1.0)
+                        c.setFont("Helvetica-Bold", s)
+                        c.drawCentredString(x + cell_w / 2, current_y - s, line1)
+                        current_y -= (s + line_gap)
+
+                    # SKU/UOM/Pack (fit)
+                    s2 = _fit_font_size(c, line2, tx_width, start_size=base_font, min_size=base_font - 1.2)
+                    c.setFont("Helvetica", s2)
+                    c.drawCentredString(x + cell_w / 2, current_y - s2, line2)
+                    current_y -= (s2 + line_gap)
+
+                    # Barcode value (fit)
+                    s3 = _fit_font_size(c, line3, tx_width, start_size=base_font + 0.4, min_size=base_font - 0.8)
+                    c.setFont("Helvetica", s3)
+                    c.drawCentredString(x + cell_w / 2, current_y - s3, line3)
+                    current_y -= (s3 + line_gap)
+
+                    # created (tiny)
+                    if extra and current_y > ty_bottom + 6:
+                        c.setFont("Helvetica", max(5.5, base_font - 1.2))
+                        c.drawCentredString(x + cell_w / 2, ty_bottom + 2, extra)
 
             c.showPage()
 
