@@ -727,3 +727,48 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
         c.save()
         buffer.seek(0)
         return buffer
+    
+
+
+
+class BarcodeLayoutOptionsAPIView(APIView):
+    """
+    Returns supported barcode sticker layouts for UI.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    GRID_MAP = {
+        1:  (1, 1),
+        2:  (2, 1),
+        4:  (2, 2),
+        8:  (4, 2),
+        10: (5, 2),
+        12: (4, 3),
+        16: (4, 4),
+        20: (5, 4),
+    }
+
+    SIZE_LABELS = {
+        1: "Extra Large",
+        2: "Large",
+        4: "Large",
+        8: "Medium",
+        10: "Medium",
+        12: "Medium",
+        16: "Small",
+        20: "Small",
+    }
+
+    def get(self, request):
+        layouts = []
+
+        for layout, (rows, cols) in self.GRID_MAP.items():
+            layouts.append({
+                "layout": layout,
+                "rows": rows,
+                "cols": cols,
+                "labels_per_page": layout,
+                "label": f"{layout} sticker{'s' if layout > 1 else ''} per page ({self.SIZE_LABELS.get(layout)})",
+            })
+
+        return Response({"layouts": layouts})

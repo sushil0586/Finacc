@@ -3,6 +3,9 @@
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator
+from django.core.exceptions import ValidationError
+from decimal import Decimal
 
 from entity.models import Entity, subentity, entityfinancialyear
 from financial.models import account
@@ -309,6 +312,7 @@ class ProductBarcode(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name='barcode_details'
     )
+
     # Auto-generated; do NOT send from frontend
     barcode = models.CharField(max_length=50, blank=True)
 
@@ -319,6 +323,18 @@ class ProductBarcode(TimeStampedModel):
     )
     isprimary = models.BooleanField(default=False)
     pack_size = models.PositiveIntegerField(null=True, blank=True)
+
+    # ✅ NEW: prices per UOM+pack_size barcode
+    mrp = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))]
+    )
+    selling_price = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))]
+    )
 
     # Auto-generated barcode image
     barcode_image = models.ImageField(
@@ -333,17 +349,28 @@ class ProductBarcode(TimeStampedModel):
             models.UniqueConstraint(
                 fields=['product', 'barcode'],
                 name='uq_product_barcode'
-            )
+            ),
+            # ✅ NEW: one row per product+uom+pack_size (prevents duplicate 250g entries)
+            models.UniqueConstraint(
+                fields=['product', 'uom', 'pack_size'],
+                name='uq_product_uom_packsize'
+            ),
         ]
 
     def __str__(self):
         return self.barcode or f"Barcode for {self.product_id}"
 
+    def clean(self):
+        # normalize pack_size
+        if not self.pack_size:
+            self.pack_size = 1
+
+        # optional rule: SP cannot exceed MRP
+        if self.mrp is not None and self.selling_price is not None:
+            if self.selling_price > self.mrp:
+                raise ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+
     def _generate_barcode_value(self):
-        """
-        Generate a deterministic, unique barcode string.
-        You can change this format as needed.
-        """
         product_id = self.product_id or 0
         self_id = self.pk or 0
         return f"PRD-{product_id:06d}-{self_id:06d}"
@@ -351,44 +378,45 @@ class ProductBarcode(TimeStampedModel):
     def _generate_barcode_image(self):
         """
         Generate barcode image + overlay key product info as text
-        (Product name, SKU, UOM, Pack size) at the bottom.
+        (Product name, SKU, UOM, Pack size, MRP, Selling price) at the bottom.
         """
         if Code128 is None or ImageWriter is None:
             return
         if not self.barcode:
             return
 
-        # 1) Generate raw barcode PNG into memory
         buffer = BytesIO()
         barcode_obj = Code128(self.barcode, writer=ImageWriter())
         barcode_obj.write(buffer)
         buffer.seek(0)
 
-        # 2) Open with Pillow
         base_img = Image.open(buffer).convert("RGB")
 
-        # 3) Prepare text with necessary information
         product_name = (self.product.productname or "").strip()
-        sku = (self.product.sku or "").strip()
-        uom_code = (self.uom.code or "").strip()
+        sku = (getattr(self.product, "sku", "") or "").strip()
+        uom_code = (getattr(self.uom, "code", "") or "").strip()
         pack = self.pack_size or 1
 
         if len(product_name) > 40:
             product_name = product_name[:37] + "..."
 
-        text = f"Product: {product_name} | SKU: {sku} | UOM: {uom_code} | Pack: {pack}"
+        # ✅ include prices (only if present)
+        price_part = ""
+        if self.mrp is not None:
+            price_part += f" | MRP: {self.mrp:.2f}"
+        if self.selling_price is not None:
+            price_part += f" | SP: {self.selling_price:.2f}"
 
-        # 4) Create new image with extra space for text
+        text = f"Product: {product_name} | SKU: {sku} | UOM: {uom_code} | Pack: {pack}{price_part}"
+
         font = ImageFont.load_default()
         dummy_draw = ImageDraw.Draw(base_img)
 
-        # ✅ Use textbbox for newer Pillow; fallback to textsize if available
         if hasattr(dummy_draw, "textbbox"):
             bbox = dummy_draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
         else:
-            # Older Pillow
             text_width, text_height = dummy_draw.textsize(text, font=font)
 
         padding = 10
@@ -399,45 +427,34 @@ class ProductBarcode(TimeStampedModel):
         new_img = Image.new("RGB", (new_width, new_height), "white")
         draw = ImageDraw.Draw(new_img)
 
-        # 5) Paste barcode centered horizontally
         barcode_x = (new_width - base_img.width) // 2
         new_img.paste(base_img, (barcode_x, 0))
 
-        # 6) Draw text centered at bottom
         text_x = (new_width - text_width) // 2
         text_y = base_img.height + padding
         draw.text((text_x, text_y), text, fill="black", font=font)
 
-        # 7) Save final composite image to ImageField
         final_buffer = BytesIO()
         new_img.save(final_buffer, format="PNG")
         final_buffer.seek(0)
 
         filename = f"barcode_{self.pk}.png"
-        file_content = ContentFile(final_buffer.getvalue())
-        self.barcode_image.save(filename, file_content, save=False)
-
+        self.barcode_image.save(filename, ContentFile(final_buffer.getvalue()), save=False)
 
     def save(self, *args, **kwargs):
-        """
-        Flow:
-        - First save: get PK.
-        - If barcode is empty → generate barcode and image → save again.
-        - Later saves: keep existing barcode, only generate image if missing.
-        """
-        is_new = self.pk is None
+        # ✅ run validations + default pack_size
+        self.full_clean()
 
-        # First save: ensure we have a PK
         super().save(*args, **kwargs)
 
         updated_fields = []
 
-        # Generate barcode if missing
         if not self.barcode:
             self.barcode = self._generate_barcode_value()
             updated_fields.append('barcode')
 
-        # Generate image if missing
+        # ✅ regenerate image if missing OR price changed and you want updated sticker
+        # (simple approach: regenerate only if missing)
         if not self.barcode_image and self.barcode:
             self._generate_barcode_image()
             updated_fields.append('barcode_image')
