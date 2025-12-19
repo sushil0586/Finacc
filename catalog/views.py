@@ -511,32 +511,47 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
     }
 
     # ✅ THIS is the GET you were missing
-    def get(self, request):
-    # layout
+    def post(self, request):
+        data = request.data
+
+        # -----------------------------
+        # layout
+        # -----------------------------
         try:
-            layout = int(request.query_params.get("layout", 16))
+            layout = int(data.get("layout", 16))
         except Exception:
-            return Response({"detail": "layout must be one of 1,2,4,8,10,12,16,20"}, status=400)
+            return Response(
+                {"detail": "layout must be one of 1,2,4,8,10,12,16,20"},
+                status=400
+            )
 
         if layout not in self.GRID_MAP:
-            return Response({"detail": "layout must be one of 1,2,4,8,10,12,16,20"}, status=400)
+            return Response(
+                {"detail": "layout must be one of 1,2,4,8,10,12,16,20"},
+                status=400
+            )
 
-        ids = request.query_params.get("ids")
-        product_id = request.query_params.get("product_id")
-        include_primary_only = request.query_params.get("include_primary_only") in ("1", "true", "True")
-        show_createdon = request.query_params.get("show_createdon") in ("1", "true", "True")
+        # -----------------------------
+        # inputs
+        # -----------------------------
+        ids = data.get("ids")                    # [1,2,3]
+        product_id = data.get("product_id")      # 123
+        include_primary_only = bool(data.get("include_primary_only", False))
+        show_createdon = bool(data.get("show_createdon", False))
 
-        # ✅ NEW:
-        copies = request.query_params.get("copies")  # e.g. 20
-        fill_to_page = request.query_params.get("fill_to_page") in ("1", "true", "True")
+        copies = data.get("copies")              # e.g. 20
+        fill_to_page = bool(data.get("fill_to_page", False))
 
         qs = ProductBarcode.objects.select_related("product", "uom")
 
+        # -----------------------------
+        # filtering
+        # -----------------------------
         if ids:
-            id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
-            if not id_list:
-                return Response({"detail": "ids is empty/invalid"}, status=400)
-            qs = qs.filter(id__in=id_list).order_by("id")
+            if not isinstance(ids, list):
+                return Response({"detail": "ids must be a list"}, status=400)
+
+            qs = qs.filter(id__in=ids).order_by("id")
             filename = f"barcodes_selected_{layout}_per_page.pdf"
 
         elif product_id:
@@ -546,19 +561,26 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             filename = f"barcodes_product_{product_id}_{layout}_per_page.pdf"
 
         else:
-            return Response({"detail": "Provide either ids=1,2,3 or product_id=123"}, status=400)
+            return Response(
+                {"detail": "Provide either ids=[1,2,3] or product_id"},
+                status=400
+            )
 
         barcodes = list(qs)
         if not barcodes:
             return Response({"detail": "No barcodes found."}, status=404)
 
-        # ensure images exist
+        # -----------------------------
+        # ensure barcode images exist
+        # -----------------------------
         with transaction.atomic():
             for b in barcodes:
                 if not b.barcode_image:
                     b.save()
 
-        # ✅ NEW: expand list to print duplicates
+        # -----------------------------
+        # expand copies
+        # -----------------------------
         expanded = barcodes
 
         if copies:
@@ -566,10 +588,10 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                 n = int(copies)
             except Exception:
                 return Response({"detail": "copies must be an integer"}, status=400)
+
             if n <= 0:
                 return Response({"detail": "copies must be > 0"}, status=400)
 
-            # Repeat cycling through available barcodes until length == n
             expanded = []
             i = 0
             while len(expanded) < n:
@@ -577,7 +599,6 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                 i += 1
 
         elif fill_to_page:
-            # fill exactly one page (layout count) by repeating
             target = layout
             expanded = []
             i = 0
@@ -585,8 +606,21 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                 expanded.append(barcodes[i % len(barcodes)])
                 i += 1
 
-        pdf_file = self._build_pdf(expanded, layout=layout, show_createdon=show_createdon)
-        return FileResponse(pdf_file, as_attachment=True, filename=filename, content_type="application/pdf")
+        # -----------------------------
+        # build PDF
+        # -----------------------------
+        pdf_file = self._build_pdf(
+            expanded,
+            layout=layout,
+            show_createdon=show_createdon
+        )
+
+        return FileResponse(
+            pdf_file,
+            as_attachment=True,
+            filename=filename,
+            content_type="application/pdf",
+        )
 
     # ✅ Sticker-style PDF builder
     def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool):
