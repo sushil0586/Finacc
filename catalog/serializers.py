@@ -127,25 +127,29 @@ class ProductGstRateSerializer(serializers.ModelSerializer):
 
 class ProductBarcodeSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
-    # Read-only URL for the generated image
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ProductBarcode
         fields = (
             "id",
-            "product",           # parent sets
-            "barcode",           # auto-generated, read-only
+            "product",            # parent sets
+            "barcode",            # auto-generated, read-only
             "uom",
             "isprimary",
             "pack_size",
-            "barcode_image_url", # derived from ImageField
+
+            # ✅ NEW
+            "mrp",
+            "selling_price",
+
+            "barcode_image_url",
             "createdon",
             "modifiedon",
         )
         read_only_fields = (
             "product",
-            "barcode",           # don’t allow client to send/override
+            "barcode",
             "barcode_image_url",
             "createdon",
             "modifiedon",
@@ -154,10 +158,24 @@ class ProductBarcodeSerializer(serializers.ModelSerializer):
     def get_barcode_image_url(self, obj):
         request = self.context.get("request")
         if obj.barcode_image and hasattr(obj.barcode_image, "url"):
-            if request is not None:
-                return request.build_absolute_uri(obj.barcode_image.url)
-            return obj.barcode_image.url
+            return request.build_absolute_uri(obj.barcode_image.url) if request else obj.barcode_image.url
         return None
+
+    def validate(self, attrs):
+        # default pack_size if not provided
+        pack_size = attrs.get("pack_size", None)
+        if pack_size in (None, 0, "0", ""):
+            attrs["pack_size"] = 1
+
+        mrp = attrs.get("mrp", None)
+        sp = attrs.get("selling_price", None)
+
+        # optional: SP <= MRP
+        if mrp is not None and sp is not None and sp > mrp:
+            raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+
+        return attrs
+
 
 
 
@@ -607,10 +625,6 @@ class ProductStatusChoiceSerializer(serializers.Serializer):
 
 
 class ProductBarcodeManageSerializer(serializers.ModelSerializer):
-    """
-    Barcode Management UI Serializer (separate from your existing ProductBarcodeSerializer).
-    """
-
     product_id = serializers.IntegerField(source="product.id", read_only=True)
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
@@ -618,7 +632,6 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
-    # ✅ Your base timestamp fields
     createdon = serializers.DateTimeField(read_only=True)
     modifiedon = serializers.DateTimeField(read_only=True)
 
@@ -635,6 +648,10 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
             "uom_code",
             "pack_size",
             "isprimary",
+
+            # ✅ NEW
+            "mrp",
+            "selling_price",
 
             "barcode_image",
             "barcode_image_url",
@@ -661,15 +678,26 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
         url = obj.barcode_image.url
         return request.build_absolute_uri(url) if request else url
 
+    def validate(self, attrs):
+        # default pack_size if not provided
+        pack_size = attrs.get("pack_size", None)
+        if pack_size in (None, 0, "0", ""):
+            attrs["pack_size"] = 1
+
+        mrp = attrs.get("mrp", None)
+        sp = attrs.get("selling_price", None)
+        if mrp is not None and sp is not None and sp > mrp:
+            raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+
+        return attrs
+
     @transaction.atomic
     def create(self, validated_data):
-        # product comes from context (/products/<id>/barcodes/)
         product = self.context["product"]
         validated_data["product"] = product
 
         obj = super().create(validated_data)
 
-        # enforce only one primary per product
         if obj.isprimary:
             ProductBarcode.objects.filter(product=product).exclude(pk=obj.pk).update(isprimary=False)
 
@@ -683,3 +711,4 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
             ProductBarcode.objects.filter(product=obj.product).exclude(pk=obj.pk).update(isprimary=False)
 
         return obj
+
