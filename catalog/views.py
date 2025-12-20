@@ -510,115 +510,116 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
         20: (4, 5),
     }
 
-    # ✅ THIS is the GET you were missing
     def post(self, request):
         data = request.data
 
-        # -----------------------------
-        # layout
-        # -----------------------------
-        try:
-            layout = int(data.get("layout", 16))
-        except Exception:
+        # ✅ Expect root-level array
+        if not isinstance(data, list):
             return Response(
-                {"detail": "layout must be one of 1,2,4,8,10,12,16,20"},
+                {"detail": "Request body must be a JSON array"},
                 status=400
             )
 
-        if layout not in self.GRID_MAP:
-            return Response(
-                {"detail": "layout must be one of 1,2,4,8,10,12,16,20"},
-                status=400
-            )
+        all_barcodes = []
+        final_layout = None
+        show_createdon = False
 
-        # -----------------------------
-        # inputs
-        # -----------------------------
-        ids = data.get("ids")                    # [1,2,3]
-        product_id = data.get("product_id")      # 123
-        include_primary_only = bool(data.get("include_primary_only", False))
-        show_createdon = bool(data.get("show_createdon", False))
-
-        copies = data.get("copies")              # e.g. 20
-        fill_to_page = bool(data.get("fill_to_page", False))
-
-        qs = ProductBarcode.objects.select_related("product", "uom")
-
-        # -----------------------------
-        # filtering
-        # -----------------------------
-        if ids:
-            if not isinstance(ids, list):
-                return Response({"detail": "ids must be a list"}, status=400)
-
-            qs = qs.filter(id__in=ids).order_by("id")
-            filename = f"barcodes_selected_{layout}_per_page.pdf"
-
-        elif product_id:
-            qs = qs.filter(product_id=product_id).order_by("-isprimary", "id")
-            if include_primary_only:
-                qs = qs.filter(isprimary=True)
-            filename = f"barcodes_product_{product_id}_{layout}_per_page.pdf"
-
-        else:
-            return Response(
-                {"detail": "Provide either ids=[1,2,3] or product_id"},
-                status=400
-            )
-
-        barcodes = list(qs)
-        if not barcodes:
-            return Response({"detail": "No barcodes found."}, status=404)
-
-        # -----------------------------
-        # ensure barcode images exist
-        # -----------------------------
-        with transaction.atomic():
-            for b in barcodes:
-                if not b.barcode_image:
-                    b.save()
-
-        # -----------------------------
-        # expand copies
-        # -----------------------------
-        expanded = barcodes
-
-        if copies:
+        for idx, job in enumerate(data):
+            # -------------------------
+            # layout
+            # -------------------------
             try:
-                n = int(copies)
+                layout = int(job.get("layout", 16))
             except Exception:
-                return Response({"detail": "copies must be an integer"}, status=400)
+                return Response(
+                    {"detail": f"Invalid layout in item {idx}"},
+                    status=400
+                )
 
-            if n <= 0:
-                return Response({"detail": "copies must be > 0"}, status=400)
+            if layout not in self.GRID_MAP:
+                return Response(
+                    {"detail": f"Invalid layout in item {idx}"},
+                    status=400
+                )
 
+            final_layout = layout  # last one wins (simple rule)
+
+            # -------------------------
+            # ids (int OR list)
+            # -------------------------
+            ids = job.get("ids")
+            if ids is None:
+                return Response(
+                    {"detail": f"'ids' missing in item {idx}"},
+                    status=400
+                )
+
+            # ✅ normalize ids
+            if isinstance(ids, int):
+                id_list = [ids]
+            elif isinstance(ids, list):
+                id_list = ids
+            else:
+                return Response(
+                    {"detail": f"'ids' must be int or list in item {idx}"},
+                    status=400
+                )
+
+            # -------------------------
+            # copies
+            # -------------------------
+            try:
+                copies = int(job.get("copies", 1))
+            except Exception:
+                return Response(
+                    {"detail": f"'copies' must be integer in item {idx}"},
+                    status=400
+                )
+
+            if copies <= 0:
+                return Response(
+                    {"detail": f"'copies' must be > 0 in item {idx}"},
+                    status=400
+                )
+
+            show_createdon = bool(job.get("show_createdon", False))
+
+            qs = ProductBarcode.objects.filter(
+                id__in=id_list
+            ).select_related("product", "uom")
+
+            barcodes = list(qs)
+            if not barcodes:
+                continue
+
+            # ensure images exist
+            with transaction.atomic():
+                for b in barcodes:
+                    if not b.barcode_image:
+                        b.save()
+
+            # expand copies
             expanded = []
             i = 0
-            while len(expanded) < n:
+            while len(expanded) < copies:
                 expanded.append(barcodes[i % len(barcodes)])
                 i += 1
 
-        elif fill_to_page:
-            target = layout
-            expanded = []
-            i = 0
-            while len(expanded) < target:
-                expanded.append(barcodes[i % len(barcodes)])
-                i += 1
+            all_barcodes.extend(expanded)
 
-        # -----------------------------
-        # build PDF
-        # -----------------------------
+        if not all_barcodes:
+            return Response({"detail": "No barcodes found"}, status=404)
+
         pdf_file = self._build_pdf(
-            expanded,
-            layout=layout,
+            all_barcodes,
+            layout=final_layout or 16,
             show_createdon=show_createdon
         )
 
         return FileResponse(
             pdf_file,
             as_attachment=True,
-            filename=filename,
+            filename="barcodes_bulk.pdf",
             content_type="application/pdf",
         )
 
@@ -795,7 +796,6 @@ class BarcodeLayoutOptionsAPIView(APIView):
 
     def get(self, request):
         layouts = []
-
         for layout, (rows, cols) in self.GRID_MAP.items():
             layouts.append({
                 "layout": layout,
@@ -805,4 +805,6 @@ class BarcodeLayoutOptionsAPIView(APIView):
                 "label": f"{layout} sticker{'s' if layout > 1 else ''} per page ({self.SIZE_LABELS.get(layout)})",
             })
 
-        return Response({"layouts": layouts})
+        # ✅ Return plain array instead of {"layouts": [...]}
+        return Response(layouts)
+
