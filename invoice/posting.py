@@ -161,29 +161,24 @@ class Poster:
     # ---------- builders ----------
     def _account_head(self, account, is_debit: bool):
         """
-        Safer AccountHead resolution:
-        - Prefer side-specific head (debitaccounthead / creditaccounthead)
-        - If missing OR wrong, fall back to the other side head
-        - Else fall back to accounthead
+        Account model:
+        - accounthead         -> base / debit-side head
+        - creditaccounthead   -> credit-side override (optional)
+
+        Rules:
+        - Debit  -> always accounthead
+        - Credit -> creditaccounthead if present, else accounthead
         """
         if account is None:
             return None
 
-        debit_head  = getattr(account, "debitaccounthead", None)
-        credit_head = getattr(account, "creditaccounthead", None)
         base_head   = getattr(account, "accounthead", None)
+        credit_head = getattr(account, "creditaccounthead", None)
 
-        # normal preference
-        preferred = debit_head if is_debit else credit_head
-        if preferred:
-            return preferred
+        if is_debit:
+            return base_head
+        return credit_head or base_head
 
-        # fallback to the other side head (this fixes your SR case)
-        other = credit_head if is_debit else debit_head
-        if other:
-            return other
-
-        return base_head
 
     def _jl(self, *, account, desc="", dr=None, cr=None, accounthead=None, detailid=None):
         amt_dr = q2(dr or ZERO2)
