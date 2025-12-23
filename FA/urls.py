@@ -43,6 +43,7 @@ urlpatterns = [
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
     path('api/payroll/',include('payroll.urls',namespace = 'payroll_api')),
     path("api/catalog/", include("catalog.urls")),
+    path("api/localization/", include("localization.urls")),
     re_path(r'^swagger(?P<format>\.json|\.yaml)$',  # use re_path + raw string
             schema_view.without_ui(cache_timeout=0),
             name='schema-json'),
