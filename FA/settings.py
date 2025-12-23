@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'errorlogger',
     'numbering',
     'catalog',
+    "localization",
     
 ]
 
