@@ -865,6 +865,7 @@ class ProductCategoryRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductCategorySerializercreate
     lookup_field = "id"
+    lookup_url_kwarg = "pk"  # URL uses <pk>, model field is id
 
     def get_queryset(self):
         # IMPORTANT: entity scoping so you can't access other entity records by id
