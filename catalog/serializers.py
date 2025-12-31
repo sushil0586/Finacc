@@ -39,6 +39,55 @@ class ProductCategorySerializer(serializers.ModelSerializer):
         )
 
 
+# catalog/serializers.py
+
+class ProductCategorySerializercreate(serializers.ModelSerializer):
+    # write: accept parent id
+    maincategory_id = serializers.PrimaryKeyRelatedField(
+        source="maincategory",
+        queryset=ProductCategory.objects.all(),
+        required=False,
+        allow_null=True
+    )
+
+    # read: return parent name (always show key, null if no parent)
+    maincategory_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ProductCategory
+        fields = [
+            "id",
+            "entity",
+            "pcategoryname",
+            "maincategory_id",
+            "maincategory_name",
+            "level",
+            "isactive",
+        ]
+        extra_kwargs = {
+            "entity": {"read_only": True},
+            "level": {"read_only": True},
+        }
+
+    def get_maincategory_name(self, obj):
+        return obj.maincategory.pcategoryname if obj.maincategory else None
+
+    def validate(self, attrs):
+        entity = self.context.get("entity")
+        parent = attrs.get("maincategory")
+
+        # Parent must be same entity
+        if parent and entity and parent.entity_id != entity.id:
+            raise serializers.ValidationError({
+                "maincategory_id": "Parent category must belong to the same entity."
+            })
+
+        # auto-level
+        attrs["level"] = (parent.level or 1) + 1 if parent else 1
+        return attrs
+
+
+
 class BrandSerializer(serializers.ModelSerializer):
     class Meta:
         model = Brand
