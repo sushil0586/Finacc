@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from entity.models import Entity, subentity, entityfinancialyear
 from financial.models import account
+from entity.models import Entity
 
 from io import BytesIO
 from django.core.files.base import ContentFile

@@ -3,11 +3,13 @@
 from rest_framework import generics, permissions
 from rest_framework import status
 from django.shortcuts import get_object_or_404
+from rest_framework.exceptions import ValidationError, NotFound
 from django.http import FileResponse
 from django.db import transaction
 import math
 from io import BytesIO
 from django.db.models import Q
+from entity.models import Entity
 
 from .models import (
     ProductCategory,
@@ -30,6 +32,7 @@ from catalog.serializers import (
     GstTypeChoiceSerializer,
     CessTypeChoiceSerializer,
     ProductStatusChoiceSerializer,
+    ProductCategorySerializercreate
 )
 
 from rest_framework.views import APIView
@@ -807,4 +810,72 @@ class BarcodeLayoutOptionsAPIView(APIView):
 
         # ✅ Return plain array instead of {"layouts": [...]}
         return Response(layouts)
+    
+
+class EntityFromQueryMixin:
+    def get_entity(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+
+        try:
+            return Entity.objects.get(id=int(entity_param))
+        except (ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["entity"] = self.get_entity()
+        return ctx
+
+
+
+class ProductCategoryListCreateAPIView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductCategorySerializercreate  # ✅ confirm this
+
+    def get_entity(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+        try:
+            return Entity.objects.get(id=int(entity_param))
+        except (ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
+
+    def get_queryset(self):
+        entity = self.get_entity()
+        return (
+            ProductCategory.objects
+            .filter(entity=entity)
+            .select_related("maincategory")   # ✅
+            .order_by("pcategoryname")
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["entity"] = self.get_entity()
+        return ctx
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class ProductCategoryRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductCategorySerializercreate
+    lookup_field = "id"
+
+    def get_queryset(self):
+        # IMPORTANT: entity scoping so you can't access other entity records by id
+        entity = self.get_entity()
+        return (
+            ProductCategory.objects
+            .select_related("entity", "maincategory")
+            .filter(entity=entity)
+        )
+
+    def perform_update(self, serializer):
+        # keep entity immutable
+        serializer.save(entity=self.get_entity())
 

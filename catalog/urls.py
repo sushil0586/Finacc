@@ -5,6 +5,7 @@ from .views import (
     # Product
     ProductListCreateAPIView,
     ProductRetrieveUpdateDestroyAPIView,
+    ProductCategoryRetrieveUpdateDestroyAPIView,
 
     # Masters
     ProductCategoryListCreateAPIView,
@@ -27,6 +28,7 @@ from .views import (
     ProductBarcodeRUDAPIView,
     ProductBarcodeDownloadPDFAPIView,
     BarcodeLayoutOptionsAPIView,
+    ProductCategoryListCreateAPIView
 )
 
 urlpatterns = [
@@ -185,4 +187,7 @@ urlpatterns = [
         BarcodeLayoutOptionsAPIView.as_view(),
         name="barcode-layout-options",
     ),
+
+    path("product-categories/", ProductCategoryListCreateAPIView.as_view(), name="productcategory-list-create"),
+    path("product-categories/<int:id>/", ProductCategoryRetrieveUpdateDestroyAPIView.as_view(), name="productcategory-rud"),
 ]
