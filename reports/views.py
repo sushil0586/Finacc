@@ -1,4 +1,6 @@
 from django.shortcuts import render
+from decimal import Decimal, ROUND_HALF_UP
+from rest_framework.exceptions import ValidationError
 
 # Create your views here.
 from collections import defaultdict
@@ -19,6 +21,9 @@ from typing import Tuple, List,Optional
 from invoice.serializers import stocktransconstant
 from .pagination import SmallPageNumberPagination,SimpleNumberPagination
 from django.db.models.functions import TruncDay, TruncMonth, TruncQuarter, TruncYear
+
+from reports.serializers import StockSummaryRequestSerializer, StockSummaryRowSerializer
+from invoice.models import InventoryMove  # adjust path
 
 
 from itertools import product
@@ -43,7 +48,7 @@ from invoice.models import StockTransactions,closingstock,salesOrderdetails,entr
 # PRSerializer,SRSerializer,stockVSerializer,stockserializer,Purchasebyaccountserializer,Salebyaccountserializer,entitySerializer1,cbserializer,ledgerserializer,ledgersummaryserializer,stockledgersummaryserializer,stockledgerbookserializer,balancesheetserializer,gstr1b2bserializer,gstr1hsnserializer,\
 # purchasetaxtypeserializer,tdsmainSerializer,tdsVSerializer,tdstypeSerializer,tdsmaincancelSerializer,salesordercancelSerializer,purchaseordercancelSerializer,purchasereturncancelSerializer,salesreturncancelSerializer,journalcancelSerializer,stockcancelSerializer,SalesOderHeaderpdfSerializer,productionmainSerializer,productionVSerializer,productioncancelSerializer,tdsreturnSerializer,gstorderservicesSerializer,SSSerializer,gstorderservicecancelSerializer,jobworkchallancancelSerializer,JwvoucherSerializer,jobworkchallanSerializer,debitcreditnoteSerializer,dcnoSerializer,debitcreditcancelSerializer,closingstockSerializer
 
-from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList,SalesGSTSummarySerializer,LedgerSummaryRequestSerializer,LedgerSummaryRowSerializer
+from reports.serializers import closingstockSerializer,stockledgerbookserializer,stockledgersummaryserializer,ledgerserializer,cbserializer,stockserializer,cashserializer,accountListSerializer2,ledgerdetailsSerializer,ledgersummarySerializer,stockledgerdetailSerializer,stockledgersummarySerializer,TrialBalanceSerializer,StockDayBookSerializer,StockSummarySerializerList,SalesGSTSummarySerializer,LedgerSummaryRequestSerializer,LedgerSummaryRowSerializer,NegativeValuationPolicy
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import DatabaseError, transaction
@@ -4889,75 +4894,75 @@ class TrialBalanceViewaccountFinal(APIView):
         return Response(final_result)
 
 
-class StockSummaryAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+# class StockSummaryAPIView(APIView):
+#     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, *args, **kwargs):
-        entity_id = request.query_params.get('entity_id')
-        if not entity_id:
-            return Response({"error": "entity_id is required"}, status=400)
+#     def get(self, request, *args, **kwargs):
+#         entity_id = request.query_params.get('entity_id')
+#         if not entity_id:
+#             return Response({"error": "entity_id is required"}, status=400)
 
-        transactions = StockTransactions.objects.filter(entity_id=entity_id).order_by('entrydate', 'id')
-        products = Product.objects.select_related('productcategory').filter(stocktrans__entity_id=entity_id).distinct()
+#         transactions = StockTransactions.objects.filter(entity_id=entity_id).order_by('entrydate', 'id')
+#         products = Product.objects.select_related('productcategory').filter(stocktrans__entity_id=entity_id).distinct()
 
-        summary = []
+#         summary = []
 
-        for product in products:
-            fifo_stack = deque()
-            sale_rate = 0
-            total_inward_qty = 0
-            total_outward_qty = 0
-            total_inward_value = 0
-            last_movement = None
+#         for product in products:
+#             fifo_stack = deque()
+#             sale_rate = 0
+#             total_inward_qty = 0
+#             total_outward_qty = 0
+#             total_inward_value = 0
+#             last_movement = None
 
-            product_trans = transactions.filter(stock=product)
+#             product_trans = transactions.filter(stock=product)
 
-            for tx in product_trans:
-                qty = tx.quantity or 0
-                last_movement = tx.entrydate if tx.entrydate else last_movement
+#             for tx in product_trans:
+#                 qty = tx.quantity or 0
+#                 last_movement = tx.entrydate if tx.entrydate else last_movement
 
-                if tx.stockttype in ['P', 'R']:
-                    rate = tx.rate or sale_rate
-                    fifo_stack.append((qty, rate))
-                    total_inward_qty += qty
-                    total_inward_value += qty * rate
+#                 if tx.stockttype in ['P', 'R']:
+#                     rate = tx.rate or sale_rate
+#                     fifo_stack.append((qty, rate))
+#                     total_inward_qty += qty
+#                     total_inward_value += qty * rate
 
-                    if tx.stockttype == 'S':
-                        sale_rate = tx.rate or sale_rate
+#                     if tx.stockttype == 'S':
+#                         sale_rate = tx.rate or sale_rate
 
-                elif tx.stockttype in ['S', 'I']:
-                    qty_out = qty
-                    cost_out = 0
+#                 elif tx.stockttype in ['S', 'I']:
+#                     qty_out = qty
+#                     cost_out = 0
 
-                    while qty_out > 0 and fifo_stack:
-                        available_qty, rate = fifo_stack[0]
-                        if available_qty <= qty_out:
-                            cost_out += available_qty * rate
-                            qty_out -= available_qty
-                            fifo_stack.popleft()
-                        else:
-                            cost_out += qty_out * rate
-                            fifo_stack[0] = (available_qty - qty_out, rate)
-                            qty_out = 0
+#                     while qty_out > 0 and fifo_stack:
+#                         available_qty, rate = fifo_stack[0]
+#                         if available_qty <= qty_out:
+#                             cost_out += available_qty * rate
+#                             qty_out -= available_qty
+#                             fifo_stack.popleft()
+#                         else:
+#                             cost_out += qty_out * rate
+#                             fifo_stack[0] = (available_qty - qty_out, rate)
+#                             qty_out = 0
 
-                    total_outward_qty += qty
+#                     total_outward_qty += qty
 
-            qty_available = total_inward_qty - total_outward_qty
-            unit_rate = (total_inward_value / total_inward_qty) if total_inward_qty else 0
-            total_value = qty_available * unit_rate
+#             qty_available = total_inward_qty - total_outward_qty
+#             unit_rate = (total_inward_value / total_inward_qty) if total_inward_qty else 0
+#             total_value = qty_available * unit_rate
 
-            summary.append({
-                'Category': product.productcategory.pcategoryname if product.productcategory else '',
-                'Code': product.productcode,
-                'Description': product.productname,
-              #  'UOM': product.uom,
-                'Quantity_Available': round(qty_available, 4),
-                'Unit_Rate_FIFO': round(unit_rate, 4),
-                'Total_Value': round(total_value, 2),
-                'Last_Movement_Date': last_movement,
-            })
+#             summary.append({
+#                 'Category': product.productcategory.pcategoryname if product.productcategory else '',
+#                 'Code': product.productcode,
+#                 'Description': product.productname,
+#               #  'UOM': product.uom,
+#                 'Quantity_Available': round(qty_available, 4),
+#                 'Unit_Rate_FIFO': round(unit_rate, 4),
+#                 'Total_Value': round(total_value, 2),
+#                 'Last_Movement_Date': last_movement,
+#             })
 
-        return Response(summary)
+#         return Response(summary)
 
 class StockDayBookReportView(ListAPIView):
     serializer_class = StockDayBookSerializer
@@ -12545,3 +12550,171 @@ class DayBookPDFAPIView(APIView):
         resp = HttpResponse(buf.getvalue(), content_type="application/pdf")
         resp["Content-Disposition"] = f'attachment; filename="{filename}"'
         return resp
+
+DEC_QTY = Decimal("0.0000")
+DEC_VAL = Decimal("0.00")
+
+
+def q4(v): return Decimal(v).quantize(DEC_QTY, rounding=ROUND_HALF_UP)
+def q2(v): return Decimal(v).quantize(DEC_VAL, rounding=ROUND_HALF_UP)
+
+
+def fifo_valuation(moves, neg_policy, std_cost):
+    layers = []
+    qty = Decimal("0")
+    val = Decimal("0")
+    last_cost = Decimal("0")
+
+    for m in moves:
+        mqty = Decimal(m["qty"])
+        cost = Decimal(m["unit_cost"] or 0)
+
+        if mqty > 0:
+            layers.append([mqty, cost])
+            qty += mqty
+            val += mqty * cost
+            last_cost = cost or last_cost
+        else:
+            out = -mqty
+            qty -= out
+            while out > 0 and layers:
+                lq, lc = layers[0]
+                take = min(out, lq)
+                val -= take * lc
+                layers[0][0] -= take
+                out -= take
+                if layers[0][0] == 0:
+                    layers.pop(0)
+
+            if out > 0:
+                if neg_policy == NegativeValuationPolicy.ERROR:
+                    raise ValidationError("Negative stock encountered (FIFO).")
+                cost_used = (
+                    std_cost if neg_policy == NegativeValuationPolicy.STANDARD_COST
+                    else last_cost if neg_policy == NegativeValuationPolicy.LAST_COST
+                    else Decimal("0")
+                )
+                val -= out * cost_used
+
+    return q4(qty), q2(val)
+
+
+class StockSummaryAPIView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        ser = StockSummaryRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        p = ser.validated_data
+
+        qs = InventoryMove.objects.filter(
+            entity_id=p["entity"],
+            entrydate__lte=p["as_on_date"]
+        )
+
+        # Filters
+        if "location" in p:
+            qs = qs.filter(location=p["location"])
+        if "locations" in p:
+            qs = qs.filter(location__in=p["locations"])
+        if "product" in p:
+            qs = qs.filter(product_id=p["product"])
+        if "products" in p:
+            qs = qs.filter(product_id__in=p["products"])
+        if "category" in p:
+            qs = qs.filter(product__category_id=p["category"])
+        if "brand" in p:
+            qs = qs.filter(product__brand_id=p["brand"])
+        if "hsn" in p:
+            qs = qs.filter(product__hsn_id=p["hsn"])
+        if "include_txn_types" in p:
+            qs = qs.filter(transactiontype__in=p["include_txn_types"])
+        if "exclude_txn_types" in p:
+            qs = qs.exclude(transactiontype__in=p["exclude_txn_types"])
+        if p.get("search"):
+            qs = qs.filter(product__productname__icontains=p["search"])
+
+        qs = qs.order_by("product_id", "location", "entrydate", "id").values(
+            "product_id",
+            "product__productname",
+            "location",
+            "qty",
+            "unit_cost",
+            "entrydate",
+        )
+
+        grouped = defaultdict(list)
+        names = {}
+        last_move = {}
+
+        for r in qs:
+            key = (r["product_id"], r["location"])
+            grouped[key].append(r)
+            names[r["product_id"]] = r["product__productname"]
+            last_move[key] = r["entrydate"]
+
+        results = []
+        for (pid, loc), moves in grouped.items():
+            qty, val = fifo_valuation(
+                moves,
+                p["negative_valuation_policy"],
+                Decimal("0")
+            )
+
+            if not p["include_zero"] and qty == DEC_QTY:
+                continue
+            if p["negative_only"] and qty >= DEC_QTY:
+                continue
+
+            row = {
+                "product_id": pid,
+                "product_name": names.get(pid),
+                "location": loc,
+                "stock_qty": qty,
+                "stock_value": val,
+            }
+
+            if p["include_avg_cost"] and qty != DEC_QTY:
+                row["avg_cost"] = q4(val / qty)
+
+            if p["include_last_movement"]:
+                row["last_movement_date"] = last_move.get((pid, loc))
+
+            results.append(row)
+
+        # Ordering
+        if p["ordering"] == "-value":
+            results.sort(key=lambda x: x["stock_value"], reverse=True)
+        elif p["ordering"] == "value":
+            results.sort(key=lambda x: x["stock_value"])
+        elif p["ordering"] == "-qty":
+            results.sort(key=lambda x: x["stock_qty"], reverse=True)
+        elif p["ordering"] == "qty":
+            results.sort(key=lambda x: x["stock_qty"])
+        elif p["ordering"] == "-product":
+            results.sort(key=lambda x: x["product_name"], reverse=True)
+        else:
+            results.sort(key=lambda x: x["product_name"])
+
+        # Pagination
+        page = p["page"]
+        size = p["page_size"]
+        start = (page - 1) * size
+        end = start + size
+
+        response = {
+            "entity": p["entity"],
+            "as_on_date": p["as_on_date"],
+            "valuation_method": p["valuation_method"],
+            "count": len(results[start:end]),
+            "results": results[start:end],
+        }
+
+        if p["include_totals"]:
+            response["totals"] = {
+                "total_qty": q4(sum(r["stock_qty"] for r in results)),
+                "total_value": q2(sum(r["stock_value"] for r in results)),
+                "total_rows": len(results),
+            }
+
+        return Response(response)
