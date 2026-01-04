@@ -1,5 +1,6 @@
 #import imp
 from itertools import product
+from django.db import models
 from os import device_encoding
 from pprint import isreadable
 from select import select
@@ -1478,3 +1479,88 @@ class LedgerAccountSerializer(serializers.Serializer):
     accountid   = serializers.IntegerField()
     accountcode = serializers.IntegerField(required=False, allow_null=True)
     accounts    = LedgerRowSerializer(many=True)
+
+
+
+
+class StockValuationMethod(models.TextChoices):
+    FIFO = "FIFO", "FIFO (default)"
+    WAVG = "WAVG", "Weighted Average"
+    STANDARD = "STANDARD", "Standard Cost"
+
+
+class NegativeValuationPolicy(models.TextChoices):
+    LAST_COST = "LAST_COST", "Last Known Cost (default)"
+    ZERO = "ZERO", "Zero Value"
+    STANDARD_COST = "STANDARD_COST", "Standard Cost"
+    ERROR = "ERROR", "Raise Error"
+
+
+class StockSummaryRequestSerializer(serializers.Serializer):
+    entity = serializers.IntegerField()
+    as_on_date = serializers.DateField()
+
+    valuation_method = serializers.ChoiceField(
+        choices=StockValuationMethod.choices,
+        default=StockValuationMethod.FIFO
+    )
+
+    negative_valuation_policy = serializers.ChoiceField(
+        choices=NegativeValuationPolicy.choices,
+        default=NegativeValuationPolicy.LAST_COST
+    )
+
+    # Inventory filters
+    location = serializers.IntegerField(required=False, allow_null=True)
+    locations = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False
+    )
+
+    product = serializers.IntegerField(required=False)
+    products = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False
+    )
+
+    category = serializers.IntegerField(required=False)
+    brand = serializers.IntegerField(required=False)
+    hsn = serializers.IntegerField(required=False)
+
+    search = serializers.CharField(required=False, allow_blank=True)
+
+    include_txn_types = serializers.ListField(
+        child=serializers.CharField(),
+        required=False
+    )
+    exclude_txn_types = serializers.ListField(
+        child=serializers.CharField(),
+        required=False
+    )
+
+    # Output controls
+    include_zero = serializers.BooleanField(default=False)
+    negative_only = serializers.BooleanField(default=False)
+    include_avg_cost = serializers.BooleanField(default=True)
+    include_last_movement = serializers.BooleanField(default=True)
+    include_totals = serializers.BooleanField(default=True)
+
+    ordering = serializers.ChoiceField(
+        choices=["product", "-product", "qty", "-qty", "value", "-value"],
+        default="product"
+    )
+
+    page = serializers.IntegerField(default=1)
+    page_size = serializers.IntegerField(default=200)
+
+
+class StockSummaryRowSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField()
+    product_name = serializers.CharField()
+    location = serializers.IntegerField(allow_null=True, required=False)
+
+    stock_qty = serializers.DecimalField(max_digits=18, decimal_places=4)
+    stock_value = serializers.DecimalField(max_digits=18, decimal_places=2)
+
+    avg_cost = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
+    last_movement_date = serializers.DateField(required=False, allow_null=True)
