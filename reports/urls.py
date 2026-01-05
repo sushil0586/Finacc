@@ -95,6 +95,16 @@ urlpatterns  = [
     path("cashbook-pdf", views.CashBookPDFAPIView.as_view(), name="cashbook-excel"),
     path("ledger-details-xlsx", views.LedgerJournalExcelAPIView.as_view(), name="ledger-details"),
     path("ledger-details-pdf", views.LedgerJournalPDFAPIView.as_view(), name="ledger-details"),
+    path(
+        "valuation-methods/",
+        views.StockValuationMethodAPIView.as_view(),
+        name="valuation-methods"
+    ),
+    path(
+        "negative-valuation-policies/",
+        views.NegativeValuationPolicyAPIView.as_view(),
+        name="negative-valuation-policies"
+    ),
 
     
     
