@@ -25,6 +25,9 @@ from django.db.models.functions import TruncDay, TruncMonth, TruncQuarter, Trunc
 from reports.serializers import StockSummaryRequestSerializer, StockSummaryRowSerializer
 from invoice.models import InventoryMove  # adjust path
 
+from reports.enums import StockValuationMethod
+from reports.utils import enum_to_choices
+
 
 from itertools import product
 from django.http import request,JsonResponse
@@ -12718,3 +12721,25 @@ class StockSummaryAPIView(APIView):
             }
 
         return Response(response)
+
+
+class StockValuationMethodAPIView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        return Response({
+            "key": "valuation_method",
+            "default": StockValuationMethod.FIFO,
+            "choices": enum_to_choices(StockValuationMethod)
+        })
+
+
+class NegativeValuationPolicyAPIView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        return Response({
+            "key": "negative_valuation_policy",
+            "default": NegativeValuationPolicy.LAST_COST,
+            "choices": enum_to_choices(NegativeValuationPolicy)
+        })
