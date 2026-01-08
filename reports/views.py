@@ -22,7 +22,7 @@ from invoice.serializers import stocktransconstant
 from .pagination import SmallPageNumberPagination,SimpleNumberPagination
 from django.db.models.functions import TruncDay, TruncMonth, TruncQuarter, TruncYear
 
-from reports.serializers import StockSummaryRequestSerializer, StockSummaryRowSerializer
+from reports.serializers import StockSummaryRequestSerializer, StockSummaryRowSerializer,StockLedgerRequestSerializer
 from invoice.models import InventoryMove  # adjust path
 
 from reports.enums import StockValuationMethod
@@ -12743,3 +12743,382 @@ class NegativeValuationPolicyAPIView(APIView):
             "default": NegativeValuationPolicy.LAST_COST,
             "choices": enum_to_choices(NegativeValuationPolicy)
         })
+
+
+
+
+
+
+DEC_QTY = Decimal("0.0000")
+DEC_VAL = Decimal("0.00")
+
+
+def q4(x) -> Decimal:
+    return (Decimal(x) if x is not None else DEC_QTY).quantize(DEC_QTY, rounding=ROUND_HALF_UP)
+
+
+def q2(x) -> Decimal:
+    return (Decimal(x) if x is not None else DEC_VAL).quantize(DEC_VAL, rounding=ROUND_HALF_UP)
+
+
+def fifo_opening_and_rows(moves_all, from_date, to_date):
+    """
+    Recompute FIFO valuation from historical moves.
+    Returns:
+      opening_qty, opening_val, rows_in_range(with running balance)
+    """
+    layers = []  # [qty_remaining, unit_cost]
+    bal_qty = Decimal("0")
+    bal_val = Decimal("0")
+
+    rows = []
+
+    for m in moves_all:
+        dt = m["entrydate"]
+        qty = Decimal(m["qty"])
+        unit_cost_in = Decimal(m["unit_cost"] or 0)
+
+        # Apply move to FIFO layers and determine issue value for this move
+        if qty > 0:
+            # IN
+            layers.append([qty, unit_cost_in])
+            move_cost = qty * unit_cost_in
+            bal_qty += qty
+            bal_val += move_cost
+            used_unit_cost = unit_cost_in
+        else:
+            # OUT (consume FIFO)
+            out_qty = -qty
+            remaining = out_qty
+            issue_val = Decimal("0")
+            # weighted unit cost used for display
+            # (because FIFO may use multiple layers)
+            issue_unit_cost_weighted = Decimal("0")
+
+            while remaining > 0 and layers:
+                layer_qty, layer_cost = layers[0]
+                take = layer_qty if layer_qty <= remaining else remaining
+                issue_val += take * layer_cost
+                issue_unit_cost_weighted += take * layer_cost
+                layer_qty -= take
+                remaining -= take
+                if layer_qty == 0:
+                    layers.pop(0)
+                else:
+                    layers[0][0] = layer_qty
+
+            # Negative stock case: value leftover at last known layer cost if any else 0
+            if remaining > 0:
+                last_cost = layers[-1][1] if layers else Decimal("0")
+                issue_val += remaining * last_cost
+                issue_unit_cost_weighted += remaining * last_cost
+
+            # Convert to signed cost for ledger
+            move_cost = -issue_val
+            bal_qty -= out_qty
+            bal_val += move_cost  # add negative => reduce
+
+            used_unit_cost = (issue_unit_cost_weighted / out_qty) if out_qty != 0 else Decimal("0")
+
+        # Capture only rows within [from_date, to_date]
+        if from_date <= dt <= to_date:
+            rows.append({
+                "entrydate": dt,
+                "transactiontype": m["transactiontype"],
+                "transactionid": m["transactionid"],
+                "detailid": m["detailid"],
+                "voucherno": m["voucherno"],
+                "qty_in": q4(qty) if qty > 0 else DEC_QTY,
+                "qty_out": q4(-qty) if qty < 0 else DEC_QTY,
+                "unit_cost": q4(used_unit_cost),
+                "amount": q2(move_cost),               # signed (+ for IN, - for OUT)
+                "balance_qty": q4(bal_qty),
+                "balance_value": q2(bal_val),
+            })
+
+    # Opening = balance as of day before from_date
+    # We computed through full history; to get opening we need to stop at from_date-1.
+    # Easiest: rerun but break before from_date and snapshot.
+    # But we can compute opening by processing until < from_date in the same run:
+    # We'll compute it separately for clarity (efficient enough for single product).
+
+    return rows  # opening will be computed separately below
+
+
+def fifo_opening(moves_upto_before_from_date):
+    layers = []
+    bal_qty = Decimal("0")
+    bal_val = Decimal("0")
+
+    for m in moves_upto_before_from_date:
+        qty = Decimal(m["qty"])
+        unit_cost_in = Decimal(m["unit_cost"] or 0)
+
+        if qty > 0:
+            layers.append([qty, unit_cost_in])
+            bal_qty += qty
+            bal_val += qty * unit_cost_in
+        else:
+            out_qty = -qty
+            remaining = out_qty
+            issue_val = Decimal("0")
+
+            while remaining > 0 and layers:
+                layer_qty, layer_cost = layers[0]
+                take = layer_qty if layer_qty <= remaining else remaining
+                issue_val += take * layer_cost
+                layer_qty -= take
+                remaining -= take
+                if layer_qty == 0:
+                    layers.pop(0)
+                else:
+                    layers[0][0] = layer_qty
+
+            if remaining > 0:
+                last_cost = layers[-1][1] if layers else Decimal("0")
+                issue_val += remaining * last_cost
+
+            bal_qty -= out_qty
+            bal_val -= issue_val
+
+    return q4(bal_qty), q2(bal_val)
+
+
+def wavg_opening(moves_upto_before_from_date):
+    bal_qty = Decimal("0")
+    bal_val = Decimal("0")
+    avg = Decimal("0")
+
+    for m in moves_upto_before_from_date:
+        qty = Decimal(m["qty"])
+        unit_cost = Decimal(m["unit_cost"] or 0)
+
+        if qty > 0:
+            bal_qty += qty
+            bal_val += qty * unit_cost
+            avg = (bal_val / bal_qty) if bal_qty != 0 else Decimal("0")
+        else:
+            out_qty = -qty
+            bal_qty -= out_qty
+            bal_val -= out_qty * avg
+            if bal_qty == 0:
+                bal_val = Decimal("0")
+                avg = Decimal("0")
+
+    return q4(bal_qty), q2(bal_val)
+
+
+def wavg_rows(moves_in_range, opening_qty, opening_val):
+    bal_qty = Decimal(opening_qty)
+    bal_val = Decimal(opening_val)
+    avg = (bal_val / bal_qty) if bal_qty != 0 else Decimal("0")
+
+    rows = []
+    for m in moves_in_range:
+        qty = Decimal(m["qty"])
+        unit_cost = Decimal(m["unit_cost"] or 0)
+
+        if qty > 0:
+            move_cost = qty * unit_cost
+            bal_qty += qty
+            bal_val += move_cost
+            avg = (bal_val / bal_qty) if bal_qty != 0 else Decimal("0")
+            used_uc = unit_cost
+        else:
+            out_qty = -qty
+            move_cost = -(out_qty * avg)
+            bal_qty -= out_qty
+            bal_val += move_cost
+            if bal_qty == 0:
+                bal_val = Decimal("0")
+                avg = Decimal("0")
+            used_uc = avg
+
+        rows.append({
+            "entrydate": m["entrydate"],
+            "transactiontype": m["transactiontype"],
+            "transactionid": m["transactionid"],
+            "detailid": m["detailid"],
+            "voucherno": m["voucherno"],
+            "qty_in": q4(qty) if qty > 0 else DEC_QTY,
+            "qty_out": q4(-qty) if qty < 0 else DEC_QTY,
+            "unit_cost": q4(used_uc),
+            "amount": q2(move_cost),
+            "balance_qty": q4(bal_qty),
+            "balance_value": q2(bal_val),
+        })
+    return rows
+
+
+class StockLedgerAPIView(APIView):
+    """
+    POST /api/reports/stock-ledger/
+    Body: StockLedgerRequestSerializer
+    """
+
+    #permission_classes = (permissions.IsAuthenticated,)
+ #   permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        ser = StockLedgerRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        p = ser.validated_data
+
+        entity_id = p["entity"]
+        product_id = p["product"]
+        from_date = p["from_date"]
+        to_date = p["to_date"]
+        method = p.get("valuation_method", StockValuationMethod.FIFO)
+
+        base = InventoryMove.objects.filter(
+            entity_id=entity_id,
+            product_id=product_id,
+        )
+
+        # location filter (NULL allowed)
+        if "location" in p:
+            base = base.filter(location=p["location"])
+
+        # txn type filters (audit)
+        if "include_txn_types" in p:
+            base = base.filter(transactiontype__in=p["include_txn_types"])
+        if "exclude_txn_types" in p:
+            base = base.exclude(transactiontype__in=p["exclude_txn_types"])
+
+        # Ordering
+        if p["ordering"] == "date_desc":
+            order_by = ["-entrydate", "-id"]
+        else:
+            order_by = ["entrydate", "id"]
+
+        # Opening moves = strictly before from_date
+        opening_qs = base.filter(entrydate__lt=from_date).order_by("entrydate", "id").values(
+            "entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost"
+        )
+
+        # Moves in range
+        range_qs = base.filter(entrydate__gte=from_date, entrydate__lte=to_date).order_by(*order_by).values(
+            "entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost"
+        )
+
+        opening_moves = list(opening_qs)
+        range_moves = list(range_qs)
+
+        # Compute opening and rows
+        if method == StockValuationMethod.FIFO:
+            opening_qty, opening_val = fifo_opening(opening_moves)
+
+            # For FIFO rows we must compute running from opening layers,
+            # easiest approach: process all moves up to to_date and collect range rows.
+            all_qs = base.filter(entrydate__lte=to_date).order_by("entrydate", "id").values(
+                "entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost"
+            )
+            all_moves = list(all_qs)
+
+            # Collect range rows with running balances (FIFO)
+            # We'll compute opening separately (already done).
+            # Now run FIFO from scratch and output only range rows.
+            layers = []
+            bal_qty = Decimal("0")
+            bal_val = Decimal("0")
+            rows = []
+
+            for m in all_moves:
+                dt = m["entrydate"]
+                qty = Decimal(m["qty"])
+                unit_cost_in = Decimal(m["unit_cost"] or 0)
+
+                if qty > 0:
+                    layers.append([qty, unit_cost_in])
+                    move_cost = qty * unit_cost_in
+                    bal_qty += qty
+                    bal_val += move_cost
+                    used_uc = unit_cost_in
+                else:
+                    out_qty = -qty
+                    remaining = out_qty
+                    issue_val = Decimal("0")
+                    issue_uc_weighted = Decimal("0")
+
+                    while remaining > 0 and layers:
+                        lq, lc = layers[0]
+                        take = lq if lq <= remaining else remaining
+                        issue_val += take * lc
+                        issue_uc_weighted += take * lc
+                        lq -= take
+                        remaining -= take
+                        if lq == 0:
+                            layers.pop(0)
+                        else:
+                            layers[0][0] = lq
+
+                    if remaining > 0:
+                        last_cost = layers[-1][1] if layers else Decimal("0")
+                        issue_val += remaining * last_cost
+                        issue_uc_weighted += remaining * last_cost
+
+                    move_cost = -issue_val
+                    bal_qty -= out_qty
+                    bal_val += move_cost
+                    used_uc = (issue_uc_weighted / out_qty) if out_qty != 0 else Decimal("0")
+
+                if from_date <= dt <= to_date:
+                    rows.append({
+                        "entrydate": dt,
+                        "transactiontype": m["transactiontype"],
+                        "transactionid": m["transactionid"],
+                        "detailid": m["detailid"],
+                        "voucherno": m["voucherno"],
+                        "qty_in": q4(qty) if qty > 0 else DEC_QTY,
+                        "qty_out": q4(-qty) if qty < 0 else DEC_QTY,
+                        "unit_cost": q4(used_uc),
+                        "amount": q2(move_cost),
+                        "balance_qty": q4(bal_qty),
+                        "balance_value": q2(bal_val),
+                    })
+
+        else:  # WAVG
+            opening_qty, opening_val = wavg_opening(opening_moves)
+            rows = wavg_rows(range_moves, opening_qty, opening_val)
+
+        # Paging (on rows in range)
+        page = p["page"]
+        size = p["page_size"]
+        start = (page - 1) * size
+        end = start + size
+        page_rows = rows[start:end]
+
+        resp = {
+            "entity": entity_id,
+            "product": product_id,
+            "location": p.get("location", None),
+            "from_date": str(from_date),
+            "to_date": str(to_date),
+            "valuation_method": method,
+            "page": page,
+            "page_size": size,
+            "count": len(page_rows),
+            "results": page_rows,
+        }
+
+        if p.get("include_opening", True):
+            resp["opening"] = {
+                "qty": str(opening_qty),
+                "value": str(opening_val),
+            }
+
+        if p.get("include_closing", True):
+            # closing is last row's balance if exists, else opening
+            if rows:
+                resp["closing"] = {
+                    "qty": str(rows[-1]["balance_qty"]),
+                    "value": str(rows[-1]["balance_value"]),
+                }
+            else:
+                resp["closing"] = {
+                    "qty": str(opening_qty),
+                    "value": str(opening_val),
+                }
+
+        return Response(resp)
+
