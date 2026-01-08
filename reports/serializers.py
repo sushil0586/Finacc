@@ -1564,3 +1564,54 @@ class StockSummaryRowSerializer(serializers.Serializer):
 
     avg_cost = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     last_movement_date = serializers.DateField(required=False, allow_null=True)
+
+
+
+class StockValuationMethod(models.TextChoices):
+    FIFO = "FIFO", "FIFO (default)"
+    WAVG = "WAVG", "Weighted Average"
+
+
+class StockLedgerRequestSerializer(serializers.Serializer):
+    entity = serializers.IntegerField(required=True)
+    product = serializers.IntegerField(required=True)
+
+    from_date = serializers.DateField(required=True)
+    to_date = serializers.DateField(required=True)
+
+    # Optional filter
+    location = serializers.IntegerField(required=False, allow_null=True)
+
+    valuation_method = serializers.ChoiceField(
+        choices=StockValuationMethod.choices,
+        default=StockValuationMethod.FIFO,
+        required=False
+    )
+
+    include_txn_types = serializers.ListField(
+        child=serializers.CharField(max_length=20),
+        required=False
+    )
+    exclude_txn_types = serializers.ListField(
+        child=serializers.CharField(max_length=20),
+        required=False
+    )
+
+    # Output controls
+    include_opening = serializers.BooleanField(default=True)
+    include_closing = serializers.BooleanField(default=True)
+
+    # Paging
+    page = serializers.IntegerField(default=1, min_value=1)
+    page_size = serializers.IntegerField(default=200, min_value=1, max_value=2000)
+
+    # Ordering (ledger should generally be date ascending)
+    ordering = serializers.ChoiceField(
+        choices=["date_asc", "date_desc"],
+        default="date_asc"
+    )
+
+    def validate(self, attrs):
+        if attrs["from_date"] > attrs["to_date"]:
+            raise serializers.ValidationError("from_date must be <= to_date")
+        return attrs

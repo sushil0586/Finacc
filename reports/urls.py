@@ -106,6 +106,9 @@ urlpatterns  = [
         name="negative-valuation-policies"
     ),
 
+
+    path("stock-ledger/", views.StockLedgerAPIView.as_view(), name="stock-ledger"),
+
     
     
     
