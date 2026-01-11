@@ -1615,3 +1615,15 @@ class StockLedgerRequestSerializer(serializers.Serializer):
         if attrs["from_date"] > attrs["to_date"]:
             raise serializers.ValidationError("from_date must be <= to_date")
         return attrs
+
+
+class StockDayBookRequestSerializer(serializers.Serializer):
+    entity = serializers.IntegerField()
+    from_date = serializers.DateField()
+    to_date = serializers.DateField()
+
+    product = serializers.IntegerField(required=False)
+    location = serializers.IntegerField(required=False)
+
+    group_by_location = serializers.BooleanField(required=False, default=True)
+    include_details = serializers.BooleanField(required=False, default=False)

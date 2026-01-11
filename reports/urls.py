@@ -1,5 +1,9 @@
 from django.urls import path,include
 from reports import views
+from reports.views_stock_ledger_export import StockLedgerExcelAPIView, StockLedgerPDFAPIView
+from reports.views_stock_daybook import StockDayBookAPIView
+from reports.views_stock_daybook_export import StockDayBookExcelAPIView, StockDayBookPDFAPIView
+
 
 
 
@@ -40,7 +44,7 @@ urlpatterns  = [
     path('daybookdetails',views.DayDetails.as_view(), name = 'Trialbalance'),
     path('cashbook',views.cbviewapi.as_view(), name = 'Trialbalance'),
     path('salebook',views.salebyaccountapi.as_view(), name = 'salebok'),
-    path('printvoucher',views.printvoucherapi.as_view(), name = 'salebok'),
+    path('printvoucher',views.PrintVoucherAPI.as_view(), name = 'salebok'),
     path('purchasebook',views.purchasebyaccountapi.as_view(), name = 'purchasebook'),
     path('daybook',views.daybookviewapi.as_view(), name = 'Trialbalance'),
     path('trialbalance',views.TrialbalanceApiView.as_view(), name = 'Trialbalance'),
@@ -108,6 +112,11 @@ urlpatterns  = [
 
 
     path("stock-ledger/", views.StockLedgerAPIView.as_view(), name="stock-ledger"),
+    path("stock-ledger/excel/", StockLedgerExcelAPIView.as_view(), name="stock-ledger-excel"),
+    path("stock-ledger/pdf/", StockLedgerPDFAPIView.as_view(), name="stock-ledger-pdf"),
+    path("stock-daybook/", StockDayBookAPIView.as_view(), name="stock-daybook"),
+    path("stock-daybook/excel/", StockDayBookExcelAPIView.as_view(), name="stock-daybook-excel"),
+    path("stock-daybook/pdf/", StockDayBookPDFAPIView.as_view(), name="stock-daybook-pdf"),
 
     
     

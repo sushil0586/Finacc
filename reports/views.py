@@ -3788,87 +3788,95 @@ class salebyaccountapi(ListAPIView):
         return Response(df.to_dict(orient="records"))
 
 
-class printvoucherapi(ListAPIView):
-
-    #serializer_class = Salebyaccountserializer
-  #  filter_class = accountheadFilter
+class PrintVoucherAPI(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
-    filter_backends = [DjangoFilterBackend]
-    #filterset_fields = ['id']
-
-
     def get(self, request):
-        entity = self.request.query_params.get('entity')
-        transactiontype = self.request.query_params.get('transactiontype')
-        transactionid = self.request.query_params.get('transactionid')
+        entity = request.query_params.get("entity")
+        transactiontype = request.query_params.get("transactiontype")
+        transactionid = request.query_params.get("transactionid")
 
-        # Fetch the stock transactions
-        queryset = StockTransactions.objects.filter(
-            isactive=1,
-            entity=entity,
-            transactiontype=transactiontype,
-            transactionid=transactionid
-        ).exclude(accounttype__in=['MD']).values(
-            'account__id', 'account__accountname', 'transactiontype', 'transactionid', 'desc',
-            'entry__entrydate1', 'debitamount', 'creditamount', 'drcr', 'id', 'voucherno'
-        ).order_by('id')
+        if not entity or not transactiontype or not transactionid:
+            return Response(
+                {"detail": "entity, transactiontype, transactionid are required."},
+                status=400,
+            )
 
-        # Convert queryset to DataFrame
-        df = read_frame(queryset)
-        df.rename(columns={
-            'account__accountname': 'accountname',
-            'account__id': 'account',
-            'entry__entrydate1': 'entrydate'
-        }, inplace=True)
+        # Base rows (grouped like your pandas groupby)
+        rows = (
+            JournalLine.objects
+            .filter(entity_id=entity, transactiontype=transactiontype, transactionid=transactionid)
+            .select_related("account")
+            .values(
+                "entrydate",
+                "voucherno",
+                "account_id",
+                "account__accountname",
+                "desc",
+                "drcr",
+            )
+            .annotate(total=Sum("amount"))
+            .order_by("entrydate", "voucherno", "account__accountname", "desc", "drcr")
+        )
 
-        # Add columns and format
-        df['transactiontype'] = transactiontype
-        df['entrydate'] = pd.to_datetime(df['entrydate']).dt.strftime('%d-%m-%y')
-
-        # Group data
-        df = df.groupby(
-            ['entrydate', 'voucherno', 'account', 'accountname', 'desc', 'drcr']
-        )[['debitamount', 'creditamount']].sum().abs().reset_index()
-
-        # Summarize totals
-        df_sum = df.groupby(
-            ['entrydate', 'voucherno']
-        )[['debitamount', 'creditamount']].sum().abs().reset_index()
-
-        df_sum['account'] = -1
-        df_sum['desc'] = ''
-        df_sum['drcr'] = True
-        df_sum['accountname'] = 'Grand Total'
-
-        # Concatenate summarized totals with the grouped data
-        df = pd.concat([df, df_sum]).reset_index(drop=True)
-
-        # Add voucher type based on transaction type
         voucher_map = {
-            'C': 'Cash Voucher',
-            'B': 'Bank Voucher',
-            'J': 'Journal Voucher',
-            'S': 'Sale Bill Voucher',
-            'P': 'Purchase Voucher',
-            'T': 'TDS Voucher',
-            'PR': 'Purchase Return Voucher',
-            'SR': 'Sale Return Voucher',
-            'PI': 'Purchase Import Voucher',
-            'RV': 'Receipt Voucher'
+            "C": "Cash Voucher",
+            "B": "Bank Voucher",
+            "J": "Journal Voucher",
+            "S": "Sale Bill Voucher",
+            "P": "Purchase Voucher",
+            "T": "TDS Voucher",
+            "PR": "Purchase Return Voucher",
+            "SR": "Sale Return Voucher",
+            "PI": "Purchase Import Voucher",
+            "RV": "Receipt Voucher",
         }
+        voucher_name = voucher_map.get(transactiontype, "Unknown Voucher")
 
-        df['voucher'] = voucher_map.get(transactiontype, 'Unknown Voucher')
+        # Build grouped output per (entrydate, voucherno)
+        buckets = defaultdict(list)
+        totals = defaultdict(lambda: {"debit": Decimal("0.00"), "credit": Decimal("0.00")})
 
-        # Format final result
+        for r in rows:
+            entrydate = r["entrydate"]
+            voucherno = r["voucherno"]
+            key = (entrydate, voucherno)
+
+            amt = (r["total"] or Decimal("0.00")).copy_abs()
+
+            debit = amt if r["drcr"] else Decimal("0.00")
+            credit = amt if not r["drcr"] else Decimal("0.00")
+
+            buckets[key].append({
+                "account": r["account_id"] or -1,
+                "accountname": r["account__accountname"] or "",
+                "desc": r["desc"] or "",
+                "debitamount": debit,
+                "creditamount": credit,
+                "drcr": r["drcr"],
+            })
+
+            totals[key]["debit"] += debit
+            totals[key]["credit"] += credit
+
+        # Final list (with Grand Total appended per voucher)
         result = []
-        if len(df) > 0:
-            result = (df.groupby(['entrydate', 'voucherno', 'voucher'])
-                    .apply(lambda x: x[['account', 'accountname', 'desc', 'debitamount', 'creditamount', 'drcr']].to_dict('records'))
-                    .reset_index()
-                    .rename(columns={0: 'accounts'})
-                    .T.to_dict()
-                    .values())
+        for (entrydate, voucherno), accounts in buckets.items():
+            accounts.append({
+                "account": -1,
+                "accountname": "Grand Total",
+                "desc": "",
+                "debitamount": totals[(entrydate, voucherno)]["debit"],
+                "creditamount": totals[(entrydate, voucherno)]["credit"],
+                "drcr": True,
+            })
+
+            result.append({
+                "entrydate": entrydate.strftime("%d-%m-%y") if entrydate else None,
+                "voucherno": voucherno,
+                "voucher": voucher_name,
+                "accounts": accounts,
+            })
 
         return Response(result)
     
