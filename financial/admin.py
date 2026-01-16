@@ -1,76 +1,78 @@
 from django.contrib import admin
-from import_export.admin import ImportExportMixin
+from import_export.admin import ImportExportModelAdmin
+
+from .models import (
+    accounttype,
+    accountHead,
+    account,
+    ShippingDetails,
+    ContactDetails,
+    staticacounts,
+    staticacountsmapping,
+)
+from .admin_resources import (
+    AccountTypeResource,
+    AccountHeadResource,
+    AccountResource,
+    StaticAccountsResource,
+    StaticAccountsMappingResource,
+)
 
 
-from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
-# Register your models here.
+@admin.register(accounttype)
+class AccountTypeAdmin(ImportExportModelAdmin):
+    resource_class = AccountTypeResource
+    list_display = ("accounttypename", "accounttypecode", "balanceType", "entity")
+    list_filter = ("entity", "balanceType")
+    search_fields = ("accounttypename", "accounttypecode")
+    ordering = ("accounttypecode",)
 
 
-class accountheadAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['name','code','accountheadsr','entity','createdby']
-    list_filter = (
-        ('entity', admin.RelatedOnlyFieldListFilter),
-    )
-    
-class accountAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['accountname','accounthead','accountcode','gstno','entity','createdby']
-    list_filter = (
-        ('entity', admin.RelatedOnlyFieldListFilter),
-    )
-    search_fields = ("accountname", "code", "gstin")  # adjust field names
-    
-
-admin.site.register(accountHead, accountheadAdmin)
+@admin.register(accountHead)
+class AccountHeadAdmin(ImportExportModelAdmin):
+    resource_class = AccountHeadResource
+    list_display = ("name", "code", "drcreffect", "entity", "canbedeleted")
+    list_filter = ("entity", "drcreffect", "canbedeleted")
+    search_fields = ("name", "code")
+    ordering = ("entity", "code")
 
 
-admin.site.register(account,accountAdmin)
+@admin.register(account)
+class AccountAdmin(ImportExportModelAdmin):
+    resource_class = AccountResource
+    list_display = ("accountname", "accountcode", "gstno", "entity", "accounthead")
+    list_filter = ("entity",)
+    search_fields = ("accountname", "gstno", "accountcode")
+    ordering = ("entity", "accountcode")
+    list_select_related = ("entity", "accounthead")
 
-# admin.site.register(account_detials1)
-# admin.site.register(account_detials2)
 
-class accounttypeadmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['id', 'accounttypename','accounttypecode','entity']
+@admin.register(staticacounts)
+class StaticAccountsAdmin(ImportExportModelAdmin):
+    resource_class = StaticAccountsResource
+    list_display = ("staticaccount", "code", "entity")
+    list_filter = ("entity",)
+    search_fields = ("staticaccount", "code")
+    ordering = ("entity", "code")
 
-admin.site.register(accounttype,accounttypeadmin)
+
+@admin.register(staticacountsmapping)
+class StaticAccountsMappingAdmin(ImportExportModelAdmin):
+    resource_class = StaticAccountsMappingResource
+    list_display = ("staticaccount", "account", "entity")
+    list_filter = ("entity",)
+    search_fields = ("staticaccount__code", "account__accountname", "account__accountcode")
+    ordering = ("entity",)
+
+
+# Optional: keep these normal (not import/export), because they depend on Account IDs heavily
 @admin.register(ShippingDetails)
 class ShippingDetailsAdmin(admin.ModelAdmin):
-    search_fields = ("name", "address1", "pincode", "city__name")
+    list_display = ("account", "full_name", "gstno", "isprimary")
+    search_fields = ("account__accountname", "full_name", "gstno")
+
+
 @admin.register(ContactDetails)
 class ContactDetailsAdmin(admin.ModelAdmin):
-    list_display = (
-        'full_name',
-        'account_name',
-        'address1',
-        'city',
-        'district',
-        'state',
-        'country',
-        'pincode',
-        'phoneno',
-    )
-    search_fields = ('full_name', 'account__accountname', 'phoneno', 'pincode')
-    list_filter = ('country', 'state', 'district', 'city')
-
-    def account_name(self, obj):
-        return obj.account.accountname
-    account_name.short_description = 'Account Name'
-
-class staticacountsadAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['accounttype','staticaccount','code']
- 
-admin.site.register(staticacounts,staticacountsadAdmin)
-
-class staticacountsmappingAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['staticaccount','account','entity']
-    list_filter = (
-        ('entity', admin.RelatedOnlyFieldListFilter),
-    )
-
-
-
-admin.site.register(staticacountsmapping,staticacountsmappingAdmin)
-
-
-
-
-
+    list_display = ("account", "full_name", "designation")
+    search_fields = ("account__accountname", "full_name", "designation")
