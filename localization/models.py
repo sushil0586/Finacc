@@ -34,10 +34,9 @@ class LocalizedStringValue(models.Model):
     )
     language = models.ForeignKey(Language, on_delete=models.PROTECT)
 
-    # Optional multi-entity override:
-   # entity_id = models.BigIntegerField(null=True, blank=True, db_index=True)
-    # If you have Entity model, replace above with:
-    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, null=True, blank=True)
+    entity = models.ForeignKey(
+        "entity.Entity", on_delete=models.CASCADE, null=True, blank=True
+    )
 
     text = models.TextField()
     is_approved = models.BooleanField(default=True)
@@ -47,14 +46,14 @@ class LocalizedStringValue(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["string_key", "language", "entity_id"],
+                fields=["string_key", "language", "entity"],
                 name="uq_localized_value_key_lang_entity",
             )
         ]
         indexes = [
-            models.Index(fields=["language", "entity_id"]),
+            models.Index(fields=["language", "entity"]),
         ]
 
     def __str__(self):
-        scope = f"entity={self.entity_id}" if self.entity_id else "global"
+        scope = f"entity={self.entity_id}" if self.entity else "global"
         return f"{self.string_key.key} [{self.language.code}] ({scope})"
