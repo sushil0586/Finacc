@@ -676,6 +676,10 @@ class PurchaseReturn(TrackingModel):
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity',null= True)
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+    invoiceMode       = models.IntegerField(null=True)
+    eway             = models.BooleanField(default=False)
+    einvoice         = models.BooleanField(default=False)
+    einvoicepluseway = models.BooleanField(default=False)
 
     # class Meta:
     #     #unique_together = ('billno', 'entity',)
@@ -1227,6 +1231,10 @@ class salereturn(TrackingModel):
     entity = models.ForeignKey(Entity,on_delete=models.CASCADE,verbose_name= 'entity')
     entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
     createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
+    invoiceMode       = models.IntegerField(null=True)
+    eway             = models.BooleanField(default=False)
+    einvoice         = models.BooleanField(default=False)
+    einvoicepluseway = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('voucherno', 'entity','entityfinid',)

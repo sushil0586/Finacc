@@ -4392,7 +4392,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             'addless','duedate','subtotal','invoicetype','reversecharge','roundOff',
             'cgst','sgst','igst','cess','totalgst','expenses','gtotal',
             'entityfinid','subentity','entity','createdby','isactive','isammended','originalinvoice',
-            'purchasereturndetails','adddetails',
+            'purchasereturndetails','adddetails','invoiceMode','eway','einvoice','einvoicepluseway',
         )
 
     def create(self, validated_data):
@@ -4507,7 +4507,7 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             'tcs206c1ch2','tcs206c1ch3','tcs206C1','tcs206C2','addless','duedate','subtotal',
             'cgst','sgst','igst','cess','totalgst','expenses','gtotal','roundOff',
             'entityfinid','subentity','isammended','originalinvoice','entity','createdby','isactive',
-            'invoicetype','reversecharge'
+            'invoicetype','reversecharge','invoiceMode','eway','einvoice','einvoicepluseway',
         ]
 
         with transaction.atomic():
@@ -7652,7 +7652,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
             'cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount',
             'entityfinid','subentity','entity','isactive',
             'salereturndetails','isammended','originalinvoice',
-            'adddetails',
+            'adddetails','invoiceMode','eway','einvoice','einvoicepluseway',
         )
 
     def validate(self, attrs):
@@ -7833,7 +7833,7 @@ class salesreturnSerializer(serializers.ModelSerializer):
                 'tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus',
                 'subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount',
                 'invoicetype','reversecharge',
-                'entityfinid','subentity','entity','isactive','isammended','originalinvoice'
+                'entityfinid','subentity','entity','isactive','isammended','originalinvoice','invoiceMode','eway','einvoice','einvoicepluseway',
             ]
 
             # 1) Apply header updates EXACTLY as frontend sent
