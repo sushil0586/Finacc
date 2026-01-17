@@ -3,6 +3,7 @@
 from itertools import product
 from os import device_encoding
 from pprint import isreadable
+import logging
 from select import select
 from typing import Optional
 from .models import account as Account, journaldetails as JournalDetails
@@ -19,7 +20,7 @@ from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
 from django.db.models.functions import Abs
 from num2words import num2words
 import string
-from django.db import  transaction
+from django.db import  transaction,IntegrityError
 from django_filters.rest_framework import DjangoFilterBackend
 import requests
 import json
@@ -3565,6 +3566,16 @@ from django.contrib.contenttypes.models import ContentType
 # IMPORTANT: ensure stocktransactionsale is imported where it lives
 # from Finacc.invoice.posting import stocktransactionsale  # adjust path if needed
 
+MASTERGST_DT_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+)
+
+logger = logging.getLogger(__name__)
+
+
 class SalesOderHeaderSerializer(serializers.ModelSerializer):
     # ---------- nested ----------
     saleInvoiceDetails = salesOrderdetailsSerializer(many=True)
@@ -3595,7 +3606,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             'discount','cgst','sgst','igst','isigst','invoicetype','reversecharge','cess','totalgst',
             'expenses','gtotal','roundOff','entityfinid','subentity','entity','createdby','eway','einvoice',
             'isammended','originalinvoice','originalinvoice_number','einvoicepluseway','isactive',
-            'saleInvoiceDetails','adddetails','einvoice_details','isadditionaldetail','invoicenumber',
+            'saleInvoiceDetails','adddetails','einvoice_details','isadditionaldetail','invoicenumber','invoiceMode',
         )
 
     # ===== utilities ==========================================================
@@ -3634,10 +3645,9 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         return getattr(getattr(obj, "originalinvoice", None), "invoicenumber", None)
 
     def get_einvoice_details(self, obj):
-        try:
-            ct = ContentType.objects.get_for_model(SalesOderHeader)
-            einv = EInvoiceDetails.objects.get(content_type=ct, object_id=obj.id)
-        except EInvoiceDetails.DoesNotExist:
+        ct = ContentType.objects.get_for_model(obj, for_concrete_model=False)
+        einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=obj.id).first()
+        if not einv:
             return None
         return {
             "irn": einv.irn,
@@ -3654,12 +3664,18 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             rep["adddetails"] = None
         return rep
 
-    # ===== validation (pass-through; no state/logic) ==========================
-
     def validate(self, attrs):
         return attrs
 
-    # ===== private steps (shared by create/update) ============================
+    # -------------------------------------------------------------------------
+    # Your existing private methods (kept as-is in your project)
+    # - _decide_and_enforce_isigst
+    # - _upsert_details
+    # - _recalc_totals
+    # - _post_once_via_shim
+    # - other helpers: _deduce_isigst_from_payload, _normalize_on_isigst_flip, etc.
+    # -------------------------------------------------------------------------
+
 
     def _decide_and_enforce_isigst(self, inst_or_data, details_data, is_create: bool) -> bool:
         """
@@ -3702,110 +3718,7 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             payload['igst'] = ZERO2
         payload['isigst'] = new_isigst
         return new_isigst
-
-    def _number_and_create_header(self, validated_data) -> SalesOderHeader:
-        """Assign next billno + invoicenumber and create header."""
-        validated_data.pop('billno', None)
-        max_bill  = SalesOderHeader.objects.filter(entity=validated_data['entity']).aggregate(m=Max('billno'))['m'] or 0
-        next_bill = max_bill + 1
-
-        settings = (SalesInvoiceSettings.objects
-                    .select_for_update()
-                    .filter(entity=validated_data['entity'].id,
-                            entityfinid=validated_data['entityfinid'].id,
-                            doctype__doccode='1001')
-                    .first())
-        if not settings:
-            raise Exception("SalesInvoiceSettings not configured for this entity/financial year.")
-        reset_counter_if_needed(settings)
-        number = build_document_number(settings)
-        if SalesOderHeader.objects.filter(invoicenumber=number).exists():
-            raise Exception("Duplicate invoice number generated. Please try again.")
-
-        order = SalesOderHeader.objects.create(**validated_data, billno=next_bill, invoicenumber=number)
-        settings.current_number += 1
-        settings.save()
-        return order
-
-    def _upsert_adddetails(self, order, adddetails_data: dict, is_update: bool):
-        """Create/Update Pay/Ref/Ewb/Exp and AddlDoc lines."""
-        paydtls_data     = adddetails_data.get('paydtls')
-        refdtls_data     = adddetails_data.get('refdtls')
-        ewbdtls_data     = adddetails_data.get('ewbdtls')
-        expdtls_data     = adddetails_data.get('expdtls')
-        addldocdtls_list = adddetails_data.get('addldocdtls', [])
-
-        # ---------- PayDtls ----------
-        if paydtls_data:
-            paydtls_data.pop('id', None)
-            if is_update:
-                PayDtls.objects.update_or_create(
-                    invoice=order,
-                    defaults=paydtls_data,
-                )
-            else:
-                PayDtls.objects.create(invoice=order, **paydtls_data)
-
-        # ---------- RefDtls ----------
-        if refdtls_data:
-            refdtls_data.pop('id', None)
-            if is_update:
-                RefDtls.objects.update_or_create(
-                    invoice=order,
-                    defaults=refdtls_data,
-                )
-            else:
-                RefDtls.objects.create(invoice=order, **refdtls_data)
-
-        # ---------- EwbDtls ----------
-        if ewbdtls_data:
-            ewbdtls_data.pop('id', None)
-            if is_update:
-                EwbDtls.objects.update_or_create(
-                    invoice=order,
-                    defaults=ewbdtls_data,
-                )
-            else:
-                EwbDtls.objects.create(invoice=order, **ewbdtls_data)
-
-        # ---------- ExpDtls ----------
-        if expdtls_data:
-            expdtls_data.pop('id', None)
-            if is_update:
-                ExpDtls.objects.update_or_create(
-                    invoice=order,
-                    defaults=expdtls_data,
-                )
-            else:
-                ExpDtls.objects.create(invoice=order, **expdtls_data)
-
-        # ---------- AddlDocDtls ----------
-        if is_update:
-            existing = AddlDocDtls.objects.filter(invoice=order)
-            existing_ids = {d.id for d in existing}
-            incoming_ids = set()
-
-            for doc in addldocdtls_list:
-                doc_id = self._pk_or_none(doc.get('id'))
-                clean = {k: v for k, v in doc.items() if k != "id"}
-
-                if doc_id and doc_id in existing_ids:
-                    obj = AddlDocDtls.objects.get(id=doc_id, invoice=order)
-                    for k, v in clean.items():
-                        setattr(obj, k, v)
-                    obj.save()
-                    incoming_ids.add(doc_id)
-                else:
-                    AddlDocDtls.objects.create(invoice=order, **clean)
-
-            to_delete = existing_ids - incoming_ids
-            if to_delete:
-                AddlDocDtls.objects.filter(id__in=to_delete).delete()
-        else:
-            for doc in addldocdtls_list:
-                doc.pop('id', None)
-                AddlDocDtls.objects.create(invoice=order, **doc)
-
+    
     def _upsert_details(self, order, details_data: list, is_update: bool):
         """
         Trust amounts/percents from client, compute linetotal if missing.
@@ -3884,6 +3797,295 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                                    description='By Sale Bill No:', entrytype=entrytype)
         stk.createtransaction()
 
+    
+
+    # ✅ INCLUDED: _upsert_adddetails (your function, improved safely)
+    def _upsert_adddetails(self, order, adddetails_data: dict, is_update: bool):
+        """Create/Update Pay/Ref/Ewb/Exp and AddlDoc lines."""
+        adddetails_data = adddetails_data or {}
+
+        # Copy so we don't mutate incoming request dict
+        paydtls_data     = dict(adddetails_data.get('paydtls') or {}) or None
+        refdtls_data     = dict(adddetails_data.get('refdtls') or {}) or None
+        ewbdtls_data     = dict(adddetails_data.get('ewbdtls') or {}) or None
+        expdtls_data     = dict(adddetails_data.get('expdtls') or {}) or None
+        addldocdtls_list = list(adddetails_data.get('addldocdtls') or [])
+
+        # ---------- PayDtls ----------
+        if paydtls_data:
+            paydtls_data.pop('id', None)
+            if is_update:
+                PayDtls.objects.update_or_create(invoice=order, defaults=paydtls_data)
+            else:
+                PayDtls.objects.create(invoice=order, **paydtls_data)
+
+        # ---------- RefDtls ----------
+        if refdtls_data:
+            refdtls_data.pop('id', None)
+            if is_update:
+                RefDtls.objects.update_or_create(invoice=order, defaults=refdtls_data)
+            else:
+                RefDtls.objects.create(invoice=order, **refdtls_data)
+
+        # ---------- EwbDtls ----------
+        if ewbdtls_data:
+            ewbdtls_data.pop('id', None)
+            if is_update:
+                EwbDtls.objects.update_or_create(invoice=order, defaults=ewbdtls_data)
+            else:
+                EwbDtls.objects.create(invoice=order, **ewbdtls_data)
+
+        # ---------- ExpDtls ----------
+        if expdtls_data:
+            expdtls_data.pop('id', None)
+            if is_update:
+                ExpDtls.objects.update_or_create(invoice=order, defaults=expdtls_data)
+            else:
+                ExpDtls.objects.create(invoice=order, **expdtls_data)
+
+        # ---------- AddlDocDtls ----------
+        if is_update:
+            existing_qs = AddlDocDtls.objects.filter(invoice=order)
+            existing_map = {d.id: d for d in existing_qs}
+            existing_ids = set(existing_map.keys())
+            incoming_ids = set()
+
+            for doc in addldocdtls_list:
+                doc = dict(doc or {})
+                doc_id = self._pk_or_none(doc.get('id'))
+                clean = {k: v for k, v in doc.items() if k != "id"}
+
+                if doc_id and doc_id in existing_ids:
+                    obj = existing_map[doc_id]
+                    for k, v in clean.items():
+                        setattr(obj, k, v)
+                    obj.save()
+                    incoming_ids.add(doc_id)
+                else:
+                    AddlDocDtls.objects.create(invoice=order, **clean)
+
+            to_delete = existing_ids - incoming_ids
+            if to_delete:
+                AddlDocDtls.objects.filter(id__in=to_delete).delete()
+        else:
+            for doc in addldocdtls_list:
+                doc = dict(doc or {})
+                doc.pop('id', None)
+                AddlDocDtls.objects.create(invoice=order, **doc)
+
+    # -------------------------------------------------------------------------
+    # GST/EWAY improvements (safe + after-commit)
+    # -------------------------------------------------------------------------
+
+    def _ct_for(self, obj):
+        return ContentType.objects.get_for_model(obj, for_concrete_model=False)
+
+    def _parse_mastergst_dt(self, value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        s = str(value).strip()
+        for fmt in MASTERGST_DT_FORMATS:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        raise ValidationError({"gst": f"Unsupported datetime format from MasterGST: {s}"})
+
+    def _persist_einvoice_details(self, order, ct, data: dict):
+        ack_dt = self._parse_mastergst_dt(data.get("AckDt"))
+        ewb_dt = self._parse_mastergst_dt(data.get("EwbDt"))
+        ewb_valid_till = self._parse_mastergst_dt(data.get("EwbValidTill"))
+
+        irn = data.get("Irn")
+        if not irn:
+            raise ValidationError({"einvoice": "MasterGST response missing IRN (Irn)."})
+
+        EInvoiceDetails.objects.update_or_create(
+            content_type=ct,
+            object_id=order.id,
+            defaults={
+                "irn": irn,
+                "ack_no": data.get("AckNo"),
+                "ack_date": ack_dt,
+                "signed_invoice": data.get("SignedInvoice"),
+                "signed_qr_code": data.get("SignedQRCode"),
+                "status": data.get("Status", "ACT"),
+                "ewb_no": data.get("EwbNo"),
+                "ewb_date": ewb_dt,
+                "ewb_valid_till": ewb_valid_till,
+                "remarks": data.get("Remarks"),
+            }
+        )
+
+    def _generate_einvoice_if_needed(self, order, mode: str, ct):
+        existing = EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).only("irn").first()
+        if existing and existing.irn:
+            return existing.irn
+
+        payload = SalesOrderFullSerializer(order, context={"mode": mode}).data
+        gst_response = gstinvoice(order, json.dumps(payload, default=str))
+
+        if not isinstance(gst_response, dict):
+            raise ValidationError({"einvoice": "Unexpected response from gstinvoice()."})
+
+        if str(gst_response.get("status_cd")) != "1":
+            raise ValidationError({
+                "einvoice": gst_response.get("status_desc", "E-Invoice generation failed."),
+                "details": gst_response,
+            })
+
+        data = gst_response.get("data") or {}
+        self._persist_einvoice_details(order, ct, data)
+        return data.get("Irn")
+
+    def _generate_eway_from_irn(self, order, ct):
+        einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).first()
+        if not (einv and einv.irn):
+            raise ValidationError({"eway": "IRN not found for this order. Cannot generate E-Way Bill."})
+
+        ewb = EwbDtls.objects.filter(invoice=order.id).first()
+        if not ewb:
+            raise ValidationError({"eway": "E-Way Bill details not found for this order."})
+
+        distance = int(getattr(ewb, "Distance", 0) or 0)
+        if distance <= 0:
+            raise ValidationError({"eway": "Distance must be > 0."})
+
+        payload = {
+            "Irn": einv.irn,
+            "Distance": distance,
+            "TransMode": str(ewb.TransMode),
+            "TransId": (ewb.TransId or "").strip(),
+            "TransName": (ewb.TransName or "").strip(),
+            "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y") if ewb.TransDocDt else None,
+            "TransDocNo": (ewb.TransDocNo or "").strip(),
+            "VehNo": (ewb.VehNo or "").strip(),
+            "VehType": (ewb.VehType or "").strip(),
+        }
+
+
+        print(payload)
+
+        resp = gst_ewaybill(order, payload)  # pass dict, not string
+
+        if isinstance(resp, dict) and str(resp.get("status_cd")) != "1":
+            raise ValidationError({
+                "eway": resp.get("status_desc") or "E-Way Bill generation failed.",
+                "details": resp
+            })
+
+        return resp
+
+
+    def _post_process_gst(self, order_id: int, mode: str, is_create: bool):
+        """
+        Runs AFTER DB commit.
+        Updates SalesOderHeader.einvoice / eway flags
+        based on actual GST outcome.
+        """
+        order = SalesOderHeader.objects.get(id=order_id)
+        ct = self._ct_for(order)
+
+        try:
+            if mode == "none":
+                return
+
+            # ------------------------
+            # E-INVOICE ONLY
+            # ------------------------
+            if mode == "einvoice":
+                self._generate_einvoice_if_needed(order, mode, ct)
+
+                # SUCCESS
+                SalesOderHeader.objects.filter(id=order.id).update(
+                    einvoice=True,
+                    eway=False
+                )
+                return
+
+            # ------------------------
+            # E-WAY ONLY
+            # ------------------------
+            if mode == "eway":
+
+                print("eway")
+                if is_create:
+                    return  # payload only on create
+
+                self._generate_eway_from_irn(order, ct)
+
+                SalesOderHeader.objects.filter(id=order.id).update(
+                    eway=True
+                )
+                return
+
+            # ------------------------
+            # E-INVOICE + E-WAY
+            # ------------------------
+            if mode == "both":
+                self._generate_einvoice_if_needed(order, mode, ct)
+                SalesOderHeader.objects.filter(id=order.id).update(einvoice=True)
+
+                self._generate_eway_from_irn(order, ct)
+                SalesOderHeader.objects.filter(id=order.id).update(eway=True)
+                return
+
+        except Exception as e:
+            logger.exception("GST failed order_id=%s mode=%s", order.id, mode)
+
+            updates = {}
+            if mode in ("einvoice", "einvoicepluseway"):
+                updates["einvoice"] = False
+            if mode in ("eway", "einvoicepluseway"):
+                updates["eway"] = False
+
+            if updates:
+                SalesOderHeader.objects.filter(id=order.id).update(**updates)
+
+            # IMPORTANT: update-only (no insert)
+            EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).update(
+                status="ERR",
+                remarks=str(e),
+            )
+            return
+
+
+    # ===== numbering (improved billno retry) =================================
+
+    def _number_and_create_header(self, validated_data) -> SalesOderHeader:
+        validated_data.pop('billno', None)
+
+        settings = (SalesInvoiceSettings.objects
+                    .select_for_update()
+                    .filter(entity=validated_data['entity'].id,
+                            entityfinid=validated_data['entityfinid'].id,
+                            doctype__doccode='1001')
+                    .first())
+        if not settings:
+            raise ValidationError({"settings": "SalesInvoiceSettings not configured for this entity/financial year."})
+
+        reset_counter_if_needed(settings)
+        number = build_document_number(settings)
+        if SalesOderHeader.objects.filter(invoicenumber=number).exists():
+            raise ValidationError({"invoicenumber": "Duplicate invoice number generated. Please try again."})
+
+        for _ in range(3):
+            max_bill = (SalesOderHeader.objects
+                        .filter(entity=validated_data['entity'])
+                        .aggregate(m=Max('billno'))['m'] or 0)
+            next_bill = max_bill + 1
+            try:
+                order = SalesOderHeader.objects.create(**validated_data, billno=next_bill, invoicenumber=number)
+                settings.current_number += 1
+                settings.save()
+                return order
+            except IntegrityError:
+                continue
+
+        raise ValidationError({"billno": "Unable to generate unique billno after retries. Please try again."})
+
     # ===== CREATE =============================================================
 
     @transaction.atomic
@@ -3891,53 +4093,39 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         details_data    = validated_data.pop('saleInvoiceDetails', [])
         adddetails_data = validated_data.pop('adddetails', {})
 
-        # decide/enforce regime (no state logic; trust payload)
+        # Decide tax regime
         self._decide_and_enforce_isigst(validated_data, details_data, is_create=True)
 
-        # header create with numbering
+        # Create order first
         order = self._number_and_create_header(validated_data)
 
-        # add-details create
+        # ✅ Decide mode ONCE based on request flags
+        mode = _mode(order)
+
+        # ✅ IMPORTANT: reset flags immediately
+        # Client intent should not persist as system truth
+        SalesOderHeader.objects.filter(id=order.id).update(
+            einvoice=False,
+            eway=False
+        )
+
+        # Continue normal flow
         self._upsert_adddetails(order, adddetails_data, is_update=False)
-
-        # detail rows create
         self._upsert_details(order, details_data, is_update=False)
-
-        # totals
         self._recalc_totals(order)
-
-        # authoritative posting
         self._post_once_via_shim(order, entrytype='I')
 
-        # e-invoice / e-way (unchanged business logic)
-        mode = _mode(order)
-        if mode == 'eway':
-            serializer = EwaybillFullSerializer(order)
-            print(json.dumps(serializer.data.get('ewaybill_payload', {}), indent=4, default=str))
-        elif mode != "none":
-            einvoice_data = SalesOrderFullSerializer(order, context={"mode": mode}).data
-            gst_response = gstinvoice(order, json.dumps(einvoice_data, indent=4, default=str))
-            if gst_response.get("status_cd") == "1":
-                data = gst_response["data"]
-                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-                EInvoiceDetails.objects.update_or_create(
-                    content_type=ContentType.objects.get_for_model(order),
-                    object_id=order.id,
-                    defaults={
-                        "irn": data["Irn"],
-                        "ack_no": data["AckNo"],
-                        "ack_date": ack_dt,
-                        "signed_invoice": data["SignedInvoice"],
-                        "signed_qr_code": data["SignedQRCode"],
-                        "status": data.get("Status", "ACT"),
-                        "ewb_no": data.get("EwbNo"),
-                        "ewb_date": ewb_dt,
-                        "ewb_valid_till": ewb_valid_till,
-                        "remarks": data.get("Remarks"),
-                    }
-                )
+        print("GST MODE:", mode)
+
+        # ✅ Run GST AFTER commit (single source of truth)
+        transaction.on_commit(
+            lambda: self._post_process_gst(
+                order.id,
+                mode=mode,
+                is_create=True
+            )
+        )
+
         return order
 
     # ===== UPDATE =============================================================
@@ -3947,10 +4135,8 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         details_data    = validated_data.pop('saleInvoiceDetails', [])
         adddetails_data = validated_data.pop('adddetails', {})
 
-        # decide/enforce regime and normalize header if flipping
         self._decide_and_enforce_isigst((instance, validated_data), details_data, is_create=False)
 
-        # apply header fields & persist (ensure zeros on cgst/sgst/igst land)
         touched = []
         for f in self._header_update_fields():
             if f in validated_data:
@@ -3958,66 +4144,25 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
                 touched.append(f)
         instance.save(update_fields=list(set(touched) | {'cgst','sgst','igst'}))
 
-        # add-details upsert
+        mode = _mode(instance)
+
+        SalesOderHeader.objects.filter(id=instance.id).update(
+            einvoice=False,
+            eway=False
+        )
+
         self._upsert_adddetails(instance, adddetails_data, is_update=True)
-
-        # details upsert (and delete removed)
         self._upsert_details(instance, details_data, is_update=True)
-
-        # totals
         self._recalc_totals(instance)
-
-        # authoritative posting
         self._post_once_via_shim(instance, entrytype='U')
 
-        # eWay / eInvoice (unchanged business logic)
-        mode = _mode(instance)
-        if mode == 'eway':
-            ct = ContentType.objects.get_for_model(instance)
-            einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=instance.id).first()
-            if not einv or not einv.irn:
-                return {"error": "IRN not found for this order. Cannot generate E-Way Bill."}
-            ewb = EwbDtls.objects.filter(invoice=instance.id).first()
-            if not ewb:
-                return {"error": "E-Way Bill details not found for this order."}
-            payload = {
-                "Irn": einv.irn,
-                "Distance": int(ewb.Distance),
-                "TransMode": ewb.TransMode,
-                "TransId": ewb.TransId,
-                "TransName": ewb.TransName,
-                "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y"),
-                "TransDocNo": ewb.TransDocNo,
-                "VehNo": ewb.VehNo,
-                "VehType": ewb.VehType
-            }
-            print(gst_ewaybill(instance, json.dumps(payload, indent=4, default=str)))
-        if mode != "none":
-            ct = ContentType.objects.get_for_model(instance)
-            existing_irn = EInvoiceDetails.objects.filter(content_type=ct, object_id=instance.id).first()
-            if not (existing_irn and existing_irn.irn):
-                json_data = SalesOrderFullSerializer(instance).data
-                gst_response = gstinvoice(instance, json.dumps(json_data, indent=4, default=str))
-                if gst_response.get("status_cd") == "1":
-                    data = gst_response["data"]
-                    ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-                    ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                    ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-                    EInvoiceDetails.objects.update_or_create(
-                        content_type=ct, object_id=instance.id,
-                        defaults={
-                            "irn": data["Irn"],
-                            "ack_no": data["AckNo"],
-                            "ack_date": ack_dt,
-                            "signed_invoice": data["SignedInvoice"],
-                            "signed_qr_code": data["SignedQRCode"],
-                            "status": data.get("Status", "ACT"),
-                            "ewb_no": data.get("EwbNo"),
-                            "ewb_date": ewb_dt,
-                            "ewb_valid_till": ewb_valid_till,
-                            "remarks": data.get("Remarks"),
-                        }
-                    )
+        
+
+        print(mode)
+
+        # Run GST calls AFTER commit
+        transaction.on_commit(lambda: self._post_process_gst(instance.id, mode=mode, is_create=False))
+
         return instance
 
 

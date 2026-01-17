@@ -374,7 +374,63 @@ admin.site.register(SalesInvoiceSettings)
 admin.site.register(doctype)
 admin.site.register(ReceiptVoucher)
 admin.site.register(ReceiptVoucherInvoiceAllocation)
-admin.site.register(EInvoiceDetails)
+@admin.register(EInvoiceDetails)
+class EInvoiceDetailsAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "document_type",
+        "document_id",
+        "bill_no",
+        "invoice_number",
+        "irn",
+        "ack_no",
+        "ack_date",
+        "status",
+        "ewb_no",
+        "ewb_date",
+        "ewb_valid_till",
+        "created_at",
+        "updated_at",
+    )
+
+    list_select_related = ("content_type",)
+    search_fields = (
+        "irn",
+        "ack_no",
+        "ewb_no",
+        "object_id",
+        "content_type__model",
+    )
+    list_filter = ("status", "content_type")
+
+    readonly_fields = (
+        "content_type",
+        "object_id",
+        "document",
+        "created_at",
+        "updated_at",
+    )
+
+    def document_type(self, obj):
+        return obj.content_type.model  # e.g. 'salesoderheader'
+    document_type.short_description = "Doc Type"
+
+    def document_id(self, obj):
+        return obj.object_id
+    document_id.short_description = "Doc ID"
+
+    def bill_no(self, obj):
+        doc = obj.document
+        # Only show if underlying document has billno field
+        return getattr(doc, "billno", None) if doc else None
+    bill_no.short_description = "Bill No"
+    bill_no.admin_order_field = "object_id"  # best-effort ordering
+
+    def invoice_number(self, obj):
+        doc = obj.document
+        return getattr(doc, "invoicenumber", None) if doc else None
+    invoice_number.short_description = "Invoice No"
+    invoice_number.admin_order_field = "object_id"
 admin.site.register(PayDtls)
 admin.site.register(RefDtls)
 admin.site.register(AddlDocDtls)
