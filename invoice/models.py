@@ -335,11 +335,12 @@ class SalesOderHeader(TrackingModel):  # keep your base class if TrackingModel; 
     subentity   = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, verbose_name='subentity')
     entity      = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, verbose_name='entity')
     entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, verbose_name='entity Financial year')
-
+    invoiceMode       = models.IntegerField(null=True)
     eway             = models.BooleanField(default=False)
     einvoice         = models.BooleanField(default=False)
     einvoicepluseway = models.BooleanField(default=False)
     isammended       = models.BooleanField(default=False)
+    
     isadditionaldetail = models.BooleanField("Is Additional details", default=False)
 
     originalinvoice = models.ForeignKey("self", null=True, on_delete=models.CASCADE, verbose_name='Orinial invoice')
@@ -462,24 +463,61 @@ class EInvoiceDetails(models.Model):
     object_id = models.PositiveIntegerField()
     document = GenericForeignKey('content_type', 'object_id')
 
+    # Core e-invoice fields
     irn = models.CharField(max_length=100, unique=True)
-    ack_no = models.BigIntegerField()
+    ack_no = models.BigIntegerField()  # consider null=True if you may store partial records
     ack_date = models.DateTimeField()
     signed_invoice = models.TextField()
     signed_qr_code = models.TextField()
-    status = models.CharField(max_length=20, default='ACT')
 
+    STATUS_ACT = "ACT"
+    STATUS_CAN = "CAN"
+    STATUS_ERR = "ERR"  # optional if you store failed attempts
+    STATUS_CHOICES = (
+        (STATUS_ACT, "Active"),
+        (STATUS_CAN, "Cancelled"),
+        (STATUS_ERR, "Error"),
+    )
+    status = models.CharField(max_length=20, default=STATUS_ACT, choices=STATUS_CHOICES)
+
+    # E-Way Bill fields
     ewb_no = models.BigIntegerField(null=True, blank=True)
     ewb_date = models.DateTimeField(null=True, blank=True)
     ewb_valid_till = models.DateTimeField(null=True, blank=True)
+
+    # Audit / remarks
     remarks = models.TextField(null=True, blank=True)
-    cancelleddate =  models.DateTimeField(null=True, blank=True)
+    cancelleddate = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         unique_together = ('content_type', 'object_id')  # Prevent duplicates per document
+        indexes = [
+            models.Index(fields=["content_type", "object_id"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["ack_date"]),
+            models.Index(fields=["ewb_no"]),
+        ]
+
+    def clean(self):
+        # Ensure the referenced document exists
+        if self.content_type_id and self.object_id:
+            model_class = self.content_type.model_class()
+            if model_class and not model_class._default_manager.filter(pk=self.object_id).exists():
+                raise ValidationError({"object_id": "Invalid object_id for selected content_type."})
+
+        # If cancelled, cancelleddate should be present (rule is optional, but recommended)
+        if self.status == self.STATUS_CAN and not self.cancelleddate:
+            raise ValidationError({"cancelleddate": "cancelleddate is required when status is CAN."})
+
+        # If EWB no is present, EWB date should ideally be present
+        if self.ewb_no and not self.ewb_date:
+            raise ValidationError({"ewb_date": "ewb_date is recommended when ewb_no is present."})
+
+    def __str__(self):
+        return f"EInvoiceDetails(irn={self.irn}, status={self.status})"
       
     
 class SalesOder(TrackingModel):
