@@ -2942,6 +2942,30 @@ def _mode(order) -> str:
         return "eway"
     return "none"
 
+
+def _mode_from_invoice_mode(obj_or_dict):
+    """
+    Returns: 'none' | 'einvoice' | 'eway' | 'both'
+    Accepts either model instance or validated_data dict.
+    """
+    if isinstance(obj_or_dict, dict):
+        im = obj_or_dict.get("invoiceMode", 0)
+    else:
+        im = getattr(obj_or_dict, "invoiceMode", 0)
+
+    try:
+        im = int(im or 0)
+    except (TypeError, ValueError):
+        im = 0
+
+    return {
+        0: "none",
+        1: "eway",
+        2: "einvoice",
+        3: "both",
+    }.get(im, "none")
+
+
 def _qr_base64_from_signed_qr(signed_qr_code: str):
     if not signed_qr_code:
         return None
@@ -4096,35 +4120,32 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
         # Decide tax regime
         self._decide_and_enforce_isigst(validated_data, details_data, is_create=True)
 
+        # ✅ decide mode ONCE from request intent (invoiceMode)
+        mode = _mode_from_invoice_mode(validated_data)
+
         # Create order first
         order = self._number_and_create_header(validated_data)
 
-        # ✅ Decide mode ONCE based on request flags
-        mode = _mode(order)
+        # ❌ No need to reset einvoice/eway flags if you are not using them anymore
+        # If these fields exist and you want them always false as "system truth":
+        # SalesOderHeader.objects.filter(id=order.id).update(einvoice=False, eway=False)
 
-        # ✅ IMPORTANT: reset flags immediately
-        # Client intent should not persist as system truth
-        SalesOderHeader.objects.filter(id=order.id).update(
-            einvoice=False,
-            eway=False
-        )
-
-        # Continue normal flow
         self._upsert_adddetails(order, adddetails_data, is_update=False)
         self._upsert_details(order, details_data, is_update=False)
         self._recalc_totals(order)
         self._post_once_via_shim(order, entrytype='I')
 
-        print("GST MODE:", mode)
+        print(mode)
 
-        # ✅ Run GST AFTER commit (single source of truth)
-        transaction.on_commit(
-            lambda: self._post_process_gst(
-                order.id,
-                mode=mode,
-                is_create=True
+        # ✅ run GST AFTER commit only if requested
+        if mode != "none":
+            transaction.on_commit(
+                lambda: self._post_process_gst(
+                    order.id,
+                    mode=mode,
+                    is_create=True
+                )
             )
-        )
 
         return order
 
@@ -4142,28 +4163,32 @@ class SalesOderHeaderSerializer(serializers.ModelSerializer):
             if f in validated_data:
                 setattr(instance, f, validated_data[f])
                 touched.append(f)
-        instance.save(update_fields=list(set(touched) | {'cgst','sgst','igst'}))
 
-        mode = _mode(instance)
+        instance.save(update_fields=list(set(touched) | {'cgst', 'sgst', 'igst'}))
 
-        SalesOderHeader.objects.filter(id=instance.id).update(
-            einvoice=False,
-            eway=False
-        )
+        # ✅ invoiceMode can come in request OR remain from existing instance
+        mode = _mode_from_invoice_mode(validated_data) if "invoiceMode" in validated_data else _mode_from_invoice_mode(instance)
+
+        # ❌ no need to reset einvoice/eway flags if obsolete
 
         self._upsert_adddetails(instance, adddetails_data, is_update=True)
         self._upsert_details(instance, details_data, is_update=True)
         self._recalc_totals(instance)
         self._post_once_via_shim(instance, entrytype='U')
 
-        
-
         print(mode)
 
-        # Run GST calls AFTER commit
-        transaction.on_commit(lambda: self._post_process_gst(instance.id, mode=mode, is_create=False))
+        if mode != "none":
+            transaction.on_commit(
+                lambda: self._post_process_gst(
+                    instance.id,
+                    mode=mode,
+                    is_create=False
+                )
+            )
 
         return instance
+
 
 
 
