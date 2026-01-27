@@ -1,5 +1,6 @@
 from django.urls import path
 from financial import views
+from .views_meta import AccountChoicesAPIView
 
 
 app_name = 'financial'
@@ -41,7 +42,9 @@ urlpatterns  = [
     path('staticaccount-mapping/<int:pk>/', views.StaticAccountMappingRetrieveUpdateDestroyView.as_view(), name='staticaccount-mapping-detail'),
     path('staticaccountslist/', views.StaticAccountFlatListView.as_view(), name='staticaccounts-flat-list'),
     path('top-account-head/', views.TopAccountHeadAPIView.as_view(), name='top-account-head'),
-    path('accountheads/entity/<int:entity_id>/', views.AccountHeadListByEntityAPIView.as_view(), name='accounthead-list-by-entity'),    
+    path('accountheads/entity/<int:entity_id>/', views.AccountHeadListByEntityAPIView.as_view(), name='accounthead-list-by-entity'),   
+    path("meta/account-choices/", AccountChoicesAPIView.as_view(), name="meta-account-choices"),
+ 
 
     
 
