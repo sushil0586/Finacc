@@ -1,4 +1,14 @@
-# catalog/serializers.py
+# catalog/serializers.py  (UPDATED AS PER NEW MODELS)
+# Changes made:
+# - UnitOfMeasureSerializer: added `uqc`
+# - ProductSerializer: added `default_is_rcm`, `is_itc_eligible`
+# - ProductGstRateSerializer: added `cess_specific_amount`
+# - ProductGstRateSerializer: gst_rate read-only (computed in model.save) to avoid mismatch bugs
+# - ProductGstRateSerializer: added validations aligned with model (cess_type rules, zero-tax types)
+# - ProductBarcodeSerializer: no change needed except it must respect "one primary" constraint;
+#   we enforce in serializer create/update as a friendly behavior (optional but recommended)
+# - ProductBarcodeManageSerializer: unchanged fields, but kept primary enforcement
+# Note: Your model constraints will enforce correctness even if serializer misses.
 
 from rest_framework import serializers
 from django.db import transaction
@@ -19,8 +29,10 @@ from .models import (
     PriceList,
     ProductPrice,
     ProductPlanning,
+    GstType,
+    CessType,
+    ProductStatus,
 )
-
 
 # ----------------------------------------------------------------------
 # Simple master serializers (for dropdowns / lookups)
@@ -39,18 +51,13 @@ class ProductCategorySerializer(serializers.ModelSerializer):
         )
 
 
-# catalog/serializers.py
-
 class ProductCategorySerializercreate(serializers.ModelSerializer):
-    # write: accept parent id
     maincategory_id = serializers.PrimaryKeyRelatedField(
         source="maincategory",
         queryset=ProductCategory.objects.all(),
         required=False,
         allow_null=True
     )
-
-    # read: return parent name (always show key, null if no parent)
     maincategory_name = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -76,16 +83,13 @@ class ProductCategorySerializercreate(serializers.ModelSerializer):
         entity = self.context.get("entity")
         parent = attrs.get("maincategory")
 
-        # Parent must be same entity
         if parent and entity and parent.entity_id != entity.id:
             raise serializers.ValidationError({
                 "maincategory_id": "Parent category must belong to the same entity."
             })
 
-        # auto-level
         attrs["level"] = (parent.level or 1) + 1 if parent else 1
         return attrs
-
 
 
 class BrandSerializer(serializers.ModelSerializer):
@@ -108,6 +112,7 @@ class UnitOfMeasureSerializer(serializers.ModelSerializer):
             "entity",
             "code",
             "description",
+            "uqc",        # ✅ NEW
             "isactive",
         )
 
@@ -150,28 +155,94 @@ class PriceListSerializer(serializers.ModelSerializer):
 # ----------------------------------------------------------------------
 
 class ProductGstRateSerializer(serializers.ModelSerializer):
+    """
+    Aligns with new model:
+    - includes cess_specific_amount
+    - gst_rate is safer as read-only because model.save() derives it
+    - adds validations mirroring model clean() (gives nicer API errors)
+    """
     id = serializers.IntegerField(required=False)
 
     class Meta:
         model = ProductGstRate
         fields = (
             "id",
-            "product",      # parent sets
+            "product",      # parent sets (read-only)
             "hsn",
             "gst_type",
             "sgst",
             "cgst",
             "igst",
-            "gst_rate",
+            "gst_rate",                 # derived by model
             "cess",
             "cess_type",
+            "cess_specific_amount",     # ✅ NEW
             "valid_from",
             "valid_to",
             "isdefault",
             "createdon",
             "modifiedon",
         )
-        read_only_fields = ("product", "createdon", "modifiedon")
+        read_only_fields = ("product", "gst_rate", "createdon", "modifiedon")
+
+    def validate(self, attrs):
+        # validate dates
+        vf = attrs.get("valid_from")
+        vt = attrs.get("valid_to")
+        if vf and vt and vt < vf:
+            raise serializers.ValidationError({"valid_to": "valid_to cannot be before valid_from."})
+
+        gst_type = attrs.get("gst_type", None)
+        cess_type = attrs.get("cess_type", None)
+
+        sgst = attrs.get("sgst", None) or 0
+        cgst = attrs.get("cgst", None) or 0
+        igst = attrs.get("igst", None) or 0
+        cess = attrs.get("cess", None) or 0
+        cess_specific = attrs.get("cess_specific_amount", None)
+
+        # zero tax for exempt/nil/non-gst
+        if gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
+            if any([
+                float(sgst) != 0,
+                float(cgst) != 0,
+                float(igst) != 0,
+                float(cess) != 0,
+                (cess_specific not in (None, 0, 0.0)),
+            ]):
+                raise serializers.ValidationError({
+                    "gst_type": "For exempt/nil/non-gst items, all GST/CESS values must be zero/blank."
+                })
+
+        # cess_type rules
+        if cess_type == CessType.NONE:
+            if float(cess) != 0 or (cess_specific not in (None, 0, 0.0)):
+                raise serializers.ValidationError({
+                    "cess_type": "cess_type=NONE requires cess and cess_specific_amount to be 0/blank."
+                })
+        elif cess_type == CessType.AD_VALOREM:
+            if float(cess) <= 0:
+                raise serializers.ValidationError({"cess": "For ad valorem cess, cess (%) must be > 0."})
+            if cess_specific not in (None, 0, 0.0):
+                raise serializers.ValidationError({"cess_specific_amount": "For ad valorem cess, cess_specific_amount must be blank/0."})
+        elif cess_type == CessType.SPECIFIC:
+            if cess_specific in (None, 0, 0.0):
+                raise serializers.ValidationError({"cess_specific_amount": "For specific cess, cess_specific_amount per unit must be > 0."})
+            if float(cess) != 0:
+                raise serializers.ValidationError({"cess": "For specific cess, cess (%) must be 0."})
+        elif cess_type == CessType.COMPOSITE:
+            if float(cess) <= 0:
+                raise serializers.ValidationError({"cess": "For composite cess, cess (%) must be > 0."})
+            if cess_specific in (None, 0, 0.0):
+                raise serializers.ValidationError({"cess_specific_amount": "For composite cess, cess_specific_amount per unit must be > 0."})
+
+        # prevent IGST + CGST/SGST combo (friendly check)
+        if float(igst) > 0 and (float(sgst) + float(cgst)) > 0:
+            raise serializers.ValidationError({
+                "igst": "When IGST is used, SGST/CGST should typically be 0."
+            })
+
+        return attrs
 
 
 class ProductBarcodeSerializer(serializers.ModelSerializer):
@@ -187,11 +258,8 @@ class ProductBarcodeSerializer(serializers.ModelSerializer):
             "uom",
             "isprimary",
             "pack_size",
-
-            # ✅ NEW
             "mrp",
             "selling_price",
-
             "barcode_image_url",
             "createdon",
             "modifiedon",
@@ -211,21 +279,15 @@ class ProductBarcodeSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, attrs):
-        # default pack_size if not provided
         pack_size = attrs.get("pack_size", None)
         if pack_size in (None, 0, "0", ""):
             attrs["pack_size"] = 1
 
         mrp = attrs.get("mrp", None)
         sp = attrs.get("selling_price", None)
-
-        # optional: SP <= MRP
         if mrp is not None and sp is not None and sp > mrp:
             raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
-
         return attrs
-
-
 
 
 class ProductUomConversionSerializer(serializers.ModelSerializer):
@@ -252,7 +314,7 @@ class OpeningStockByLocationSerializer(serializers.ModelSerializer):
         model = OpeningStockByLocation
         fields = (
             "id",
-            "entity",     # will be derived from product in model.save
+            "entity",     # derived from product in model.save
             "product",    # parent sets
             "location",
             "openingqty",
@@ -309,8 +371,6 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
         read_only_fields = ("product", "createdon", "modifiedon")
 
 
-# Attribute & Image nested serializers
-
 class ProductAttributeValueSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
@@ -352,28 +412,14 @@ class ProductImageNestedSerializer(serializers.ModelSerializer):
 # ----------------------------------------------------------------------
 
 class ProductSerializer(serializers.ModelSerializer):
-    """
-    Nested serializer for Product with:
-      - gst_rates
-      - barcodes
-      - uom_conversions
-      - opening_stocks
-      - prices
-      - planning (1:1 via unique constraint)
-      - attributes
-      - images
-    """
-
     gst_rates = ProductGstRateSerializer(many=True, required=False)
 
-    # Name != related_name → we use source
     barcodes = ProductBarcodeSerializer(
         many=True,
         required=False,
         source="barcode_details",
     )
 
-    # related_name == field name → no source
     uom_conversions = ProductUomConversionSerializer(
         many=True,
         required=False,
@@ -388,7 +434,6 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = (
-            # product core
             "id",
             "entity",
             "productname",
@@ -399,10 +444,15 @@ class ProductSerializer(serializers.ModelSerializer):
             "base_uom",
             "sales_account",
             "purchase_account",
+
             "is_service",
             "is_batch_managed",
             "is_serialized",
             "is_ecomm_9_5_service",
+
+            "default_is_rcm",     # ✅ NEW
+            "is_itc_eligible",    # ✅ NEW
+
             "product_status",
             "launch_date",
             "discontinue_date",
@@ -410,7 +460,6 @@ class ProductSerializer(serializers.ModelSerializer):
             "createdon",
             "modifiedon",
 
-            # nested
             "gst_rates",
             "barcodes",
             "uom_conversions",
@@ -425,47 +474,44 @@ class ProductSerializer(serializers.ModelSerializer):
     # -------------------- generic helper --------------------
 
     def _upsert_child_list(self, *, parent_instance, child_model,
-                           child_data_list, fk_name, existing_qs):
+                          child_data_list, fk_name, existing_qs,
+                          strip_fields=None):
         """
         Generic helper for 1:M nested lists:
         - update existing by id (id > 0)
         - create new when id is missing or <= 0
         - delete missing ones
         """
+        strip_fields = set(strip_fields or [])
         sent_ids = []
 
         for item_data in child_data_list:
             raw_id = item_data.get("id", None)
-            # id <= 0 or None should be treated as "no id"
             item_id = raw_id if raw_id not in (None, 0, "0") else None
 
-            # do not allow client to override product/entity directly
+            # do not allow client to override parent fk/entity
             item_data.pop("product", None)
             item_data.pop("entity", None)
 
-            item_data.pop("barcode", None)
-            item_data.pop("barcode_image", None)
+            for f in strip_fields:
+                item_data.pop(f, None)
 
             if item_id:
-                # UPDATE EXISTING
                 try:
                     child_obj = existing_qs.get(id=item_id)
                 except child_model.DoesNotExist:
-                    # treat as new if id not found
                     item_data.pop("id", None)
                     child_obj = child_model.objects.create(
                         **item_data,
                         **{fk_name: parent_instance},
                     )
                 else:
-                    # normal update
                     for attr, value in item_data.items():
                         if attr != "id":
                             setattr(child_obj, attr, value)
                     child_obj.save()
                 sent_ids.append(child_obj.id)
             else:
-                # NEW ROW: make sure we don't pass id=0
                 item_data.pop("id", None)
                 child_obj = child_model.objects.create(
                     **item_data,
@@ -473,7 +519,6 @@ class ProductSerializer(serializers.ModelSerializer):
                 )
                 sent_ids.append(child_obj.id)
 
-        # delete records not sent in payload
         if sent_ids:
             existing_qs.exclude(id__in=sent_ids).delete()
         else:
@@ -483,7 +528,6 @@ class ProductSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
-        # keys: for "barcodes" we use source="barcode_details"
         gst_rates_data = validated_data.pop("gst_rates", [])
         barcodes_data = validated_data.pop("barcode_details", [])
         uom_conversions_data = validated_data.pop("uom_conversions", [])
@@ -493,7 +537,7 @@ class ProductSerializer(serializers.ModelSerializer):
         attributes_data = validated_data.pop("attributes", [])
         images_data = validated_data.pop("images", [])
 
-        # ---- strip id from all nested data (id=0 / any id) ----
+        # strip ids on create
         for lst in (
             gst_rates_data,
             barcodes_data,
@@ -506,24 +550,21 @@ class ProductSerializer(serializers.ModelSerializer):
             for item in lst:
                 item.pop("id", None)
 
-        # Create product
         product = Product.objects.create(**validated_data)
 
-        # GST Rates
         for gr in gst_rates_data:
+            # gst_rate is computed by model, ignore any client-provided value
+            gr.pop("gst_rate", None)
             ProductGstRate.objects.create(product=product, **gr)
 
-        # Barcodes
         for bd in barcodes_data:
             bd.pop("barcode", None)
             bd.pop("barcode_image", None)
             ProductBarcode.objects.create(product=product, **bd)
 
-        # UOM conversions
         for uc in uom_conversions_data:
             ProductUomConversion.objects.create(product=product, **uc)
 
-        # Opening stocks (entity can be set by model save, but we set explicitly)
         for os in opening_stocks_data:
             OpeningStockByLocation.objects.create(
                 product=product,
@@ -531,21 +572,16 @@ class ProductSerializer(serializers.ModelSerializer):
                 **os,
             )
 
-        # Prices
         for pr in prices_data:
             ProductPrice.objects.create(product=product, **pr)
 
-        # Planning (1:1)
         if planning_data:
-            # if planning_data has an id=0/malformed, strip it
             planning_data.pop("id", None)
             ProductPlanning.objects.create(product=product, **planning_data)
 
-        # Attributes
         for av in attributes_data:
             ProductAttributeValue.objects.create(product=product, **av)
 
-        # Images
         for img in images_data:
             ProductImage.objects.create(product=product, **img)
 
@@ -562,13 +598,14 @@ class ProductSerializer(serializers.ModelSerializer):
         attributes_data = validated_data.pop("attributes", None)
         images_data = validated_data.pop("images", None)
 
-        # update core product fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # nested lists (only if key present in payload)
         if gst_rates_data is not None:
+            # ignore gst_rate if sent
+            for item in gst_rates_data:
+                item.pop("gst_rate", None)
             self._upsert_child_list(
                 parent_instance=instance,
                 child_model=ProductGstRate,
@@ -584,6 +621,7 @@ class ProductSerializer(serializers.ModelSerializer):
                 child_data_list=barcodes_data,
                 fk_name="product",
                 existing_qs=instance.barcode_details.all(),
+                strip_fields=["barcode", "barcode_image", "barcode_image_url"],
             )
 
         if uom_conversions_data is not None:
@@ -596,7 +634,6 @@ class ProductSerializer(serializers.ModelSerializer):
             )
 
         if opening_stocks_data is not None:
-            # strip entity from client; model will derive from product if needed
             for os in opening_stocks_data:
                 os.pop("entity", None)
 
@@ -617,16 +654,10 @@ class ProductSerializer(serializers.ModelSerializer):
                 existing_qs=instance.prices.all(),
             )
 
-        # planning 1:1 via unique constraint on product
         if planning_data is not None:
-            # id=0 should be treated as new
             planning_data.pop("id", None)
 
-            existing_planning_obj = (
-                instance.planning.first()
-                if hasattr(instance, "planning")
-                else None
-            )
+            existing_planning_obj = instance.planning.first() if hasattr(instance, "planning") else None
             if existing_planning_obj:
                 for attr, value in planning_data.items():
                     if attr != "id":
@@ -655,7 +686,10 @@ class ProductSerializer(serializers.ModelSerializer):
 
         return instance
 
-    
+
+# ----------------------------------------------------------------------
+# Choice serializers (unchanged)
+# ----------------------------------------------------------------------
 
 class GstTypeChoiceSerializer(serializers.Serializer):
     value = serializers.CharField()
@@ -672,6 +706,9 @@ class ProductStatusChoiceSerializer(serializers.Serializer):
     label = serializers.CharField()
 
 
+# ----------------------------------------------------------------------
+# Barcode manage serializer (updated only if you want strict primary handling)
+# ----------------------------------------------------------------------
 
 class ProductBarcodeManageSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source="product.id", read_only=True)
@@ -698,7 +735,6 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
             "pack_size",
             "isprimary",
 
-            # ✅ NEW
             "mrp",
             "selling_price",
 
@@ -728,7 +764,6 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
     def validate(self, attrs):
-        # default pack_size if not provided
         pack_size = attrs.get("pack_size", None)
         if pack_size in (None, 0, "0", ""):
             attrs["pack_size"] = 1
@@ -747,6 +782,7 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
 
         obj = super().create(validated_data)
 
+        # friendly behavior: ensure only one primary barcode
         if obj.isprimary:
             ProductBarcode.objects.filter(product=product).exclude(pk=obj.pk).update(isprimary=False)
 
@@ -760,4 +796,3 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
             ProductBarcode.objects.filter(product=obj.product).exclude(pk=obj.pk).update(isprimary=False)
 
         return obj
-

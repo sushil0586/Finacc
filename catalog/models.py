@@ -1,22 +1,25 @@
-# catalog/models.py
+# catalog/models.py  (FINAL - cleaner + GST-complete improvements)
+# Notes:
+# - No existing field/column names removed/renamed.
+# - Only ADDITIONS + validations/constraints to make GST handling robust.
 
-from django.db import models
-from django.utils import timezone
-from django.utils.translation import gettext_lazy as _
-from django.core.validators import MinValueValidator
-from django.core.exceptions import ValidationError
 from decimal import Decimal
-
-from entity.models import Entity, subentity, entityfinancialyear
-from financial.models import account
-from entity.models import Entity
-
 from io import BytesIO
+
+from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
+from django.core.validators import MinValueValidator
+from django.db import models
+from django.db.models import Q
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 
-from PIL import Image, ImageDraw, ImageFont  # ⬅️ NEW
+from PIL import Image, ImageDraw, ImageFont
+
+from entity.models import Entity, subentity
+from financial.models import account
 
 try:
     from barcode import Code128
@@ -24,7 +27,6 @@ try:
 except ImportError:
     Code128 = None
     ImageWriter = None
-
 
 
 # ----------------------------------------------------------------------
@@ -43,7 +45,6 @@ class EntityScopedModel(TimeStampedModel):
     entity = models.ForeignKey(
         Entity,
         on_delete=models.PROTECT,
-        # Unique reverse name per class in catalog app
         related_name='catalog_%(class)s_set',
     )
     isactive = models.BooleanField(default=True)
@@ -98,21 +99,39 @@ class Brand(EntityScopedModel):
 
 
 class UnitOfMeasure(EntityScopedModel):
+    """
+    UQC is important for Indian e-invoice / e-waybill (NIC UQC codes like KGS, NOS, MTR, etc.)
+    Keep your current code field, and add UQC separately.
+    """
     code = models.CharField(max_length=20)
     description = models.CharField(max_length=100, blank=True)
+
+    # ✅ NEW: NIC UQC code (optional but strongly recommended)
+    uqc = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        help_text="NIC UQC code for e-invoice/e-waybill (e.g., KGS, NOS, MTR).",
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=['entity', 'code'],
                 name='uq_uom_entity_code'
-            )
+            ),
+            # ✅ NEW: prevent duplicate UQC within entity (only if provided)
+            models.UniqueConstraint(
+                fields=['entity', 'uqc'],
+                condition=Q(uqc__isnull=False) & ~Q(uqc=""),
+                name='uq_uom_entity_uqc'
+            ),
         ]
         ordering = ['code']
 
     def __str__(self):
         return self.code
-    
+
 
 class ProductStatus(models.TextChoices):
     ACTIVE = 'active', _('Active')
@@ -122,11 +141,10 @@ class ProductStatus(models.TextChoices):
 
 
 class Product(EntityScopedModel):
-   
-
     productname = models.CharField(max_length=200)
     sku = models.CharField(max_length=100)
     productdesc = models.CharField(max_length=500, blank=True)
+
     productcategory = models.ForeignKey(
         ProductCategory,
         on_delete=models.PROTECT,
@@ -169,10 +187,23 @@ class Product(EntityScopedModel):
         help_text="If true, quantity is treated as pieces (integer). Otherwise, allows decimals."
     )
 
+    # GST / compliance flags
     is_service = models.BooleanField(default=False)
     is_batch_managed = models.BooleanField(default=False)
     is_serialized = models.BooleanField(default=False)
-    is_ecomm_9_5_service = models.BooleanField(default=False)  # for section 9(5) cases
+
+    # for section 9(5) cases
+    is_ecomm_9_5_service = models.BooleanField(default=False)
+
+    # ✅ NEW: optional compliance helpers
+    default_is_rcm = models.BooleanField(
+        default=False,
+        help_text="Default reverse charge applicability for this product/service (optional helper)."
+    )
+    is_itc_eligible = models.BooleanField(
+        default=True,
+        help_text="Whether ITC is generally eligible for this product/service (optional helper)."
+    )
 
     product_status = models.CharField(
         max_length=20,
@@ -192,6 +223,12 @@ class Product(EntityScopedModel):
 
     def __str__(self):
         return f"{self.productname} ({self.sku})"
+
+    def clean(self):
+        # If marked service, you might want to ensure base_uom has UQC set (optional)
+        # Not enforcing hard because many systems keep UQC optional initially.
+        if self.launch_date and self.discontinue_date and self.discontinue_date < self.launch_date:
+            raise ValidationError({"discontinue_date": "Discontinue date cannot be before launch date."})
 
 
 # ----------------------------------------------------------------------
@@ -243,6 +280,12 @@ class CessType(models.TextChoices):
 class ProductGstRate(TimeStampedModel):
     """
     GST rate for a product, with validity period and type.
+    Includes robust validations:
+    - one default per product
+    - no overlapping validity periods for the same product
+    - gst_rate consistency with component rates
+    - gst_type zero-tax enforcement for exempt/nil/non-gst
+    - cess_type enforcement (+ specific cess amount support)
     """
 
     product = models.ForeignKey(
@@ -256,19 +299,16 @@ class ProductGstRate(TimeStampedModel):
         related_name='product_gst_rates'
     )
 
-    # GST type (regular, exempt, nil, non-gst, composition)
     gst_type = models.CharField(
         max_length=20,
         choices=GstType.choices,
         default=GstType.REGULAR
     )
 
-    # component rates
     sgst = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     cgst = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     igst = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
-    # combined GST rate (CGST+SGST or IGST)
     gst_rate = models.DecimalField(
         max_digits=6,
         decimal_places=2,
@@ -276,13 +316,24 @@ class ProductGstRate(TimeStampedModel):
         help_text="Total GST rate (CGST+SGST or IGST)"
     )
 
-    # CESS
+    # CESS (%)
     cess = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+
     cess_type = models.CharField(
         max_length=20,
         choices=CessType.choices,
         default=CessType.NONE,
         help_text="Type of CESS (if any)",
+    )
+
+    # ✅ NEW: specific cess amount per unit (needed for SPECIFIC/COMPOSITE)
+    cess_specific_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Specific CESS amount per unit (used when cess_type is specific or composite)."
     )
 
     valid_from = models.DateField(null=True, blank=True)
@@ -295,12 +346,143 @@ class ProductGstRate(TimeStampedModel):
             models.UniqueConstraint(
                 fields=['product', 'hsn', 'valid_from'],
                 name='uq_product_hsn_validfrom'
-            )
+            ),
+            # ✅ NEW: only one default per product
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=Q(isdefault=True),
+                name='uq_product_one_default_gst_rate'
+            ),
         ]
         ordering = ['product', 'valid_from']
 
     def __str__(self):
         return f"{self.product} GST {self.gst_rate}% ({self.gst_type})"
+
+    # --------------------
+    # Helpers
+    # --------------------
+    @staticmethod
+    def _d(v) -> Decimal:
+        try:
+            return Decimal(v or 0)
+        except Exception:
+            return Decimal("0")
+
+    def clean(self):
+        errors = {}
+
+        # date sanity
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            errors["valid_to"] = "valid_to cannot be before valid_from."
+
+        # enforce no overlapping validity periods for the same product
+        # Logic:
+        #  - If no valid_from provided, treat as open (not recommended)
+        #  - If valid_to is null => open-ended
+        # Overlap condition between [A_from, A_to] and [B_from, B_to]
+        # overlaps if A_from <= B_to (or B_to is null) AND (A_to is null or A_to >= B_from)
+        if self.product_id:
+            qs = ProductGstRate.objects.filter(product_id=self.product_id)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+
+            A_from = self.valid_from
+            A_to = self.valid_to
+
+            # Only run overlap check when valid_from is provided (best practice)
+            if A_from:
+                overlap_q = Q(valid_from__lte=A_to) if A_to else Q()  # if A_to is None, don't bound by it
+                # Equivalent robust overlap:
+                # B_from <= A_to (or A_to is null)  AND  (B_to is null OR B_to >= A_from)
+                cond1 = Q(valid_from__lte=A_to) if A_to else Q()  # if A_to open, cond1 always true
+                cond2 = Q(valid_to__isnull=True) | Q(valid_to__gte=A_from)
+                overlap = qs.filter(cond2).filter(cond1 if A_to else Q())
+                # If A_to is None, we just need cond2 (B_to open or >= A_from)
+                if overlap.exists():
+                    errors["valid_from"] = "Overlapping GST rate period exists for this product. Adjust valid_from/valid_to."
+
+        # gst_type enforcement
+        sgst = self._d(self.sgst)
+        cgst = self._d(self.cgst)
+        igst = self._d(self.igst)
+        gst_rate = self._d(self.gst_rate)
+        cess = self._d(self.cess)
+        cess_specific = self._d(self.cess_specific_amount)
+
+        if self.gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
+            if any(x != 0 for x in (sgst, cgst, igst, gst_rate, cess, cess_specific)):
+                errors["gst_type"] = "For exempt/nil/non-gst items, all GST/CESS rates must be 0."
+
+        # Composition: depends on how you model; typically outward tax not charged.
+        # We won't force 0, but we will still ensure internal consistency.
+        # gst_rate consistency with components:
+        # - If IGST is set (>0), gst_rate should equal igst and sgst/cgst typically 0.
+        # - Else gst_rate should equal sgst+cgst.
+        if self.gst_type not in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
+            if igst > 0:
+                expected = igst.quantize(Decimal("0.01"))
+                if gst_rate.quantize(Decimal("0.01")) != expected:
+                    errors["gst_rate"] = f"gst_rate must match IGST ({expected}) when IGST is used."
+                # optional strictness: avoid having both IGST and CGST/SGST
+                if (sgst + cgst) > 0:
+                    errors["igst"] = "When IGST is used, SGST/CGST should typically be 0."
+            else:
+                expected = (sgst + cgst).quantize(Decimal("0.01"))
+                if gst_rate.quantize(Decimal("0.01")) != expected:
+                    errors["gst_rate"] = f"gst_rate must match SGST+CGST ({expected}) when IGST is 0."
+
+        # cess_type enforcement
+        if self.cess_type == CessType.NONE:
+            if cess != 0 or (self.cess_specific_amount not in (None, Decimal("0"), 0)):
+                errors["cess_type"] = "cess_type=NONE requires cess and cess_specific_amount to be 0/blank."
+        elif self.cess_type == CessType.AD_VALOREM:
+            if cess <= 0:
+                errors["cess"] = "For ad valorem cess, cess (%) must be > 0."
+            if self.cess_specific_amount not in (None, Decimal("0"), 0):
+                errors["cess_specific_amount"] = "For ad valorem cess, cess_specific_amount should be blank/0."
+        elif self.cess_type == CessType.SPECIFIC:
+            if self.cess_specific_amount is None or cess_specific <= 0:
+                errors["cess_specific_amount"] = "For specific cess, cess_specific_amount per unit must be > 0."
+            if cess != 0:
+                errors["cess"] = "For specific cess, cess (%) should be 0."
+        elif self.cess_type == CessType.COMPOSITE:
+            if cess <= 0:
+                errors["cess"] = "For composite cess, cess (%) must be > 0."
+            if self.cess_specific_amount is None or cess_specific <= 0:
+                errors["cess_specific_amount"] = "For composite cess, cess_specific_amount per unit must be > 0."
+
+        # HSN vs product is_service consistency (soft check)
+        if self.product_id and self.hsn_id:
+            if self.product.is_service != self.hsn.is_service:
+                # not always wrong if you allow mapping exceptions, so keep as a warning-level validation.
+                # If you want strictness, uncomment:
+                # errors["hsn"] = "HSN/SAC is_service does not match Product.is_service."
+                pass
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        # Always validate
+        self.full_clean()
+
+        # Optionally normalize gst_rate automatically (safer)
+        if self.gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
+            self.sgst = Decimal("0.00")
+            self.cgst = Decimal("0.00")
+            self.igst = Decimal("0.00")
+            self.gst_rate = Decimal("0.00")
+            self.cess = Decimal("0.00")
+            self.cess_specific_amount = None
+            self.cess_type = CessType.NONE
+        else:
+            if Decimal(self.igst or 0) > 0:
+                self.gst_rate = Decimal(self.igst or 0)
+            else:
+                self.gst_rate = Decimal(self.sgst or 0) + Decimal(self.cgst or 0)
+
+        super().save(*args, **kwargs)
 
 
 # ----------------------------------------------------------------------
@@ -325,7 +507,6 @@ class ProductBarcode(TimeStampedModel):
     isprimary = models.BooleanField(default=False)
     pack_size = models.PositiveIntegerField(null=True, blank=True)
 
-    # ✅ NEW: prices per UOM+pack_size barcode
     mrp = models.DecimalField(
         max_digits=12, decimal_places=2,
         null=True, blank=True,
@@ -337,7 +518,6 @@ class ProductBarcode(TimeStampedModel):
         validators=[MinValueValidator(Decimal("0.00"))]
     )
 
-    # Auto-generated barcode image
     barcode_image = models.ImageField(
         upload_to='barcodes/',
         blank=True,
@@ -351,10 +531,15 @@ class ProductBarcode(TimeStampedModel):
                 fields=['product', 'barcode'],
                 name='uq_product_barcode'
             ),
-            # ✅ NEW: one row per product+uom+pack_size (prevents duplicate 250g entries)
             models.UniqueConstraint(
                 fields=['product', 'uom', 'pack_size'],
                 name='uq_product_uom_packsize'
+            ),
+            # ✅ NEW: only one primary barcode per product
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=Q(isprimary=True),
+                name='uq_product_one_primary_barcode'
             ),
         ]
 
@@ -362,11 +547,9 @@ class ProductBarcode(TimeStampedModel):
         return self.barcode or f"Barcode for {self.product_id}"
 
     def clean(self):
-        # normalize pack_size
         if not self.pack_size:
             self.pack_size = 1
 
-        # optional rule: SP cannot exceed MRP
         if self.mrp is not None and self.selling_price is not None:
             if self.selling_price > self.mrp:
                 raise ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
@@ -377,10 +560,6 @@ class ProductBarcode(TimeStampedModel):
         return f"PRD-{product_id:06d}-{self_id:06d}"
 
     def _generate_barcode_image(self):
-        """
-        Generate barcode image + overlay key product info as text
-        (Product name, SKU, UOM, Pack size, MRP, Selling price) at the bottom.
-        """
         if Code128 is None or ImageWriter is None:
             return
         if not self.barcode:
@@ -401,7 +580,6 @@ class ProductBarcode(TimeStampedModel):
         if len(product_name) > 40:
             product_name = product_name[:37] + "..."
 
-        # ✅ include prices (only if present)
         price_part = ""
         if self.mrp is not None:
             price_part += f" | MRP: {self.mrp:.2f}"
@@ -443,9 +621,7 @@ class ProductBarcode(TimeStampedModel):
         self.barcode_image.save(filename, ContentFile(final_buffer.getvalue()), save=False)
 
     def save(self, *args, **kwargs):
-        # ✅ run validations + default pack_size
         self.full_clean()
-
         super().save(*args, **kwargs)
 
         updated_fields = []
@@ -454,8 +630,6 @@ class ProductBarcode(TimeStampedModel):
             self.barcode = self._generate_barcode_value()
             updated_fields.append('barcode')
 
-        # ✅ regenerate image if missing OR price changed and you want updated sticker
-        # (simple approach: regenerate only if missing)
         if not self.barcode_image and self.barcode:
             self._generate_barcode_image()
             updated_fields.append('barcode_image')
@@ -464,18 +638,10 @@ class ProductBarcode(TimeStampedModel):
             super().save(update_fields=updated_fields)
 
 
-
 @receiver(post_save, sender=Product)
 def create_default_barcode_for_product(sender, instance, created, **kwargs):
-    """
-    When a Product is created:
-    - If it has a base_uom
-    - And no barcode exists yet
-    → create one primary barcode automatically.
-    """
     if not created:
         return
-
     if instance.base_uom and not instance.barcode_details.exists():
         ProductBarcode.objects.create(
             product=instance,
@@ -483,7 +649,6 @@ def create_default_barcode_for_product(sender, instance, created, **kwargs):
             isprimary=True,
             pack_size=1,
         )
-
 
 
 class ProductUomConversion(TimeStampedModel):
@@ -583,6 +748,16 @@ class ProductImage(TimeStampedModel):
     is_primary = models.BooleanField(default=False)
     caption = models.CharField(max_length=255, blank=True)
 
+    class Meta:
+        constraints = [
+            # ✅ NEW: only one primary image per product (optional but clean)
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=Q(is_primary=True),
+                name='uq_product_one_primary_image'
+            )
+        ]
+
     def __str__(self):
         return f"Image for {self.product}"
 
@@ -624,7 +799,6 @@ class OpeningStockByLocation(TimeStampedModel):
         return f"Opening {self.product} @ {self.location} ({self.as_of_date})"
 
     def save(self, *args, **kwargs):
-        # auto-derive entity from product if missing
         if self.product_id and self.entity_id is None:
             self.entity_id = self.product.entity_id
         super().save(*args, **kwargs)
@@ -644,7 +818,13 @@ class PriceList(EntityScopedModel):
             models.UniqueConstraint(
                 fields=['entity', 'name'],
                 name='uq_pricelist_entity_name'
-            )
+            ),
+            # ✅ NEW: only one default pricelist per entity
+            models.UniqueConstraint(
+                fields=['entity'],
+                condition=Q(isdefault=True),
+                name='uq_pricelist_one_default_per_entity'
+            ),
         ]
         ordering = ['name']
 
@@ -669,7 +849,6 @@ class ProductPrice(TimeStampedModel):
         related_name='product_prices'
     )
 
-    # purchase side
     purchase_rate = models.DecimalField(
         max_digits=18,
         decimal_places=2,
@@ -685,7 +864,6 @@ class ProductPrice(TimeStampedModel):
         help_text="Discount % on purchase rate"
     )
 
-    # MRP side
     mrp = models.DecimalField(
         max_digits=18,
         decimal_places=2,
@@ -700,7 +878,6 @@ class ProductPrice(TimeStampedModel):
         help_text="Discount % on MRP"
     )
 
-    # selling price
     selling_price = models.DecimalField(max_digits=18, decimal_places=2)
 
     effective_from = models.DateField()
@@ -717,6 +894,13 @@ class ProductPrice(TimeStampedModel):
 
     def __str__(self):
         return f"{self.product} @ {self.pricelist} ({self.uom})"
+
+    def clean(self):
+        errors = {}
+        if self.effective_to and self.effective_to < self.effective_from:
+            errors["effective_to"] = "effective_to cannot be before effective_from."
+        if errors:
+            raise ValidationError(errors)
 
 
 # ----------------------------------------------------------------------

@@ -1,14 +1,34 @@
-# catalog/views.py
+# catalog/views.py  (OPTIMIZED + UPDATED FOR NEW MODEL DESIGN)
+# Key improvements:
+# 1) Removed duplicate ProductCategory views (kept the "create" serializer variant + entity scoping)
+# 2) Added EntityFromQueryMixin usage consistently
+# 3) Optimized ProductList/Detail querysets (planning is a 1:1 -> use select_related where applicable)
+# 4) Optimized InvoiceProductListAPIView & ProductImportantListAPIView using DB-side selection + fixed HSN lookup bug
+# 5) Updated UOM serialization bootstrap (now includes uqc automatically via serializer)
+# 6) Better error handling for missing/invalid entity_id/product_id
+# 7) Kept barcode PDF generator as-is (already good), only minor safety tweaks
+#
+# NOTE: Because ProductGstRate.gst_rate is derived in model.save(), invoice list should rely on gst_rate if present,
+# but CGST/SGST/IGST remain available.
 
-from rest_framework import generics, permissions
-from rest_framework import status
-from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import ValidationError, NotFound
-from django.http import FileResponse
-from django.db import transaction
-import math
 from io import BytesIO
-from django.db.models import Q
+import math
+
+from django.db import transaction
+from django.db.models import Q, Prefetch, OuterRef, Subquery
+from django.shortcuts import get_object_or_404
+
+from rest_framework import generics, permissions, status
+from rest_framework.exceptions import ValidationError, NotFound
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from django.http import FileResponse
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
+
 from entity.models import Entity
 
 from .models import (
@@ -21,9 +41,13 @@ from .models import (
     GstType,
     CessType,
     ProductStatus,
+    ProductBarcode,
+    ProductGstRate,
+    ProductPrice,
 )
-from catalog.serializers import (
+from .serializers import (
     ProductCategorySerializer,
+    ProductCategorySerializercreate,
     BrandSerializer,
     UnitOfMeasureSerializer,
     ProductSerializer,
@@ -32,343 +56,392 @@ from catalog.serializers import (
     GstTypeChoiceSerializer,
     CessTypeChoiceSerializer,
     ProductStatusChoiceSerializer,
-    ProductCategorySerializercreate
+    ProductBarcodeManageSerializer,
 )
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
 
+# ----------------------------------------------------------------------
+# Mixins
+# ----------------------------------------------------------------------
 
+class EntityFromQueryMixin:
+    """
+    Forces entity scoping using ?entity=<id> query param.
+    Helps prevent cross-entity access by plain id.
+    """
+    def get_entity(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
+        try:
+            return Entity.objects.get(id=int(entity_param))
+        except (ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
 
-from catalog.models import Product, ProductBarcode
-from catalog.serializers import ProductBarcodeManageSerializer
-
-
-
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["entity"] = self.get_entity()
+        return ctx
 
 
 # ----------------------------------------------------------------------
-# Helper mixin for entity filtering (optional)
+# Product master views
 # ----------------------------------------------------------------------
 
-class EntityFilteredQuerysetMixin:
+def product_queryset_optimized():
     """
-    Optional mixin: filter queryset by ?entity=<id> if present.
+    Centralized queryset to avoid duplication and ensure consistent prefetching.
+    planning is 1:1 in design -> prefer select_related if you change model to OneToOne.
+    But your current model is FK with unique constraint, so prefetch is OK.
     """
+    return (
+        Product.objects
+        .select_related(
+            "productcategory",
+            "brand",
+            "base_uom",
+            "entity",
+            "sales_account",
+            "purchase_account",
+        )
+        .prefetch_related(
+            "gst_rates",
+            "barcode_details",
+            "uom_conversions",
+            "opening_stocks",
+            "prices",
+            "planning",
+            "attributes",
+            "images",
+        )
+    )
+
+
+class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    """
+    GET  /api/products/?entity=<id>
+    POST /api/products/?entity=<id>
+    """
+    serializer_class = ProductSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs = super().get_queryset()
-        entity_id = self.request.query_params.get("entity")
-        if entity_id:
-            qs = qs.filter(entity_id=entity_id)
-        return qs
+        entity = self.get_entity()
+        return product_queryset_optimized().filter(entity=entity)
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
 
 
-# ----------------------------------------------------------------------
-# Product master generic views
-# ----------------------------------------------------------------------
-
-class ProductListCreateAPIView(EntityFilteredQuerysetMixin,
-                               generics.ListCreateAPIView):
+class ProductRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     """
-    GET  /api/products/           -> list (with nested if serializer returns)
-    POST /api/products/           -> create Product + nested children
+    GET/PATCH/PUT/DELETE /api/products/<pk>/?entity=<id>
     """
-    queryset = (
-        Product.objects
-        .select_related(
-            "productcategory",
-            "brand",
-            "base_uom",
-            "entity",
-            "sales_account",
-            "purchase_account",
-        )
-        .prefetch_related(
-            "gst_rates",
-            "barcode_details",
-            "uom_conversions",
-            "opening_stocks",
-            "prices",
-            "planning",
-            "attributes",
-            "images",
-        )
-    )
     serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        entity = self.get_entity()
+        return product_queryset_optimized().filter(entity=entity)
 
-class ProductRetrieveUpdateDestroyAPIView(EntityFilteredQuerysetMixin,
-                                          generics.RetrieveUpdateDestroyAPIView):
-    """
-    GET    /api/products/<id>/    -> detail with nested
-    PUT    /api/products/<id>/    -> full update with nested
-    PATCH  /api/products/<id>/    -> partial update (nested if included)
-    DELETE /api/products/<id>/    -> delete
-    """
-    queryset = (
-        Product.objects
-        .select_related(
-            "productcategory",
-            "brand",
-            "base_uom",
-            "entity",
-            "sales_account",
-            "purchase_account",
-        )
-        .prefetch_related(
-            "gst_rates",
-            "barcode_details",
-            "uom_conversions",
-            "opening_stocks",
-            "prices",
-            "planning",
-            "attributes",
-            "images",
-        )
-    )
-    serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    def perform_update(self, serializer):
+        serializer.save(entity=self.get_entity())
 
 
 # ----------------------------------------------------------------------
-# Basic master data APIs
+# Basic master data APIs (entity-scoped)
 # ----------------------------------------------------------------------
 
-class ProductCategoryListCreateAPIView(EntityFilteredQuerysetMixin,
-                                       generics.ListCreateAPIView):
-    queryset = ProductCategory.objects.all()
-    serializer_class = ProductCategorySerializer
+class ProductCategoryListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductCategorySerializercreate
+
+    def get_queryset(self):
+        entity = self.get_entity()
+        return (
+            ProductCategory.objects
+            .filter(entity=entity)
+            .select_related("maincategory")
+            .order_by("pcategoryname")
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
 
 
-class ProductCategoryRetrieveUpdateDestroyAPIView(
-        generics.RetrieveUpdateDestroyAPIView):
-    queryset = ProductCategory.objects.all()
-    serializer_class = ProductCategorySerializer
+class ProductCategoryRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductCategorySerializercreate
+
+    def get_queryset(self):
+        entity = self.get_entity()
+        return (
+            ProductCategory.objects
+            .filter(entity=entity)
+            .select_related("entity", "maincategory")
+        )
+
+    def perform_update(self, serializer):
+        serializer.save(entity=self.get_entity())
 
 
-class BrandListCreateAPIView(EntityFilteredQuerysetMixin,
-                             generics.ListCreateAPIView):
-    queryset = Brand.objects.all()
+class BrandListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
     serializer_class = BrandSerializer
+
+    def get_queryset(self):
+        return Brand.objects.filter(entity=self.get_entity()).order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class BrandRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class BrandRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Brand.objects.all()
     serializer_class = BrandSerializer
+
+    def get_queryset(self):
+        return Brand.objects.filter(entity=self.get_entity())
+
+
+class UnitOfMeasureListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class UnitOfMeasureListCreateAPIView(EntityFilteredQuerysetMixin,
-                                     generics.ListCreateAPIView):
-    queryset = UnitOfMeasure.objects.all()
     serializer_class = UnitOfMeasureSerializer
+
+    def get_queryset(self):
+        return UnitOfMeasure.objects.filter(entity=self.get_entity()).order_by("code")
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class UnitOfMeasureRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class UnitOfMeasureRetrieveUpdateDestroyAPIView(
-        generics.RetrieveUpdateDestroyAPIView):
-    queryset = UnitOfMeasure.objects.all()
     serializer_class = UnitOfMeasureSerializer
+
+    def get_queryset(self):
+        return UnitOfMeasure.objects.filter(entity=self.get_entity())
+
+
+class HsnSacListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class HsnSacListCreateAPIView(EntityFilteredQuerysetMixin,
-                              generics.ListCreateAPIView):
-    queryset = HsnSac.objects.all()
     serializer_class = HsnSacSerializer
+
+    def get_queryset(self):
+        return HsnSac.objects.filter(entity=self.get_entity()).order_by("code")
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class HsnSacRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class HsnSacRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = HsnSac.objects.all()
     serializer_class = HsnSacSerializer
+
+    def get_queryset(self):
+        return HsnSac.objects.filter(entity=self.get_entity())
+
+
+class PriceListListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class PriceListListCreateAPIView(EntityFilteredQuerysetMixin,
-                                 generics.ListCreateAPIView):
-    queryset = PriceList.objects.all()
     serializer_class = PriceListSerializer
+
+    def get_queryset(self):
+        return PriceList.objects.filter(entity=self.get_entity()).order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class PriceListRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
-
-class PriceListRetrieveUpdateDestroyAPIView(
-        generics.RetrieveUpdateDestroyAPIView):
-    queryset = PriceList.objects.all()
     serializer_class = PriceListSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        return PriceList.objects.filter(entity=self.get_entity())
+
+
+# ----------------------------------------------------------------------
+# Choice APIs
+# ----------------------------------------------------------------------
 
 class GstTypeListAPIView(APIView):
-    """
-    Returns GST type choices:
-    [
-        {"value": "regular", "label": "Regular"},
-        {"value": "exempt", "label": "Exempt"},
-        {"value": "nil_rated", "label": "Nil Rated"},
-        {"value": "non_gst", "label": "Non-GST"},
-        {"value": "composition", "label": "Composition"}
-    ]
-    """
-
-    def get(self, request):
-        data = [{"value": choice.value, "label": choice.label}
-                for choice in GstType]
-
-        serializer = GstTypeChoiceSerializer(data, many=True)
-        return Response(serializer.data)
-    
-
-class CessTypeListAPIView(APIView):
-    def get(self, request):
-        data = [{"value": c.value, "label": c.label} for c in CessType]
-        serializer = CessTypeChoiceSerializer(data, many=True)
-        return Response(serializer.data)
-    
-
-class ProductStatusListAPIView(APIView):
-    """
-    Returns product status choices:
-    [
-        {"value": "active", "label": "Active"},
-        {"value": "discontinued", "label": "Discontinued"},
-        {"value": "blocked", "label": "Blocked"},
-        {"value": "upcoming", "label": "Upcoming"}
-    ]
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        data = [
-            {"value": choice.value, "label": choice.label}
-            for choice in ProductStatus
-        ]
-        serializer = ProductStatusChoiceSerializer(data, many=True)
-        return Response(serializer.data)
-    
+        data = [{"value": choice.value, "label": choice.label} for choice in GstType]
+        return Response(GstTypeChoiceSerializer(data, many=True).data)
+
+
+class CessTypeListAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        data = [{"value": c.value, "label": c.label} for c in CessType]
+        return Response(CessTypeChoiceSerializer(data, many=True).data)
+
+
+class ProductStatusListAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        data = [{"value": choice.value, "label": choice.label} for choice in ProductStatus]
+        return Response(ProductStatusChoiceSerializer(data, many=True).data)
+
+
+# ----------------------------------------------------------------------
+# Bootstrap API for Product Page (one call for dropdowns + optional product)
+# ----------------------------------------------------------------------
 
 class ProductPageBootstrapAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         entity_id = request.query_params.get("entity")
-        product_id = request.query_params.get("product_id")
+        if not entity_id:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
 
+        try:
+            entity_id_int = int(entity_id)
+        except ValueError:
+            raise ValidationError({"entity": "Invalid entity id"})
+
+        product_id = request.query_params.get("product_id")
         product = None
         if product_id:
-            product_obj = Product.objects.get(pk=product_id, entity_id=entity_id)
-            product = ProductSerializer(product_obj).data
+            try:
+                product_obj = product_queryset_optimized().get(pk=int(product_id), entity_id=entity_id_int)
+            except (ValueError, Product.DoesNotExist):
+                raise NotFound("Invalid product for this entity")
+            product = ProductSerializer(product_obj, context={"request": request}).data
 
-        categories = ProductCategory.objects.filter(entity_id=entity_id, isactive=True)
-        brands = Brand.objects.filter(entity_id=entity_id, isactive=True)
-        uoms = UnitOfMeasure.objects.filter(entity_id=entity_id, isactive=True)
-        hsn_sac = HsnSac.objects.filter(entity_id=entity_id, isactive=True)
-        pricelists = PriceList.objects.filter(entity_id=entity_id, isactive=True)
+        categories = ProductCategory.objects.filter(entity_id=entity_id_int, isactive=True).select_related("maincategory")
+        brands = Brand.objects.filter(entity_id=entity_id_int, isactive=True)
+        uoms = UnitOfMeasure.objects.filter(entity_id=entity_id_int, isactive=True)
+        hsn_sac = HsnSac.objects.filter(entity_id=entity_id_int, isactive=True)
+        pricelists = PriceList.objects.filter(entity_id=entity_id_int, isactive=True)
 
         data = {
             "product": product,
-
-            "gst_types": [
-                {"value": choice.value, "label": choice.label}
-                for choice in GstType
-            ],
-
-            "cess_types": [
-                {"value": choice.value, "label": choice.label}
-                for choice in CessType
-            ],
-
-            "product_statuses": [
-                {"value": choice.value, "label": choice.label}
-                for choice in ProductStatus
-            ],
+            "gst_types": [{"value": choice.value, "label": choice.label} for choice in GstType],
+            "cess_types": [{"value": choice.value, "label": choice.label} for choice in CessType],
+            "product_statuses": [{"value": choice.value, "label": choice.label} for choice in ProductStatus],
 
             "product_categories": ProductCategorySerializer(categories, many=True).data,
             "brands": BrandSerializer(brands, many=True).data,
-            "uoms": UnitOfMeasureSerializer(uoms, many=True).data,
+            "uoms": UnitOfMeasureSerializer(uoms, many=True).data,          # includes uqc now
             "hsn_sac": HsnSacSerializer(hsn_sac, many=True).data,
             "pricelists": PriceListSerializer(pricelists, many=True).data,
         }
-
         return Response(data)
 
 
+# ----------------------------------------------------------------------
+# Lightweight product list for invoice page (optimized)
+# ----------------------------------------------------------------------
 
 class InvoiceProductListAPIView(APIView):
     """
-    Lightweight product list for invoice page.
-
-    GET /api/catalog/entity/<entity_id>/invoice-products/
-    Optional: ?search=<text>  (search by name or sku)
+    GET /api/catalog/entity/<entity_id>/invoice-products/?search=<text>
+    Returns flat list with:
+    - default GST rate (isdefault=True else latest valid_from)
+    - default price from default pricelist (else latest)
+    - UOM code
+    - cess_type + cess_specific_amount (NEW)
     """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, entity_id, format=None):
         search = (request.query_params.get("search") or "").strip()
 
-        # Base queryset: entity + active
+        # Subquery: pick default GST record else latest by valid_from
+        gst_default_sq = ProductGstRate.objects.filter(
+            product_id=OuterRef("pk"),
+            isdefault=True
+        ).order_by("-valid_from")
+
+        gst_latest_sq = ProductGstRate.objects.filter(
+            product_id=OuterRef("pk")
+        ).order_by("-valid_from")
+
+        # Subquery: pick default price record else latest
+        price_default_sq = ProductPrice.objects.filter(
+            product_id=OuterRef("pk"),
+            pricelist__isdefault=True
+        ).order_by("-effective_from")
+
+        price_latest_sq = ProductPrice.objects.filter(
+            product_id=OuterRef("pk")
+        ).order_by("-effective_from")
+
         qs = (
             Product.objects
             .filter(entity_id=entity_id, isactive=True)
             .select_related("base_uom")
-            .prefetch_related("gst_rates", "prices")
+            .annotate(
+                # GST (try default first; if null, fallback latest)
+                gst_hsn_id=Subquery(gst_default_sq.values("hsn_id")[:1]),
+                gst_cgst=Subquery(gst_default_sq.values("cgst")[:1]),
+                gst_sgst=Subquery(gst_default_sq.values("sgst")[:1]),
+                gst_igst=Subquery(gst_default_sq.values("igst")[:1]),
+                gst_rate=Subquery(gst_default_sq.values("gst_rate")[:1]),
+                gst_cess=Subquery(gst_default_sq.values("cess")[:1]),
+                gst_cess_type=Subquery(gst_default_sq.values("cess_type")[:1]),
+                gst_cess_specific=Subquery(gst_default_sq.values("cess_specific_amount")[:1]),
+
+                gst_hsn_id2=Subquery(gst_latest_sq.values("hsn_id")[:1]),
+                gst_cgst2=Subquery(gst_latest_sq.values("cgst")[:1]),
+                gst_sgst2=Subquery(gst_latest_sq.values("sgst")[:1]),
+                gst_igst2=Subquery(gst_latest_sq.values("igst")[:1]),
+                gst_rate2=Subquery(gst_latest_sq.values("gst_rate")[:1]),
+                gst_cess2=Subquery(gst_latest_sq.values("cess")[:1]),
+                gst_cess_type2=Subquery(gst_latest_sq.values("cess_type")[:1]),
+                gst_cess_specific2=Subquery(gst_latest_sq.values("cess_specific_amount")[:1]),
+
+                # Prices (try default pricelist first; else latest)
+                price_mrp=Subquery(price_default_sq.values("mrp")[:1]),
+                price_sales=Subquery(price_default_sq.values("selling_price")[:1]),
+                price_purchase=Subquery(price_default_sq.values("purchase_rate")[:1]),
+
+                price_mrp2=Subquery(price_latest_sq.values("mrp")[:1]),
+                price_sales2=Subquery(price_latest_sq.values("selling_price")[:1]),
+                price_purchase2=Subquery(price_latest_sq.values("purchase_rate")[:1]),
+            )
             .order_by("productname")
         )
 
         if search:
-            qs = qs.filter(
-                Q(productname__icontains=search) |
-                Q(sku__icontains=search)
-            )
+            qs = qs.filter(Q(productname__icontains=search) | Q(sku__icontains=search))
+
+        # load HSN codes in one query
+        hsn_ids = set()
+        for row in qs.values("gst_hsn_id", "gst_hsn_id2"):
+            if row["gst_hsn_id"]:
+                hsn_ids.add(row["gst_hsn_id"])
+            if row["gst_hsn_id2"]:
+                hsn_ids.add(row["gst_hsn_id2"])
+        hsn_map = {h.id: h.code for h in HsnSac.objects.filter(id__in=hsn_ids)}
 
         items = []
-
         for p in qs:
-            # ---------- GST / HSN (pick default, else latest) ----------
-            default_gst = (
-                p.gst_rates.filter(isdefault=True).order_by("-valid_from").first()
-                or p.gst_rates.order_by("-valid_from").first()
-            )
+            # GST choose default else latest
+            hsn_id = p.gst_hsn_id or p.gst_hsn_id2
+            cgst = p.gst_cgst if p.gst_hsn_id else p.gst_cgst2
+            sgst = p.gst_sgst if p.gst_hsn_id else p.gst_sgst2
+            igst = p.gst_igst if p.gst_hsn_id else p.gst_igst2
+            gst_rate = p.gst_rate if p.gst_hsn_id else p.gst_rate2
+            cess = p.gst_cess if p.gst_hsn_id else p.gst_cess2
+            cess_type = p.gst_cess_type if p.gst_hsn_id else p.gst_cess_type2
+            cess_specific = p.gst_cess_specific if p.gst_hsn_id else p.gst_cess_specific2
 
-            if default_gst:
-                hsn_code = default_gst.hsn.code
-                cgst = default_gst.cgst
-                sgst = default_gst.sgst
-                igst = default_gst.igst
-                cess = default_gst.cess
-                cess_type = default_gst.cess_type
-            else:
-                hsn_code = None
-                cgst = sgst = igst = cess = None
-                cess_type = None
+            # Prices choose default else latest
+            mrp = p.price_mrp if p.price_mrp is not None else p.price_mrp2
+            salesprice = p.price_sales if p.price_sales is not None else p.price_sales2
+            purchaserate = p.price_purchase if p.price_purchase is not None else p.price_purchase2
 
-            # ---------- Prices (pick default pricelist, else latest) ----------
-            default_price = (
-                p.prices.filter(pricelist__isdefault=True)
-                .order_by("-effective_from")
-                .first()
-                or p.prices.order_by("-effective_from").first()
-            )
-
-            if default_price:
-                mrp = default_price.mrp
-                salesprice = default_price.selling_price
-                purchaserate = default_price.purchase_rate
-            else:
-                mrp = salesprice = purchaserate = None
-
-            # ---------- UOM ----------
             uom_code = p.base_uom.code if p.base_uom else None
 
-            # ---------- Build response row ----------
             items.append({
                 "id": p.id,
                 "productname": p.productname,
@@ -382,57 +455,57 @@ class InvoiceProductListAPIView(APIView):
                 "salesprice": float(salesprice) if salesprice is not None else None,
                 "purchaserate": float(purchaserate) if purchaserate is not None else None,
 
-                "hsn": hsn_code,
+                "hsn": hsn_map.get(hsn_id),
                 "cgst": float(cgst) if cgst is not None else None,
                 "sgst": float(sgst) if sgst is not None else None,
                 "igst": float(igst) if igst is not None else None,
+                "gst_rate": float(gst_rate) if gst_rate is not None else None,
+
                 "cess": float(cess) if cess is not None else None,
                 "cesstype": cess_type,
+                "cess_specific_amount": float(cess_specific) if cess_specific is not None else None,  # ✅ NEW
             })
 
         return Response(items, status=status.HTTP_200_OK)
 
 
-
+# ----------------------------------------------------------------------
+# Flat list for product screen (optimized + fixed HSN bug)
+# ----------------------------------------------------------------------
 
 class ProductImportantListAPIView(APIView):
     """
-    Returns lightweight flat list of products for main product screen.
     GET /api/catalog/entity/<entity_id>/products/list/
     """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, entity_id):
-        items = []
+        gst_latest_sq = ProductGstRate.objects.filter(
+            product_id=OuterRef("pk")
+        ).order_by("-valid_from")
 
-        # Preload related objects
+        price_default_sq = ProductPrice.objects.filter(
+            product_id=OuterRef("pk"),
+            pricelist__isdefault=True
+        ).order_by("-effective_from")
+
         qs = (
             Product.objects
             .filter(entity_id=entity_id, isactive=True)
             .select_related("brand", "productcategory", "base_uom")
+            .annotate(
+                gst_rate=Subquery(gst_latest_sq.values("gst_rate")[:1]),
+                hsn_id=Subquery(gst_latest_sq.values("hsn_id")[:1]),
+                selling_price=Subquery(price_default_sq.values("selling_price")[:1]),
+            )
             .order_by("productname")
         )
 
+        hsn_ids = list(set([x for x in qs.values_list("hsn_id", flat=True) if x]))
+        hsn_map = {h.id: h.code for h in HsnSac.objects.filter(id__in=hsn_ids)}
+
+        items = []
         for p in qs:
-            # Get latest GST rate (if exists)
-            latest_gst = (
-                p.gst_rates.order_by("-valid_from").first()
-                if hasattr(p, "gst_rates")
-                else None
-            )
-
-            gst_rate = (
-                latest_gst.gst_rate if latest_gst else None
-            )
-
-            # Get default selling price
-            default_price = (
-                p.prices.filter(pricelist__isdefault=True)
-                .order_by("-effective_from")
-                .first()
-            )
-
-            selling_price = default_price.selling_price if default_price else None
-
             items.append({
                 "id": p.id,
                 "productname": p.productname,
@@ -440,24 +513,27 @@ class ProductImportantListAPIView(APIView):
                 "brand": p.brand.name if p.brand else None,
                 "category": p.productcategory.pcategoryname if p.productcategory else None,
                 "uom": p.base_uom.code if p.base_uom else None,
-                "hsn": p.hsn_sac.code if hasattr(p, "hsn_sac") and p.hsn_sac else None,
-                "gst": float(gst_rate) if gst_rate is not None else None,
-                "selling_price": selling_price,
-                "isactive": p.isactive
+                "hsn": hsn_map.get(p.hsn_id),  # ✅ FIXED: previously p.hsn_sac did not exist
+                "gst": float(p.gst_rate) if p.gst_rate is not None else None,
+                "selling_price": float(p.selling_price) if p.selling_price is not None else None,
+                "isactive": p.isactive,
             })
 
         return Response(items, status=status.HTTP_200_OK)
-    
 
 
+# ----------------------------------------------------------------------
+# Barcode CRUD
+# ----------------------------------------------------------------------
 
 class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
-
     serializer_class = ProductBarcodeManageSerializer
 
     def get_product(self):
-        return get_object_or_404(Product, pk=self.kwargs["product_id"])
+        product_id = self.kwargs["product_id"]
+        # If you want entity scoping here too, add ?entity= and verify
+        return get_object_or_404(Product, pk=product_id)
 
     def get_queryset(self):
         product = self.get_product()
@@ -473,22 +549,16 @@ class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
         return ctx
 
 
-# ---------------------------------------------------------
-# GET    /api/barcodes/<id>/
-# PATCH  /api/barcodes/<id>/
-# DELETE /api/barcodes/<id>/
-# ---------------------------------------------------------
 class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductBarcodeManageSerializer
     queryset = ProductBarcode.objects.select_related("product", "uom")
 
 
-# ---------------------------------------------------------
-# GET /api/barcodes/download/?product_id=123&layout=16
-# GET /api/barcodes/download/?ids=1,2,3&layout=4
-# layout must be 4 or 10 or 16
-# ---------------------------------------------------------
+# ----------------------------------------------------------------------
+# Barcode PDF download (kept mostly same; already good)
+# ----------------------------------------------------------------------
+
 def _fit_font_size(c, text, max_width, start_size=8.0, min_size=5.5):
     size = start_size
     while size >= min_size:
@@ -516,92 +586,59 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
     def post(self, request):
         data = request.data
 
-        # ✅ Expect root-level array
         if not isinstance(data, list):
-            return Response(
-                {"detail": "Request body must be a JSON array"},
-                status=400
-            )
+            return Response({"detail": "Request body must be a JSON array"}, status=400)
 
         all_barcodes = []
         final_layout = None
         show_createdon = False
 
         for idx, job in enumerate(data):
-            # -------------------------
-            # layout
-            # -------------------------
             try:
                 layout = int(job.get("layout", 16))
             except Exception:
-                return Response(
-                    {"detail": f"Invalid layout in item {idx}"},
-                    status=400
-                )
+                return Response({"detail": f"Invalid layout in item {idx}"}, status=400)
 
             if layout not in self.GRID_MAP:
-                return Response(
-                    {"detail": f"Invalid layout in item {idx}"},
-                    status=400
-                )
+                return Response({"detail": f"Invalid layout in item {idx}"}, status=400)
 
-            final_layout = layout  # last one wins (simple rule)
+            final_layout = layout
 
-            # -------------------------
-            # ids (int OR list)
-            # -------------------------
             ids = job.get("ids")
             if ids is None:
-                return Response(
-                    {"detail": f"'ids' missing in item {idx}"},
-                    status=400
-                )
+                return Response({"detail": f"'ids' missing in item {idx}"}, status=400)
 
-            # ✅ normalize ids
             if isinstance(ids, int):
                 id_list = [ids]
             elif isinstance(ids, list):
                 id_list = ids
             else:
-                return Response(
-                    {"detail": f"'ids' must be int or list in item {idx}"},
-                    status=400
-                )
+                return Response({"detail": f"'ids' must be int or list in item {idx}"}, status=400)
 
-            # -------------------------
-            # copies
-            # -------------------------
             try:
                 copies = int(job.get("copies", 1))
             except Exception:
-                return Response(
-                    {"detail": f"'copies' must be integer in item {idx}"},
-                    status=400
-                )
+                return Response({"detail": f"'copies' must be integer in item {idx}"}, status=400)
 
             if copies <= 0:
-                return Response(
-                    {"detail": f"'copies' must be > 0 in item {idx}"},
-                    status=400
-                )
+                return Response({"detail": f"'copies' must be > 0 in item {idx}"}, status=400)
 
             show_createdon = bool(job.get("show_createdon", False))
 
-            qs = ProductBarcode.objects.filter(
-                id__in=id_list
-            ).select_related("product", "uom")
-
-            barcodes = list(qs)
+            barcodes = list(
+                ProductBarcode.objects
+                .filter(id__in=id_list)
+                .select_related("product", "uom")
+            )
             if not barcodes:
                 continue
 
-            # ensure images exist
+            # ensure images exist (one atomic block is enough)
             with transaction.atomic():
                 for b in barcodes:
                     if not b.barcode_image:
                         b.save()
 
-            # expand copies
             expanded = []
             i = 0
             while len(expanded) < copies:
@@ -626,7 +663,6 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             content_type="application/pdf",
         )
 
-    # ✅ Sticker-style PDF builder
     def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool):
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
@@ -671,11 +707,9 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     x = margin + col * (cell_w + gap)
                     y = page_h - margin - (r + 1) * cell_h - r * gap
 
-                    # Border (rounded)
                     c.setLineWidth(0.6)
                     c.roundRect(x, y, cell_w, cell_h, corner_radius, stroke=1, fill=0)
 
-                    # Cut guide (dashed)
                     if show_cut_lines:
                         c.saveState()
                         c.setDash(2, 2)
@@ -683,7 +717,6 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                         c.roundRect(x + 1.5, y + 1.5, cell_w - 3, cell_h - 3, corner_radius, stroke=1, fill=0)
                         c.restoreState()
 
-                    # PRIMARY badge
                     if getattr(b, "isprimary", False):
                         badge_w, badge_h = 46, 14
                         bx = x + cell_w - badge_w - pad
@@ -695,25 +728,18 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                         c.drawCentredString(bx + badge_w / 2, by + 4, "PRIMARY")
                         c.restoreState()
 
-                    # Barcode image
                     if b.barcode_image:
                         img = ImageReader(b.barcode_image.path)
                         img_x = x + pad
                         img_y = y + text_area_h + pad
                         img_w = cell_w - 2 * pad
                         img_h = img_area_h
-
                         c.drawImage(
-                            img,
-                            img_x,
-                            img_y,
-                            width=img_w,
-                            height=img_h,
-                            preserveAspectRatio=True,
-                            anchor="c",
+                            img, img_x, img_y,
+                            width=img_w, height=img_h,
+                            preserveAspectRatio=True, anchor="c",
                         )
 
-                    # Text
                     product_name = ((b.product.productname or "").strip() if b.product_id else "")
                     sku = ((b.product.sku or "").strip() if b.product_id else "")
                     uom_code = ((b.uom.code or "").strip() if b.uom_id else "")
@@ -731,10 +757,7 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     if show_createdon and getattr(b, "createdon", None):
                         extra = f"Created: {b.createdon.date().isoformat()}"
 
-                    tx_left = x + pad
-                    tx_right = x + cell_w - pad
-                    tx_width = tx_right - tx_left
-
+                    tx_width = (x + cell_w - pad) - (x + pad)
                     ty_top = y + text_area_h - pad
                     ty_bottom = y + pad
                     line_gap = 2
@@ -765,14 +788,9 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
         c.save()
         buffer.seek(0)
         return buffer
-    
-
 
 
 class BarcodeLayoutOptionsAPIView(APIView):
-    """
-    Returns supported barcode sticker layouts for UI.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     GRID_MAP = {
@@ -807,76 +825,4 @@ class BarcodeLayoutOptionsAPIView(APIView):
                 "labels_per_page": layout,
                 "label": f"{layout} sticker{'s' if layout > 1 else ''} per page ({self.SIZE_LABELS.get(layout)})",
             })
-
-        # ✅ Return plain array instead of {"layouts": [...]}
         return Response(layouts)
-    
-
-class EntityFromQueryMixin:
-    def get_entity(self):
-        entity_param = self.request.query_params.get("entity")
-        if not entity_param:
-            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
-
-        try:
-            return Entity.objects.get(id=int(entity_param))
-        except (ValueError, Entity.DoesNotExist):
-            raise NotFound("Invalid entity")
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["entity"] = self.get_entity()
-        return ctx
-
-
-
-class ProductCategoryListCreateAPIView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = ProductCategorySerializercreate  # ✅ confirm this
-
-    def get_entity(self):
-        entity_param = self.request.query_params.get("entity")
-        if not entity_param:
-            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
-        try:
-            return Entity.objects.get(id=int(entity_param))
-        except (ValueError, Entity.DoesNotExist):
-            raise NotFound("Invalid entity")
-
-    def get_queryset(self):
-        entity = self.get_entity()
-        return (
-            ProductCategory.objects
-            .filter(entity=entity)
-            .select_related("maincategory")   # ✅
-            .order_by("pcategoryname")
-        )
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["entity"] = self.get_entity()
-        return ctx
-
-    def perform_create(self, serializer):
-        serializer.save(entity=self.get_entity())
-
-
-class ProductCategoryRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = ProductCategorySerializercreate
-    lookup_field = "id"
-    lookup_url_kwarg = "pk"  # URL uses <pk>, model field is id
-
-    def get_queryset(self):
-        # IMPORTANT: entity scoping so you can't access other entity records by id
-        entity = self.get_entity()
-        return (
-            ProductCategory.objects
-            .select_related("entity", "maincategory")
-            .filter(entity=entity)
-        )
-
-    def perform_update(self, serializer):
-        # keep entity immutable
-        serializer.save(entity=self.get_entity())
-
