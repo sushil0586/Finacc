@@ -2,10 +2,11 @@ from django.http import request
 from django.shortcuts import render
 from rest_framework import response,status,permissions
 from django.db import transaction
+from rest_framework.viewsets import ModelViewSet
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,ShippingDetailsgetSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,ContactDetailsgetSerializer,AccountHeadMinimalSerializer,AccountTypeJsonSerializer,AccountBalanceSerializer,AccountHeadListSerializer
+from financial.serializers import AccountHeadSerializer,AccountSerializer,accountSerializer2,accountHeadSerializer2,accountHeadSerializeraccounts,accountHeadMainSerializer,AccountListSerializer,accountservicesSerializeraccounts,accountcodeSerializer,accounttypeserializer,AccountListtopSerializer,ShippingDetailsSerializer,ShippingDetailsListSerializer,StaticAccountsSerializer,StaticAccountMappingSerializer,ContactDetailsListSerializer,AccountHeadMinimalSerializer,AccountTypeJsonSerializer,AccountBalanceSerializer,AccountHeadListSerializer,ContactDetailsSerializer
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 import os
@@ -915,159 +916,313 @@ class AccountListView(ListAPIView):
 
 
 class ShippingDetailsListCreateView(ListCreateAPIView):
-    queryset = ShippingDetails.objects.all()
-    serializer_class = ShippingDetailsgetSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Optimize list queries (avoids N+1 for names)
+        return ShippingDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+    def get_serializer_class(self):
+        # Use list serializer for GET, base serializer for POST
+        if self.request.method == "GET":
+            return ShippingDetailsListSerializer
+        return ShippingDetailsSerializer
+
+    def perform_create(self, serializer):
+        """
+        If you want createdby to be set automatically (recommended),
+        and entity auto-inferred from account if not passed.
+        """
+        serializer.save(createdby=self.request.user)
 
 class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
-    queryset = ShippingDetails.objects.all()
-    serializer_class = ShippingDetailsgetSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return ShippingDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+    serializer_class = ShippingDetailsSerializer
 
 
 class ContactDetailsListCreateView(ListCreateAPIView):
-    queryset = ContactDetails.objects.all()
-    serializer_class = ContactDetailsgetSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return ContactDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return ContactDetailsListSerializer
+        return ContactDetailsSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
 
 class ContactDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
-    queryset = ContactDetails.objects.all()
-    serializer_class = ContactDetailsgetSerializer
+    permission_classes = [IsAuthenticated]
+    serializer_class = ContactDetailsSerializer
+
+    def get_queryset(self):
+        return ContactDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+
+class ContactDetailsByAccountView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ContactDetailsListSerializer
+
+    def get_queryset(self):
+        account_id = self.kwargs.get("account_id")
+        return (
+            ContactDetails.objects.select_related(
+                "account", "entity", "country", "state", "district", "city"
+            )
+            .filter(account_id=account_id)
+            .order_by("-isprimary", "id")
+        )
 
 # API View to Get Shipping Details by Account
 class ShippingDetailsByAccountView(ListAPIView):
-    serializer_class = ShippingDetailsListSerializer
     permission_classes = [IsAuthenticated]
-    
+    serializer_class = ShippingDetailsListSerializer
+
     def get_queryset(self):
-        account_id = self.kwargs.get('account_id')
-        return ShippingDetails.objects.select_related('country', 'state', 'district', 'city').filter(account_id=account_id)
-    
+        account_id = self.kwargs.get("account_id")
+
+        return (
+            ShippingDetails.objects.select_related(
+                "account", "entity", "country", "state", "district", "city"
+            )
+            .filter(account_id=account_id)
+            .order_by("-isprimary", "id")
+            .only(
+                "id", "account_id", "entity_id", "gstno",
+                "address1", "address2", "pincode", "phoneno",
+                "full_name", "emailid", "isprimary",
+                "country_id", "state_id", "district_id", "city_id",
+            )
+        )
+
 
 class ContactDetailsByAccountView(ListAPIView):
-    serializer_class = ContactDetailsListSerializer
     permission_classes = [IsAuthenticated]
-    
+    serializer_class = ContactDetailsListSerializer
+
     def get_queryset(self):
-        account_id = self.kwargs.get('account_id')
-        return ContactDetails.objects.select_related('country', 'state', 'district', 'city').filter(account_id=account_id)
-    
+        account_id = self.kwargs.get("account_id")
+
+        return (
+            ContactDetails.objects.select_related(
+                "account", "entity", "country", "state", "district", "city"
+            )
+            .filter(account_id=account_id)
+            .order_by("-isprimary", "id")
+            .only(
+                "id", "account_id", "entity_id",
+                "address1", "address2", "pincode", "phoneno",
+                "full_name", "emailid", "designation", "isprimary",
+                "country_id", "state_id", "district_id", "city_id",
+            )
+        )
+
+
+class StaticAccountsViewSet(ModelViewSet):
+    """
+    Replaces the APIView-based CRUD with proper REST patterns:
+    - GET /static-accounts/          (list)
+    - POST /static-accounts/         (create)
+    - GET /static-accounts/{id}/     (retrieve)
+    - PUT/PATCH /static-accounts/{id}/
+    - DELETE /static-accounts/{id}/
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = StaticAccountsSerializer
+
+    def get_queryset(self):
+        # select_related avoids N+1 if you show these in UI
+        return staticacounts.objects.select_related("accounttype", "entity")
+
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+
 class StaticAccountsAPIView(APIView):
-    
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Avoid N+1
+        return staticacounts.objects.select_related("accounttype", "entity")
+
     def get(self, request, pk=None):
+        queryset = self.get_queryset()
+
         if pk:
-            static_account = get_object_or_404(staticacounts, pk=pk)
+            static_account = get_object_or_404(queryset, pk=pk)
             serializer = StaticAccountsSerializer(static_account)
             return Response(serializer.data)
-        else:
-            static_accounts = staticacounts.objects.all()
-            serializer = StaticAccountsSerializer(static_accounts, many=True)
-            return Response(serializer.data)
-    
+
+        static_accounts = queryset.order_by("staticaccount")
+        serializer = StaticAccountsSerializer(static_accounts, many=True)
+        return Response(serializer.data)
+
     def post(self, request):
         serializer = StaticAccountsSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(createdby=request.user)  # ✅ auto set createdby
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def put(self, request, pk):
-        static_account = get_object_or_404(staticacounts, pk=pk)
-        serializer = StaticAccountsSerializer(static_account, data=request.data)
+        queryset = self.get_queryset()
+        static_account = get_object_or_404(queryset, pk=pk)
+
+        # ✅ allow partial update too (safer for front-end)
+        serializer = StaticAccountsSerializer(static_account, data=request.data, partial=True)
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(createdby=request.user)  # ✅ update audit
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
-        static_account = get_object_or_404(staticacounts, pk=pk)
+        queryset = self.get_queryset()
+        static_account = get_object_or_404(queryset, pk=pk)
         static_account.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
     
 
-# GET (list), POST (single/bulk)
+# =========================
+# Static Account Mapping (List + bulk upsert)
+# =========================
 class StaticAccountMappingListCreateView(ListCreateAPIView):
-    queryset = staticacountsmapping.objects.all()
+    permission_classes = [IsAuthenticated]
     serializer_class = StaticAccountMappingSerializer
+
+    def get_queryset(self):
+        return staticacountsmapping.objects.select_related("staticaccount", "account", "entity")
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
+        """
+        Supports:
+        - single payload {staticaccount, entity, account}
+        - bulk payload   [{...}, {...}]
+
+        Behavior:
+        - If mapping exists (entity + staticaccount): update it
+        - If account is null: delete existing mapping (if any)
+        - If mapping doesn't exist and account is null: ignore
+        """
         is_many = isinstance(request.data, list)
         data_list = request.data if is_many else [request.data]
+
+        # Validate minimum keys early (fast fail)
+        for item in data_list:
+            if not item.get("staticaccount") or not item.get("entity"):
+                return Response(
+                    {"detail": "Both 'staticaccount' and 'entity' are required for each item."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Prefetch existing mappings in one query (OPTIMIZATION)
+        static_ids = [i.get("staticaccount") for i in data_list]
+        entity_ids = [i.get("entity") for i in data_list]
+
+        existing = {
+            (m.staticaccount_id, m.entity_id): m
+            for m in staticacountsmapping.objects.filter(
+                staticaccount_id__in=static_ids,
+                entity_id__in=entity_ids,
+            )
+        }
+
         results = []
 
         for item in data_list:
-            staticaccount_id = item.get("staticaccount")
-            entity_id = item.get("entity")
-            account_id = item.get("account")
+            key = (item.get("staticaccount"), item.get("entity"))
+            account_id = item.get("account", None)
 
-            if not staticaccount_id or not entity_id:
-                return Response(
-                    {"detail": "Both 'staticaccount' and 'entity' are required."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            instance = existing.get(key)
 
-            try:
-                instance = staticacountsmapping.objects.get(
-                    staticaccount_id=staticaccount_id,
-                    entity_id=entity_id
-                )
-
-                if account_id is None:
-                    # Delete if account is null
+            # Delete if account is null
+            if account_id in (None, "", 0):
+                if instance:
                     instance.delete()
-                    continue
+                continue
 
-                # Update existing mapping
+            # Update existing
+            if instance:
                 serializer = self.get_serializer(instance, data=item, partial=True)
                 serializer.is_valid(raise_exception=True)
-                serializer.save()
+                serializer.save(createdby=request.user)
                 results.append(serializer.data)
+                continue
 
-            except staticacountsmapping.DoesNotExist:
-                if account_id is None:
-                    # Don't create if account is null
-                    continue
-                # Create new mapping
-                serializer = self.get_serializer(data=item)
-                serializer.is_valid(raise_exception=True)
-                serializer.save()
-                results.append(serializer.data)
+            # Create new
+            serializer = self.get_serializer(data=item)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(createdby=request.user)
+            results.append(serializer.data)
 
         return Response(results, status=status.HTTP_200_OK)
 
 
-# GET by ID, PUT, DELETE
 class StaticAccountMappingRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
-    queryset = staticacountsmapping.objects.all()
+    permission_classes = [IsAuthenticated]
     serializer_class = StaticAccountMappingSerializer
 
+    def get_queryset(self):
+        return staticacountsmapping.objects.select_related("staticaccount", "account", "entity")
 
-class StaticAccountFlatListView(APIView):
+    def perform_update(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+
+
+class StaticAccountFlatListView(ListAPIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        entity_id = request.query_params.get('entity')
-        accounttype_id = request.query_params.get('accounttype')
+    # returns list(dict) not model instances, so no serializer needed
+    serializer_class = None
+
+    def list(self, request, *args, **kwargs):
+        entity_id = request.query_params.get("entity")
+        accounttype_id = request.query_params.get("accounttype")
 
         if not entity_id:
-            return Response({'detail': 'entity is required'}, status=400)
+            return Response({"detail": "entity is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         mapping_qs = staticacountsmapping.objects.filter(
-            staticaccount=OuterRef('pk'),
-            entity_id=entity_id
-        ).values('account_id')[:1]
+            staticaccount=OuterRef("pk"),
+            entity_id=entity_id,
+        ).values("account_id")[:1]
 
         base_filter = Q()
         if accounttype_id:
             base_filter &= Q(accounttype_id=accounttype_id)
 
-        queryset = staticacounts.objects.filter(base_filter).annotate(
-            staticaccountid=F('id'),
-            staticaccountname=F('staticaccount'),
-            accountid=Subquery(mapping_qs)
-        ).values(
-            'staticaccountid', 'staticaccountname', 'accountid'
+        qs = (
+            staticacounts.objects.filter(base_filter)
+            .annotate(
+                staticaccountid=F("id"),
+                staticaccountname=F("staticaccount"),
+                accountid=Subquery(mapping_qs),
+            )
+            .values("staticaccountid", "staticaccountname", "accountid")
+            .order_by("staticaccountname")
         )
 
-        return Response(list(queryset))
+        return Response(list(qs))
     
 
 class TopAccountHeadAPIView(APIView):

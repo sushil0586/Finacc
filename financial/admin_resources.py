@@ -232,7 +232,7 @@ class StaticAccountsResource(resources.ModelResource):
     class Meta:
         model = staticacounts
         import_id_fields = ("entity", "code")
-        fields = ("entity", "code", "staticaccount", "createdby")
+        fields = ("accounttype","entity", "code", "staticaccount", "createdby")
         skip_unchanged = True
         report_skipped = True
 

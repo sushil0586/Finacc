@@ -4,261 +4,436 @@ from rest_framework.fields import ChoiceField
 from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
 from invoice.models import entry,StockTransactions
 from entity.models import Entity,entityfinancialyear
+from django.db import models
 from django.db.models import Q, Sum
+from financial.helper_posting import repost_opening_balance
 
 from geography.serializers import CityListSerializer
 import os
 from django.db import transaction
 
 
-class ShippingDetailsgetSerializer(serializers.ModelSerializer):
-
-    id = serializers.IntegerField(read_only=True)
-    class Meta:
-        model = ShippingDetails
-        fields = ('id','account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
-
 class ShippingDetailsSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(read_only=True)
+    """
+    Single serializer for Create/Update/Get (optimized).
+    - account is writable (for list-create endpoint)
+    - id is read-only automatically
+    """
     class Meta:
         model = ShippingDetails
-        fields = ('id','address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','isprimary',)
+        fields = (
+            "id",
+            "account",
+            "entity",
+            "gstno",
+            "address1",
+            "address2",
+            "country",
+            "state",
+            "district",
+            "city",
+            "pincode",
+            "phoneno",
+            "full_name",
+            "emailid",
+            "isprimary",
+        )
+        read_only_fields = ("id",)
+        extra_kwargs = {
+            "account": {"required": False, "allow_null": True},
+            "entity": {"required": False, "allow_null": True},
+        }
+
+    def validate(self, attrs):
+        """
+        Optional: prevent multiple primary on create/update at serializer level.
+        (DB unique constraint already enforces it, but this gives cleaner error.)
+        """
+        isprimary = attrs.get("isprimary", None)
+
+        # Resolve account for update vs create
+        account = attrs.get("account", getattr(self.instance, "account", None))
+        entity = attrs.get("entity", getattr(self.instance, "entity", None))
+
+        if isprimary is True and account:
+            qs = ShippingDetails.objects.filter(account=account, isprimary=True)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"isprimary": "Primary shipping address already exists for this account."}
+                )
+
+        # If entity not provided, inherit from account if possible
+        # (only if your Account model has entity FK)
+        if entity is None and account and getattr(account, "entity_id", None):
+            attrs["entity"] = account.entity
+
+        return attrs
 
 
 class ShippingDetailsListSerializer(serializers.ModelSerializer):
-    country = serializers.SerializerMethodField()
-    countryName = serializers.SerializerMethodField()
-    state = serializers.SerializerMethodField()
-    stateName = serializers.SerializerMethodField()
-    district = serializers.SerializerMethodField()
-    districtName = serializers.SerializerMethodField()
-    city = serializers.SerializerMethodField()
-    cityName = serializers.SerializerMethodField()
+    """
+    List serializer with denormalized names.
+    Uses source= instead of SerializerMethodField (faster & cleaner).
+    """
+    countryName = serializers.CharField(source="country.countryname", read_only=True, allow_null=True)
+    stateName = serializers.CharField(source="state.statename", read_only=True, allow_null=True)
+    districtName = serializers.CharField(source="district.districtname", read_only=True, allow_null=True)
+    cityName = serializers.CharField(source="city.cityname", read_only=True, allow_null=True)
 
     class Meta:
         model = ShippingDetails
-        fields = [
-            'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name','emailid',
-            'country', 'countryName', 'state', 'stateName', 'district', 'districtName',
-            'city', 'cityName','isprimary'
-        ]
-
-    def get_country(self, obj):
-        return obj.country.id if obj.country else None
-
-    def get_countryName(self, obj):
-        return obj.country.countryname if obj.country else None
-
-    def get_state(self, obj):
-        return obj.state.id if obj.state else None
-
-    def get_stateName(self, obj):
-        return obj.state.statename if obj.state else None
-
-    def get_district(self, obj):
-        return obj.district.id if obj.district else None
-
-    def get_districtName(self, obj):
-        return obj.district.districtname if obj.district else None
-
-    def get_city(self, obj):
-        return obj.city.id if obj.city else None
-
-    def get_cityName(self, obj):
-        return obj.city.cityname if obj.city else None
+        fields = (
+            "id",
+            "account",
+            "entity",
+            "gstno",
+            "address1",
+            "address2",
+            "pincode",
+            "phoneno",
+            "full_name",
+            "emailid",
+            "isprimary",
+            "country",
+            "countryName",
+            "state",
+            "stateName",
+            "district",
+            "districtName",
+            "city",
+            "cityName",
+        )
     
 
-class ContactDetailsgetSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(read_only=True)
-    class Meta:
-        model = ContactDetails
-        fields = ('id','account', 'address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
-
 class ContactDetailsSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(read_only=True)
+    """
+    Create / Update / Retrieve serializer
+    """
     class Meta:
         model = ContactDetails
-        fields = ('id','address1','address2','country','state','district','city','pincode','phoneno','full_name','emailid','designation',)
+        fields = (
+            "id",
+            "account",
+            "entity",
+            "address1",
+            "address2",
+            "country",
+            "state",
+            "district",
+            "city",
+            "pincode",
+            "phoneno",
+            "emailid",
+            "full_name",
+            "designation",
+            "isprimary",
+        )
+        read_only_fields = ("id",)
+        extra_kwargs = {
+            "account": {"required": False, "allow_null": True},
+            "entity": {"required": False, "allow_null": True},
+        }
 
+    def validate(self, attrs):
+        """
+        Prevent multiple primary contacts per account (clean API error).
+        DB constraint not required here, but UX improves.
+        """
+        isprimary = attrs.get("isprimary", None)
+        account = attrs.get("account", getattr(self.instance, "account", None))
 
+        if isprimary is True and account:
+            qs = ContactDetails.objects.filter(account=account, isprimary=True)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"isprimary": "Primary contact already exists for this account."}
+                )
+
+        # Auto-inherit entity from account if not provided
+        entity = attrs.get("entity", None)
+        if entity is None and account and getattr(account, "entity_id", None):
+            attrs["entity"] = account.entity
+
+        return attrs
+    
 class ContactDetailsListSerializer(serializers.ModelSerializer):
-    country = serializers.SerializerMethodField()
-    countryName = serializers.SerializerMethodField()
-    state = serializers.SerializerMethodField()
-    stateName = serializers.SerializerMethodField()
-    district = serializers.SerializerMethodField()
-    districtName = serializers.SerializerMethodField()
-    city = serializers.SerializerMethodField()
-    cityName = serializers.SerializerMethodField()
+    countryName = serializers.CharField(source="country.countryname", read_only=True, allow_null=True)
+    stateName = serializers.CharField(source="state.statename", read_only=True, allow_null=True)
+    districtName = serializers.CharField(source="district.districtname", read_only=True, allow_null=True)
+    cityName = serializers.CharField(source="city.cityname", read_only=True, allow_null=True)
 
     class Meta:
         model = ContactDetails
-        fields = [
-            'id','account','address1', 'address2', 'pincode', 'phoneno', 'full_name',
-            'country', 'countryName', 'state', 'stateName', 'district', 'districtName','emailid',
-            'city', 'cityName','designation'
-        ]
+        fields = (
+            "id",
+            "account",
+            "entity",
+            "address1",
+            "address2",
+            "pincode",
+            "phoneno",
+            "emailid",
+            "full_name",
+            "designation",
+            "isprimary",
+            "country",
+            "countryName",
+            "state",
+            "stateName",
+            "district",
+            "districtName",
+            "city",
+            "cityName",
+        )
 
-    def get_country(self, obj):
-        return obj.country.id if obj.country else None
-
-    def get_countryName(self, obj):
-        return obj.country.countryname if obj.country else None
-
-    def get_state(self, obj):
-        return obj.state.id if obj.state else None
-
-    def get_stateName(self, obj):
-        return obj.state.statename if obj.state else None
-
-    def get_district(self, obj):
-        return obj.district.id if obj.district else None
-
-    def get_districtName(self, obj):
-        return obj.district.districtname if obj.district else None
-
-    def get_city(self, obj):
-        return obj.city.id if obj.city else None
-
-    def get_cityName(self, obj):
-        return obj.city.cityname if obj.city else None
 
 class AccountSerializer(serializers.ModelSerializer):
-
     shipping_details = ShippingDetailsSerializer(many=True, required=False)
     contact_details = ContactDetailsSerializer(many=True, required=False)
 
     class Meta:
         model = account
         fields = (
-            'id', 'accountcode','iscompany','reminders','website','accountdate', 'accounthead', 'gstno','contraaccount', 'creditaccounthead', 'accountname',
-            'address1', 'address2', 'gstintype','isaddsameasbillinf','cin','msme','gsttdsno',
-            'dateofreg', 'dateofdreg', 'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr',
-            'contactno', 'pincode', 'emailid', 'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno',
-            'bankname', 'adhaarno', 'saccode', 'contactperson', 'deprate', 'tdsrate', 'gstshare',  'banKAcno', 'composition', 'accounttype', 'createdby','shipping_details','contact_details',
+            # core
+            "id",
+            "entity",
+            "accountcode",
+            "accountdate",
+            "accounttype",
+            "accounthead",
+            "creditaccounthead",
+            "contraaccount",
+            "accountname",
+            "legalname",
+            "iscompany",
+            "website",
+            "reminders",
+
+            # gst/compliance
+            "gstno",
+            "gstintype",
+            "gstregtype",
+            "is_sez",
+            "cin",
+            "msme",
+            "gsttdsno",
+            "pan",
+            "tdsno",
+            "tdsrate",
+            "tdssection",
+            "tds_threshold",
+            "istcsapplicable",
+            "tcscode",
+
+            # address
+            "address1",
+            "address2",
+            "addressfloorno",
+            "addressstreet",
+            "country",
+            "state",
+            "district",
+            "city",
+            "pincode",
+
+            # registration dates / status
+            "dateofreg",
+            "dateofdreg",
+            "blockstatus",
+            "blockedreason",
+            "isactive",
+            "approved",
+
+            # contact
+            "contactno",
+            "contactno2",
+            "emailid",
+            "contactperson",
+            "agent",
+
+            # balances / terms
+            "openingbcr",
+            "openingbdr",
+            "creditlimit",
+            "creditdays",
+            "paymentterms",
+            "currency",
+            "partytype",
+
+            # bank
+            "bankname",
+            "banKAcno",
+            "rtgsno",
+
+            # other existing fields
+            "adhaarno",
+            "saccode",
+            "deprate",
+            "gstshare",
+            "quanity1",
+            "quanity2",
+            "composition",
+            "tobel10cr",
+            "isaddsameasbillinf",
+            "sharepercentage",
+
+            # audit
+            "createdby",
+
+            # nested
+            "shipping_details",
+            "contact_details",
         )
+        read_only_fields = ("id", "accountcode", "createdby")
 
+    # --------------------------
+    # CREATE
+    # --------------------------
+    @transaction.atomic
     def create(self, validated_data):
-        # Extract and clean shipping data
-        shipping_data = validated_data.pop('shipping_details', [])
-        shipping_data = [shipping for shipping in shipping_data if shipping.get('id', None) != 0]
+        shipping_data = validated_data.pop("shipping_details", [])
+        contact_data = validated_data.pop("contact_details", [])
 
-        contact_data = validated_data.pop('contact_details', [])
-        contact_data = [contact for contact in contact_data if contact.get('id', None) != 0]
+        # ignore id=0 from UI payloads
+        shipping_data = [s for s in shipping_data if (s.get("id") not in (0, "0"))]
+        contact_data = [c for c in contact_data if (c.get("id") not in (0, "0"))]
 
-        with transaction.atomic():
-            entity = validated_data['entity']
-            accountcode = self._generate_account_code(entity)
+        entity = validated_data["entity"]
 
-            # Create account instance
-            detail = account.objects.create(**validated_data, accountcode=accountcode)
+        # accountcode generation (Max is safer than last())
+        accountcode = self._generate_account_code(entity)
 
-            # Create shipping details
-            for shipping in shipping_data:
-                ShippingDetails.objects.create(account=detail, **shipping)
+        # createdby from request
+        request = self.context.get("request")
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            validated_data["createdby"] = request.user
 
-            for contact in contact_data:
-                ContactDetails.objects.create(account=detail, **contact)
+        acc = account.objects.create(**validated_data, accountcode=accountcode)
 
-            # Get the financial year start date
-            accountdate1 = (
-                entityfinancialyear.objects
-                .filter(entity=detail.entity)
-                .order_by('finstartyear')
-                .values_list('finstartyear', flat=True)
-                .first()
-)
+        # nested bulk upsert
+        self._upsert_shipping_bulk(acc, shipping_data)
+        self._upsert_contact_bulk(acc, contact_data)
 
+        # opening balance posting via JournalLine
+        fin_start = self._first_fin_start_date(acc.entity)
+        repost_opening_balance(acc, fin_start)
 
-            print(accountdate1)
+        return acc
 
-            # # Create entry if not exists
-            entryid, created = entry.objects.get_or_create(entrydate1=accountdate1, entity=detail.entity)
-
-            # # Handle opening balances
-            self._handle_opening_balances(detail, entryid, accountdate1)
-
-        return detail
-
+    # --------------------------
+    # UPDATE (partial safe)
+    # --------------------------
+    @transaction.atomic
     def update(self, instance, validated_data):
-        fields = [
-            'accountdate', 'accounthead','iscompany','reminders','website', 'gstno', 'creditaccounthead','contraaccount','accountname',  'address1',
-            'address2', 'gstintype', 'dateofreg', 'dateofdreg', 'isaddsameasbillinf','cin','msme','gsttdsno',
-            'country', 'state', 'district', 'city', 'openingbcr', 'openingbdr', 'contactno', 'pincode', 'emailid',
-            'agent', 'pan', 'tobel10cr', 'approved', 'tdsno', 'entity', 'rtgsno', 'bankname', 'adhaarno', 'saccode',
-            'contactperson', 'deprate', 'tdsrate', 'gstshare', 'banKAcno', 'accounttype',
-            'composition', 'createdby'
-        ]
+        shipping_data = validated_data.pop("shipping_details", None)
+        contact_data = validated_data.pop("contact_details", None)
 
-        # Update instance fields
-        for field in fields:
-            setattr(instance, field, validated_data.get(field, getattr(instance, field)))
+        # update base fields
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
 
-        # Save updated instance
+        # audit
+        request = self.context.get("request")
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            instance.createdby = request.user
+
         instance.save()
 
-        # Update or create shipping details
-        shipping_data = validated_data.pop('shipping_details', [])
-        for shipping in shipping_data:
-            shipping_id = shipping.get('id', None)
-            if shipping_id:  
-                # If ID exists, update the existing record
-                ShippingDetails.objects.filter(id=shipping_id, account=instance).update(**shipping)
-            else:
-                # If no ID, create a new shipping record
-                ShippingDetails.objects.create(account=instance, **shipping)
+        # nested updates only if provided
+        if shipping_data is not None:
+            self._upsert_shipping_bulk(instance, shipping_data)
 
-        # Update or create shipping details
-        contact_data = validated_data.pop('contact_details', [])
-        for contact in contact_data:
-            contact_id = contact.get('id', None)
-            if contact_id:  
-                # If ID exists, update the existing record
-                ContactDetails.objects.filter(id=contact_id, account=instance).update(**contact)
-            else:
-                # If no ID, create a new shipping record
-                ContactDetails.objects.create(account=instance, **contact)
+        if contact_data is not None:
+            self._upsert_contact_bulk(instance, contact_data)
 
-        # Handle stock transactions for opening balances
-        StockTransactions.objects.filter(entity=instance.entity, transactionid=instance.id, transactiontype='OA').delete()
-
-        first_start_date = (
-            entityfinancialyear.objects
-            .filter(entity=instance.entity)
-            .order_by('finstartyear')
-            .values_list('finstartyear', flat=True)
-            .first()
-)
-
-        # Handle opening balances after update
-        entry_instance, _ = entry.objects.get_or_create(entrydate1=first_start_date, entity=instance.entity)
-        self._handle_opening_balances(instance, entry_instance, first_start_date)
+        # opening balance repost
+        fin_start = self._first_fin_start_date(instance.entity)
+        repost_opening_balance(instance, fin_start)
 
         return instance
 
-
+    # --------------------------
+    # helpers
+    # --------------------------
     def _generate_account_code(self, entity):
-        """
-        Helper method to generate the next account code based on the entity.
-        """
-        last_account = account.objects.filter(entity=entity).last()
-        return last_account.accountcode + 1 if last_account else 1
+        last_code = (
+            account.objects.filter(entity=entity)
+            .aggregate(models.Max("accountcode"))
+            .get("accountcode__max")
+        )
+        return (last_code or 0) + 1
 
-    def _handle_opening_balances(self, detail, entryid, accountdate1):
-        """
-        Handle the creation of stock transactions for opening balances (both debit and credit).
-        """
-        if (detail.openingbcr is not None and detail.openingbcr > 0) or  (detail.openingbdr is not None and detail.openingbdr > 0):
-            
-            drcr = 0 if detail.openingbcr > 0 else 1
+    def _first_fin_start_date(self, entity):
+        return (
+            entityfinancialyear.objects.filter(entity=entity)
+            .order_by("finstartyear")
+            .values_list("finstartyear", flat=True)
+            .first()
+        )
 
-            # Create debit/credit stock transactions based on opening balances
-            StockTransactions.objects.create(
-                accounthead=detail.accounthead, account=detail, transactiontype='O', transactionid=detail.id,
-                desc='Opening Balance', drcr=drcr, debitamount=detail.openingbdr, creditamount=detail.openingbcr,
-                entity=detail.entity, createdby=detail.createdby, entry=entryid, entrydatetime=accountdate1,
-                accounttype='M', isactive=1
-            )
+    def _upsert_shipping_bulk(self, acc, rows):
+        rows = [r for r in rows if (r.get("id") not in (0, "0"))]
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        to_create = []
+        for r in rows:
+            sid = r.get("id")
+            payload = dict(r)
+            payload.pop("id", None)
+
+            # enforce entity/createdby
+            payload.setdefault("entity", acc.entity)
+            if user and user.is_authenticated:
+                payload.setdefault("createdby", user)
+
+            # ✅ If this row is being set as primary, demote others first
+            if payload.get("isprimary") is True:
+                ShippingDetails.objects.filter(account=acc, isprimary=True).exclude(id=sid or 0).update(isprimary=False)
+
+            if sid:
+                # ✅ update existing
+                ShippingDetails.objects.filter(id=sid, account=acc).update(**payload)
+            else:
+                # ✅ create new (primary will work because others are demoted above)
+                to_create.append(ShippingDetails(account=acc, **payload))
+
+        if to_create:
+            ShippingDetails.objects.bulk_create(to_create)
+
+    def _upsert_contact_bulk(self, acc, rows):
+        rows = [r for r in rows if (r.get("id") not in (0, "0"))]
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        to_create = []
+        for r in rows:
+            cid = r.get("id")
+            payload = dict(r)
+            payload.pop("id", None)
+
+            payload.setdefault("entity", acc.entity)
+            if user and user.is_authenticated:
+                payload.setdefault("createdby", user)
+
+            # ✅ If this row is being set as primary, demote others first
+            if payload.get("isprimary") is True:
+                ContactDetails.objects.filter(account=acc, isprimary=True).exclude(id=cid or 0).update(isprimary=False)
+
+            if cid:
+                ContactDetails.objects.filter(id=cid, account=acc).update(**payload)
+            else:
+                to_create.append(ContactDetails(account=acc, **payload))
+
+        if to_create:
+            ContactDetails.objects.bulk_create(to_create)
+
         
 
 class accountcodeSerializer(serializers.ModelSerializer):
@@ -281,7 +456,15 @@ class accountcodeSerializer(serializers.ModelSerializer):
 class StaticAccountsSerializer(serializers.ModelSerializer):
     class Meta:
         model = staticacounts
-        fields = '__all__'
+        fields = (
+            "id",
+            "accounttype",
+            "staticaccount",
+            "code",
+            "entity",
+            "createdby",
+        )
+        read_only_fields = ("id", "createdby")
 
 
 
@@ -512,7 +695,14 @@ class accounttypeserializer(serializers.ModelSerializer):
 class StaticAccountMappingSerializer(serializers.ModelSerializer):
     class Meta:
         model = staticacountsmapping
-        fields = '__all__'
+        fields = (
+            "id",
+            "staticaccount",
+            "account",
+            "entity",
+            "createdby",
+        )
+        read_only_fields = ("id", "createdby")
 
 
 
