@@ -422,12 +422,11 @@ class ProductGstRate(TimeStampedModel):
 
         # ✅ FINAL GST rule: IGST == CGST + SGST (for taxable types)
         if self.gst_type not in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
-            expected_total = self._q2(sgst + cgst)
+            expected_total = (sgst + cgst).quantize(Decimal("0.01"))
 
             if igst != expected_total:
                 errors["igst"] = f"IGST must be equal to CGST+SGST ({expected_total})."
 
-            # optional strictness: gst_rate must also equal total
             if gst_rate != expected_total:
                 errors["gst_rate"] = f"gst_rate must be equal to CGST+SGST ({expected_total})."
 
@@ -462,10 +461,7 @@ class ProductGstRate(TimeStampedModel):
     # Save normalization
     # --------------------
     def save(self, *args, **kwargs):
-        # validate first
-        self.full_clean()
-
-        # normalize taxable vs non-taxable
+        # ✅ normalize first (so clean() validates correct values)
         if self.gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
             self.sgst = Decimal("0.00")
             self.cgst = Decimal("0.00")
@@ -475,11 +471,13 @@ class ProductGstRate(TimeStampedModel):
             self.cess_specific_amount = None
             self.cess_type = CessType.NONE
         else:
-            total = self._q2(Decimal(self.sgst or 0) + Decimal(self.cgst or 0))
-            # enforce your final storage rule: keep igst and gst_rate equal to total
+            total = self._q2(self._d(self.sgst) + self._d(self.cgst))
+            # ✅ enforce storage rule
             self.igst = total
             self.gst_rate = total
 
+        # ✅ NOW validate after values are normalized
+        self.full_clean()
         super().save(*args, **kwargs)
 
 

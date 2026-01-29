@@ -237,10 +237,12 @@ class ProductGstRateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"cess_specific_amount": "For composite cess, cess_specific_amount per unit must be > 0."})
 
         # prevent IGST + CGST/SGST combo (friendly check)
-        if float(igst) > 0 and (float(sgst) + float(cgst)) > 0:
-            raise serializers.ValidationError({
-                "igst": "When IGST is used, SGST/CGST should typically be 0."
-            })
+        if gst_type not in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
+            expected = float(sgst) + float(cgst)
+            if float(igst) != expected:
+                raise serializers.ValidationError({
+                    "igst": f"IGST must be equal to CGST+SGST ({expected})."
+                })
 
         return attrs
 
