@@ -5,6 +5,8 @@
 
 from decimal import Decimal
 from io import BytesIO
+from django.db import transaction
+
 
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
@@ -430,20 +432,20 @@ class ProductGstRate(TimeStampedModel):
                 errors["gst_rate"] = f"gst_rate must be equal to CGST+SGST ({expected_total})."
 
         # cess_type enforcement
-        if self.cess_type == "CessType".NONE:
+        if self.cess_type == CessType.NONE:
             if cess != 0 or (self.cess_specific_amount not in (None, Decimal("0"), 0)):
                 errors["cess_type"] = "cess_type=NONE requires cess and cess_specific_amount to be 0/blank."
-        elif self.cess_type == "CessType".AD_VALOREM:
+        elif self.cess_type == CessType.AD_VALOREM:
             if cess <= 0:
                 errors["cess"] = "For ad valorem cess, cess (%) must be > 0."
             if self.cess_specific_amount not in (None, Decimal("0"), 0):
                 errors["cess_specific_amount"] = "For ad valorem cess, cess_specific_amount should be blank/0."
-        elif self.cess_type == "CessType".SPECIFIC:
+        elif self.cess_type == CessType.SPECIFIC:
             if self.cess_specific_amount is None or cess_specific <= 0:
                 errors["cess_specific_amount"] = "For specific cess, cess_specific_amount per unit must be > 0."
             if cess != 0:
                 errors["cess"] = "For specific cess, cess (%) should be 0."
-        elif self.cess_type == "CessType".COMPOSITE:
+        elif self.cess_type == CessType.COMPOSITE:
             if cess <= 0:
                 errors["cess"] = "For composite cess, cess (%) must be > 0."
             if self.cess_specific_amount is None or cess_specific <= 0:
@@ -471,7 +473,7 @@ class ProductGstRate(TimeStampedModel):
             self.gst_rate = Decimal("0.00")
             self.cess = Decimal("0.00")
             self.cess_specific_amount = None
-            self.cess_type = "CessType".NONE
+            self.cess_type = CessType.NONE
         else:
             total = self._q2(Decimal(self.sgst or 0) + Decimal(self.cgst or 0))
             # enforce your final storage rule: keep igst and gst_rate equal to total
@@ -531,7 +533,7 @@ class ProductBarcode(TimeStampedModel):
                 fields=['product', 'uom', 'pack_size'],
                 name='uq_product_uom_packsize'
             ),
-            # ✅ NEW: only one primary barcode per product
+            # ✅ only one primary barcode per product
             models.UniqueConstraint(
                 fields=['product'],
                 condition=Q(isprimary=True),
@@ -546,9 +548,8 @@ class ProductBarcode(TimeStampedModel):
         if not self.pack_size:
             self.pack_size = 1
 
-        if self.mrp is not None and self.selling_price is not None:
-            if self.selling_price > self.mrp:
-                raise ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+        if self.mrp is not None and self.selling_price is not None and self.selling_price > self.mrp:
+            raise ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
 
     def _generate_barcode_value(self):
         product_id = self.product_id or 0
@@ -617,7 +618,17 @@ class ProductBarcode(TimeStampedModel):
         self.barcode_image.save(filename, ContentFile(final_buffer.getvalue()), save=False)
 
     def save(self, *args, **kwargs):
+        # normalize / validate
         self.full_clean()
+
+        # ✅ Enforce one primary BEFORE saving (avoids constraint failure)
+        if self.isprimary and self.product_id:
+            with transaction.atomic():
+                ProductBarcode.objects.filter(
+                    product_id=self.product_id,
+                    isprimary=True
+                ).exclude(pk=self.pk).update(isprimary=False)
+
         super().save(*args, **kwargs)
 
         updated_fields = []
@@ -636,15 +647,20 @@ class ProductBarcode(TimeStampedModel):
 
 @receiver(post_save, sender=Product)
 def create_default_barcode_for_product(sender, instance, created, **kwargs):
-    if not created:
+    if not created or not instance.base_uom:
         return
-    if instance.base_uom and not instance.barcode_details.exists():
-        ProductBarcode.objects.create(
-            product=instance,
-            uom=instance.base_uom,
-            isprimary=True,
-            pack_size=1,
-        )
+
+    def _create_if_still_missing():
+        # Runs after the whole transaction commits (after nested barcodes are inserted)
+        if not instance.barcode_details.exists():
+            ProductBarcode.objects.create(
+                product=instance,
+                uom=instance.base_uom,
+                isprimary=True,
+                pack_size=1,
+            )
+
+    transaction.on_commit(_create_if_still_missing)
 
 
 class ProductUomConversion(TimeStampedModel):
@@ -778,9 +794,9 @@ class OpeningStockByLocation(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name='opening_stocks'
     )
-    openingqty = models.DecimalField(max_digits=18, decimal_places=2)
-    openingrate = models.DecimalField(max_digits=18, decimal_places=2)
-    openingvalue = models.DecimalField(max_digits=18, decimal_places=2)
+    openingqty = models.DecimalField(max_digits=18, decimal_places=2,blank=True, null=True)
+    openingrate = models.DecimalField(max_digits=18, decimal_places=2,blank=True, null=True)
+    openingvalue = models.DecimalField(max_digits=18, decimal_places=2,blank=True, null=True)
     as_of_date = models.DateField(default=timezone.now)
 
     class Meta:
