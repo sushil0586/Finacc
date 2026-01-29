@@ -279,24 +279,25 @@ class CessType(models.TextChoices):
 
 class ProductGstRate(TimeStampedModel):
     """
-    GST rate for a product, with validity period and type.
-    Includes robust validations:
-    - one default per product
-    - no overlapping validity periods for the same product
-    - gst_rate consistency with component rates
-    - gst_type zero-tax enforcement for exempt/nil/non-gst
-    - cess_type enforcement (+ specific cess amount support)
+    FINAL RULESET
+    ------------
+    1) Stores CGST, SGST, IGST.
+    2) Enforces: IGST == (CGST + SGST) for taxable types.
+    3) Computes gst_rate automatically as (CGST + SGST).
+    4) One default GST rate row per product.
+    5) Prevents overlapping validity periods for same product.
+    6) Enforces cess rules with specific cess amount support.
     """
 
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
-        related_name='gst_rates'
+        related_name="gst_rates"
     )
     hsn = models.ForeignKey(
         HsnSac,
         on_delete=models.PROTECT,
-        related_name='product_gst_rates'
+        related_name="product_gst_rates"
     )
 
     gst_type = models.CharField(
@@ -309,11 +310,12 @@ class ProductGstRate(TimeStampedModel):
     cgst = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     igst = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
+    # total GST for convenience/reporting (computed)
     gst_rate = models.DecimalField(
         max_digits=6,
         decimal_places=2,
         default=0,
-        help_text="Total GST rate (CGST+SGST or IGST)"
+        help_text="Computed total GST rate (CGST+SGST)."
     )
 
     # CESS (%)
@@ -323,10 +325,10 @@ class ProductGstRate(TimeStampedModel):
         max_length=20,
         choices=CessType.choices,
         default=CessType.NONE,
-        help_text="Type of CESS (if any)",
+        help_text="Type of CESS (if any)."
     )
 
-    # ✅ NEW: specific cess amount per unit (needed for SPECIFIC/COMPOSITE)
+    # Specific cess amount per unit (SPECIFIC/COMPOSITE)
     cess_specific_amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -344,17 +346,16 @@ class ProductGstRate(TimeStampedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['product', 'hsn', 'valid_from'],
-                name='uq_product_hsn_validfrom'
+                fields=["product", "hsn", "valid_from"],
+                name="uq_product_hsn_validfrom"
             ),
-            # ✅ NEW: only one default per product
             models.UniqueConstraint(
-                fields=['product'],
+                fields=["product"],
                 condition=Q(isdefault=True),
-                name='uq_product_one_default_gst_rate'
+                name="uq_product_one_default_gst_rate"
             ),
         ]
-        ordering = ['product', 'valid_from']
+        ordering = ["product", "valid_from"]
 
     def __str__(self):
         return f"{self.product} GST {self.gst_rate}% ({self.gst_type})"
@@ -369,6 +370,13 @@ class ProductGstRate(TimeStampedModel):
         except Exception:
             return Decimal("0")
 
+    @staticmethod
+    def _q2(v: Decimal) -> Decimal:
+        return (v or Decimal("0")).quantize(Decimal("0.01"))
+
+    # --------------------
+    # Validation
+    # --------------------
     def clean(self):
         errors = {}
 
@@ -376,13 +384,8 @@ class ProductGstRate(TimeStampedModel):
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             errors["valid_to"] = "valid_to cannot be before valid_from."
 
-        # enforce no overlapping validity periods for the same product
-        # Logic:
-        #  - If no valid_from provided, treat as open (not recommended)
-        #  - If valid_to is null => open-ended
-        # Overlap condition between [A_from, A_to] and [B_from, B_to]
-        # overlaps if A_from <= B_to (or B_to is null) AND (A_to is null or A_to >= B_from)
-        if self.product_id:
+        # no overlapping validity periods for same product
+        if self.product_id and self.valid_from:
             qs = ProductGstRate.objects.filter(product_id=self.product_id)
             if self.pk:
                 qs = qs.exclude(pk=self.pk)
@@ -390,84 +393,77 @@ class ProductGstRate(TimeStampedModel):
             A_from = self.valid_from
             A_to = self.valid_to
 
-            # Only run overlap check when valid_from is provided (best practice)
-            if A_from:
-                overlap_q = Q(valid_from__lte=A_to) if A_to else Q()  # if A_to is None, don't bound by it
-                # Equivalent robust overlap:
-                # B_from <= A_to (or A_to is null)  AND  (B_to is null OR B_to >= A_from)
-                cond1 = Q(valid_from__lte=A_to) if A_to else Q()  # if A_to open, cond1 always true
-                cond2 = Q(valid_to__isnull=True) | Q(valid_to__gte=A_from)
-                overlap = qs.filter(cond2).filter(cond1 if A_to else Q())
-                # If A_to is None, we just need cond2 (B_to open or >= A_from)
-                if overlap.exists():
-                    errors["valid_from"] = "Overlapping GST rate period exists for this product. Adjust valid_from/valid_to."
+            cond2 = Q(valid_to__isnull=True) | Q(valid_to__gte=A_from)  # B_to open or >= A_from
+            if A_to:
+                cond1 = Q(valid_from__lte=A_to)  # B_from <= A_to
+                overlap = qs.filter(cond2).filter(cond1)
+            else:
+                overlap = qs.filter(cond2)  # A open-ended: only need B_to open or >= A_from
+
+            if overlap.exists():
+                errors["valid_from"] = (
+                    "Overlapping GST rate period exists for this product. "
+                    "Adjust valid_from/valid_to."
+                )
+
+        sgst = self._q2(self._d(self.sgst))
+        cgst = self._q2(self._d(self.cgst))
+        igst = self._q2(self._d(self.igst))
+        gst_rate = self._q2(self._d(self.gst_rate))
+        cess = self._q2(self._d(self.cess))
+        cess_specific = self._q2(self._d(self.cess_specific_amount))
 
         # gst_type enforcement
-        sgst = self._d(self.sgst)
-        cgst = self._d(self.cgst)
-        igst = self._d(self.igst)
-        gst_rate = self._d(self.gst_rate)
-        cess = self._d(self.cess)
-        cess_specific = self._d(self.cess_specific_amount)
-
         if self.gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
             if any(x != 0 for x in (sgst, cgst, igst, gst_rate, cess, cess_specific)):
                 errors["gst_type"] = "For exempt/nil/non-gst items, all GST/CESS rates must be 0."
 
-        # Composition: depends on how you model; typically outward tax not charged.
-        # We won't force 0, but we will still ensure internal consistency.
-        # gst_rate consistency with components:
-        # - If IGST is set (>0), gst_rate should equal igst and sgst/cgst typically 0.
-        # - Else gst_rate should equal sgst+cgst.
+        # ✅ FINAL GST rule: IGST == CGST + SGST (for taxable types)
         if self.gst_type not in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
-            if igst > 0:
-                expected = igst.quantize(Decimal("0.01"))
-                if gst_rate.quantize(Decimal("0.01")) != expected:
-                    errors["gst_rate"] = f"gst_rate must match IGST ({expected}) when IGST is used."
-                # optional strictness: avoid having both IGST and CGST/SGST
-                if (sgst + cgst) > 0:
-                    errors["igst"] = "When IGST is used, SGST/CGST should typically be 0."
-            else:
-                expected = (sgst + cgst).quantize(Decimal("0.01"))
-                if gst_rate.quantize(Decimal("0.01")) != expected:
-                    errors["gst_rate"] = f"gst_rate must match SGST+CGST ({expected}) when IGST is 0."
+            expected_total = self._q2(sgst + cgst)
+
+            if igst != expected_total:
+                errors["igst"] = f"IGST must be equal to CGST+SGST ({expected_total})."
+
+            # optional strictness: gst_rate must also equal total
+            if gst_rate != expected_total:
+                errors["gst_rate"] = f"gst_rate must be equal to CGST+SGST ({expected_total})."
 
         # cess_type enforcement
-        if self.cess_type == CessType.NONE:
+        if self.cess_type == "CessType".NONE:
             if cess != 0 or (self.cess_specific_amount not in (None, Decimal("0"), 0)):
                 errors["cess_type"] = "cess_type=NONE requires cess and cess_specific_amount to be 0/blank."
-        elif self.cess_type == CessType.AD_VALOREM:
+        elif self.cess_type == "CessType".AD_VALOREM:
             if cess <= 0:
                 errors["cess"] = "For ad valorem cess, cess (%) must be > 0."
             if self.cess_specific_amount not in (None, Decimal("0"), 0):
                 errors["cess_specific_amount"] = "For ad valorem cess, cess_specific_amount should be blank/0."
-        elif self.cess_type == CessType.SPECIFIC:
+        elif self.cess_type == "CessType".SPECIFIC:
             if self.cess_specific_amount is None or cess_specific <= 0:
                 errors["cess_specific_amount"] = "For specific cess, cess_specific_amount per unit must be > 0."
             if cess != 0:
                 errors["cess"] = "For specific cess, cess (%) should be 0."
-        elif self.cess_type == CessType.COMPOSITE:
+        elif self.cess_type == "CessType".COMPOSITE:
             if cess <= 0:
                 errors["cess"] = "For composite cess, cess (%) must be > 0."
             if self.cess_specific_amount is None or cess_specific <= 0:
                 errors["cess_specific_amount"] = "For composite cess, cess_specific_amount per unit must be > 0."
 
-        # HSN vs product is_service consistency (soft check)
-        if self.product_id and self.hsn_id:
-            if self.product.is_service != self.hsn.is_service:
-                # not always wrong if you allow mapping exceptions, so keep as a warning-level validation.
-                # If you want strictness, uncomment:
-                # errors["hsn"] = "HSN/SAC is_service does not match Product.is_service."
-                pass
+        # soft check: product.is_service vs hsn.is_service (kept non-blocking)
+        # if self.product_id and self.hsn_id and self.product.is_service != self.hsn.is_service:
+        #     pass
 
         if errors:
             raise ValidationError(errors)
 
+    # --------------------
+    # Save normalization
+    # --------------------
     def save(self, *args, **kwargs):
-        # Always validate
+        # validate first
         self.full_clean()
 
-        # Optionally normalize gst_rate automatically (safer)
+        # normalize taxable vs non-taxable
         if self.gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
             self.sgst = Decimal("0.00")
             self.cgst = Decimal("0.00")
@@ -475,12 +471,12 @@ class ProductGstRate(TimeStampedModel):
             self.gst_rate = Decimal("0.00")
             self.cess = Decimal("0.00")
             self.cess_specific_amount = None
-            self.cess_type = CessType.NONE
+            self.cess_type = "CessType".NONE
         else:
-            if Decimal(self.igst or 0) > 0:
-                self.gst_rate = Decimal(self.igst or 0)
-            else:
-                self.gst_rate = Decimal(self.sgst or 0) + Decimal(self.cgst or 0)
+            total = self._q2(Decimal(self.sgst or 0) + Decimal(self.cgst or 0))
+            # enforce your final storage rule: keep igst and gst_rate equal to total
+            self.igst = total
+            self.gst_rate = total
 
         super().save(*args, **kwargs)
 

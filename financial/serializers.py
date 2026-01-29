@@ -4,6 +4,7 @@ from rest_framework.fields import ChoiceField
 from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
 from invoice.models import entry,StockTransactions
 from entity.models import Entity,entityfinancialyear
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, Sum
 from financial.helper_posting import repost_opening_balance
@@ -14,31 +15,20 @@ from django.db import transaction
 
 
 class ShippingDetailsSerializer(serializers.ModelSerializer):
-    """
-    Single serializer for Create/Update/Get (optimized).
-    - account is writable (for list-create endpoint)
-    - id is read-only automatically
-    """
+    id = serializers.IntegerField(required=False)  # ✅ writable so update works
+
     class Meta:
         model = ShippingDetails
         fields = (
             "id",
-            "account",
-            "entity",
+            "account",   # optional for nested
+            "entity",    # optional for nested
             "gstno",
-            "address1",
-            "address2",
-            "country",
-            "state",
-            "district",
-            "city",
-            "pincode",
-            "phoneno",
-            "full_name",
-            "emailid",
+            "address1", "address2",
+            "country", "state", "district", "city",
+            "pincode", "phoneno", "full_name", "emailid",
             "isprimary",
         )
-        read_only_fields = ("id",)
         extra_kwargs = {
             "account": {"required": False, "allow_null": True},
             "entity": {"required": False, "allow_null": True},
@@ -108,29 +98,20 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     
 
 class ContactDetailsSerializer(serializers.ModelSerializer):
-    """
-    Create / Update / Retrieve serializer
-    """
+    id = serializers.IntegerField(required=False)  # ✅ writable so update works
+
     class Meta:
         model = ContactDetails
         fields = (
             "id",
             "account",
             "entity",
-            "address1",
-            "address2",
-            "country",
-            "state",
-            "district",
-            "city",
-            "pincode",
-            "phoneno",
-            "emailid",
-            "full_name",
+            "address1", "address2",
+            "country", "state", "district", "city",
+            "pincode", "phoneno", "full_name", "emailid",
             "designation",
             "isprimary",
         )
-        read_only_fields = ("id",)
         extra_kwargs = {
             "account": {"required": False, "allow_null": True},
             "entity": {"required": False, "allow_null": True},
@@ -376,45 +357,56 @@ class AccountSerializer(serializers.ModelSerializer):
         )
 
     def _upsert_shipping_bulk(self, acc, rows):
-        rows = [r for r in rows if (r.get("id") not in (0, "0"))]
-
         request = self.context.get("request")
         user = getattr(request, "user", None)
 
-        to_create = []
-        for r in rows:
-            sid = r.get("id")
+        for r in (rows or []):
+            sid_raw = r.get("id", 0)
+
+            # normalize id
+            try:
+                sid = int(sid_raw) if sid_raw not in (None, "", "null") else 0
+            except (TypeError, ValueError):
+                sid = 0
+
             payload = dict(r)
             payload.pop("id", None)
 
-            # enforce entity/createdby
+            # enforce entity/createdby on child
             payload.setdefault("entity", acc.entity)
             if user and user.is_authenticated:
                 payload.setdefault("createdby", user)
 
-            # ✅ If this row is being set as primary, demote others first
+            # primary handling: demote others BEFORE saving this one as primary
             if payload.get("isprimary") is True:
-                ShippingDetails.objects.filter(account=acc, isprimary=True).exclude(id=sid or 0).update(isprimary=False)
+                qs = ShippingDetails.objects.filter(account=acc, isprimary=True)
+                if sid:
+                    qs = qs.exclude(id=sid)
+                qs.update(isprimary=False)
 
-            if sid:
-                # ✅ update existing
-                ShippingDetails.objects.filter(id=sid, account=acc).update(**payload)
+            if sid > 0:
+                # UPDATE: must exist for this account, otherwise raise error (no silent inserts)
+                updated = ShippingDetails.objects.filter(id=sid, account=acc).update(**payload)
+                if updated == 0:
+                    raise ValidationError(
+                        {"shipping_details": [f"Invalid id {sid}: record not found for this account."]}
+                    )
             else:
-                # ✅ create new (primary will work because others are demoted above)
-                to_create.append(ShippingDetails(account=acc, **payload))
-
-        if to_create:
-            ShippingDetails.objects.bulk_create(to_create)
+                # CREATE
+                ShippingDetails.objects.create(account=acc, **payload)
 
     def _upsert_contact_bulk(self, acc, rows):
-        rows = [r for r in rows if (r.get("id") not in (0, "0"))]
-
         request = self.context.get("request")
         user = getattr(request, "user", None)
 
-        to_create = []
-        for r in rows:
-            cid = r.get("id")
+        for r in (rows or []):
+            cid_raw = r.get("id", 0)
+
+            try:
+                cid = int(cid_raw) if cid_raw not in (None, "", "null") else 0
+            except (TypeError, ValueError):
+                cid = 0
+
             payload = dict(r)
             payload.pop("id", None)
 
@@ -422,17 +414,20 @@ class AccountSerializer(serializers.ModelSerializer):
             if user and user.is_authenticated:
                 payload.setdefault("createdby", user)
 
-            # ✅ If this row is being set as primary, demote others first
             if payload.get("isprimary") is True:
-                ContactDetails.objects.filter(account=acc, isprimary=True).exclude(id=cid or 0).update(isprimary=False)
+                qs = ContactDetails.objects.filter(account=acc, isprimary=True)
+                if cid:
+                    qs = qs.exclude(id=cid)
+                qs.update(isprimary=False)
 
-            if cid:
-                ContactDetails.objects.filter(id=cid, account=acc).update(**payload)
+            if cid > 0:
+                updated = ContactDetails.objects.filter(id=cid, account=acc).update(**payload)
+                if updated == 0:
+                    raise ValidationError(
+                        {"contact_details": [f"Invalid id {cid}: record not found for this account."]}
+                    )
             else:
-                to_create.append(ContactDetails(account=acc, **payload))
-
-        if to_create:
-            ContactDetails.objects.bulk_create(to_create)
+                ContactDetails.objects.create(account=acc, **payload)
 
         
 
