@@ -5,6 +5,7 @@ from os import device_encoding
 from pprint import isreadable
 import logging
 from select import select
+from .models import ReceiptVoucher, ReceiptVoucherAllocation, ReceiptVoucherAdjustment
 from typing import Optional
 from .models import account as Account, journaldetails as JournalDetails
 from typing import Optional, Any, TYPE_CHECKING
@@ -10593,6 +10594,226 @@ class SalesQuotationHeaderSerializer(serializers.ModelSerializer):
             self._upsert_lines(instance, lines_payload)
         self._recalc_totals(instance)
         return instance
+
+
+DEC2 = Decimal("0.01")
+def q2(v) -> Decimal:
+    return Decimal(v or 0).quantize(DEC2, rounding=ROUND_HALF_UP)
+
+
+class ReceiptVoucherAllocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReceiptVoucherAllocation
+        fields = ["id", "invoice", "settled_amount", "is_full_settlement", "is_advance_adjustment"]
+
+    def validate(self, attrs):
+        if q2(attrs.get("settled_amount")) < 0:
+            raise serializers.ValidationError("settled_amount cannot be negative.")
+        return attrs
+
+
+class ReceiptVoucherAdjustmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReceiptVoucherAdjustment
+        fields = ["id", "allocation", "adj_type", "ledger_account", "amount", "settlement_effect", "remarks"]
+
+    def validate(self, attrs):
+        if q2(attrs.get("amount")) < 0:
+            raise serializers.ValidationError("Adjustment amount cannot be negative.")
+        return attrs
+
+
+class ReceiptVoucherSerializer(serializers.ModelSerializer):
+    allocations = ReceiptVoucherAllocationSerializer(many=True, required=False)
+    adjustments = ReceiptVoucherAdjustmentSerializer(many=True, required=False)
+
+    class Meta:
+        model = ReceiptVoucher
+        fields = [
+            "id",
+            "entity", "entityfinid",
+            "voucher_no", "voucher_code", "voucher_date",
+            "receipt_type", "supply_type",
+            "received_in", "received_from", "payment_mode",
+            "cash_received_amount",
+            "reference_number", "narration",
+            "instrument_bank_name", "instrument_no", "instrument_date",
+            "place_of_supply_state", "customer_gstin",
+            "advance_taxable_value", "advance_cgst", "advance_sgst", "advance_igst", "advance_cess",
+            "is_posted",
+            "created_by", "approved_by", "created_at", "approved_at",
+            "allocations", "adjustments",
+        ]
+        read_only_fields = ["is_posted", "created_at", "approved_at", "created_by", "approved_by"]
+
+    # ---------- helpers ----------
+    def _sum_allocations(self, rows):
+        total = Decimal("0.00")
+        for r in rows or []:
+            total += q2(r.get("settled_amount"))
+        return q2(total)
+
+    def _sum_adjustments(self, rows):
+        plus = Decimal("0.00")
+        minus = Decimal("0.00")
+        for r in rows or []:
+            amt = q2(r.get("amount"))
+            if (r.get("settlement_effect") == "MINUS"):
+                minus += amt
+            else:
+                plus += amt
+        return q2(plus), q2(minus), q2(plus - minus)
+
+    def _sum_advance(self, data):
+        taxable = q2(data.get("advance_taxable_value"))
+        cgst = q2(data.get("advance_cgst"))
+        sgst = q2(data.get("advance_sgst"))
+        igst = q2(data.get("advance_igst"))
+        cess = q2(data.get("advance_cess"))
+        total = q2(taxable + cgst + sgst + igst + cess)
+        return taxable, cgst, sgst, igst, cess, total
+
+    def validate(self, attrs):
+        # nested payloads
+        allocations_payload = self.initial_data.get("allocations", [])
+        adjustments_payload = self.initial_data.get("adjustments", [])
+
+        instance = getattr(self, "instance", None)
+        def getv(name, default=None):
+            if name in attrs:
+                return attrs.get(name)
+            if instance is not None:
+                return getattr(instance, name)
+            return default
+
+        receipt_type = getv("receipt_type", ReceiptVoucher.ReceiptType.AGAINST_INVOICE)
+        supply_type = getv("supply_type", ReceiptVoucher.SupplyType.SERVICES)
+
+        cash_received = q2(getv("cash_received_amount", 0))
+        if cash_received < 0:
+            raise serializers.ValidationError({"cash_received_amount": "Must be >= 0."})
+
+        alloc_sum = self._sum_allocations(allocations_payload)
+        plus, minus, adj_effect = self._sum_adjustments(adjustments_payload)
+        expected_settlement = q2(cash_received + adj_effect)
+
+        taxable, cgst, sgst, igst, cess, adv_total = self._sum_advance({
+            "advance_taxable_value": getv("advance_taxable_value", 0),
+            "advance_cgst": getv("advance_cgst", 0),
+            "advance_sgst": getv("advance_sgst", 0),
+            "advance_igst": getv("advance_igst", 0),
+            "advance_cess": getv("advance_cess", 0),
+        })
+
+        # ---- AGAINST INVOICE ----
+        if receipt_type == ReceiptVoucher.ReceiptType.AGAINST_INVOICE:
+            if not allocations_payload:
+                raise serializers.ValidationError({"allocations": "Required for AGAINST_INVOICE."})
+            for i, row in enumerate(allocations_payload):
+                if not row.get("invoice"):
+                    raise serializers.ValidationError({"allocations": f"Row {i+1}: invoice is required."})
+
+            if alloc_sum != expected_settlement:
+                raise serializers.ValidationError({
+                    "allocations": f"Total settled {alloc_sum} must equal cash_received {cash_received} "
+                                   f"+ (plus {plus} - minus {minus}) = {expected_settlement}."
+                })
+
+            if adv_total != Decimal("0.00"):
+                raise serializers.ValidationError("Advance GST values must be 0 for AGAINST_INVOICE.")
+
+        # ---- ADVANCE ----
+        elif receipt_type == ReceiptVoucher.ReceiptType.ADVANCE:
+            # No invoice allowed
+            for i, row in enumerate(allocations_payload or []):
+                if row.get("invoice"):
+                    raise serializers.ValidationError({"allocations": f"Row {i+1}: invoice must be blank for ADVANCE."})
+
+            # Services/Mixed: POS required; total must match taxable+tax
+            pos = getv("place_of_supply_state", None)
+            if supply_type in (ReceiptVoucher.SupplyType.SERVICES, ReceiptVoucher.SupplyType.MIXED) and not pos:
+                raise serializers.ValidationError({"place_of_supply_state": "Required for service/mixed ADVANCE."})
+
+            if supply_type == ReceiptVoucher.SupplyType.GOODS:
+                # Common practice: no GST on goods advance
+                if (cgst + sgst + igst + cess) != Decimal("0.00"):
+                    raise serializers.ValidationError("For GOODS ADVANCE, GST amounts must be 0.")
+                if taxable != cash_received:
+                    raise serializers.ValidationError({"cash_received_amount": f"For GOODS ADVANCE, cash_received_amount must equal taxable {taxable}."})
+            else:
+                if taxable <= 0:
+                    raise serializers.ValidationError({"advance_taxable_value": "Must be > 0 for SERVICES/MIXED ADVANCE."})
+                if adv_total != cash_received:
+                    raise serializers.ValidationError({"cash_received_amount": f"cash_received_amount {cash_received} must equal advance total {adv_total}."})
+                if igst > 0 and (cgst > 0 or sgst > 0):
+                    raise serializers.ValidationError("Advance cannot have both IGST and CGST/SGST.")
+                if (cgst > 0) != (sgst > 0):
+                    raise serializers.ValidationError("CGST and SGST must both be present or both be 0.")
+
+        # ---- ON ACCOUNT ----
+        elif receipt_type == ReceiptVoucher.ReceiptType.ON_ACCOUNT:
+            # No invoice, no advance GST
+            for i, row in enumerate(allocations_payload or []):
+                if row.get("invoice"):
+                    raise serializers.ValidationError({"allocations": f"Row {i+1}: invoice must be blank for ON_ACCOUNT."})
+            if adv_total != Decimal("0.00"):
+                raise serializers.ValidationError("Advance GST values must be 0 for ON_ACCOUNT.")
+
+        else:
+            raise serializers.ValidationError({"receipt_type": "Invalid receipt_type."})
+
+        return attrs
+
+    # ---------- create/update ----------
+    @transaction.atomic
+    def create(self, validated_data):
+        allocations_data = validated_data.pop("allocations", [])
+        adjustments_data = validated_data.pop("adjustments", [])
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user:
+            validated_data["created_by"] = user
+
+        rv = ReceiptVoucher.objects.create(**validated_data)
+
+        for row in allocations_data:
+            ReceiptVoucherAllocation.objects.create(receipt_voucher=rv, **row)
+
+        for row in adjustments_data:
+            ReceiptVoucherAdjustment.objects.create(receipt_voucher=rv, **row)
+
+        return rv
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        allocations_data = validated_data.pop("allocations", None)
+        adjustments_data = validated_data.pop("adjustments", None)
+
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+
+        # Replace strategy (simple + safe)
+        if allocations_data is not None:
+            instance.allocations.all().delete()
+            for row in allocations_data:
+                ReceiptVoucherAllocation.objects.create(receipt_voucher=instance, **row)
+
+        if adjustments_data is not None:
+            instance.adjustments.all().delete()
+            for row in adjustments_data:
+                ReceiptVoucherAdjustment.objects.create(receipt_voucher=instance, **row)
+
+        return instance
+
+
+
+class PendingInvoiceSerializer(serializers.Serializer):
+    invoice = serializers.IntegerField()
+    invoiceno = serializers.CharField()
+    invoicedate = serializers.DateField()
+    pendingamount = serializers.DecimalField(max_digits=12, decimal_places=2)
 
 
 

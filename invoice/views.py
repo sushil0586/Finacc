@@ -27,7 +27,7 @@ from invoice.models import (
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,SalesQuotationHeader,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,SalesQuotationDetail,
     newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
-    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,EInvoiceDetails
+    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,EInvoiceDetails,ReceiptVoucher,ReceiptVoucherAllocation
 )
 
 from invoice.serializers import (
@@ -58,8 +58,8 @@ from invoice.serializers import (
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
-    PurchaseSettingsSerializer,SalesQuotationHeaderSerializer,
-    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer,SaleReturnPDFSerializer,PurchaseSupplierEInvoiceCaptureSerializer,PurchaseInvoiceEWayCaptureSerializer
+    PurchaseSettingsSerializer,SalesQuotationHeaderSerializer,ReceiptVoucherSerializer,
+    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer,SaleReturnPDFSerializer,PurchaseSupplierEInvoiceCaptureSerializer,PurchaseInvoiceEWayCaptureSerializer,PendingInvoiceSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -6533,6 +6533,146 @@ class SalesQuotationConvertAPIView(APIView):
             {"invoice_id": hdr.id, "billno": hdr.billno, "invoicenumber": hdr.invoicenumber},
             status=status.HTTP_200_OK,
         )
+
+
+class ReceiptVoucherListCreateAPIView(GenericAPIView):
+    serializer_class = ReceiptVoucherSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_queryset(self):
+        qs = ReceiptVoucher.objects.select_related(
+            "entity", "entityfinid",
+            "received_in", "received_from",
+            "payment_mode",
+            "place_of_supply_state",
+        ).prefetch_related("allocations", "adjustments").order_by("-voucher_date", "-id")
+
+        entity_id = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if entityfinid:
+            qs = qs.filter(entityfinid_id=entityfinid)
+
+        return qs
+
+    def get(self, request):
+        ser = self.serializer_class(self.get_queryset(), many=True)
+        return Response(ser.data)
+
+    def post(self, request):
+        ser = self.serializer_class(data=request.data, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return Response(self.serializer_class(obj).data, status=status.HTTP_201_CREATED)
+
+
+class ReceiptVoucherDetailAPIView(GenericAPIView):
+    serializer_class = ReceiptVoucherSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self, pk):
+        return get_object_or_404(
+            ReceiptVoucher.objects.prefetch_related("allocations", "adjustments"),
+            pk=pk
+        )
+
+    def get(self, request, pk):
+        obj = self.get_object(pk)
+        return Response(self.serializer_class(obj).data)
+
+    def put(self, request, pk):
+        obj = self.get_object(pk)
+        ser = self.serializer_class(obj, data=request.data, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return Response(self.serializer_class(obj).data)
+
+    def patch(self, request, pk):
+        obj = self.get_object(pk)
+        ser = self.serializer_class(obj, data=request.data, partial=True, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return Response(self.serializer_class(obj).data)
+
+
+class ReceiptVoucherPostAPIView(GenericAPIView):
+    permission_classes =[permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        rv = get_object_or_404(ReceiptVoucher, pk=pk)
+
+        if rv.is_posted:
+            return Response({"detail": "Already posted."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Call your double-entry posting service here
+        rv.is_posted = True
+        rv.save(update_fields=["is_posted"])
+
+        return Response({"status": "success", "is_posted": True}, status=status.HTTP_200_OK)
+
+
+
+class ReceiptPendingInvoiceAPIView(GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PendingInvoiceSerializer
+
+    def get(self, request):
+        entity = request.query_params.get("entity")
+        entityfinid = request.query_params.get("entityfinid")
+        party = request.query_params.get("party")
+
+        if not entity or not entityfinid or not party:
+            return Response(
+                {"detail": "entity, entityfinid and party are required"},
+                status=400
+            )
+
+        # Step 1: fetch all sales invoices for customer
+        invoices = (
+            SalesOderHeader.objects
+            .filter(
+                entity_id=entity,
+                entityfinid_id=entityfinid,
+                account_id=party,
+                isactive=True,
+                iscancelled=False,
+            )
+            .order_by("invoicedate", "id")   # FIFO
+        )
+
+        result = []
+
+        for inv in invoices:
+            # Step 2: total invoice value (GST included)
+            invoice_total = Decimal(inv.grandtotal or 0)
+
+            # Step 3: total settled via receipt vouchers
+            settled = (
+                ReceiptVoucherAllocation.objects
+                .filter(
+                    invoice_id=inv.id,
+                    receipt_voucher__entity_id=entity,
+                    receipt_voucher__entityfinid_id=entityfinid,
+                    receipt_voucher__isactive=True,
+                )
+                .aggregate(total=Sum("settled_amount"))["total"] or Decimal("0.00")
+            )
+
+            pending = invoice_total - settled
+
+            # Step 4: return only pending invoices
+            if pending > 0:
+                result.append({
+                    "invoice": inv.id,
+                    "invoiceno": inv.invoicenumber,
+                    "invoicedate": inv.invoicedate,
+                    "pendingamount": pending.quantize(Decimal("0.01")),
+                })
+
+        serializer = self.get_serializer(result, many=True)
+        return Response(serializer.data)
+
+
 
 
 
