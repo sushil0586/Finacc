@@ -11,7 +11,7 @@ from typing import Optional, Any, TYPE_CHECKING
 
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader,DetailKind,VoucherType 
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader,DetailKind,VoucherType 
 from financial.models import account,accountHead,ShippingDetails,staticacounts,staticacountsmapping
 from catalog.models import Product,ProductPrice,ProductGstRate
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -306,17 +306,6 @@ class StockcancelSerializer(StockTxnCancelMixin, CancelSerializerBase):
         return instance
 
 
-class ReceiptVouchercancelSerializer(StockTxnCancelMixin, CancelSerializerBase):
-    transactiontype_code = "RV"
-
-    class Meta:
-        model = ReceiptVoucher
-        fields = ("isactive",)
-
-    def update(self, instance, validated_data):
-        instance = super().update(instance, validated_data)
-        self._update_stock_transactions(instance)
-        return instance
 
 
 class SalesordercancelSerializer(CancelSerializerBase):
@@ -1252,7 +1241,7 @@ class stocktransaction:
 
             elif t == TxnType.PURCHASE_RETURN:
                 # ✅ your actual related_name
-                details = list(order.Purchasereturndetails.all())
+                details = list(order.purchasereturndetails.all())
 
             elif t == TxnType.SALES:
                 # only if you use this shim for sales too; else you can remove
@@ -2084,10 +2073,10 @@ class stockmainSerializer(serializers.ModelSerializer):
             id,created  = entry.objects.get_or_create(entrydate1 = order.entrydate,entity=order.entity)
 
 
-            if detail.issuereceived == True:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate, entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'I',accounttype = 'DD',voucherno = order.voucherno,desc = 'Stock V.No ' + str(order.voucherno))
-            else:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'R',accounttype = 'DD',voucherno = order.voucherno,desc = 'Stock V.No ' + str(order.voucherno))
+            # if detail.issuereceived == True:
+            #     StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate, entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'I',accounttype = 'DD',voucherno = order.voucherno,desc = 'Stock V.No ' + str(order.voucherno))
+            # else:
+            #     StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = order.vouchertype,transactionid = order.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = order.entrydate,entrydatetime = order.entrydate,entity = order.entity,createdby = order.createdby,entry = id,stockttype= 'R',accounttype = 'DD',voucherno = order.voucherno,desc = 'Stock V.No ' + str(order.voucherno))
 
           #  StockTransactions.objects.create(accounthead= detail.account.accounthead,account= detail.account,transactiontype = order.vouchertype,transactionid = order.id,desc = 'Journal V.No' + str(order.voucherno),drcr=detail.drcr,creditamount=detail.creditamount,debitamount=detail.debitamount,entity=order.entity,createdby= order.createdby,entrydate = order.entrydate,entry =id,entrydatetime = order.entrydate)
            # stk.createtransactiondetails(detail=detail,stocktype='S')
@@ -2111,7 +2100,7 @@ class stockmainSerializer(serializers.ModelSerializer):
         instance.save()
        # stk = stocktransactionsale(instance, transactiontype= 'S',debit=1,credit=0,description= 'Sale')
         stockdetails.objects.filter(stockmain=instance,entity = instance.entity).delete()
-        StockTransactions.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
+      #  StockTransactions.objects.filter(entity = instance.entity,transactiontype = instance.vouchertype,transactionid = instance.id).delete()
      #   stk.updateransaction()
 
         journaldetails_data = validated_data.get('stockdetails')
@@ -2121,10 +2110,10 @@ class stockmainSerializer(serializers.ModelSerializer):
             detail = stockdetails.objects.create(stockmain = instance, **journaldetail_data)
            # goodstransaction.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,stockttype = detail.issuereceived,issuedquantity = detail.issuedquantity,recivedquantity = detail.recivedquantity,entrydate = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid)
             #stk.createtransactiondetails(detail=detail,stocktype='S')
-            if detail.issuereceived == True:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'I',accounttype = 'DD',voucherno = instance.voucherno,desc = 'Stock V.No ' + str(instance.voucherno))
-            else:
-                StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'R',accounttype = 'DD',voucherno = instance.voucherno,desc = 'Stock V.No   ' + str(instance.voucherno))
+            # if detail.issuereceived == True:
+            #    # StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.issuedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'I',accounttype = 'DD',voucherno = instance.voucherno,desc = 'Stock V.No ' + str(instance.voucherno))
+            # else:
+               # StockTransactions.objects.create(account= detail.stock.purchaseaccount,stock=detail.stock,transactiontype = instance.vouchertype,transactionid = instance.id,drcr = detail.issuereceived,quantity = detail.recivedquantity,entrydate = instance.entrydate,entrydatetime = instance.entrydate,entity = instance.entity,createdby = instance.createdby,entry = entryid,stockttype= 'R',accounttype = 'DD',voucherno = instance.voucherno,desc = 'Stock V.No   ' + str(instance.voucherno))
 
         
         return instance
@@ -4405,7 +4394,7 @@ class purchasereturndetailsSerializer(serializers.ModelSerializer):
 
 class PurchasereturnSerializer(serializers.ModelSerializer):
     purchasereturndetails = purchasereturndetailsSerializer(many=True)
-    adddetails = AddDetailsSerializer(required=False)
+    adddetails = serializers.DictField(required=False, write_only=True)
 
     class Meta:
         model = PurchaseReturn
@@ -4420,112 +4409,25 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             'purchasereturndetails','adddetails','invoiceMode','eway','einvoice','einvoicepluseway',
         )
 
-    def create(self, validated_data):
-        adddetails_data = validated_data.pop('adddetails', {}) or {}
-        details_data = validated_data.pop('purchasereturndetails', [])
-        validated_data.pop('billno', None)
+    # ===== utilities ==========================================================
 
-        with transaction.atomic():
-            settings = SalesInvoiceSettings.objects.select_for_update().filter(
-                entity=validated_data['entity'].id,
-                entityfinid=validated_data['entityfinid'].id,
-                doctype__doccode='1004'
-            ).first()
-            if not settings:
-                raise serializers.ValidationError({"settings": "SalesInvoiceSettings not configured for this entity/financial year."})
+    @staticmethod
+    def _pk_or_none(val):
+        try:
+            i = int(val)
+            return i if i > 0 else None
+        except Exception:
+            return None
 
-            reset_counter_if_needed(settings)
-            number = build_document_number(settings)
+    @classmethod
+    def _strip_pk(cls, d: dict):
+        if isinstance(d, dict) and 'id' in d and cls._pk_or_none(d.get('id')) is None:
+            d.pop('id', None)
+        return d
 
-            if PurchaseReturn.objects.filter(invoicenumber=number).exists():
-                raise serializers.ValidationError({"invoicenumber": "Duplicate invoice number generated. Please try again."})
-
-            last = PurchaseReturn.objects.filter(entity=validated_data['entity'].id).order_by('-id').first()
-            billno2 = (last.billno + 1) if last else 1
-
-            order = PurchaseReturn.objects.create(**validated_data, billno=billno2, invoicenumber=number)
-
-            # posting object
-            stk = stocktransaction(order, transactiontype='PR', debit=1, credit=0,
-                                       description='Purchase Return', entrytype='I')
-
-            # ---------- adddetails ----------
-            paydtls_data = adddetails_data.get('paydtls')
-            refdtls_data = adddetails_data.get('refdtls')
-            ewbdtls_data = adddetails_data.get('ewbdtls')
-            expdtls_data = adddetails_data.get('expdtls')
-            addldocdtls_data = adddetails_data.get('addldocdtls', []) or []
-
-            if paydtls_data:
-                paydtls_data.pop('id', None)
-                PayDtls.objects.create(purchase_return=order, **paydtls_data)
-            if refdtls_data:
-                refdtls_data.pop('id', None)
-                RefDtls.objects.create(purchase_return=order, **refdtls_data)
-            if ewbdtls_data:
-                ewbdtls_data.pop('id', None)
-                EwbDtls.objects.create(purchase_return=order, **ewbdtls_data)
-            if expdtls_data:
-                expdtls_data.pop('id', None)
-                ExpDtls.objects.create(purchase_return=order, **expdtls_data)
-            for doc_data in addldocdtls_data:
-                doc_data.pop('id', None)
-                AddlDocDtls.objects.create(purchase_return=order, **doc_data)
-
-            # ---------- details + othercharges ----------
-            for row in details_data:
-                row.pop('id', None)
-                othercharges = row.pop('otherchargesdetail', []) or []
-
-                detail = Purchasereturndetails.objects.create(purchasereturn=order, **row)
-                stk.createtransactiondetails(detail=detail, stocktype='S')
-
-                for oc in othercharges:
-                    oc.pop('id', None)
-                    oc_obj = Purchasereturnothercharges.objects.create(purchasereturnorderdetail=detail, **oc)
-                    stk.createothertransactiondetails(detail=oc_obj, stocktype='S')
-
-            # ---------- e-invoice ----------
-            einvoice_data = PurchasereturnFullSerializer(order).data
-            json_data = json.dumps(einvoice_data, indent=4, default=str)
-            gst_response = gstinvoice(order, json_data)
-
-            if gst_response.get("status_cd") == "1":
-                data = gst_response["data"]
-                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
-
-                EInvoiceDetails.objects.update_or_create(
-                    content_type=ContentType.objects.get_for_model(order),
-                    object_id=order.id,
-                    defaults={
-                        "irn": data["Irn"],
-                        "ack_no": data["AckNo"],
-                        "ack_date": ack_dt,
-                        "signed_invoice": data["SignedInvoice"],
-                        "signed_qr_code": data["SignedQRCode"],
-                        "status": data.get("Status", "ACT"),
-                        "ewb_no": data.get("EwbNo"),
-                        "ewb_date": ewb_dt,
-                        "ewb_valid_till": ewb_valid_till,
-                        "remarks": data.get("Remarks"),
-                    }
-                )
-
-            # ✅ POST ONLY ONCE everything is created
-            stk.createtransaction()
-
-            settings.current_number += 1
-            settings.save()
-
-            return order
-
-    def update(self, instance, validated_data):
-        adddetails_data = validated_data.pop('adddetails', {}) or {}
-        submitted_details = validated_data.pop('purchasereturndetails', [])
-
-        header_fields = [
+    @staticmethod
+    def _header_update_fields():
+        return [
             'sorderdate','billno','accountid','state','district','city','pincode','latepaymentalert',
             'grno','terms','vehicle','taxtype','billcash','supply','totalquanity','totalpieces','advance',
             'shippedto','remarks','transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1',
@@ -4535,101 +4437,376 @@ class PurchasereturnSerializer(serializers.ModelSerializer):
             'invoicetype','reversecharge','invoiceMode','eway','einvoice','einvoicepluseway',
         ]
 
-        with transaction.atomic():
-            instance = PurchaseReturn.objects.select_for_update().get(pk=instance.pk)
+    def _ct_for(self, obj):
+        return ContentType.objects.get_for_model(obj, for_concrete_model=False)
 
-            # 1) update header first
-            for f in header_fields:
-                if f in validated_data:
-                    setattr(instance, f, validated_data[f])
-            instance.save(update_fields=header_fields)
+    # ===== adddetails upsert (invoice-style, safe) ===========================
 
-            # 2) upsert adddetails (IMPORTANT: use purchase_return FK, not invoice)
-            paydtls_data = adddetails_data.get('paydtls')
-            refdtls_data = adddetails_data.get('refdtls')
-            ewbdtls_data = adddetails_data.get('ewbdtls')
-            expdtls_data = adddetails_data.get('expdtls')
-            addldocdtls_data = adddetails_data.get('addldocdtls', []) or []
+    def _upsert_adddetails(self, order, adddetails_data: dict, is_update: bool):
+        adddetails_data = adddetails_data or {}
 
-            if paydtls_data:
-                PayDtls.objects.update_or_create(purchase_return=instance, defaults=paydtls_data)
-            if refdtls_data:
-                RefDtls.objects.update_or_create(purchase_return=instance, defaults=refdtls_data)
-            if ewbdtls_data:
-                EwbDtls.objects.update_or_create(purchase_return=instance, defaults=ewbdtls_data)
-            if expdtls_data:
-                ExpDtls.objects.update_or_create(purchase_return=instance, defaults=expdtls_data)
+        paydtls_data     = dict(adddetails_data.get('paydtls') or {}) or None
+        refdtls_data     = dict(adddetails_data.get('refdtls') or {}) or None
+        ewbdtls_data     = dict(adddetails_data.get('ewbdtls') or {}) or None
+        expdtls_data     = dict(adddetails_data.get('expdtls') or {}) or None
+        addldocdtls_list = list(adddetails_data.get('addldocdtls') or [])
 
-            existing_docs = list(AddlDocDtls.objects.filter(purchase_return=instance))
-            existing_doc_ids = {d.id for d in existing_docs}
-            incoming_doc_ids = set()
+        # PayDtls
+        if paydtls_data:
+            paydtls_data.pop('id', None)
+            if is_update:
+                PayDtls.objects.update_or_create(purchase_return=order, defaults=paydtls_data)
+            else:
+                PayDtls.objects.create(purchase_return=order, **paydtls_data)
 
-            for doc_data in addldocdtls_data:
-                doc_id = doc_data.get('id', 0)
-                if doc_id and doc_id in existing_doc_ids:
-                    doc = AddlDocDtls.objects.get(id=doc_id, purchase_return=instance)
-                    for k, v in doc_data.items():
-                        setattr(doc, k, v)
-                    doc.save()
-                    incoming_doc_ids.add(doc_id)
+        # RefDtls
+        if refdtls_data:
+            refdtls_data.pop('id', None)
+            if is_update:
+                RefDtls.objects.update_or_create(purchase_return=order, defaults=refdtls_data)
+            else:
+                RefDtls.objects.create(purchase_return=order, **refdtls_data)
+
+        # EwbDtls
+        if ewbdtls_data:
+            ewbdtls_data.pop('id', None)
+            if is_update:
+                EwbDtls.objects.update_or_create(purchase_return=order, defaults=ewbdtls_data)
+            else:
+                EwbDtls.objects.create(purchase_return=order, **ewbdtls_data)
+
+        # ExpDtls
+        if expdtls_data:
+            expdtls_data.pop('id', None)
+            if is_update:
+                ExpDtls.objects.update_or_create(purchase_return=order, defaults=expdtls_data)
+            else:
+                ExpDtls.objects.create(purchase_return=order, **expdtls_data)
+
+        # AddlDocDtls (upsert list)
+        if is_update:
+            existing_qs  = AddlDocDtls.objects.filter(purchase_return=order)
+            existing_map = {d.id: d for d in existing_qs}
+            existing_ids = set(existing_map.keys())
+            incoming_ids = set()
+
+            for doc in addldocdtls_list:
+                doc = dict(doc or {})
+                doc_id = self._pk_or_none(doc.get("id"))
+                clean = {k: v for k, v in doc.items() if k != "id"}
+
+                if doc_id and doc_id in existing_ids:
+                    obj = existing_map[doc_id]
+                    for k, v in clean.items():
+                        setattr(obj, k, v)
+                    obj.save()
+                    incoming_ids.add(doc_id)
                 else:
-                    doc_data.pop('id', None)
-                    AddlDocDtls.objects.create(purchase_return=instance, **doc_data)
+                    AddlDocDtls.objects.create(purchase_return=order, **clean)
 
-            to_delete = existing_doc_ids - incoming_doc_ids
+            to_delete = existing_ids - incoming_ids
             if to_delete:
                 AddlDocDtls.objects.filter(id__in=to_delete).delete()
+        else:
+            for doc in addldocdtls_list:
+                doc = dict(doc or {})
+                doc.pop("id", None)
+                AddlDocDtls.objects.create(purchase_return=order, **doc)
 
-            # 3) upsert details + recreate othercharges
-            existing = list(Purchasereturndetails.objects.filter(purchasereturn=instance, entity=instance.entity))
-            by_id = {x.id: x for x in existing}
-            seen = set()
+    # ===== details upsert (NO per-line posting) ===============================
 
-            for row in submitted_details:
-                detail_id = row.get('id', 0)
-                othercharges_data = row.pop('otherchargesdetail', []) or []
+    def _upsert_details(self, order, details_data: list, is_update: bool):
+        if not is_update:
+            for row in details_data:
+                row = dict(row or {})
+                self._strip_pk(row)
 
-                if not detail_id:
-                    row.pop('id', None)
-                    d = Purchasereturndetails.objects.create(purchasereturn=instance, **row)
-                else:
-                    d = by_id.get(detail_id)
-                    if not d:
-                        continue
+                othercharges = list(row.pop('otherchargesdetail', []) or [])
+                detail = Purchasereturndetails.objects.create(purchasereturn=order, **row)
+
+                for oc in othercharges:
+                    oc = dict(oc or {})
+                    self._strip_pk(oc)
+                    Purchasereturnothercharges.objects.create(purchasereturnorderdetail=detail, **oc)
+            return
+
+        existing_map = {d.id: d for d in Purchasereturndetails.objects.filter(purchasereturn=order)}
+        existing_ids = set(existing_map.keys())
+        seen_ids = set()
+
+        for row in details_data:
+            row = dict(row or {})
+            detail_id = self._pk_or_none(row.get('id'))
+            row.pop('id', None)
+
+            othercharges = list(row.pop('otherchargesdetail', []) or [])
+
+            if detail_id is None:
+                d = Purchasereturndetails.objects.create(purchasereturn=order, **row)
+            else:
+                d = existing_map.get(detail_id)
+                if d:
+                    seen_ids.add(detail_id)
                     for k, v in row.items():
-                        if k != "id":
-                            setattr(d, k, v)
+                        setattr(d, k, v)
                     d.save()
+                else:
+                    d = Purchasereturndetails.objects.create(purchasereturn=order, **row)
 
-                seen.add(d.id)
+            # refresh othercharges
+            Purchasereturnothercharges.objects.filter(purchasereturnorderdetail=d).delete()
+            for oc in othercharges:
+                oc = dict(oc or {})
+                self._strip_pk(oc)
+                Purchasereturnothercharges.objects.create(purchasereturnorderdetail=d, **oc)
 
-                Purchasereturnothercharges.objects.filter(purchasereturnorderdetail=d).delete()
-                for oc in othercharges_data:
-                    oc.pop('id', None)
-                    Purchasereturnothercharges.objects.create(purchasereturnorderdetail=d, **oc)
+        to_delete = existing_ids - seen_ids
+        if to_delete:
+            Purchasereturndetails.objects.filter(id__in=to_delete).delete()
 
-            # delete removed lines
-            to_delete_ids = set(by_id.keys()) - seen
-            if to_delete_ids:
-                Purchasereturndetails.objects.filter(id__in=to_delete_ids).delete()
+    # ===== posting (single authoritative) ====================================
 
-            # 4) ✅ POSTING AT END (Sales-return style)
-            stk = stocktransaction(instance, transactiontype='PR', debit=1, credit=0,
-                                       description='Purchase Return', entrytype='U')
+    def _post_once_via_shim(self, order, entrytype: str):
+        """
+        IMPORTANT: only call createtransaction() once.
+        Your stocktransaction implementation should re-query detail lines + othercharges.
+        """
+        stk = stocktransaction(order, transactiontype='PR', debit=1, credit=0,
+                               description='Purchase Return', entrytype=entrytype)
+        stk.createtransaction()
 
-            current_lines = list(
-                Purchasereturndetails.objects.filter(purchasereturn=instance)
-                .select_related("product")
-                .prefetch_related("otherchargesdetail")
+    # ===== GST helpers (after-commit) ========================================
+
+    def _parse_mastergst_dt(self, value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        s = str(value).strip()
+        for fmt in MASTERGST_DT_FORMATS:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        raise ValidationError({"gst": f"Unsupported datetime format from MasterGST: {s}"})
+
+    def _persist_einvoice_details(self, order, ct, data: dict):
+        ack_dt = self._parse_mastergst_dt(data.get("AckDt"))
+        ewb_dt = self._parse_mastergst_dt(data.get("EwbDt"))
+        ewb_valid_till = self._parse_mastergst_dt(data.get("EwbValidTill"))
+
+        irn = data.get("Irn")
+        if not irn:
+            raise ValidationError({"einvoice": "MasterGST response missing IRN (Irn)."})
+
+        EInvoiceDetails.objects.update_or_create(
+            content_type=ct,
+            object_id=order.id,
+            defaults={
+                "irn": irn,
+                "ack_no": data.get("AckNo"),
+                "ack_date": ack_dt,
+                "signed_invoice": data.get("SignedInvoice"),
+                "signed_qr_code": data.get("SignedQRCode"),
+                "status": data.get("Status", "ACT"),
+                "ewb_no": data.get("EwbNo"),
+                "ewb_date": ewb_dt,
+                "ewb_valid_till": ewb_valid_till,
+                "remarks": data.get("Remarks"),
+            }
+        )
+
+    def _generate_einvoice_if_needed(self, order, mode: str, ct):
+        existing = EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).only("irn").first()
+        if existing and existing.irn:
+            return existing.irn
+
+        payload = PurchasereturnFullSerializer(order, context={"mode": mode}).data
+        resp = gstinvoice(order, json.dumps(payload, default=str))
+
+        if not isinstance(resp, dict):
+            raise ValidationError({"einvoice": "Unexpected response from gstinvoice()."})
+
+        if str(resp.get("status_cd")) != "1":
+            raise ValidationError({
+                "einvoice": resp.get("status_desc", "E-Invoice generation failed."),
+                "details": resp,
+            })
+
+        data = resp.get("data") or {}
+        self._persist_einvoice_details(order, ct, data)
+        return data.get("Irn")
+
+    def _generate_eway_from_irn(self, order, ct):
+        einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).first()
+        if not (einv and einv.irn):
+            raise ValidationError({"eway": "IRN not found for this purchase return. Cannot generate E-Way Bill."})
+
+        ewb = EwbDtls.objects.filter(purchase_return=order).first()
+        if not ewb:
+            raise ValidationError({"eway": "E-Way Bill details not found for this purchase return."})
+
+        distance = int(getattr(ewb, "Distance", 0) or 0)
+        if distance <= 0:
+            raise ValidationError({"eway": "Distance must be > 0."})
+
+        payload = {
+            "Irn": einv.irn,
+            "Distance": distance,
+            "TransMode": str(getattr(ewb, "TransMode", "") or ""),
+            "TransId": (getattr(ewb, "TransId", "") or "").strip(),
+            "TransName": (getattr(ewb, "TransName", "") or "").strip(),
+            "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y") if getattr(ewb, "TransDocDt", None) else None,
+            "TransDocNo": (getattr(ewb, "TransDocNo", "") or "").strip(),
+            "VehNo": (getattr(ewb, "VehNo", "") or "").strip(),
+            "VehType": (getattr(ewb, "VehType", "") or "").strip(),
+        }
+
+        resp = gst_ewaybill(order, payload)
+        if isinstance(resp, dict) and str(resp.get("status_cd")) != "1":
+            raise ValidationError({
+                "eway": resp.get("status_desc") or "E-Way Bill generation failed.",
+                "details": resp
+            })
+        return resp
+
+    def _post_process_gst(self, order_id: int, mode: str, is_create: bool):
+        """
+        AFTER COMMIT.
+        Updates PurchaseReturn.einvoice / eway flags based on GST outcome.
+        """
+        order = PurchaseReturn.objects.get(id=order_id)
+        ct = self._ct_for(order)
+
+        try:
+            if mode == "none":
+                return
+
+            if mode == "einvoice":
+                self._generate_einvoice_if_needed(order, mode, ct)
+                PurchaseReturn.objects.filter(id=order.id).update(einvoice=True, eway=False)
+                return
+
+            if mode == "eway":
+                if is_create:
+                    return  # same behavior as your invoice serializer (eway on update only)
+                self._generate_eway_from_irn(order, ct)
+                PurchaseReturn.objects.filter(id=order.id).update(eway=True)
+                return
+
+            if mode == "both":
+                self._generate_einvoice_if_needed(order, mode, ct)
+                PurchaseReturn.objects.filter(id=order.id).update(einvoice=True)
+                self._generate_eway_from_irn(order, ct)
+                PurchaseReturn.objects.filter(id=order.id).update(eway=True)
+                return
+
+        except Exception as e:
+            logger.exception("GST failed purchase_return_id=%s mode=%s", order.id, mode)
+
+            updates = {}
+            if mode in ("einvoice", "both"):
+                updates["einvoice"] = False
+            if mode in ("eway", "both"):
+                updates["eway"] = False
+            if updates:
+                PurchaseReturn.objects.filter(id=order.id).update(**updates)
+
+            EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).update(
+                status="ERR",
+                remarks=str(e),
             )
-            for d in current_lines:
-                stk.createtransactiondetails(detail=d, stocktype='S')
-                for oc in d.otherchargesdetail.all():
-                    stk.createothertransactiondetails(detail=oc, stocktype='S')
+            return
 
-            stk.createtransaction()
+    # ===== numbering (billno retry) ==========================================
 
-            return instance
+    def _number_and_create_header(self, validated_data) -> PurchaseReturn:
+        validated_data.pop('billno', None)
+        validated_data.pop('invoicenumber', None)
+
+        settings = (SalesInvoiceSettings.objects
+                    .select_for_update()
+                    .filter(entity=validated_data['entity'].id,
+                            entityfinid=validated_data['entityfinid'].id,
+                            doctype__doccode='1004')  # Purchase Return doccode
+                    .first())
+        if not settings:
+            raise ValidationError({"settings": "SalesInvoiceSettings not configured for this entity/financial year."})
+
+        reset_counter_if_needed(settings)
+        number = build_document_number(settings)
+
+        if PurchaseReturn.objects.filter(invoicenumber=number).exists():
+            raise ValidationError({"invoicenumber": "Duplicate invoice number generated. Please try again."})
+
+        for _ in range(3):
+            max_bill = (PurchaseReturn.objects
+                        .filter(entity=validated_data['entity'])
+                        .aggregate(m=Max('billno'))['m'] or 0)
+            next_bill = max_bill + 1
+            try:
+                order = PurchaseReturn.objects.create(**validated_data, billno=next_bill, invoicenumber=number)
+                settings.current_number += 1
+                settings.save()
+                return order
+            except IntegrityError:
+                continue
+
+        raise ValidationError({"billno": "Unable to generate unique billno after retries. Please try again."})
+
+    # ===== CREATE / UPDATE ====================================================
+
+    @transaction.atomic
+    def create(self, validated_data):
+        details_data    = validated_data.pop('purchasereturndetails', [])
+        adddetails_data = validated_data.pop('adddetails', {}) or {}
+
+        mode = _mode_from_invoice_mode(validated_data)
+
+        order = self._number_and_create_header(validated_data)
+
+        self._upsert_adddetails(order, adddetails_data, is_update=False)
+        self._upsert_details(order, details_data, is_update=False)
+
+        # ✅ post once
+        self._post_once_via_shim(order, entrytype='I')
+
+        # ✅ GST after commit (only if requested)
+        if mode != "none":
+            transaction.on_commit(
+                lambda: self._post_process_gst(order.id, mode=mode, is_create=True)
+            )
+
+        return order
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        details_data    = validated_data.pop('purchasereturndetails', [])
+        adddetails_data = validated_data.pop('adddetails', {}) or {}
+
+        touched = []
+        for f in self._header_update_fields():
+            if f in validated_data:
+                setattr(instance, f, validated_data[f])
+                touched.append(f)
+
+        if touched:
+            instance.save(update_fields=list(set(touched)))
+
+        mode = _mode_from_invoice_mode(validated_data) if "invoiceMode" in validated_data else _mode_from_invoice_mode(instance)
+
+        self._upsert_adddetails(instance, adddetails_data, is_update=True)
+        self._upsert_details(instance, details_data, is_update=True)
+
+        # ✅ post once
+        self._post_once_via_shim(instance, entrytype='U')
+
+        if mode != "none":
+            transaction.on_commit(
+                lambda: self._post_process_gst(instance.id, mode=mode, is_create=False)
+            )
+
+        return instance
 
 
 
@@ -5099,13 +5276,49 @@ def _recompute_purchase_totals(po: purchaseorder) -> None:
     #     half = q2(totalgst / Decimal("2")); po.cgst = half; po.sgst = totalgst - half; po.igst = ZERO2
 
 
+class PurchaseSupplierEInvoiceCaptureSerializer(serializers.Serializer):
+    irn = serializers.CharField(required=True, max_length=128)
+    ack_no = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=64)
+    ack_date = serializers.DateTimeField(required=False, allow_null=True)
+    signed_qr_code = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
+    def validate_irn(self, v):
+        v = (v or "").strip()
+        if len(v) < 16:
+            raise serializers.ValidationError("Invalid IRN.")
+        return v
+
+
+class PurchaseInvoiceEWayCaptureSerializer(serializers.Serializer):
+    # Capturing only: EWB number and dates (from supplier/transport docs)
+    EwbNo = serializers.CharField(max_length=20, required=True)
+    EwbDt = serializers.DateTimeField(required=False, allow_null=True)
+    EwbValidTill = serializers.DateTimeField(required=False, allow_null=True)
+
+    # Optional transport fields you may want to store (not mandatory)
+    TransId = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
+    TransName = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    Distance = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True)
+    TransDocNo = serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True)
+    TransMode = serializers.CharField(max_length=1, required=False, allow_null=True, allow_blank=True)
+    TransDocDt = serializers.DateTimeField(required=False, allow_null=True)
+    VehNo = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
+    VehType = serializers.CharField(max_length=1, required=False, allow_null=True, allow_blank=True)
+
+    def validate_EwbNo(self, v):
+        v = (v or "").strip()
+        if len(v) < 8:
+            raise serializers.ValidationError("Invalid E-Way Bill number.")
+        return v
 
 class purchaseorderSerializer(serializers.ModelSerializer):
+    # ---------- nested ----------
     purchaseInvoiceDetails = PurchaseOrderDetailsSerializer(many=True)
+    supplier_einvoice_details = serializers.SerializerMethodField(read_only=True)
+    eway_details = serializers.SerializerMethodField(read_only=True)
     attachments = PurchaseOrderAttachmentSerializer(many=True, required=False, allow_null=True, default=list)
 
-    # validators kept optional (totals may be omitted in POST)
+    # ---------- optional numeric fields ----------
     stbefdiscount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
     discount      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
     subtotal      = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO2, required=False)
@@ -5127,222 +5340,311 @@ class purchaseorderSerializer(serializers.ModelSerializer):
             'stbefdiscount','discount','subtotal','addless','cgst','sgst','igst','totalgst',
             'reversecharge','invoicetype','cess','expenses','gtotal','roundOff','finalAmount',
             'entityfinid','subentity','entity','isactive',
-            'purchaseInvoiceDetails','attachments',
+            'purchaseInvoiceDetails','attachments','supplier_einvoice_details','eway_details',
         )
 
-    def validate(self, attrs):
-        is_inter = _purchase_is_inter(attrs, attrs.get("purchaseInvoiceDetails") or [])
-        attrs.pop('isigst', None)
+    def get_supplier_einvoice_details(self, obj):
+        ct = ContentType.objects.get_for_model(obj, for_concrete_model=False)
+        einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=obj.id).first()
+        if not einv:
+            return None
+        return {
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
+            "status": einv.status,
+            "remarks": einv.remarks,
+        }
 
-        igst_in = q2(attrs.get("igst", ZERO2) or ZERO2)
-        cgst_in = q2(attrs.get("cgst", ZERO2) or ZERO2)
-        sgst_in = q2(attrs.get("sgst", ZERO2) or ZERO2)
+    def get_eway_details(self, obj):
+        ewb = getattr(obj, "ewbdtls3", None)  # related_name we set
+        if not ewb:
+            return None
+        return {
+            "EwbNo": getattr(ewb, "EwbNo", None),
+            "EwbDt": ewb.EwbDt.strftime("%d/%m/%Y %H:%M:%S") if getattr(ewb, "EwbDt", None) else None,
+            "EwbValidTill": ewb.EwbValidTill.strftime("%d/%m/%Y %H:%M:%S") if getattr(ewb, "EwbValidTill", None) else None,
+            "TransId": getattr(ewb, "TransId", None),
+            "TransName": getattr(ewb, "TransName", None),
+            "Distance": str(getattr(ewb, "Distance", "") or "") or None,
+            "VehNo": getattr(ewb, "VehNo", None),
+            "TransDocNo": getattr(ewb, "TransDocNo", None),
+        }
+
+    # ===== utilities ==========================================================
+
+    @staticmethod
+    def _pk_or_none(val):
+        try:
+            i = int(val)
+            return i if i > 0 else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _strip_pk(cls, d: dict):
+        if isinstance(d, dict) and 'id' in d and cls._pk_or_none(d.get('id')) is None:
+            d.pop('id', None)
+        return d
+
+    @staticmethod
+    def _header_update_fields():
+        return [
+            'voucherdate','voucherno','account','state','district','city','pincode',
+            'billno','billdate','showledgeraccount','terms','taxtype','reversecharge',
+            'invoicetype','billcash','totalpieces','totalquanity','advance','remarks',
+            'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2',
+            'tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno',
+            'gstr2astatus','stbefdiscount','discount','subtotal','addless',
+            'cgst','sgst','igst','totalgst','cess','expenses','gtotal','roundOff',
+            'finalAmount','entityfinid','subentity','entity','isactive'
+        ]
+
+    # ===== tax enforcement (single source of truth) ==========================
+
+    def _decide_and_enforce_is_inter(self, header_like: dict, details_data: list):
+        """
+        Decide inter/intra and enforce header + detail tax combo to satisfy DB constraints:
+        - If inter => IGST kept, CGST/SGST forced 0, details isigst=True, cgst/sgst=0
+        - Else     => CGST/SGST kept, IGST forced 0, details isigst=False, igst=0
+        """
+        is_inter = _purchase_is_inter(header_like, details_data)
+
+        igst_in = q2(header_like.get("igst", ZERO2) or ZERO2)
+        cgst_in = q2(header_like.get("cgst", ZERO2) or ZERO2)
+        sgst_in = q2(header_like.get("sgst", ZERO2) or ZERO2)
+
         if is_inter:
-            attrs["igst"] = igst_in; attrs["cgst"] = ZERO2; attrs["sgst"] = ZERO2
+            header_like["igst"] = igst_in
+            header_like["cgst"] = ZERO2
+            header_like["sgst"] = ZERO2
         else:
-            attrs["igst"] = ZERO2;   attrs["cgst"] = cgst_in; attrs["sgst"] = sgst_in
+            header_like["igst"] = ZERO2
+            header_like["cgst"] = cgst_in
+            header_like["sgst"] = sgst_in
 
-        for d in attrs.get("purchaseInvoiceDetails") or []:
+        for d in details_data or []:
             _normalize_purchase_detail_taxes(d, is_inter)
+
+        return is_inter
+
+    def validate(self, attrs):
+        # details key present during serializer validation
+        details = attrs.get("purchaseInvoiceDetails") or []
+        attrs.pop("isigst", None)  # model does not need it
+
+        # enforce taxes based on business rule
+        self._decide_and_enforce_is_inter(attrs, details)
+
+        # remove non-model keys in nested dicts if present
+        for d in details:
+            if isinstance(d, dict):
+                d.pop("productname", None)
+
         return attrs
 
-    def create(self, validated_data):
-        with transaction.atomic():
-            details_data = validated_data.pop('purchaseInvoiceDetails', [])
-            attachments_data = validated_data.pop('attachments', []) or []
+    # ===== upsert helpers =====================================================
 
-            is_inter = _purchase_is_inter(validated_data, details_data)
-            validated_data.pop('isigst', None)
-
-            igst_in = q2(validated_data.get("igst", ZERO2) or ZERO2)
-            cgst_in = q2(validated_data.get("cgst", ZERO2) or ZERO2)
-            sgst_in = q2(validated_data.get("sgst", ZERO2) or ZERO2)
-            if is_inter:
-                validated_data["igst"] = igst_in; validated_data["cgst"] = ZERO2; validated_data["sgst"] = ZERO2
-            else:
-                validated_data["igst"] = ZERO2;   validated_data["cgst"] = cgst_in; validated_data["sgst"] = sgst_in
-
-            for d in details_data:
-                d.pop('id', None)
-                d.pop('productname', None)
-                _normalize_purchase_detail_taxes(d, is_inter)
-
-            order = purchaseorder.objects.create(**validated_data)
-
-            # ---- details + othercharges ----
+    def _upsert_details(self, order, details_data: list, is_update: bool):
+        """
+        Create/Update PurchaseOrderDetails and purchaseothercharges.
+        No posting here.
+        """
+        if not is_update:
             for row in details_data:
-                other_charges = row.pop('otherchargesdetail', [])
-                detail = PurchaseOrderDetails.objects.create(purchaseorder=order, **row)
+                row = dict(row or {})
+                self._strip_pk(row)
+                row.pop("productname", None)
+
+                other_charges = list(row.pop("otherchargesdetail", []) or [])
+                d = PurchaseOrderDetails.objects.create(purchaseorder=order, **row)
+
                 for oc in other_charges:
-                    purchaseothercharges.objects.create(purchaseorderdetail=detail, **oc)
-
-            # ---- attachments ----
-            for att in attachments_data:
-                att.pop('id', None)
-                PurchaseOrderAttachment.objects.create(purchase_order=order, **att)
-
-            # ---- totals (optional) ----
-            if AUTO_RECALC_TOTALS:
-                _recompute_purchase_totals(order)
-                order.save(update_fields=["stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"])
-
-            # ---- posting: MUST be inside same atomic ----
-            try:
-                stk = stocktransaction(
-                    order, transactiontype='P', debit=1, credit=0,
-                    description='To Purchase V.No: ', entrytype='I'
-                )
-
-                current_lines = list(
-                    PurchaseOrderDetails.objects.filter(purchaseorder=order)
-                    .select_related("product")
-                    .prefetch_related("otherchargesdetail")
-                )
-                for d in current_lines:
-                    stk.createtransactiondetails(detail=d, stocktype='P')
-                    for oc in d.otherchargesdetail.all():
-                        stk.createothertransactiondetails(detail=oc, stocktype='P')
-
-                stk.createtransaction()
-
-            except Exception as e:
-                # IMPORTANT: re-raise so atomic rolls back header + lines + attachments + posting
-                raise serializers.ValidationError({"posting": str(e)})
-
-            return order
-
-    def update(self, instance, validated_data):
-        with transaction.atomic():
-            # lock row so concurrent updates don’t corrupt posting
-            instance = purchaseorder.objects.select_for_update().get(pk=instance.pk)
-
-            fields = [
-                'voucherdate','voucherno','account','state','district','city','pincode',
-                'billno','billdate','showledgeraccount','terms','taxtype','reversecharge',
-                'invoicetype','billcash','totalpieces','totalquanity','advance','remarks',
-                'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2',
-                'tcs206c1ch3','tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno',
-                'gstr2astatus','stbefdiscount','discount','subtotal','addless',
-                'cgst','sgst','igst','totalgst','cess','expenses','gtotal','roundOff',
-                'finalAmount','entityfinid','subentity','entity','isactive'
-            ]
-
-            details_data     = validated_data.pop('purchaseInvoiceDetails', [])
-            attachments_data = validated_data.pop('attachments', []) or []
-            validated_data.pop('isigst', None)
-
-            for f in fields:
-                if f in validated_data:
-                    setattr(instance, f, validated_data[f])
-
-            header_view = {
-                "entity": instance.entity,
-                "shippedto": getattr(instance, "shippedto", None),
-                "state": instance.state,
-                "cgst": q2(getattr(instance, "cgst", ZERO2) or ZERO2),
-                "sgst": q2(getattr(instance, "sgst", ZERO2) or ZERO2),
-                "igst": q2(getattr(instance, "igst", ZERO2) or ZERO2),
-            }
-            is_inter = _purchase_is_inter(header_view, details_data)
-
-            igst_now = q2(getattr(instance, "igst", ZERO2) or ZERO2)
-            cgst_now = q2(getattr(instance, "cgst", ZERO2) or ZERO2)
-            sgst_now = q2(getattr(instance, "sgst", ZERO2) or ZERO2)
-            if is_inter:
-                instance.igst = igst_now; instance.cgst = ZERO2; instance.sgst = ZERO2
-            else:
-                instance.igst = ZERO2;    instance.cgst = cgst_now; instance.sgst = sgst_now
-
-            for d in details_data:
-                d.pop('productname', None)
-                _normalize_purchase_detail_taxes(d, is_inter)
-
-            instance.save(update_fields=fields)
-
-            # ---- details upsert ----
-            existing = list(PurchaseOrderDetails.objects.filter(purchaseorder=instance))
-            by_id = {x.id: x for x in existing}
-            seen = set()
-
-            for row in details_data:
-                detail_id = row.get('id', 0)
-                other_charges = row.pop('otherchargesdetail', [])
-
-                if not detail_id:
-                    row.pop('id', None)
-                    d = PurchaseOrderDetails.objects.create(purchaseorder=instance, **row)
-                else:
-                    d = by_id.get(detail_id)
-                    if not d:
-                        continue
-                    seen.add(detail_id)
-                    for k, v in row.items():
-                        if k != "id":
-                            setattr(d, k, v)
-                    d.save()
-
-                seen.add(d.id)
-
-                purchaseothercharges.objects.filter(purchaseorderdetail=d).delete()
-                for oc in other_charges:
+                    oc = dict(oc or {})
+                    self._strip_pk(oc)
                     purchaseothercharges.objects.create(purchaseorderdetail=d, **oc)
+            return
 
-            to_delete = set(by_id.keys()) - seen
-            if to_delete:
-                PurchaseOrderDetails.objects.filter(id__in=to_delete).delete()
+        existing_map = {d.id: d for d in PurchaseOrderDetails.objects.filter(purchaseorder=order)}
+        existing_ids = set(existing_map.keys())
+        seen_ids = set()
 
-            # ---- attachments diff ----
-            existing_atts = list(PurchaseOrderAttachment.objects.filter(purchase_order=instance))
-            by_id_att = {a.id: a for a in existing_atts}
-            incoming_ids = set()
+        for row in details_data:
+            row = dict(row or {})
+            row.pop("productname", None)
 
-            for att in attachments_data:
-                att_id = att.get('id', 0)
-                if att_id and att_id in by_id_att:
-                    a = by_id_att[att_id]
-                    for k, v in att.items():
-                        if k != "id":
-                            setattr(a, k, v)
-                    a.save()
-                    incoming_ids.add(att_id)
+            detail_id = self._pk_or_none(row.get("id"))
+            row.pop("id", None)
+
+            other_charges = list(row.pop("otherchargesdetail", []) or [])
+
+            if detail_id is None:
+                d = PurchaseOrderDetails.objects.create(purchaseorder=order, **row)
+            else:
+                d = existing_map.get(detail_id)
+                if d:
+                    seen_ids.add(detail_id)
+                    for k, v in row.items():
+                        setattr(d, k, v)
+                    d.save()
                 else:
-                    PurchaseOrderAttachment.objects.create(
-                        purchase_order=instance,
-                        **{k: v for k, v in att.items() if k != "id"}
-                    )
+                    d = PurchaseOrderDetails.objects.create(purchaseorder=order, **row)
 
-            to_del = set(by_id_att.keys()) - incoming_ids
-            if to_del:
-                PurchaseOrderAttachment.objects.filter(id__in=to_del).delete()
+            # refresh othercharges
+            purchaseothercharges.objects.filter(purchaseorderdetail=d).delete()
+            for oc in other_charges:
+                oc = dict(oc or {})
+                self._strip_pk(oc)
+                purchaseothercharges.objects.create(purchaseorderdetail=d, **oc)
 
-            # ---- totals ----
-            if AUTO_RECALC_TOTALS:
-                _recompute_purchase_totals(instance)
-                instance.save(update_fields=["stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"])
+        # delete removed lines
+        to_delete = existing_ids - seen_ids
+        if to_delete:
+            PurchaseOrderDetails.objects.filter(id__in=to_delete).delete()
 
-            # ---- posting ----
-            try:
-                stk = stocktransaction(
-                    instance, transactiontype='P', debit=1, credit=0,
-                    description='To Purchase V.No: ', entrytype='U'
-                )
+    def _sync_attachments(self, order, attachments_data: list, is_update: bool):
+        """
+        Create or diff attachments.
+        """
+        attachments_data = list(attachments_data or [])
 
-                current_lines = list(
-                    PurchaseOrderDetails.objects.filter(purchaseorder=instance)
-                    .select_related("product")
-                    .prefetch_related("otherchargesdetail")
-                )
-                for d in current_lines:
-                    stk.createtransactiondetails(detail=d, stocktype='P')
-                    for oc in d.otherchargesdetail.all():
-                        stk.createothertransactiondetails(detail=oc, stocktype='P')
+        if not is_update:
+            for att in attachments_data:
+                att = dict(att or {})
+                self._strip_pk(att)
+                PurchaseOrderAttachment.objects.create(purchase_order=order, **att)
+            return
 
-                stk.createtransaction()
+        existing = list(PurchaseOrderAttachment.objects.filter(purchase_order=order))
+        by_id = {a.id: a for a in existing}
+        incoming_ids = set()
 
-            except Exception as e:
-                raise serializers.ValidationError({"posting": str(e)})
+        for att in attachments_data:
+            att = dict(att or {})
+            att_id = self._pk_or_none(att.get("id"))
+            clean = {k: v for k, v in att.items() if k != "id"}
 
-            return instance
+            if att_id and att_id in by_id:
+                a = by_id[att_id]
+                for k, v in clean.items():
+                    setattr(a, k, v)
+                a.save()
+                incoming_ids.add(att_id)
+            else:
+                PurchaseOrderAttachment.objects.create(purchase_order=order, **clean)
+
+        to_delete = set(by_id.keys()) - incoming_ids
+        if to_delete:
+            PurchaseOrderAttachment.objects.filter(id__in=to_delete).delete()
+
+    # ===== posting (single authoritative) ====================================
+
+    def _post_once(self, order, entrytype: str):
+        """
+        IMPORTANT: Keep posting INSIDE same atomic for PO (as you requested).
+        Post ONCE, let stocktransaction re-query DB rows.
+        """
+        stk = stocktransaction(
+            order, transactiontype='P', debit=1, credit=0,
+            description='To Purchase V.No: ', entrytype=entrytype
+        )
+        stk.createtransaction()
+
+    # ===== CREATE =============================================================
+
+    @transaction.atomic
+    def create(self, validated_data):
+        details_data = validated_data.pop("purchaseInvoiceDetails", [])
+        attachments_data = validated_data.pop("attachments", []) or []
+
+        # enforce taxes again here (safety, DB constraints)
+        validated_data.pop("isigst", None)
+        self._decide_and_enforce_is_inter(validated_data, details_data)
+
+        # cleanup incoming rows
+        for d in details_data:
+            if isinstance(d, dict):
+                d.pop("id", None)
+                d.pop("productname", None)
+
+        order = purchaseorder.objects.create(**validated_data)
+
+        self._upsert_details(order, details_data, is_update=False)
+        self._sync_attachments(order, attachments_data, is_update=False)
+
+        if AUTO_RECALC_TOTALS:
+            _recompute_purchase_totals(order)
+            order.save(update_fields=["stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"])
+
+        # posting must be in same atomic
+        try:
+            self._post_once(order, entrytype="I")
+        except Exception as e:
+            raise ValidationError({"posting": str(e)})
+
+        return order
+
+    # ===== UPDATE =============================================================
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        instance = purchaseorder.objects.select_for_update().get(pk=instance.pk)
+
+        details_data = validated_data.pop("purchaseInvoiceDetails", [])
+        attachments_data = validated_data.pop("attachments", []) or []
+        validated_data.pop("isigst", None)
+
+        touched = []
+        for f in self._header_update_fields():
+            if f in validated_data:
+                setattr(instance, f, validated_data[f])
+                touched.append(f)
+
+        # Decide inter/intra using "current header view" + incoming details
+        header_view = {
+            "entity": instance.entity,
+            "state": instance.state,
+            "cgst": q2(getattr(instance, "cgst", ZERO2) or ZERO2),
+            "sgst": q2(getattr(instance, "sgst", ZERO2) or ZERO2),
+            "igst": q2(getattr(instance, "igst", ZERO2) or ZERO2),
+        }
+        # overlay incoming header values if provided
+        for k in ("state","cgst","sgst","igst","entity"):
+            if k in validated_data:
+                header_view[k] = validated_data[k]
+
+        self._decide_and_enforce_is_inter(header_view, details_data)
+
+        # apply enforced header tax results onto instance
+        instance.igst = header_view["igst"]
+        instance.cgst = header_view["cgst"]
+        instance.sgst = header_view["sgst"]
+        if "igst" not in touched: touched.append("igst")
+        if "cgst" not in touched: touched.append("cgst")
+        if "sgst" not in touched: touched.append("sgst")
+
+        if touched:
+            instance.save(update_fields=list(set(touched)))
+
+        # upsert children
+        for d in details_data:
+            if isinstance(d, dict):
+                d.pop("productname", None)
+
+        self._upsert_details(instance, details_data, is_update=True)
+        self._sync_attachments(instance, attachments_data, is_update=True)
+
+        if AUTO_RECALC_TOTALS:
+            _recompute_purchase_totals(instance)
+            instance.save(update_fields=["stbefdiscount","discount","subtotal","totalgst","roundOff","gtotal"])
+
+        # posting at end (still inside atomic)
+        try:
+            self._post_once(instance, entrytype="U")
+        except Exception as e:
+            raise ValidationError({"posting": str(e)})
+
+        return instance
 
 
 
@@ -7649,10 +7951,15 @@ class salesreturnDetailsSerializer(serializers.ModelSerializer):
 
 
 class salesreturnSerializer(serializers.ModelSerializer):
+    # ---------- nested ----------
     salereturndetails = salesreturnDetailsSerializer(many=True)
-    adddetails = AddDetailsSerializer(required=False)
+    adddetails = serializers.DictField(required=False, write_only=True)
 
-    # OPTIONAL: if you want “purchase-like” behavior (totals can be omitted in POST)
+    # ---------- read-only helpers ----------
+    originalinvoice_number = serializers.SerializerMethodField()
+    einvoice_details = serializers.SerializerMethodField()
+
+    # OPTIONAL numeric fields (your existing)
     subtotal     = serializers.DecimalField(max_digits=14, decimal_places=4, required=False)
     cgst         = serializers.DecimalField(max_digits=14, decimal_places=4, required=False)
     sgst         = serializers.DecimalField(max_digits=14, decimal_places=4, required=False)
@@ -7676,105 +7983,185 @@ class salesreturnSerializer(serializers.ModelSerializer):
             'subtotal','invoicetype','reversecharge','addless',
             'cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount',
             'entityfinid','subentity','entity','isactive',
-            'salereturndetails','isammended','originalinvoice',
+            'salereturndetails','isammended','originalinvoice','originalinvoice_number',
             'adddetails','invoiceMode','eway','einvoice','einvoicepluseway',
+            'einvoice_details',
         )
 
-    def validate(self, attrs):
+    # ===== utilities ==========================================================
+
+    @staticmethod
+    def _pk_or_none(val):
+        """Return positive int PK, else None for 0/'0'/None/''/negatives."""
+        try:
+            i = int(val)
+            return i if i > 0 else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _strip_pk(cls, d: dict):
+        """Remove 'id' key if it's falsy or non-positive."""
+        if isinstance(d, dict) and 'id' in d and cls._pk_or_none(d.get('id')) is None:
+            d.pop('id', None)
+        return d
+
+    @staticmethod
+    def _header_update_fields():
+        return [
+            'voucherdate','voucherno','account','billno','state','district','city','pincode','billdate',
+            'terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks',
+            'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3',
+            'tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus',
+            'subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount',
+            'invoicetype','reversecharge',
+            'entityfinid','subentity','entity','isactive','isammended','originalinvoice',
+            'invoiceMode','eway','einvoice','einvoicepluseway',
+        ]
+
+    # ===== read helpers =======================================================
+
+    def get_originalinvoice_number(self, obj):
+        return getattr(getattr(obj, "originalinvoice", None), "invoicenumber", None)
+
+    def _ct_for(self, obj):
+        return ContentType.objects.get_for_model(obj, for_concrete_model=False)
+
+    def get_einvoice_details(self, obj):
+        ct = self._ct_for(obj)
+        einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=obj.id).first()
+        if not einv:
+            return None
+        return {
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date.strftime("%d/%m/%Y %H:%M:%S") if einv.ack_date else None,
+            "qr_image_base64": _qr_base64_from_signed_qr(einv.signed_qr_code) if einv.signed_qr_code else None,
+            "status": einv.status,
+            "remarks": einv.remarks,
+        }
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        try:
+            # if you already have a shared builder that returns pay/ref/ewb/exp/addldoc as dict
+            rep["adddetails"] = _build_adddetails_dict(instance)
+        except Exception:
+            rep["adddetails"] = None
+        return rep
+
+    # ===== tax regime enforcement (same spirit as your SalesOderHeader) =======
+
+    def _enforce_igst_bucket(self, attrs: dict) -> None:
+        """
+        Your current rule:
+          - if header IGST > 0 => force CGST/SGST = 0 and set details isigst=True, cgst/sgst=0
+          - else => force IGST = 0 and set details isigst=False, igst=0
+        """
         details = attrs.get("salereturndetails") or []
 
         igst = q2(attrs.get("igst", ZERO2) or ZERO2)
-        cgst = q2(attrs.get("cgst", ZERO2) or ZERO2)
-        sgst = q2(attrs.get("sgst", ZERO2) or ZERO2)
-
         if igst > ZERO2:
-            # Inter-state: keep IGST, force CGST/SGST = 0
             attrs["cgst"] = ZERO2
             attrs["sgst"] = ZERO2
-
             for d in details:
-                d["cgst"] = ZERO2
-                d["sgst"] = ZERO2
-                d["isigst"] = True
-                # DO NOT overwrite d["igst"] from header. Keep what frontend sent.
+                if isinstance(d, dict):
+                    d["cgst"] = ZERO2
+                    d["sgst"] = ZERO2
+                    d["isigst"] = True
         else:
-            # Intra-state: keep CGST/SGST, force IGST = 0
             attrs["igst"] = ZERO2
-
             for d in details:
-                d["igst"] = ZERO2
-                d["isigst"] = False
+                if isinstance(d, dict):
+                    d["igst"] = ZERO2
+                    d["isigst"] = False
 
+    def validate(self, attrs):
+        self._enforce_igst_bucket(attrs)
         return attrs
 
+    # ===== adddetails upsert (invoice-style, safe) ===========================
 
-    def create(self, validated_data):
-        details_data = validated_data.pop('salereturndetails', [])
-        adddetails_data = validated_data.pop('adddetails', {}) or {}
+    def _upsert_adddetails(self, order, adddetails_data: dict, is_update: bool):
+        adddetails_data = adddetails_data or {}
 
-        # you were removing voucherno (auto assigned)
-        validated_data.pop('voucherno', None)
+        paydtls_data     = dict(adddetails_data.get('paydtls') or {}) or None
+        refdtls_data     = dict(adddetails_data.get('refdtls') or {}) or None
+        ewbdtls_data     = dict(adddetails_data.get('ewbdtls') or {}) or None
+        expdtls_data     = dict(adddetails_data.get('expdtls') or {}) or None
+        addldocdtls_list = list(adddetails_data.get('addldocdtls') or [])
 
-        with transaction.atomic():
-            # -------------------------
-            # Invoice number generation (your existing logic)
-            # -------------------------
-            settings = SalesInvoiceSettings.objects.select_for_update().filter(
-                entity=validated_data['entity'].id,
-                entityfinid=validated_data['entityfinid'].id,
-                doctype__doccode='1005'
-            ).first()
-            if not settings:
-                raise serializers.ValidationError({"settings": "SalesInvoiceSettings not configured for this entity/financial year."})
-
-            reset_counter_if_needed(settings)
-            number = build_document_number(settings)
-
-            if salereturn.objects.filter(invoicenumber=number).exists():
-                raise serializers.ValidationError({"invoicenumber": "Duplicate invoice number generated. Please try again."})
-
-            last_order = salereturn.objects.filter(entity=validated_data['entity'].id).order_by('-id').first()
-            billno2 = (last_order.voucherno + 1) if (last_order and last_order.voucherno) else 1
-
-            # -------------------------
-            # Create header
-            # -------------------------
-            order = salereturn.objects.create(
-                **validated_data,
-                voucherno=billno2,
-                invoicenumber=number
-            )
-
-            # -------------------------
-            # adddetails (same as your code)
-            # -------------------------
-            paydtls_data = adddetails_data.get('paydtls')
-            refdtls_data = adddetails_data.get('refdtls')
-            ewbdtls_data = adddetails_data.get('ewbdtls')
-            expdtls_data = adddetails_data.get('expdtls')
-            addldocdtls_data = adddetails_data.get('addldocdtls', []) or []
-
-            if paydtls_data:
-                paydtls_data.pop('id', None)
+        # PayDtls
+        if paydtls_data:
+            paydtls_data.pop('id', None)
+            if is_update:
+                PayDtls.objects.update_or_create(sales_return=order, defaults=paydtls_data)
+            else:
                 PayDtls.objects.create(sales_return=order, **paydtls_data)
-            if refdtls_data:
-                refdtls_data.pop('id', None)
-                RefDtls.objects.create(sales_return=order, **refdtls_data)
-            if ewbdtls_data:
-                ewbdtls_data.pop('id', None)
-                EwbDtls.objects.create(sales_return=order, **ewbdtls_data)
-            if expdtls_data:
-                expdtls_data.pop('id', None)
-                ExpDtls.objects.create(sales_return=order, **expdtls_data)
-            for doc_data in addldocdtls_data:
-                doc_data.pop('id', None)
-                AddlDocDtls.objects.create(sales_return=order, **doc_data)
 
-            # -------------------------
-            # details + othercharges (purchase-like)
-            # -------------------------
+        # RefDtls
+        if refdtls_data:
+            refdtls_data.pop('id', None)
+            if is_update:
+                RefDtls.objects.update_or_create(sales_return=order, defaults=refdtls_data)
+            else:
+                RefDtls.objects.create(sales_return=order, **refdtls_data)
+
+        # EwbDtls
+        if ewbdtls_data:
+            ewbdtls_data.pop('id', None)
+            if is_update:
+                EwbDtls.objects.update_or_create(sales_return=order, defaults=ewbdtls_data)
+            else:
+                EwbDtls.objects.create(sales_return=order, **ewbdtls_data)
+
+        # ExpDtls
+        if expdtls_data:
+            expdtls_data.pop('id', None)
+            if is_update:
+                ExpDtls.objects.update_or_create(sales_return=order, defaults=expdtls_data)
+            else:
+                ExpDtls.objects.create(sales_return=order, **expdtls_data)
+
+        # AddlDocDtls (upsert list)
+        if is_update:
+            existing_qs  = AddlDocDtls.objects.filter(sales_return=order)
+            existing_map = {d.id: d for d in existing_qs}
+            existing_ids = set(existing_map.keys())
+            incoming_ids = set()
+
+            for doc in addldocdtls_list:
+                doc = dict(doc or {})
+                doc_id = self._pk_or_none(doc.get("id"))
+                clean = {k: v for k, v in doc.items() if k != "id"}
+
+                if doc_id and doc_id in existing_ids:
+                    obj = existing_map[doc_id]
+                    for k, v in clean.items():
+                        setattr(obj, k, v)
+                    obj.save()
+                    incoming_ids.add(doc_id)
+                else:
+                    AddlDocDtls.objects.create(sales_return=order, **clean)
+
+            to_delete = existing_ids - incoming_ids
+            if to_delete:
+                AddlDocDtls.objects.filter(id__in=to_delete).delete()
+        else:
+            for doc in addldocdtls_list:
+                doc = dict(doc or {})
+                doc.pop("id", None)
+                AddlDocDtls.objects.create(sales_return=order, **doc)
+
+    # ===== details upsert (invoice-style) ====================================
+
+    def _upsert_details(self, order, details_data: list, is_update: bool):
+        if not is_update:
             for row in details_data:
-                row.pop('id', None)
+                row = dict(row or {})
+                self._strip_pk(row)
+
+                # keep your current "cleanup" behavior
                 row.pop('productname', None)
                 row.pop('hsn', None)
                 row.pop('mrp', None)
@@ -7783,202 +8170,311 @@ class salesreturnSerializer(serializers.ModelSerializer):
                 detail = salereturnDetails.objects.create(salereturn=order, **row)
 
                 for oc in other_charges:
-                    oc.pop('id', None)
+                    oc = dict(oc or {})
+                    self._strip_pk(oc)
                     salereturnothercharges.objects.create(salesreturnorderdetail=detail, **oc)
+            return
 
-            # -------------------------
-            # posting (purchase-like approach: fetch current lines and post)
-            # -------------------------
+        existing_map = {d.id: d for d in salereturnDetails.objects.filter(salereturn=order)}
+        existing_ids = set(existing_map.keys())
+        seen_ids = set()
+
+        for row in details_data:
+            row = dict(row or {})
+
+            row.pop('productname', None)
+            row.pop('hsn', None)
+            row.pop('mrp', None)
+
+            detail_id = self._pk_or_none(row.get('id'))
+            row.pop('id', None)
+
+            other_charges = row.pop('otherchargesdetail', []) or []
+
+            if detail_id is None:
+                d = salereturnDetails.objects.create(salereturn=order, **row)
+            else:
+                d = existing_map.get(detail_id)
+                if d:
+                    seen_ids.add(detail_id)
+                    for k, v in row.items():
+                        setattr(d, k, v)
+                    d.save()
+                else:
+                    d = salereturnDetails.objects.create(salereturn=order, **row)
+
+            # refresh charges
+            salereturnothercharges.objects.filter(salesreturnorderdetail=d).delete()
+            for oc in other_charges:
+                oc = dict(oc or {})
+                self._strip_pk(oc)
+                salereturnothercharges.objects.create(salesreturnorderdetail=d, **oc)
+
+        to_delete = existing_ids - seen_ids
+        if to_delete:
+            salereturnDetails.objects.filter(id__in=to_delete).delete()
+
+    # ===== posting (single authoritative) ====================================
+
+    def _post_once_via_shim(self, order, entrytype: str):
+        """
+        Like your SalesOderHeaderSerializer:
+        - One call to createtransaction() which re-queries DB.
+        - No per-line createtransactiondetails here.
+        """
+        stk = stocktransaction(order, transactiontype='SR', debit=1, credit=0,
+                               description='To Sales Return V.No: ', entrytype=entrytype)
+        stk.createtransaction()
+
+    # ===== GST helpers (same as your invoice) =================================
+
+    def _parse_mastergst_dt(self, value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        s = str(value).strip()
+        for fmt in MASTERGST_DT_FORMATS:
             try:
-                stk = stocktransaction(order, transactiontype='SR', debit=1, credit=0,
-                                       description='Sale Return', entrytype='I')
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        raise ValidationError({"gst": f"Unsupported datetime format from MasterGST: {s}"})
 
-                current_lines = list(
-                    salereturnDetails.objects.filter(salereturn=order)
-                    .select_related("product")
-                    .prefetch_related("otherchargesdetail")
-                )
-                for d in current_lines:
-                    stk.createtransactiondetails(detail=d, stocktype='P')
-                    for oc in d.otherchargesdetail.all():
-                        stk.createothertransactiondetails(detail=oc, stocktype='P')
+    def _persist_einvoice_details(self, order, ct, data: dict):
+        ack_dt = self._parse_mastergst_dt(data.get("AckDt"))
+        ewb_dt = self._parse_mastergst_dt(data.get("EwbDt"))
+        ewb_valid_till = self._parse_mastergst_dt(data.get("EwbValidTill"))
 
-                stk.createtransaction()
+        irn = data.get("Irn")
+        if not irn:
+            raise ValidationError({"einvoice": "MasterGST response missing IRN (Irn)."})
 
-            except Exception as e:
-                raise serializers.ValidationError({"posting": str(e)})
+        EInvoiceDetails.objects.update_or_create(
+            content_type=ct,
+            object_id=order.id,
+            defaults={
+                "irn": irn,
+                "ack_no": data.get("AckNo"),
+                "ack_date": ack_dt,
+                "signed_invoice": data.get("SignedInvoice"),
+                "signed_qr_code": data.get("SignedQRCode"),
+                "status": data.get("Status", "ACT"),
+                "ewb_no": data.get("EwbNo"),
+                "ewb_date": ewb_dt,
+                "ewb_valid_till": ewb_valid_till,
+                "remarks": data.get("Remarks"),
+            }
+        )
 
-            # -------------------------
-            # E-invoice call (your current logic)
-            # -------------------------
-            einvoice_data = SalereturnFullSerializer(order).data
-            json_data = json.dumps(einvoice_data, indent=4, default=str)
+    def _generate_einvoice_if_needed(self, order, mode: str, ct):
+        existing = EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).only("irn").first()
+        if existing and existing.irn:
+            return existing.irn
 
-            gst_response = gstinvoice(order, json_data)
-            if gst_response.get("status_cd") == "1":
-                data = gst_response["data"]
-                ack_dt = datetime.strptime(data["AckDt"], "%Y-%m-%d %H:%M:%S")
-                ewb_dt = datetime.strptime(data["EwbDt"], "%Y-%m-%d %H:%M:%S") if data.get("EwbDt") else None
-                ewb_valid_till = datetime.strptime(data["EwbValidTill"], "%Y-%m-%d %H:%M:%S") if data.get("EwbValidTill") else None
+        payload = SalereturnFullSerializer(order, context={"mode": mode}).data
 
-                EInvoiceDetails.objects.update_or_create(
-                    content_type=ContentType.objects.get_for_model(order),
-                    object_id=order.id,
-                    defaults={
-                        "irn": data["Irn"],
-                        "ack_no": data["AckNo"],
-                        "ack_date": ack_dt,
-                        "signed_invoice": data["SignedInvoice"],
-                        "signed_qr_code": data["SignedQRCode"],
-                        "status": data.get("Status", "ACT"),
-                        "ewb_no": data.get("EwbNo"),
-                        "ewb_date": ewb_dt,
-                        "ewb_valid_till": ewb_valid_till,
-                        "remarks": data.get("Remarks"),
-                    }
-                )
 
-            # bump doc counter only if everything succeeded
-            settings.current_number += 1
-            settings.save()
+        print(payload)
+        resp = gstinvoice(order, json.dumps(payload, default=str))
 
-            return order
+        print(resp)
 
-    def update(self, instance, validated_data):
-        details_data = validated_data.pop('salereturndetails', [])
+        if not isinstance(resp, dict):
+            raise ValidationError({"einvoice": "Unexpected response from gstinvoice()."})
+
+        if str(resp.get("status_cd")) != "1":
+            raise ValidationError({
+                "einvoice": resp.get("status_desc", "E-Invoice generation failed."),
+                "details": resp,
+            })
+
+        data = resp.get("data") or {}
+        self._persist_einvoice_details(order, ct, data)
+        return data.get("Irn")
+
+    def _generate_eway_from_irn(self, order, ct):
+        einv = EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).first()
+        if not (einv and einv.irn):
+            raise ValidationError({"eway": "IRN not found for this sales return. Cannot generate E-Way Bill."})
+
+        ewb = EwbDtls.objects.filter(sales_return=order).first()
+        if not ewb:
+            raise ValidationError({"eway": "E-Way Bill details not found for this sales return."})
+
+        distance = int(getattr(ewb, "Distance", 0) or 0)
+        if distance <= 0:
+            raise ValidationError({"eway": "Distance must be > 0."})
+
+        payload = {
+            "Irn": einv.irn,
+            "Distance": distance,
+            "TransMode": str(getattr(ewb, "TransMode", "") or ""),
+            "TransId": (getattr(ewb, "TransId", "") or "").strip(),
+            "TransName": (getattr(ewb, "TransName", "") or "").strip(),
+            "TransDocDt": ewb.TransDocDt.strftime("%d/%m/%Y") if getattr(ewb, "TransDocDt", None) else None,
+            "TransDocNo": (getattr(ewb, "TransDocNo", "") or "").strip(),
+            "VehNo": (getattr(ewb, "VehNo", "") or "").strip(),
+            "VehType": (getattr(ewb, "VehType", "") or "").strip(),
+        }
+
+        resp = gst_ewaybill(order, payload)
+        if isinstance(resp, dict) and str(resp.get("status_cd")) != "1":
+            raise ValidationError({
+                "eway": resp.get("status_desc") or "E-Way Bill generation failed.",
+                "details": resp
+            })
+        return resp
+
+    def _post_process_gst(self, order_id: int, mode: str, is_create: bool):
+        """
+        Runs AFTER DB commit.
+        Updates header flags based on outcome.
+        Stores ERR status in EInvoiceDetails if GST fails.
+        """
+        order = salereturn.objects.get(id=order_id)
+        ct = self._ct_for(order)
+
+        try:
+            if mode == "none":
+                return
+
+            if mode == "einvoice":
+                self._generate_einvoice_if_needed(order, mode, ct)
+                salereturn.objects.filter(id=order.id).update(einvoice=True, eway=False)
+                return
+
+            if mode == "eway":
+                if is_create:
+                    return  # same as your invoice serializer choice
+                self._generate_eway_from_irn(order, ct)
+                salereturn.objects.filter(id=order.id).update(eway=True)
+                return
+
+            if mode == "both":
+                self._generate_einvoice_if_needed(order, mode, ct)
+                salereturn.objects.filter(id=order.id).update(einvoice=True)
+                self._generate_eway_from_irn(order, ct)
+                salereturn.objects.filter(id=order.id).update(eway=True)
+                return
+
+        except Exception as e:
+            logger.exception("GST failed sales_return_id=%s mode=%s", order.id, mode)
+
+            updates = {}
+            if mode in ("einvoice", "both"):
+                updates["einvoice"] = False
+            if mode in ("eway", "both"):
+                updates["eway"] = False
+            if updates:
+                salereturn.objects.filter(id=order.id).update(**updates)
+
+            EInvoiceDetails.objects.filter(content_type=ct, object_id=order.id).update(
+                status="ERR",
+                remarks=str(e),
+            )
+            return
+
+    # ===== numbering ==========================================================
+
+    def _number_and_create_header(self, validated_data) -> salereturn:
+        validated_data.pop('voucherno', None)
+        validated_data.pop('invoicenumber', None)
+
+        settings = (SalesInvoiceSettings.objects
+                    .select_for_update()
+                    .filter(entity=validated_data['entity'].id,
+                            entityfinid=validated_data['entityfinid'].id,
+                            doctype__doccode='1005')  # keep your SR doccode
+                    .first())
+        if not settings:
+            raise ValidationError({"settings": "SalesInvoiceSettings not configured for this entity/financial year."})
+
+        reset_counter_if_needed(settings)
+        number = build_document_number(settings)
+        if salereturn.objects.filter(invoicenumber=number).exists():
+            raise ValidationError({"invoicenumber": "Duplicate invoice number generated. Please try again."})
+
+        # voucherno retry (unique-ish)
+        for _ in range(3):
+            max_vno = (salereturn.objects
+                       .filter(entity=validated_data['entity'])
+                       .aggregate(m=Max('voucherno'))['m'] or 0)
+            next_vno = max_vno + 1
+            try:
+                order = salereturn.objects.create(**validated_data, voucherno=next_vno, invoicenumber=number)
+                settings.current_number += 1
+                settings.save()
+                return order
+            except IntegrityError:
+                continue
+
+        raise ValidationError({"voucherno": "Unable to generate unique voucherno after retries. Please try again."})
+
+    # ===== CREATE / UPDATE ====================================================
+
+    @transaction.atomic
+    def create(self, validated_data):
+        details_data    = validated_data.pop('salereturndetails', [])
         adddetails_data = validated_data.pop('adddetails', {}) or {}
 
-        with transaction.atomic():
-            instance = salereturn.objects.select_for_update().get(pk=instance.pk)
+        # enforce header/detail IGST rules (same as validate)
+        validated_data["salereturndetails"] = details_data
+        self._enforce_igst_bucket(validated_data)
+        validated_data.pop("salereturndetails", None)
 
-            fields = [
-                'voucherdate','voucherno','account','billno','state','district','city','pincode','billdate',
-                'terms','showledgeraccount','taxtype','billcash','totalpieces','totalquanity','advance','remarks',
-                'transport','broker','taxid','tds194q','tds194q1','tcs206c1ch1','tcs206c1ch2','tcs206c1ch3',
-                'tcs206C1','tcs206C2','duedate','inputdate','vehicle','grno','gstr2astatus',
-                'subtotal','addless','cgst','sgst','igst','cess','expenses','gtotal','roundOff','finalAmount',
-                'invoicetype','reversecharge',
-                'entityfinid','subentity','entity','isactive','isammended','originalinvoice','invoiceMode','eway','einvoice','einvoicepluseway',
-            ]
+        mode = _mode_from_invoice_mode(validated_data)
 
-            # 1) Apply header updates EXACTLY as frontend sent
-            for f in fields:
-                if f in validated_data:
-                    setattr(instance, f, validated_data[f])
+        order = self._number_and_create_header(validated_data)
 
-            # IMPORTANT: DO NOT call _sr_is_inter or overwrite igst/cgst/sgst here.
-            # validate() already enforced the bucket rules.
+        self._upsert_adddetails(order, adddetails_data, is_update=False)
+        self._upsert_details(order, details_data, is_update=False)
 
-            instance.save(update_fields=fields)
+        # single authoritative posting
+        self._post_once_via_shim(order, entrytype='I')
 
-            # -------------------------
-            # adddetails upsert (keep your existing code)
-            # -------------------------
-            paydtls_data = adddetails_data.get('paydtls')
-            refdtls_data = adddetails_data.get('refdtls')
-            ewbdtls_data = adddetails_data.get('ewbdtls')
-            expdtls_data = adddetails_data.get('expdtls')
-            addldocdtls_data = adddetails_data.get('addldocdtls', []) or []
+        # GST after-commit
+        if mode != "none":
+            transaction.on_commit(
+                lambda: self._post_process_gst(order.id, mode=mode, is_create=True)
+            )
 
-            if paydtls_data:
-                PayDtls.objects.update_or_create(sales_return=instance, defaults=paydtls_data)
-            if refdtls_data:
-                RefDtls.objects.update_or_create(sales_return=instance, defaults=refdtls_data)
-            if ewbdtls_data:
-                EwbDtls.objects.update_or_create(sales_return=instance, defaults=ewbdtls_data)
-            if expdtls_data:
-                ExpDtls.objects.update_or_create(sales_return=instance, defaults=expdtls_data)
+        return order
 
-            existing_docs = list(AddlDocDtls.objects.filter(sales_return=instance))
-            existing_doc_ids = {doc.id for doc in existing_docs}
-            incoming_doc_ids = set()
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        details_data    = validated_data.pop('salereturndetails', [])
+        adddetails_data = validated_data.pop('adddetails', {}) or {}
 
-            for doc_data in addldocdtls_data:
-                doc_id = doc_data.get('id', 0)
-                if doc_id and doc_id in existing_doc_ids:
-                    doc = AddlDocDtls.objects.get(id=doc_id, sales_return=instance)
-                    for k, v in doc_data.items():
-                        setattr(doc, k, v)
-                    doc.save()
-                    incoming_doc_ids.add(doc_id)
-                else:
-                    doc_data.pop('id', None)
-                    AddlDocDtls.objects.create(sales_return=instance, **doc_data)
+        # enforce header/detail IGST rules (same as validate)
+        validated_data["salereturndetails"] = details_data
+        self._enforce_igst_bucket(validated_data)
+        validated_data.pop("salereturndetails", None)
 
-            to_delete_ids = existing_doc_ids - incoming_doc_ids
-            if to_delete_ids:
-                AddlDocDtls.objects.filter(id__in=to_delete_ids).delete()
+        touched = []
+        for f in self._header_update_fields():
+            if f in validated_data:
+                setattr(instance, f, validated_data[f])
+                touched.append(f)
 
-            # -------------------------
-            # 2) details upsert (DO NOT normalize taxes again)
-            # -------------------------
-            existing = list(salereturnDetails.objects.filter(salereturn=instance))
-            by_id = {x.id: x for x in existing}
-            seen = set()
+        if touched:
+            instance.save(update_fields=list(set(touched)))
 
-            for row in details_data:
-                row.pop('productname', None)
-                row.pop('hsn', None)
-                row.pop('mrp', None)
+        mode = _mode_from_invoice_mode(validated_data) if "invoiceMode" in validated_data else _mode_from_invoice_mode(instance)
 
-                detail_id = row.get('id', 0)
-                other_charges = row.pop('otherchargesdetail', []) or []
+        self._upsert_adddetails(instance, adddetails_data, is_update=True)
+        self._upsert_details(instance, details_data, is_update=True)
 
-                if not detail_id:
-                    row.pop('id', None)
-                    d = salereturnDetails.objects.create(salereturn=instance, **row)
-                else:
-                    d = by_id.get(detail_id)
-                    if not d:
-                        continue
-                    for k, v in row.items():
-                        if k != "id":
-                            setattr(d, k, v)
-                    d.save()
+        # single authoritative posting
+        self._post_once_via_shim(instance, entrytype='U')
 
-                seen.add(d.id)
+        # GST after-commit
+        if mode != "none":
+            transaction.on_commit(
+                lambda: self._post_process_gst(instance.id, mode=mode, is_create=False)
+            )
 
-                salereturnothercharges.objects.filter(salesreturnorderdetail=d).delete()
-                for oc in other_charges:
-                    oc.pop('id', None)
-                    salereturnothercharges.objects.create(salesreturnorderdetail=d, **oc)
-
-            to_delete = set(by_id.keys()) - seen
-            if to_delete:
-                salereturnDetails.objects.filter(id__in=to_delete).delete()
-
-            # -------------------------
-            # 3) posting (post with FRESH DB values)
-            # -------------------------
-            try:
-                # reload header so we definitely have final igst/cgst/sgst/cess after save
-                instance.refresh_from_db()
-
-                stk = stocktransaction(
-                    instance,
-                    transactiontype='SR',
-                    debit=1, credit=0,
-                    description='To Sales Return V.No: ',
-                    entrytype='U'
-                )
-
-                current_lines = list(
-                    salereturnDetails.objects.filter(salereturn=instance)
-                    .select_related("product")
-                    .prefetch_related("otherchargesdetail")
-                )
-
-                for d in current_lines:
-                    stk.createtransactiondetails(detail=d, stocktype='P')
-                    for oc in d.otherchargesdetail.all():
-                        stk.createothertransactiondetails(detail=oc, stocktype='P')
-
-                stk.createtransaction()
-
-            except Exception as e:
-                raise serializers.ValidationError({"posting": str(e)})
-
-            return instance
+        return instance
 
 
 
@@ -9433,6 +9929,15 @@ class PurchasereturnFullSerializer(serializers.ModelSerializer):
             "VehNo": ewb.VehNo,
             "VehType": ewb.VehType
         }
+
+
+DEC2 = Decimal("0.01")
+
+def q2(v):
+    return (Decimal(v) if v is not None else Decimal("0")).quantize(DEC2, rounding=ROUND_HALF_UP)
+
+def fmt2(v):
+    return f"{q2(v):.2f}"
     
 
 class SalereturnItemSerializer(serializers.ModelSerializer):
@@ -9466,6 +9971,7 @@ class SalereturnItemSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
+        # ---- existing optional fields logic ----
         optional_fields = {
             "BchDtls": self.get_BchDtls(instance),
             "AttribDtls": self.get_AttribDtls(instance),
@@ -9476,6 +9982,22 @@ class SalereturnItemSerializer(serializers.ModelSerializer):
         for key, value in optional_fields.items():
             if value is not None:
                 data[key] = value
+
+        # ---- IRP consistency check (CRITICAL) ----
+        ass  = Decimal(data["AssAmt"])
+        cgst = Decimal(data["CgstAmt"])
+        sgst = Decimal(data["SgstAmt"])
+        igst = Decimal(data["IgstAmt"])
+        cess = Decimal(data["CesAmt"])
+
+        expected = (ass + cgst + sgst + igst + cess).quantize(Decimal("0.01"))
+        got = Decimal(data["TotItemVal"]).quantize(Decimal("0.01"))
+
+        if expected != got:
+            raise serializers.ValidationError(
+                f"Item mismatch (SlNo {data.get('SlNo')}): "
+                f"expected TotItemVal {expected} but got {got}"
+            )
 
         return data
 
@@ -9507,49 +10029,52 @@ class SalereturnItemSerializer(serializers.ModelSerializer):
         return row.hsn.code if (row and row.hsn) else None
 
     def get_Qty(self, obj):
-        return "{0:.2f}".format(float(obj.orderqty or 0))
+        return fmt2(obj.orderqty or 0)
 
     def get_Unit(self, obj):
         return obj.product.base_uom.code if (obj.product and obj.product.base_uom) else None
 
     def get_UnitPrice(self, obj):
-        return "{0:.2f}".format(float(obj.rate or 0))
+        return fmt2(obj.rate or 0)
 
     def get_TotAmt(self, obj):
-        qty = float(obj.orderqty or 0)
-        rate = float(obj.rate or 0)
-        tot_amt = round(qty * rate, 2)
-        return "{0:.2f}".format(tot_amt)
+        # ✅ Use DB taxable amount (do not recompute from qty*rate)
+        return fmt2(obj.amount or 0)
 
     def get_Discount(self, obj):
         return "0.00"
 
     def get_PreTaxVal(self, obj):
-        return self.get_AssAmt(obj)
+        # ✅ Keep 0 unless you really have pre-tax adjustments
+        return "0.00"
 
     def get_AssAmt(self, obj):
-        qty = float(obj.orderqty or 0)
-        rate = float(obj.rate or 0)
-        ass_amt = round(qty * rate, 2)  # No discount, so ass_amt = tot_amt
-        return "{0:.2f}".format(ass_amt)
+        # ✅ taxable value
+        return fmt2(obj.amount or 0)
 
     def get_GstRt(self, obj):
         return "{0:.2f}".format(float(obj.igstpercent if obj.isigst else (obj.cgstpercent or 0) + (obj.sgstpercent or 0)))
 
+    def get_CgstAmt(self, obj):
+        return fmt2(obj.cgst or 0)
+
     def get_SgstAmt(self, obj):
-        return "{0:.2f}".format(float(obj.sgst or 0))
+        return fmt2(obj.sgst or 0)
 
     def get_IgstAmt(self, obj):
-        return "{0:.2f}".format(float(obj.igst or 0))
+        return fmt2(obj.igst or 0)
 
-    def get_CgstAmt(self, obj):
-        return "{0:.2f}".format(float(obj.cgst or 0))
+    def get_CesAmt(self, obj):
+        return fmt2(obj.cess or 0)
+
+    def get_TotItemVal(self, obj):
+        # ✅ must equal AssAmt + taxes (+cess)
+        return fmt2(obj.linetotal or 0)
 
     def get_CesAmt(self, obj):
         return "{0:.2f}".format(float(obj.cess or 0))
 
-    def get_TotItemVal(self, obj):
-        return "{0:.2f}".format(float(obj.linetotal or 0))
+    
 
     def get_OrdLineRef(self, obj):
         return str(obj.id or "")
@@ -9800,337 +10325,7 @@ class SalesOrderHeadeListSerializer(serializers.ModelSerializer):
     def get_invoiceno(self, obj):
         return obj.invoicenumber if obj.invoicenumber else str(obj.billno)
 
-class ReceiptVoucherInvoiceAllocationSerializer(serializers.ModelSerializer):
-    invoiceno = serializers.SerializerMethodField(read_only=True)
-    invoiceamount = serializers.DecimalField(source='invoice.gtotal', max_digits=14, decimal_places=4, read_only=True)
-    pendingamount = serializers.SerializerMethodField(read_only=True)
-    invoicedate = serializers.DateTimeField(source='invoice.sorderdate', read_only=True)
 
-    class Meta:
-        model = ReceiptVoucherInvoiceAllocation
-        fields = ['invoice', 'invoiceno', 'trans_amount', 'invoiceamount', 'pendingamount', 'invoicedate', 'otheraccount', 'other_amount', 'allocated_amount']
-
-    def get_invoiceno(self, obj):
-        return obj.invoice.invoicenumber if obj.invoice.invoicenumber else str(obj.invoice.billno)
-
-    def get_pendingamount(self, obj):
-        if not obj.invoice:
-            return None
-
-        # Get total invoice amount
-        invoice_total = obj.invoice.gtotal or 0
-
-        # Sum all trans_amounts allocated against this invoice
-        total_allocated = ReceiptVoucherInvoiceAllocation.objects.filter(invoice=obj.invoice).aggregate(
-            total=models.Sum('trans_amount')
-        )['total'] or 0
-
-        # Pending amount is invoice total minus already allocated amount
-        pending_amount = invoice_total - total_allocated
-
-        return pending_amount
-class ReceiptVoucherSerializer(serializers.ModelSerializer):
-    invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
-    
-
-    class Meta:
-        model = ReceiptVoucher
-        fields = [
-            'id', 'voucher_number','vouchernumber', 'voucherdate', 'received_in', 'received_from', 'account_type',
-            'payment_mode', 'total_amount', 'narration', 'reference_number', 'isledgerposting',
-            'receiverbankname', 'chqno', 'chqdate', 'created_by', 'approved_by',
-            'created_at', 'approved_at','entity','entityfinid','invoice_allocations'
-        ]
-        read_only_fields = ['created_at', 'approved_at']
-
-    @staticmethod
-    def create_stock_transaction(accounthead, account, transactiontype, transactionid, desc, drcr, amount, entity, createdby, entry, entrydatetime, accounttype, iscashtransaction, voucherno):
-        data = {
-            'accounthead': accounthead,
-            'account': account,
-            'transactiontype': transactiontype,
-            'transactionid': transactionid,
-            'desc': desc,
-            'drcr': drcr,
-            'entity': entity,
-            'createdby': createdby,
-            'entry': entry,
-            'entrydatetime': entrydatetime,
-            'accounttype': accounttype,
-            'iscashtransaction': iscashtransaction,
-            'voucherno': voucherno
-        }
-        if drcr == 1:
-            data['debitamount'] = amount
-        else:
-            data['creditamount'] = amount
-
-        StockTransactions.objects.create(**data)
-
-    staticmethod
-    def get_contra_account(account_id, entity_id):
-        try:
-            acc = account.objects.get(id=account_id, entity_id=entity_id)
-            return acc.contraaccount
-        except account.DoesNotExist:
-            return None
-
-
-    @transaction.atomic
-    def create(self, validated_data):
-        invoice_data = validated_data.pop('invoice_allocations', [])
-
-        settings = SalesInvoiceSettings.objects.select_for_update().filter(
-            entity=validated_data['entity'].id,
-            entityfinid=validated_data['entityfinid'].id,
-            doctype__doccode='1002'
-        ).first()
-
-        reset_counter_if_needed(settings)
-        number = build_document_number(settings)
-
-        if ReceiptVoucher.objects.filter(vouchernumber=number).exists():
-            raise Exception("Duplicate voucher number generated. Please try again.")
-
-        receipt = ReceiptVoucher.objects.create(**validated_data, vouchernumber=number)
-
-        entryid, _ = entry.objects.get_or_create(
-            entrydate1=receipt.voucherdate,
-            entity=receipt.entity
-        )
-
-        iscashtransaction = receipt.payment_mode.iscash if receipt.payment_mode else False
-        accounttpe = 'CIH' if iscashtransaction else 'M'
-
-        # Cash/Bank received
-        self.create_stock_transaction(
-            accounthead=receipt.received_in.accounthead,
-            account=receipt.received_in,
-            transactiontype='RV',
-            transactionid=receipt.id,
-            desc=f'By Voucherno : {receipt.vouchernumber}',
-            drcr=1,
-            amount=receipt.total_amount,
-            entity=receipt.entity,
-            createdby=receipt.created_by,
-            entry=entryid,
-            entrydatetime=receipt.voucherdate,
-            accounttype=accounttpe,
-            iscashtransaction=iscashtransaction,
-            voucherno=receipt.voucher_number
-        )
-
-        # Received from
-        self.create_stock_transaction(
-            accounthead=receipt.received_from.accounthead,
-            account=receipt.received_from,
-            transactiontype='RV',
-            transactionid=receipt.id,
-            desc=f'By Voucherno : {receipt.vouchernumber}',
-            drcr=0,
-            amount=receipt.total_amount,
-            entity=receipt.entity,  
-            createdby=receipt.created_by,
-            entry=entryid,
-            entrydatetime=receipt.voucherdate,
-            accounttype='M',
-            iscashtransaction=iscashtransaction,
-            voucherno=receipt.voucher_number
-        )
-
-        # Invoice allocations
-        for inv in invoice_data:
-            details = ReceiptVoucherInvoiceAllocation.objects.create(
-                receipt_voucher=receipt,
-                **inv
-            )
-
-            # Check if otheraccount exists
-            if details.otheraccount and details.otheraccount.id:
-                contracc = ReceiptVoucherSerializer.get_contra_account(
-                    details.otheraccount.id,
-                    receipt.entity.id
-                )
-                drcr_value = 1 if details.other_amount > 0 else 0
-
-                # Main transaction for otheraccount
-                self.create_stock_transaction(
-                    accounthead=details.otheraccount.accounthead,
-                    account=details.otheraccount,
-                    transactiontype='RV',
-                    transactionid=receipt.id,
-                    desc=f'By Voucherno : {receipt.vouchernumber}',
-                    drcr=drcr_value,
-                    amount=abs(details.other_amount),
-                    entity=receipt.entity,
-                    createdby=receipt.created_by,
-                    entry=entryid,
-                    entrydatetime=receipt.voucherdate,
-                    accounttype='M',
-                    iscashtransaction=False,
-                    voucherno=receipt.voucher_number
-                )
-
-                # Contra transaction if contra account exists
-                if contracc:
-                    self.create_stock_transaction(
-                        accounthead=contracc.accounthead,
-                        account=contracc,
-                        transactiontype='RV',
-                        transactionid=receipt.id,
-                        desc=f'By Voucherno : {receipt.vouchernumber}',
-                        drcr=0 if drcr_value == 1 else 1,
-                        amount=abs(details.other_amount),
-                        entity=receipt.entity,
-                        createdby=receipt.created_by,
-                        entry=entryid,
-                        entrydatetime=receipt.voucherdate,
-                        accounttype='M',
-                        iscashtransaction=False,
-                        voucherno=receipt.voucher_number
-                    )
-
-        # Update running voucher number
-        settings.current_number += 1
-        settings.save()
-
-        return receipt
-
-    def update(self, instance, validated_data):
-        invoice_data = validated_data.pop('invoice_allocations', [])
-
-        # Update fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        # Remove old invoice allocations and stock transactions
-        instance.invoice_allocations.all().delete()
-        StockTransactions.objects.filter(
-            transactiontype='RV',
-            transactionid=instance.id
-        ).delete()
-
-        # Recreate or fetch entry
-        entryid, _ = entry.objects.get_or_create(
-            entrydate1=instance.voucherdate,
-            entity=instance.entity
-        )
-
-        iscash = instance.payment_mode.iscash if instance.payment_mode else False
-
-        # Recreate Cash/Bank Received transaction
-        self.create_stock_transaction(
-            accounthead=instance.received_in.accounthead,
-            account=instance.received_in,
-            transactiontype='RV',
-            transactionid=instance.id,
-            desc=f'By Voucherno : {instance.vouchernumber}',
-            drcr=1,
-            amount=instance.total_amount,
-            entity=instance.entity,
-            createdby=instance.created_by,
-            entry=entryid,
-            entrydatetime=instance.voucherdate,
-            accounttype='M',
-            iscashtransaction=iscash,
-            voucherno=instance.voucher_number
-        )
-
-        # Recreate Received From transaction
-        self.create_stock_transaction(
-            accounthead=instance.received_from.accounthead,
-            account=instance.received_from,
-            transactiontype='RV',
-            transactionid=instance.id,
-            desc=f'By Voucherno : {instance.vouchernumber}',
-            drcr=0,
-            amount=instance.total_amount,
-            entity=instance.entity,
-            createdby=instance.created_by,
-            entry=entryid,
-            entrydatetime=instance.voucherdate,
-            accounttype='M',
-            iscashtransaction=iscash,
-            voucherno=instance.voucher_number
-        )
-
-        for inv in invoice_data:
-            details = ReceiptVoucherInvoiceAllocation.objects.create(
-                receipt_voucher=instance,
-                **inv
-            )
-
-            if details.otheraccount and details.otheraccount.id:
-                contracc = ReceiptVoucherSerializer.get_contra_account(details.otheraccount.id, instance.entity.id)
-
-                drcr_value = 1 if details.other_amount > 0 else 0
-
-                # Transaction for otheraccount
-                self.create_stock_transaction(
-                    accounthead=details.otheraccount.accounthead,
-                    account=details.otheraccount,
-                    transactiontype='RV',
-                    transactionid=instance.id,
-                    desc=f'By Voucherno : {instance.vouchernumber}',
-                    drcr=drcr_value,
-                    amount=abs(details.other_amount),
-                    entity=instance.entity,
-                    createdby=instance.created_by,
-                    entry=entryid,
-                    entrydatetime=instance.voucherdate,
-                    accounttype='M',
-                    iscashtransaction=False,
-                    voucherno=instance.voucher_number
-                )
-
-                # Contra transaction if available
-                if contracc:
-                    self.create_stock_transaction(
-                        accounthead=contracc.accounthead,
-                        account=contracc,
-                        transactiontype='RV',
-                        transactionid=instance.id,
-                        desc=f'By Voucherno : {instance.vouchernumber}',
-                        drcr=0 if drcr_value == 1 else 1,  # Opposite
-                        amount=abs(details.other_amount),
-                        entity=instance.entity,
-                        createdby=instance.created_by,
-                        entry=entryid,
-                        entrydatetime=instance.voucherdate,
-                        accounttype='M',
-                        iscashtransaction=False,
-                        voucherno=instance.voucher_number
-                    )
-
-        return instance
-    
-
-class ReceiptVoucherPdfSerializer(serializers.ModelSerializer):
-    invoice_allocations = ReceiptVoucherInvoiceAllocationSerializer(many=True)
-    received_from_accountname = serializers.CharField(source='received_from.accountname', read_only=True)
-    payment_mode = serializers.CharField(source='payment_mode.paymentmode', read_only=True)
-    account_type = serializers.CharField(source='account_type.accounttypename', read_only=True)
-    voucherdate = serializers.SerializerMethodField()  # 👈 Add this
-    amountinwords = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ReceiptVoucher
-        fields = [
-            'id', 'voucher_number','vouchernumber', 'voucherdate', 'received_in', 'received_from','received_from_accountname',  'account_type',
-            'payment_mode', 'total_amount','amountinwords','narration', 'reference_number', 'isledgerposting',
-            'receiverbankname', 'chqno', 'chqdate', 'created_by', 'approved_by',
-            'created_at', 'approved_at','entity','entityfinid','invoice_allocations'
-        ]
-        read_only_fields = ['created_at', 'approved_at']
-        
-    def get_voucherdate(self, obj):
-        if obj.voucherdate:
-            return obj.voucherdate.strftime("%d-%b-%Y")  # Format as DD-MMM-YYYY
-        return None
-    
-    def get_amountinwords(self, obj):
-        return f"{string.capwords(num2words(obj.total_amount))} only"
     
 
 

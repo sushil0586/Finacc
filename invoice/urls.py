@@ -1,6 +1,6 @@
 from django.urls import path
 from invoice import views
-from .views import PurchaseOrderAttachmentAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView
+from .views import PurchaseOrderAttachmentAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView
 
 
 app_name = 'invoice'
@@ -100,7 +100,6 @@ urlpatterns  = [
     path('tdsvoucherno',views.tdsordelatestview.as_view(), name = 'purchaseorder'),
     path('tdstype',views.tdstypeApiView.as_view(), name = 'purchaseorder'),
     path('tdscancel/<int:id>',views.tdsmaincancel.as_view(), name = 'tdsmain'),
-    path('receiptvouchercancel/<int:id>',views.ReceiptVouchercancel.as_view(), name = 'tdsmain'),
     path('saleinvoicecancel/<int:id>',views.salesordercancel.as_view(), name = 'tdsmain'),
     path('saleordercancel/<int:id>',views.saleordercancel.as_view(), name = 'tdsmain'),
     path('jobworkcancel/<int:id>',views.jobworkchalancancel.as_view(), name = 'tdsmain'),
@@ -166,12 +165,10 @@ urlpatterns  = [
     path('doctype/<int:pk>/', views.DoctypeAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
 
     path('getlatestreceiptvno/', views.GetReceiptNumberAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
-    path('create-receipt-voucher/', views.CreateReceiptVoucherAPIView.as_view(), name='create-receipt-voucher'),
-    path('salesorderslistbyaccountid/', views.SalesOrderHeaderListView.as_view(), name='sales-order-list'),
-    path('receipt-vouchers/', views.ReceiptVoucherListCreateAPIView.as_view(), name='receipt-voucher-list-create'),
-    path('receipt-vouchers/<int:pk>/', views.ReceiptVoucherDetailAPIView.as_view(), name='receipt-voucher-detail'),
-    path('receiptvoucherpdf/<int:pk>/', views.ReceiptVoucherDetailPdfAPIView.as_view(), name='receipt-voucher-detail'),
-    path('receiptvoucherbyvoucherid/', views.ReceiptVoucherLookupAPIView.as_view(), name='receipt-voucher-detail'),
+    
+   
+   
+  
     path('sales-orders/<int:pk>/pdf/', views.SalesOrderPDFViewlatest.as_view(), name='sales-order-pdf'),
     path('salesorder/update-adddetails/<int:pk>/', views.UpdateAddDetailsAPIView.as_view(), name='update-adddetails'),
     path('salesorder/get-adddetails/<int:pk>/', views.GetAddDetailsAPIView.as_view(), name='get-adddetails'),
@@ -185,7 +182,8 @@ urlpatterns  = [
     path("sales/quotations/<int:id>", SalesQuotationRetrieveUpdateDestroyAPIView.as_view(), name="quotation-detail"),
     path("sales/quotations/<int:id>/status", SalesQuotationStatusAPIView.as_view(), name="quotation-status"),
     path("sales/quotations/<int:id>/convert", SalesQuotationConvertAPIView.as_view(), name="quotation-convert"),
-    
+    path("purchaseorder/<int:pk>/capture-supplier-einvoice/", PurchaseOrderCaptureSupplierEInvoiceApiView.as_view()),
+     path("purchaseorder/<int:pk>/capture-eway/", PurchaseOrderCaptureEWayApiView.as_view()),
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
 

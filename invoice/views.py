@@ -27,7 +27,7 @@ from invoice.models import (
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,SalesQuotationHeader,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,SalesQuotationDetail,
     newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
-    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ReceiptVoucher, ReceiptVoucherInvoiceAllocation,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls
+    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,EInvoiceDetails
 )
 
 from invoice.serializers import (
@@ -58,13 +58,14 @@ from invoice.serializers import (
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
     SalesInvoiceSettingsSerializer,
-    PurchaseSettingsSerializer,ReceiptVoucherPdfSerializer,SalesQuotationHeaderSerializer,
-    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,ReceiptVoucherSerializer,ReceiptVouchercancelSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer,SaleReturnPDFSerializer
+    PurchaseSettingsSerializer,SalesQuotationHeaderSerializer,
+    ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer,SaleReturnPDFSerializer,PurchaseSupplierEInvoiceCaptureSerializer,PurchaseInvoiceEWayCaptureSerializer
 )
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions,status
 from django_filters.rest_framework import DjangoFilterBackend
+from django.contrib.contenttypes.models import ContentType
 from django.db import DatabaseError, transaction
 from rest_framework.response import Response
 from django.db.models import Sum,OuterRef,Subquery,F,Count,Value
@@ -470,17 +471,7 @@ class salesordercancel(RetrieveUpdateDestroyAPIView):
         return SalesOderHeader.objects.filter(entity = entity)
     
 
-class ReceiptVouchercancel(RetrieveUpdateDestroyAPIView):
 
-    serializer_class = ReceiptVouchercancelSerializer
-    permission_classes = (permissions.IsAuthenticated,)
-    lookup_field = "id"
-
-    def get_queryset(self):
-        entity = self.request.query_params.get('entity')
-        if not entity:
-            raise ValidationError({"error": "entity parameter is required."})
-        return ReceiptVoucher.objects.filter(entity=entity)  # optional: isactive
     
 class saleordercancel(RetrieveUpdateDestroyAPIView):
 
@@ -1588,6 +1579,46 @@ class PurchaseReturnlatestview(ListCreateAPIView):
 
         ############################################################
 
+class PurchaseOrderCaptureEWayApiView(GenericAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = PurchaseInvoiceEWayCaptureSerializer
+
+    def post(self, request, pk):
+        po = purchaseorder.objects.get(pk=pk)
+
+        # Optional: entity guard (recommended)
+        entity = request.query_params.get("entity")
+        if entity and str(po.entity_id) != str(entity):
+            return Response({"detail": "Invalid entity."}, status=status.HTTP_403_FORBIDDEN)
+
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        # ✅ Upsert EWB details linked to purchase invoice
+        EwbDtls.objects.update_or_create(
+            purchase_invoice=po,
+            defaults={
+                "EwbNo": data.get("EwbNo"),
+                "EwbDt": data.get("EwbDt"),
+                "EwbValidTill": data.get("EwbValidTill"),
+                "TransId": data.get("TransId"),
+                "TransName": data.get("TransName"),
+                "Distance": data.get("Distance"),
+                "TransDocNo": data.get("TransDocNo"),
+                "TransMode": data.get("TransMode"),
+                "TransDocDt": data.get("TransDocDt"),
+                "VehNo": data.get("VehNo"),
+                "VehType": data.get("VehType"),
+            }
+        )
+
+        # Mark header flag (if you have eway boolean in purchaseorder, else skip this line)
+        if hasattr(po, "eway"):
+            purchaseorder.objects.filter(id=po.id).update(eway=True)
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
+
 
 class purchaseorderApiView(ListCreateAPIView):
     serializer_class = purchaseorderSerializer
@@ -1615,6 +1646,40 @@ class purchaseorderApiView(ListCreateAPIView):
             "attachments",
         )
         return qs
+
+
+class PurchaseOrderCaptureSupplierEInvoiceApiView(GenericAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = PurchaseSupplierEInvoiceCaptureSerializer
+
+    def post(self, request, pk):
+        po = purchaseorder.objects.get(pk=pk)
+
+        # (optional but recommended) enforce entity access
+        entity = request.query_params.get("entity")
+        if entity and str(po.entity_id) != str(entity):
+            return Response({"detail": "Invalid entity."}, status=status.HTTP_403_FORBIDDEN)
+
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        ct = ContentType.objects.get_for_model(po, for_concrete_model=False)
+
+        EInvoiceDetails.objects.update_or_create(
+            content_type=ct,
+            object_id=po.id,
+            defaults={
+                "irn": data["irn"],
+                "ack_no": data.get("ack_no"),
+                "ack_date": data.get("ack_date"),
+                "signed_qr_code": data.get("signed_qr_code"),
+                "status": "ACT",
+                "remarks": "Captured from supplier invoice",
+            }
+        )
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
 
 class newpurchaseorderApiView(ListCreateAPIView):
 
@@ -6210,179 +6275,10 @@ class GetReceiptNumberAPIView(APIView):
     
 
 
-class CreateReceiptVoucherAPIView(APIView):
-    def post(self, request):
-        data = request.data
 
-        try:
-            with transaction.atomic():
-                # Create ReceiptVoucher
-                receipt_voucher = ReceiptVoucher.objects.create(
-                    voucher_number=data['voucher_number'],
-                    received_in_id=data['received_in'],
-                    received_from_id=data['received_from'],
-                    payment_mode_id=data['payment_mode'],
-                    total_amount=data['total_amount'],
-                    narration=data.get('narration', ''),
-                    reference_number=data.get('reference_number', ''),
-                    receiverbankname=data['receiverbankname'],
-                    chqno=data['chqno'],
-                    created_by_id=data['created_by'],
-                    chqdate=date.today(),  # override if passed explicitly
-                )
-
-                # Create related invoice allocations
-                invoice_allocations = data.get('invoice_allocations', [])
-                for allocation in invoice_allocations:
-                    ReceiptVoucherInvoiceAllocation.objects.create(
-                        receipt_voucher=receipt_voucher,
-                        invoice_id=allocation['invoice'],
-                        invoice_amount=allocation['invoice_amount'],
-                        otheraccount_id=allocation['otheraccount'],
-                        other_amount=allocation['other_amount'],
-                        allocated_amount=allocation['allocated_amount']
-                    )
-
-            return Response({"message": "Receipt Voucher created successfully."}, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         
 
-class SalesOrderHeaderListView(APIView):
-    def get(self, request, *args, **kwargs):
-        accountid = request.query_params.get('account_id')
-        entity = request.query_params.get('entity_id')
-        entityfinid = request.query_params.get('entityfin_id')
 
-        if not all([accountid, entity, entityfinid]):
-            return Response(
-                {"detail": "accountid, entity and entityfinid are required parameters."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        invoices = SalesOderHeader.objects.filter(
-            accountid=accountid,
-            entity=entity,
-            entityfinid=entityfinid
-        ).annotate(
-            trans_amount=Coalesce(
-                Sum(
-                    'receiptvoucherinvoiceallocation__trans_amount',
-                    filter=Q(receiptvoucherinvoiceallocation__isfullamtreceived=False)
-                ),
-                Value(0),
-                output_field=DecimalField(max_digits=14, decimal_places=4)
-            )
-        ).annotate(
-            pending_amount=F('gtotal') - F('trans_amount')
-        ).filter(
-            pending_amount__gt=0
-        )
-
-        serializer = SalesOrderHeadeListSerializer(invoices, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-
-class   ReceiptVoucherListCreateAPIView(APIView):
-    def get(self, request):
-        vouchers = ReceiptVoucher.objects.all()
-
-        # Export to Excel if requested
-        if request.query_params.get('export') == 'excel':
-            serializer = ReceiptVoucherSerializer(vouchers, many=True)
-            df = pd.DataFrame(serializer.data)
-
-            # Ensure all data is string to preserve special characters
-            df = df.astype(str)
-
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Vouchers')
-                writer.close()
-            output.seek(0)
-
-            response = HttpResponse(
-                output,
-                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-            response['Content-Disposition'] = 'attachment; filename="receipt_vouchers.xlsx"'
-            return response
-
-        # Default JSON response
-        serializer = ReceiptVoucherSerializer(vouchers, many=True)
-        return Response(serializer.data)
-
-    def post(self, request):
-        serializer = ReceiptVoucherSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-
-    
-
-class ReceiptVoucherDetailPdfAPIView(APIView):
-    def get(self, request, pk):
-        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
-        serializer = ReceiptVoucherPdfSerializer(voucher)
-        return Response(serializer.data)
-
-
-
-class ReceiptVoucherDetailAPIView(APIView):
-    def get(self, request, pk):
-        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
-        serializer = ReceiptVoucherSerializer(voucher)
-        return Response(serializer.data)
-
-    def put(self, request, pk):
-        voucher = get_object_or_404(ReceiptVoucher, pk=pk)
-        serializer = ReceiptVoucherSerializer(voucher, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class ReceiptVoucherLookupAPIView(APIView):
-    def get(self, request):
-        vouchernumber = request.query_params.get('vouchernumber')
-        entity = request.query_params.get('entity_id')
-        entityfinid = request.query_params.get('entityfin_id')
-
-        if not all([vouchernumber, entity, entityfinid]):
-            return Response(
-                {"detail": "Missing query parameters: vouchernumber, entity, entityfinid required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        voucher = get_object_or_404(
-            ReceiptVoucher,
-            voucher_number=vouchernumber,
-            entity=entity,
-            entityfinid=entityfinid
-        )
-
-        settings = get_object_or_404(
-            SalesInvoiceSettings,
-            entity=entity,
-            entityfinid=entityfinid,
-            doctype=2
-        )
-
-        # Use boolean comparison directly
-        firstnumber = str(vouchernumber) == str(settings.starting_number)
-        lastnumber = str(vouchernumber) == str(settings.current_number)
-
-        serializer = ReceiptVoucherSerializer(voucher)
-        data = serializer.data
-        data["firstnumber"] = firstnumber
-        data["lastnumber"] = lastnumber
-
-        return Response(data)
     
 
 

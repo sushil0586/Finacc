@@ -3,6 +3,8 @@
 from django.db import models
 from django.forms import DateField
 from helpers.models import TrackingModel
+from django.core.validators import MinValueValidator
+from django.conf import settings
 from Authentication.models import User
 from financial.models import account,accountHead,ShippingDetails,accounttype
 from entity.models import Entity,entityfinancialyear,subentity
@@ -1429,45 +1431,7 @@ class journaldetails(TrackingModel):  # or inherit your TrackingModel if you hav
 
 
 
-class ReceiptVoucher(TrackingModel):
-    voucher_number = models.IntegerField(max_length=50,)
-    vouchernumber = models.CharField(max_length=50,null= True)
-    voucherdate = models.DateTimeField(verbose_name='Vocucher Date',null=True, blank=True)
-    received_in = models.ForeignKey(account,on_delete=models.CASCADE)
-    received_from = models.ForeignKey(account, related_name='receipt_vouchers', on_delete=models.CASCADE)
-    account_type = models.ForeignKey(accounttype, related_name='account_type',null=True, blank=True, on_delete=models.CASCADE)
-    payment_mode = models.ForeignKey(Paymentmodes, related_name='Payment_mode',null=True, on_delete=models.CASCADE)
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    narration = models.TextField(blank=True, null=True)
-    reference_number = models.CharField(max_length=100, blank=True, null=True)
-    isledgerposting =   models.BooleanField(default=False)
-    receiverbankname = models.CharField(max_length=100,null=True, blank=True, )
-    chqno = models.CharField(max_length=50,null=True, blank=True, )
-    chqdate =  models.DateTimeField(verbose_name='chq Date',null=True, blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_receipt_vouchers')
-    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_receipt_vouchers')
-    created_at = models.DateTimeField(auto_now_add=True)
-    approved_at = models.DateTimeField(null=True, blank=True)
-    createdby = models.ForeignKey(to= User, on_delete=models.CASCADE,null=True)
-    entity = models.ForeignKey(Entity,on_delete=models.CASCADE,null=True, verbose_name= 'entity')
-    entityfinid = models.ForeignKey(entityfinancialyear,on_delete=models.CASCADE,verbose_name= 'entity Financial year',null= True)
 
-    def __str__(self):
-        return f"Receipt Voucher #{self.voucher_number}"
-
-
-class ReceiptVoucherInvoiceAllocation(models.Model):
-    receipt_voucher = models.ForeignKey(ReceiptVoucher, related_name='invoice_allocations', on_delete=models.CASCADE)
-    invoice = models.ForeignKey('SalesOderHeader', on_delete=models.CASCADE)
-    trans_amount = models.DecimalField(max_digits=12, decimal_places=2,default =0,null=True, blank=True, )
-    otheraccount = models.ForeignKey(account,on_delete=models.CASCADE,null=True,blank=True,)
-    other_amount = models.DecimalField(max_digits=12, decimal_places=2,default =0,null=True, blank=True, )
-    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    isfullamtreceived =   models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"{self.receipt_voucher.voucher_number} - Invoice {self.invoice.invoicenumber}"
-    
 
 class PaymentVoucher(TrackingModel):
     voucher_number = models.IntegerField()
@@ -1867,6 +1831,12 @@ class EwbDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE,null=True, blank=True, related_name='ewbdtls')
     sales_return = models.OneToOneField('salereturn', on_delete=models.CASCADE, null=True, blank=True, related_name='ewbdtls1')
     purchase_return = models.OneToOneField('PurchaseReturn', on_delete=models.CASCADE, null=True, blank=True, related_name='ewbdtls2')
+    purchase_invoice = models.OneToOneField(
+        'purchaseorder',
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='ewbdtls3'
+    )
     TransId = models.CharField(max_length=20,null=True, blank=True)
     TransName = models.CharField(max_length=100,null=True, blank=True)
     Distance = models.DecimalField(max_digits=8, decimal_places=2,null=True, blank=True)
@@ -1875,6 +1845,10 @@ class EwbDtls(models.Model):
     TransDocDt = models.DateTimeField(verbose_name='TransDocDt',null = True)
     VehNo = models.CharField(max_length=20,null = True)
     VehType = models.CharField(max_length=1,null = True)  # e.g., R - Regular, O - ODC
+
+    EwbNo = models.CharField(max_length=20, null=True, blank=True)
+    EwbDt = models.DateTimeField(null=True, blank=True)
+    EwbValidTill = models.DateTimeField(null=True, blank=True)
 
 class ExpDtls(models.Model):
     invoice = models.OneToOneField('SalesOderHeader', on_delete=models.CASCADE,null=True, blank=True, related_name='expdtls')
@@ -2226,6 +2200,11 @@ class SalesQuotationDetail(TrackingModel):
 
     def __str__(self):
         return f"{self.product or self.productdesc or '#'}"
+
+
+
+
+
 
 
 
