@@ -1,6 +1,6 @@
 from django.urls import path
 from invoice import views
-from .views import PurchaseOrderAttachmentAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView
+from .views import PurchaseOrderAttachmentAPIView,ReceiptPendingInvoiceAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView,  ReceiptVoucherListCreateAPIView,ReceiptVoucherDetailAPIView, ReceiptVoucherPostAPIView
 
 
 app_name = 'invoice'
@@ -165,7 +165,14 @@ urlpatterns  = [
     path('doctype/<int:pk>/', views.DoctypeAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
 
     path('getlatestreceiptvno/', views.GetReceiptNumberAPIView.as_view(), name='doctype-detail'),  # GET specific doctype by ID
-    
+    path("receipt-vouchers/", ReceiptVoucherListCreateAPIView.as_view()),
+    path("receipt-vouchers/<int:pk>/", ReceiptVoucherDetailAPIView.as_view()),
+    path("receipt-vouchers/<int:pk>/post/", ReceiptVoucherPostAPIView.as_view()),
+    path(
+        "receipt-vouchers/pending-invoices/",
+        ReceiptPendingInvoiceAPIView.as_view(),
+        name="receipt-pending-invoices"
+    ),
    
    
   
