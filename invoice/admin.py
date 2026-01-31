@@ -6,7 +6,10 @@ from .models import (
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
     accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
-    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls,JournalLine, InventoryMove, TxnType,SalesQuotationDetail,SalesQuotationHeader,PostingConfig
+    debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls,JournalLine, InventoryMove, TxnType,SalesQuotationDetail,SalesQuotationHeader,PostingConfig,
+    ReceiptVoucher,
+    ReceiptVoucherAllocation,
+    ReceiptVoucherAdjustment,
 )
 from django.utils.translation import gettext_lazy as _
 from import_export.admin import ImportExportMixin
@@ -33,6 +36,242 @@ def ensure_admin_with_search(model, admin_class, **kwargs):
 # ---- Account admin ----
 # ---- Product admin ----
 
+
+
+class ReceiptVoucherAllocationInline(admin.TabularInline):
+    model = ReceiptVoucherAllocation
+    extra = 0
+    show_change_link = True
+
+    fields = (
+        "invoice",
+        "settled_amount",
+        "is_full_settlement",
+        "is_advance_adjustment",
+    )
+
+
+
+class ReceiptVoucherAdjustmentInline(admin.TabularInline):
+    model = ReceiptVoucherAdjustment
+    extra = 0
+    show_change_link = True
+
+    fields = (
+        "allocation",
+        "adj_type",
+        "ledger_account",
+        "amount",
+        "settlement_effect",
+        "remarks",
+    )
+
+    
+
+
+# -----------------------------
+# ReceiptVoucher Admin
+# -----------------------------
+@admin.register(ReceiptVoucher)
+class ReceiptVoucherAdmin(admin.ModelAdmin):
+    save_on_top = True
+    list_per_page = 50
+
+    date_hierarchy = "voucher_date"
+
+    list_display = (
+        "id",
+        "voucher_code",
+        "voucher_no",
+        "voucher_date",
+        "receipt_type",
+        "supply_type",
+        "received_from",
+        "received_in",
+        "payment_mode",
+        "cash_received_amount",
+        "alloc_total",
+        "adj_total",
+        "is_posted",
+        "entity",
+        "entityfinid",
+        "created_at",
+    )
+
+    list_filter = (
+        "receipt_type",
+        "supply_type",
+        "is_posted",
+        "voucher_date",
+        "entity",
+        "entityfinid",
+        "payment_mode",
+    )
+
+    
+
+    
+
+    readonly_fields = (
+        "created_at",
+        "approved_at",
+        "alloc_total",
+        "adj_total",
+        "settlement_net",
+    )
+
+    fieldsets = (
+        ("Voucher", {
+            "fields": (
+                ("voucher_date", "voucher_no", "voucher_code"),
+                ("receipt_type", "supply_type", "is_posted"),
+            )
+        }),
+        ("Party & Receipt Account", {
+            "fields": (
+                ("received_from", "received_in"),
+                ("payment_mode", "cash_received_amount"),
+            )
+        }),
+        ("Reference / Narration", {
+            "fields": (
+                "reference_number",
+                "narration",
+            )
+        }),
+        ("Instrument Details", {
+            "fields": (
+                ("instrument_bank_name", "instrument_no", "instrument_date"),
+            ),
+            "classes": ("collapse",),
+        }),
+        ("Advance GST Details (only for ADVANCE)", {
+            "fields": (
+                ("place_of_supply_state", "customer_gstin"),
+                ("advance_taxable_value", "advance_cgst", "advance_sgst"),
+                ("advance_igst", "advance_cess"),
+            ),
+            "classes": ("collapse",),
+        }),
+        ("Totals", {
+            "fields": (
+                "alloc_total",
+                "adj_total",
+                "settlement_net",
+            )
+        }),
+        ("Entity Context", {
+            "fields": (
+                ("entity", "entityfinid"),
+            )
+        }),
+        ("Approvals / Audit", {
+            "fields": (
+                ("created_by", "approved_by"),
+                ("created_at", "approved_at"),
+            ),
+            "classes": ("collapse",),
+        }),
+    )
+
+    inlines = [
+        ReceiptVoucherAllocationInline,
+        ReceiptVoucherAdjustmentInline,
+    ]
+
+    # ---------- Computed totals ----------
+    def alloc_total(self, obj: ReceiptVoucher):
+        total = obj.allocations.aggregate(t=Sum("settled_amount"))["t"] or 0
+        return total
+    alloc_total.short_description = "Allocated Total"
+
+    def adj_total(self, obj: ReceiptVoucher):
+        total = obj.adjustments.aggregate(t=Sum("amount"))["t"] or 0
+        return total
+    adj_total.short_description = "Adjustments Total"
+
+    def settlement_net(self, obj: ReceiptVoucher):
+        """
+        Net settlement effect = Allocated + (PLUS adjustments) - (MINUS adjustments)
+        Note: cash_received_amount is separate (bank/cash actually received).
+        """
+        alloc = obj.allocations.aggregate(t=Sum("settled_amount"))["t"] or 0
+
+        plus = obj.adjustments.filter(settlement_effect="PLUS").aggregate(t=Sum("amount"))["t"] or 0
+        minus = obj.adjustments.filter(settlement_effect="MINUS").aggregate(t=Sum("amount"))["t"] or 0
+
+        return (alloc + plus - minus)
+    settlement_net.short_description = "Settlement Net"
+
+    # ---------- Optional: prevent editing once posted ----------
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(super().get_readonly_fields(request, obj))
+        if obj and obj.is_posted:
+            # lock most fields after posting
+            ro += [
+                "entity", "entityfinid",
+                "voucher_no", "voucher_code", "voucher_date",
+                "receipt_type", "supply_type",
+                "received_in", "received_from", "payment_mode",
+                "cash_received_amount",
+                "reference_number", "narration",
+                "instrument_bank_name", "instrument_no", "instrument_date",
+                "place_of_supply_state", "customer_gstin",
+                "advance_taxable_value", "advance_cgst", "advance_sgst", "advance_igst", "advance_cess",
+                "created_by", "approved_by",
+            ]
+        return ro
+
+
+# -----------------------------
+# Allocation Admin (standalone)
+# -----------------------------
+@admin.register(ReceiptVoucherAllocation)
+class ReceiptVoucherAllocationAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "receipt_voucher",
+        "invoice",
+        "settled_amount",
+        "is_full_settlement",
+        "is_advance_adjustment",
+    )
+    list_filter = (
+        "is_full_settlement",
+        "is_advance_adjustment",
+    )
+    search_fields = (
+        "receipt_voucher__voucher_code",
+        "receipt_voucher__voucher_no",
+        "invoice__invoicenumber",
+    )
+
+
+
+# -----------------------------
+# Adjustment Admin (standalone)
+# -----------------------------
+@admin.register(ReceiptVoucherAdjustment)
+class ReceiptVoucherAdjustmentAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "receipt_voucher",
+        "allocation",
+        "adj_type",
+        "ledger_account",
+        "amount",
+        "settlement_effect",
+    )
+    list_filter = (
+        "adj_type",
+        "settlement_effect",
+    )
+    search_fields = (
+        "receipt_voucher__voucher_code",
+        "ledger_account__accountname",
+        "remarks",
+    )
+  
 
 
 
