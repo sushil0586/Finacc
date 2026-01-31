@@ -6715,9 +6715,27 @@ class ReceiptVoucherDetailAPIView(GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self, pk):
-        # Keep your existing prefetch
         return get_object_or_404(
-            ReceiptVoucher.objects.prefetch_related("allocations", "adjustments"),
+            ReceiptVoucher.objects
+            .select_related(
+                "entity",
+                "entityfinid",
+                "received_in",
+                "received_from",
+                "payment_mode",
+                "place_of_supply_state",
+                "created_by",
+                "approved_by",
+            )
+            .prefetch_related(
+                "allocations",
+                "allocations__invoice",   # ✅ THIS is what fixes N+1 / stale invoice fetch
+                "adjustments",
+                # optional if you show ledger/alloc invoice in adjustments too:
+                "adjustments__ledger_account",
+                "adjustments__allocation",
+                "adjustments__allocation__invoice",
+            ),
             pk=pk
         )
 

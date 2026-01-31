@@ -10602,14 +10602,63 @@ def q2(v) -> Decimal:
 
 
 class ReceiptVoucherAllocationSerializer(serializers.ModelSerializer):
+    invoice_total = serializers.SerializerMethodField()
+    settled_other = serializers.SerializerMethodField()
+    pending_before = serializers.SerializerMethodField()
+    pending_after = serializers.SerializerMethodField()
+
     class Meta:
         model = ReceiptVoucherAllocation
-        fields = ["id", "invoice", "settled_amount", "is_full_settlement", "is_advance_adjustment"]
+        fields = [
+            "id",
+            "receipt_voucher",
+            "invoice",
+            "settled_amount",
+            "is_full_settlement",
+            "is_advance_adjustment",
+            # computed
+            "invoice_total",
+            "settled_other",
+            "pending_before",
+            "pending_after",
+        ]
+        read_only_fields = ["invoice_total", "settled_other", "pending_before", "pending_after"]
 
-    def validate(self, attrs):
-        if q2(attrs.get("settled_amount")) < 0:
-            raise serializers.ValidationError("settled_amount cannot be negative.")
-        return attrs
+    def _q2(self, x):
+        return Decimal(x or 0).quantize(Decimal("0.01"))
+
+    def get_invoice_total(self, obj):
+        inv = getattr(obj, "invoice", None)
+        return self._q2(getattr(inv, "grandtotal", 0)) if inv else self._q2(0)
+
+    def get_settled_other(self, obj):
+        """
+        Sum allocations for the same invoice EXCLUDING current receipt voucher.
+        This prevents double counting when opening/editing this voucher.
+        """
+        inv = getattr(obj, "invoice", None)
+        if not inv:
+            return self._q2(0)
+
+        other = (
+            ReceiptVoucherAllocation.objects
+            .filter(invoice_id=inv.id)
+            .exclude(receipt_voucher_id=obj.receipt_voucher_id)
+            .aggregate(t=Sum("settled_amount"))["t"]
+        )
+        return self._q2(other)
+
+    def get_pending_before(self, obj):
+        total = self.get_invoice_total(obj)
+        other = self.get_settled_other(obj)
+        pending = total - other
+        return self._q2(pending)
+
+    def get_pending_after(self, obj):
+        pending_before = self.get_pending_before(obj)
+        curr = self._q2(obj.settled_amount)
+        pending_after = pending_before - curr
+        return self._q2(pending_after)
 
 
 class ReceiptVoucherAdjustmentSerializer(serializers.ModelSerializer):
