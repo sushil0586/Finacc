@@ -6721,53 +6721,52 @@ class ReceiptPendingInvoiceAPIView(GenericAPIView):
         if not entity or not entityfinid or not party:
             return Response(
                 {"detail": "entity, entityfinid and party are required"},
-                status=400
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Step 1: fetch all sales invoices for customer
+        # 1) Fetch invoices (FIFO)
         invoices = (
             SalesOderHeader.objects
             .filter(
                 entity_id=entity,
                 entityfinid_id=entityfinid,
-                account_id=party,
+                accountid_id=party,     # ✅ Correct field name (party/customer)
                 isactive=True,
-                iscancelled=False,
+               
             )
-            .order_by("invoicedate", "id")   # FIFO
+            .order_by("sorderdate", "id")
         )
 
         result = []
 
         for inv in invoices:
-            # Step 2: total invoice value (GST included)
-            invoice_total = Decimal(inv.grandtotal or 0)
+            invoice_total = Decimal(inv.gtotal or 0)
 
-            # Step 3: total settled via receipt vouchers
+            # 2) Sum settlements from ReceiptVoucherAllocation
             settled = (
                 ReceiptVoucherAllocation.objects
                 .filter(
                     invoice_id=inv.id,
                     receipt_voucher__entity_id=entity,
                     receipt_voucher__entityfinid_id=entityfinid,
-                    receipt_voucher__isactive=True,
+                    receipt_voucher__is_posted=True,  # ✅ your new model field
                 )
-                .aggregate(total=Sum("settled_amount"))["total"] or Decimal("0.00")
+                .aggregate(total=Sum("settled_amount"))["total"]
+                or Decimal("0.00")
             )
 
-            pending = invoice_total - settled
+            pending = (invoice_total - settled)
 
-            # Step 4: return only pending invoices
             if pending > 0:
                 result.append({
                     "invoice": inv.id,
                     "invoiceno": inv.invoicenumber,
-                    "invoicedate": inv.invoicedate,
+                    "invoicedate": inv.sorderdate,
                     "pendingamount": pending.quantize(Decimal("0.01")),
                 })
 
         serializer = self.get_serializer(result, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 

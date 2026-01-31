@@ -10812,7 +10812,7 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
 class PendingInvoiceSerializer(serializers.Serializer):
     invoice = serializers.IntegerField()
     invoiceno = serializers.CharField()
-    invoicedate = serializers.DateField()
+    invoicedate =  serializers.DateTimeField(allow_null=True)
     pendingamount = serializers.DecimalField(max_digits=12, decimal_places=2)
 
 
