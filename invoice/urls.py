@@ -1,6 +1,6 @@
 from django.urls import path
 from invoice import views
-from .views import PurchaseOrderAttachmentAPIView,ReceiptPendingInvoiceAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView,  ReceiptVoucherListCreateAPIView,ReceiptVoucherDetailAPIView, ReceiptVoucherPostAPIView
+from .views import ReceiptVoucherPDFAPIView,PurchaseOrderAttachmentAPIView,ReceiptPendingInvoiceAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView,  ReceiptVoucherListCreateAPIView,ReceiptVoucherDetailAPIView, ReceiptVoucherPostAPIView
 
 
 app_name = 'invoice'
@@ -173,6 +173,8 @@ urlpatterns  = [
         ReceiptPendingInvoiceAPIView.as_view(),
         name="receipt-pending-invoices"
     ),
+
+    path("receipt-vouchers/<int:pk>/pdf/", ReceiptVoucherPDFAPIView.as_view(), name="receipt_voucher_pdf"),
    
    
   

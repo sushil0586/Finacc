@@ -4,6 +4,7 @@ from django.shortcuts import render
 from collections import defaultdict
 from django.utils.encoding import smart_str
 from math import radians, sin, cos, sqrt, atan2
+from decimal import Decimal, ROUND_HALF_UP
 from django.utils import timezone
 import io
 import calendar
@@ -13,6 +14,12 @@ from helpers.utils.pdf import render_to_pdf
 from django.utils.functional import cached_property
 from rest_framework.filters import OrderingFilter
 from django.utils.dateparse import parse_date
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from io import BytesIO
+
 
 from catalog.models import ProductPrice,ProductGstRate
 
@@ -6728,10 +6735,12 @@ class ReceiptVoucherDetailAPIView(GenericAPIView):
                 "approved_by",
             )
             .prefetch_related(
+                # allocations + invoice
                 "allocations",
-                "allocations__invoice",   # ✅ THIS is what fixes N+1 / stale invoice fetch
+                "allocations__invoice",
+
+                # adjustments + optional drilldowns
                 "adjustments",
-                # optional if you show ledger/alloc invoice in adjustments too:
                 "adjustments__ledger_account",
                 "adjustments__allocation",
                 "adjustments__allocation__invoice",
@@ -6883,6 +6892,282 @@ class ReceiptPendingInvoiceAPIView(GenericAPIView):
 
         serializer = self.get_serializer(result, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+def q2(x):
+    return Decimal(x or 0).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+class ReceiptVoucherPDFAPIView(APIView):
+    """
+    Customer Copy PDF for Receipt Voucher
+    GET /api/invoice/receipt-vouchers/<id>/pdf/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self, pk):
+        return get_object_or_404(
+            ReceiptVoucher.objects
+            .select_related(
+                "entity", "entityfinid",
+                "received_in", "received_from",
+                "payment_mode",
+                "place_of_supply_state",
+                "created_by", "approved_by",
+            )
+            .prefetch_related(
+                "allocations",
+                "allocations__invoice",
+                "adjustments",
+                "adjustments__ledger_account",
+                "adjustments__allocation",
+                "adjustments__allocation__invoice",
+            ),
+            pk=pk
+        )
+
+    def get(self, request, pk):
+        rv = self.get_object(pk)
+
+        # -------------------------
+        # Prepare data (customer POV)
+        # -------------------------
+        company_name = getattr(rv.entity, "entityname", None) or getattr(rv.entity, "name", None) or f"Entity #{rv.entity_id}"
+        customer_name = getattr(rv.received_from, "accountname", None) or str(rv.received_from_id)
+        received_in_name = getattr(rv.received_in, "accountname", None) or str(rv.received_in_id)
+        payment_mode_name = getattr(rv.payment_mode, "paymentmode", None) or getattr(rv.payment_mode, "name", None) or ""
+
+        cash_received = q2(rv.cash_received_amount)
+        receipt_type = rv.receipt_type
+        supply_type = rv.supply_type
+
+        # allocations table (Against Invoice)
+        alloc_rows = []
+        alloc_total = Decimal("0.00")
+        for a in rv.allocations.all():
+            inv = getattr(a, "invoice", None)
+            inv_no = getattr(inv, "invoicenumber", None) if inv else ""
+            inv_dt = getattr(inv, "invoicedate", None) if inv else None
+            # make date safe if it is datetime
+            if inv_dt and hasattr(inv_dt, "date"):
+                inv_dt = inv_dt.date()
+            alloc_amt = q2(a.settled_amount)
+            alloc_total += alloc_amt
+            alloc_rows.append({
+                "invoice_no": inv_no,
+                "invoice_date": inv_dt,
+                "settled_amount": alloc_amt,
+            })
+        alloc_total = q2(alloc_total)
+
+        # adjustments summary
+        plus = Decimal("0.00")
+        minus = Decimal("0.00")
+        adj_rows = []
+        for ad in rv.adjustments.all():
+            amt = q2(ad.amount)
+            eff = ad.settlement_effect
+            if eff == "MINUS":
+                minus += amt
+            else:
+                plus += amt
+            adj_rows.append({
+                "type": ad.adj_type,
+                "effect": eff,
+                "amount": amt,
+                "remarks": ad.remarks or "",
+            })
+        plus = q2(plus)
+        minus = q2(minus)
+        adj_effect = q2(plus - minus)
+
+        expected_settlement = q2(cash_received + adj_effect)
+
+        # Advance GST block (customer copy)
+        adv_taxable = q2(rv.advance_taxable_value)
+        adv_cgst = q2(rv.advance_cgst)
+        adv_sgst = q2(rv.advance_sgst)
+        adv_igst = q2(rv.advance_igst)
+        adv_cess = q2(rv.advance_cess)
+        adv_total = q2(adv_taxable + adv_cgst + adv_sgst + adv_igst + adv_cess)
+
+        # -------------------------
+        # Build PDF (ReportLab)
+        # -------------------------
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        w, h = A4
+
+        left = 18 * mm
+        right = w - 18 * mm
+        top = h - 18 * mm
+
+        def draw_text(x, y, text, size=10, bold=False):
+            c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+            c.drawString(x, y, str(text))
+
+        def draw_line(y):
+            c.line(left, y, right, y)
+
+        y = top
+
+        # Header
+        draw_text(left, y, company_name, 14, bold=True)
+        y -= 7 * mm
+        draw_text(left, y, "Receipt Voucher (Customer Copy)", 11, bold=True)
+        y -= 6 * mm
+        draw_line(y)
+        y -= 6 * mm
+
+        # Voucher meta
+        draw_text(left, y, f"Receipt No: {rv.voucher_code}", 10, bold=True)
+        draw_text(right - 90*mm, y, f"Date: {rv.voucher_date}", 10, bold=True)
+        y -= 6 * mm
+
+        draw_text(left, y, f"Received From (Customer): {customer_name}", 10)
+        y -= 5 * mm
+        draw_text(left, y, f"Received In (Bank/Cash): {received_in_name}", 10)
+        y -= 5 * mm
+        if payment_mode_name:
+            draw_text(left, y, f"Payment Mode: {payment_mode_name}", 10)
+            y -= 5 * mm
+
+        if rv.reference_number:
+            draw_text(left, y, f"Reference No: {rv.reference_number}", 10)
+            y -= 5 * mm
+
+        # instrument details
+        inst_parts = []
+        if rv.instrument_bank_name:
+            inst_parts.append(f"Bank: {rv.instrument_bank_name}")
+        if rv.instrument_no:
+            inst_parts.append(f"Instrument No: {rv.instrument_no}")
+        if rv.instrument_date:
+            inst_parts.append(f"Instrument Date: {rv.instrument_date}")
+        if inst_parts:
+            draw_text(left, y, " | ".join(inst_parts), 9)
+            y -= 5 * mm
+
+        draw_text(left, y, f"Receipt Type: {receipt_type}", 10)
+        draw_text(right - 90*mm, y, f"Supply Type: {supply_type}", 10)
+        y -= 6 * mm
+
+        # Amount summary
+        draw_line(y)
+        y -= 6 * mm
+        draw_text(left, y, f"Cash Received Amount: ₹ {cash_received}", 11, bold=True)
+        y -= 6 * mm
+        draw_text(left, y, f"Adjustments Effect (Plus - Minus): ₹ {adj_effect}   (Plus ₹{plus} - Minus ₹{minus})", 9)
+        y -= 5 * mm
+        draw_text(left, y, f"Expected Settlement Total: ₹ {expected_settlement}", 10, bold=True)
+        y -= 6 * mm
+
+        # Allocations table (Against Invoice)
+        if alloc_rows:
+            draw_line(y)
+            y -= 6 * mm
+            draw_text(left, y, "Against Invoices", 11, bold=True)
+            y -= 6 * mm
+
+            # table header
+            draw_text(left, y, "Invoice No", 9, bold=True)
+            draw_text(left + 70*mm, y, "Invoice Date", 9, bold=True)
+            draw_text(right - 40*mm, y, "Settled Amount", 9, bold=True)
+            y -= 4 * mm
+            draw_line(y)
+            y -= 5 * mm
+
+            for r in alloc_rows:
+                if y < 25*mm:
+                    c.showPage()
+                    y = top
+                draw_text(left, y, r["invoice_no"] or "-", 9)
+                draw_text(left + 70*mm, y, r["invoice_date"] or "-", 9)
+                draw_text(right - 40*mm, y, f"₹ {r['settled_amount']}", 9)
+                y -= 5 * mm
+
+            y -= 2 * mm
+            draw_line(y)
+            y -= 6 * mm
+            draw_text(right - 70*mm, y, f"Total Allocated: ₹ {alloc_total}", 10, bold=True)
+            y -= 8 * mm
+
+        # Adjustments detail
+        if adj_rows:
+            draw_line(y)
+            y -= 6 * mm
+            draw_text(left, y, "Adjustments", 11, bold=True)
+            y -= 6 * mm
+            draw_text(left, y, "Type", 9, bold=True)
+            draw_text(left + 60*mm, y, "Effect", 9, bold=True)
+            draw_text(left + 80*mm, y, "Amount", 9, bold=True)
+            draw_text(left + 105*mm, y, "Remarks", 9, bold=True)
+            y -= 4 * mm
+            draw_line(y)
+            y -= 5 * mm
+
+            for r in adj_rows:
+                if y < 25*mm:
+                    c.showPage()
+                    y = top
+                draw_text(left, y, r["type"], 9)
+                draw_text(left + 60*mm, y, r["effect"], 9)
+                draw_text(left + 80*mm, y, f"₹ {r['amount']}", 9)
+                draw_text(left + 105*mm, y, (r["remarks"][:40] + "…") if len(r["remarks"]) > 41 else r["remarks"], 9)
+                y -= 5 * mm
+
+            y -= 4 * mm
+
+        # Advance GST block (only if relevant)
+        if receipt_type == "ADVANCE" and adv_total > Decimal("0.00"):
+            draw_line(y)
+            y -= 6 * mm
+            draw_text(left, y, "Advance GST Details (Customer Copy)", 11, bold=True)
+            y -= 6 * mm
+            pos = getattr(rv.place_of_supply_state, "name", None) if rv.place_of_supply_state else "-"
+            draw_text(left, y, f"Place of Supply: {pos}", 9)
+            y -= 5 * mm
+            draw_text(left, y, f"Customer GSTIN: {rv.customer_gstin or '-'}", 9)
+            y -= 6 * mm
+            draw_text(left, y, f"Taxable: ₹ {adv_taxable}", 9)
+            y -= 5 * mm
+            draw_text(left, y, f"CGST: ₹ {adv_cgst}   SGST: ₹ {adv_sgst}   IGST: ₹ {adv_igst}   CESS: ₹ {adv_cess}", 9)
+            y -= 5 * mm
+            draw_text(left, y, f"Advance Total: ₹ {adv_total}", 10, bold=True)
+            y -= 6 * mm
+
+        # Narration
+        if rv.narration:
+            draw_line(y)
+            y -= 6 * mm
+            draw_text(left, y, "Narration:", 10, bold=True)
+            y -= 5 * mm
+            # wrap manually (simple)
+            text = rv.narration.strip()
+            chunk = 95
+            for i in range(0, len(text), chunk):
+                if y < 25*mm:
+                    c.showPage()
+                    y = top
+                draw_text(left, y, text[i:i+chunk], 9)
+                y -= 5 * mm
+
+        # Footer
+        y = max(y, 20*mm)
+        draw_line(18*mm)
+        draw_text(left, 14*mm, "This is a computer-generated receipt. No signature required.", 8)
+
+        c.showPage()
+        c.save()
+
+        pdf = buf.getvalue()
+        buf.close()
+
+        filename = f"ReceiptVoucher_{rv.voucher_code}.pdf".replace("/", "_")
+
+        resp = HttpResponse(pdf, content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
 
 
 
