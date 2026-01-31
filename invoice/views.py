@@ -6668,28 +6668,79 @@ class ReceiptVoucherDetailAPIView(GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self, pk):
+        # Keep your existing prefetch
         return get_object_or_404(
             ReceiptVoucher.objects.prefetch_related("allocations", "adjustments"),
             pk=pk
         )
 
+    def _nav_for(self, obj: ReceiptVoucher) -> dict:
+        """
+        Compute previous/next ids within SAME entity + entityfinid.
+        Navigation order: voucher_no then id (stable).
+        """
+
+        base_qs = ReceiptVoucher.objects.filter(
+            entity_id=obj.entity_id,
+            entityfinid_id=obj.entityfinid_id,
+        )
+
+        prev_obj = (
+            base_qs
+            .filter(
+                Q(voucher_no__lt=obj.voucher_no) |
+                Q(voucher_no=obj.voucher_no, id__lt=obj.id)
+            )
+            .order_by("-voucher_no", "-id")
+            .values("id")
+            .first()
+        )
+
+        next_obj = (
+            base_qs
+            .filter(
+                Q(voucher_no__gt=obj.voucher_no) |
+                Q(voucher_no=obj.voucher_no, id__gt=obj.id)
+            )
+            .order_by("voucher_no", "id")
+            .values("id")
+            .first()
+        )
+
+        previous_id = prev_obj["id"] if prev_obj else None
+        next_id = next_obj["id"] if next_obj else None
+
+        return {
+            "previous_id": previous_id,
+            "next_id": next_id,
+            "has_previous": previous_id is not None,
+            "has_next": next_id is not None,
+        }
+
+    def _response_with_nav(self, obj, request=None):
+        data = self.serializer_class(obj, context={"request": request} if request else {}).data
+        data["nav"] = self._nav_for(obj)
+        return Response(data, status=status.HTTP_200_OK)
+
     def get(self, request, pk):
         obj = self.get_object(pk)
-        return Response(self.serializer_class(obj).data)
+        return self._response_with_nav(obj, request)
 
     def put(self, request, pk):
         obj = self.get_object(pk)
         ser = self.serializer_class(obj, data=request.data, context={"request": request})
         ser.is_valid(raise_exception=True)
         obj = ser.save()
-        return Response(self.serializer_class(obj).data)
+        # ✅ After save, return updated data + nav
+        return self._response_with_nav(obj, request)
 
     def patch(self, request, pk):
         obj = self.get_object(pk)
         ser = self.serializer_class(obj, data=request.data, partial=True, context={"request": request})
         ser.is_valid(raise_exception=True)
         obj = ser.save()
-        return Response(self.serializer_class(obj).data)
+        # ✅ After save, return updated data + nav
+        return self._response_with_nav(obj, request)
 
 
 class ReceiptVoucherPostAPIView(GenericAPIView):
