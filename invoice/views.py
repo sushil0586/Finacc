@@ -6247,11 +6247,82 @@ class DoctypeAPIView(APIView):
             return Response(serializer.data)
 
 
+def _maybe_reset(settings_obj, today: date):
+    freq = settings_obj.reset_frequency or "none"
+    if freq == "none":
+        # Initialize last_reset_date once (optional)
+        if settings_obj.last_reset_date is None:
+            settings_obj.last_reset_date = today
+        return
+
+    last = settings_obj.last_reset_date
+    if last is None:
+        settings_obj.last_reset_date = today
+        return
+
+    if freq == "monthly":
+        if (last.year, last.month) != (today.year, today.month):
+            settings_obj.current_number = settings_obj.starting_number
+            settings_obj.last_reset_date = today
+
+    elif freq == "yearly":
+        if last.year != today.year:
+            settings_obj.current_number = settings_obj.starting_number
+            settings_obj.last_reset_date = today
+
+
+def _format_doc_number(settings_obj, number: int, today: date) -> str:
+    year = str(today.year)
+    month = f"{today.month:02d}"
+
+    num = str(number)
+    if settings_obj.number_padding and settings_obj.number_padding > 0:
+        num = num.zfill(settings_obj.number_padding)
+
+    prefix = settings_obj.prefix or ""
+    suffix = settings_obj.suffix or ""
+    sep = settings_obj.separator or "-"
+
+    if settings_obj.custom_format:
+        return settings_obj.custom_format.format(
+            prefix=prefix,
+            year=year,
+            month=month,
+            number=num,
+            suffix=suffix,
+        )
+
+    parts = []
+    if prefix:
+        parts.append(prefix)
+    if settings_obj.include_year:
+        parts.append(year)
+    if settings_obj.include_month:
+        parts.append(month)
+    parts.append(num)
+    if suffix:
+        parts.append(suffix)
+
+    return sep.join([p for p in parts if p and str(p).strip()])
+
+
 class GetReceiptNumberAPIView(APIView):
+    """
+    FINAL:
+    - Locks the row (select_for_update)
+    - Applies reset logic
+    - Increments current_number
+    - Saves
+    - Returns reserved next number + formatted doc no
+
+    Output keys kept compatible with your current UI: rvoucherno
+    """
+
+    @transaction.atomic
     def get(self, request):
-        entity_id = request.query_params.get('entity_id')
-        entityfinid_id = request.query_params.get('entityfinid_id')
-        doccode = request.query_params.get('doccode')
+        entity_id = request.query_params.get("entity_id")
+        entityfinid_id = request.query_params.get("entityfinid_id")
+        doccode = request.query_params.get("doccode")
 
         if not entity_id or not entityfinid_id or not doccode:
             return Response(
@@ -6261,15 +6332,41 @@ class GetReceiptNumberAPIView(APIView):
 
         doc_type = get_object_or_404(doctype, doccode=doccode, entity_id=entity_id)
 
-        sales_invoice_settings = get_object_or_404(
-            SalesInvoiceSettings,
-            doctype=doc_type,
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id
+        # 🔒 Lock settings row to avoid duplicates under concurrency
+        settings_obj = (
+            SalesInvoiceSettings.objects
+            .select_for_update()
+            .get(
+                doctype=doc_type,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+            )
         )
 
+        today = date.today()
+
+        # reset if needed (monthly/yearly)
+        _maybe_reset(settings_obj, today)
+
+        # ✅ Reserve next number (increment and persist)
+        settings_obj.current_number = (settings_obj.current_number or 0) + 1
+        reserved_number = settings_obj.current_number
+
+        # Save only what changed
+        settings_obj.save(update_fields=["current_number", "last_reset_date"])
+
+        formatted = _format_doc_number(settings_obj, reserved_number, today)
+
         return Response(
-            {"rvoucherno": sales_invoice_settings.current_number},
+            {
+                # old key you used
+                "rvoucherno": reserved_number,
+
+                # extra useful fields (optional for UI)
+                "document_no": formatted,
+                "doccode": doccode,
+                "reset_frequency": settings_obj.reset_frequency,
+            },
             status=status.HTTP_200_OK
         )
     
