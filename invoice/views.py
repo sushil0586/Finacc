@@ -6314,9 +6314,47 @@ class GetReceiptNumberAPIView(APIView):
     - Increments current_number
     - Saves
     - Returns reserved next number + formatted doc no
-
-    Output keys kept compatible with your current UI: rvoucherno
+    - ✅ Also returns nav info (previous/next receipt voucher id)
     """
+
+    def _nav_for_reserved(self, *, entity_id: int, entityfinid_id: int, reserved_number: int) -> dict:
+        """
+        Compute previous/next ids around a RESERVED voucher number (no RV row exists yet).
+        Ordering: voucher_no then id (stable).
+        """
+
+        base_qs = ReceiptVoucher.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+        )
+
+        # Previous = last existing with voucher_no < reserved_number
+        prev_obj = (
+            base_qs
+            .filter(voucher_no__lt=reserved_number)
+            .order_by("-voucher_no", "-id")
+            .values("id")
+            .first()
+        )
+
+        # Next = first existing with voucher_no > reserved_number (usually None)
+        next_obj = (
+            base_qs
+            .filter(voucher_no__gt=reserved_number)
+            .order_by("voucher_no", "id")
+            .values("id")
+            .first()
+        )
+
+        previous_id = prev_obj["id"] if prev_obj else None
+        next_id = next_obj["id"] if next_obj else None
+
+        return {
+            "previous_id": previous_id,
+            "next_id": next_id,
+            "has_previous": previous_id is not None,
+            "has_next": next_id is not None,
+        }
 
     @transaction.atomic
     def get(self, request):
@@ -6330,9 +6368,12 @@ class GetReceiptNumberAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # ensure int for ORM filters
+        entity_id = int(entity_id)
+        entityfinid_id = int(entityfinid_id)
+
         doc_type = get_object_or_404(doctype, doccode=doccode, entity_id=entity_id)
 
-        # 🔒 Lock settings row to avoid duplicates under concurrency
         settings_obj = (
             SalesInvoiceSettings.objects
             .select_for_update()
@@ -6348,24 +6389,30 @@ class GetReceiptNumberAPIView(APIView):
         # reset if needed (monthly/yearly)
         _maybe_reset(settings_obj, today)
 
-        # ✅ Reserve next number (increment and persist)
+        # Reserve next number
         settings_obj.current_number = (settings_obj.current_number or 0) + 1
         reserved_number = settings_obj.current_number
 
-        # Save only what changed
         settings_obj.save(update_fields=["current_number", "last_reset_date"])
 
         formatted = _format_doc_number(settings_obj, reserved_number, today)
 
+        # ✅ NAV for create-screen buttons
+        nav = self._nav_for_reserved(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            reserved_number=reserved_number,
+        )
+
         return Response(
             {
-                # old key you used
                 "rvoucherno": reserved_number,
-
-                # extra useful fields (optional for UI)
                 "document_no": formatted,
                 "doccode": doccode,
                 "reset_frequency": settings_obj.reset_frequency,
+
+                # ✅ new
+                "nav": nav,
             },
             status=status.HTTP_200_OK
         )
