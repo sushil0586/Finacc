@@ -6315,27 +6315,19 @@ def _format_doc_number(settings_obj, number: int, today: date) -> str:
 
 class GetReceiptNumberAPIView(APIView):
     """
-    FINAL:
+    PREVIEW (no reservation):
     - Locks the row (select_for_update)
     - Applies reset logic
-    - Increments current_number
-    - Saves
-    - Returns reserved next number + formatted doc no
-    - ✅ Also returns nav info (previous/next receipt voucher id)
+    - DOES NOT increment current_number
+    - Returns latest current_number + next voucher number to display + formatted doc no + nav
     """
 
     def _nav_for_reserved(self, *, entity_id: int, entityfinid_id: int, reserved_number: int) -> dict:
-        """
-        Compute previous/next ids around a RESERVED voucher number (no RV row exists yet).
-        Ordering: voucher_no then id (stable).
-        """
-
         base_qs = ReceiptVoucher.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
         )
 
-        # Previous = last existing with voucher_no < reserved_number
         prev_obj = (
             base_qs
             .filter(voucher_no__lt=reserved_number)
@@ -6344,7 +6336,6 @@ class GetReceiptNumberAPIView(APIView):
             .first()
         )
 
-        # Next = first existing with voucher_no > reserved_number (usually None)
         next_obj = (
             base_qs
             .filter(voucher_no__gt=reserved_number)
@@ -6375,7 +6366,6 @@ class GetReceiptNumberAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # ensure int for ORM filters
         entity_id = int(entity_id)
         entityfinid_id = int(entityfinid_id)
 
@@ -6392,33 +6382,26 @@ class GetReceiptNumberAPIView(APIView):
         )
 
         today = date.today()
-
-        # reset if needed (monthly/yearly)
         _maybe_reset(settings_obj, today)
 
-        # Reserve next number
-        settings_obj.current_number = (settings_obj.current_number or 0) + 1
-        reserved_number = settings_obj.current_number
+        current_number = int(settings_obj.current_number or 0)
+        next_number = current_number + 1
 
-        settings_obj.save(update_fields=["current_number", "last_reset_date"])
+        formatted = _format_doc_number(settings_obj, next_number, today)
 
-        formatted = _format_doc_number(settings_obj, reserved_number, today)
-
-        # ✅ NAV for create-screen buttons
         nav = self._nav_for_reserved(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
-            reserved_number=reserved_number,
+            reserved_number=next_number,
         )
 
         return Response(
             {
-                "rvoucherno": reserved_number,
-                "document_no": formatted,
+                "current_number": current_number,          # ✅ latest stored
+                "rvoucherno": next_number,                 # ✅ number to show on UI
+                "document_no": formatted,                  # ✅ formatted next doc no
                 "doccode": doccode,
                 "reset_frequency": settings_obj.reset_frequency,
-
-                # ✅ new
                 "nav": nav,
             },
             status=status.HTTP_200_OK
@@ -6428,27 +6411,21 @@ class GetReceiptNumberAPIView(APIView):
 
 class GetPaymentNumberAPIView(APIView):
     """
-    FINAL:
+    PREVIEW (no reservation):
     - Locks the row (select_for_update)
     - Applies reset logic
-    - Increments current_number
-    - Saves
-    - Returns reserved next number + formatted doc no
-    - ✅ Also returns nav info (previous/next payment voucher id)
+    - DOES NOT increment current_number
+    - Returns latest current_number + next voucher number to display + formatted doc no + nav
     """
 
-    def _nav_for_reserved(self, *, entity_id: int, entityfinid_id: int, reserved_number: int) -> dict:
-        """
-        Compute previous/next ids around a RESERVED voucher number (no PV row exists yet).
-        Ordering: voucher_no then id (stable).
-        """
+    PAYMENT_DOCCODE = "1003"
 
+    def _nav_for_reserved(self, *, entity_id: int, entityfinid_id: int, reserved_number: int) -> dict:
         base_qs = PaymentVoucher.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
         )
 
-        # Previous = last existing with voucher_no < reserved_number
         prev_obj = (
             base_qs
             .filter(voucher_no__lt=reserved_number)
@@ -6457,7 +6434,6 @@ class GetPaymentNumberAPIView(APIView):
             .first()
         )
 
-        # Next = first existing with voucher_no > reserved_number (usually None)
         next_obj = (
             base_qs
             .filter(voucher_no__gt=reserved_number)
@@ -6480,21 +6456,20 @@ class GetPaymentNumberAPIView(APIView):
     def get(self, request):
         entity_id = request.query_params.get("entity_id")
         entityfinid_id = request.query_params.get("entityfinid_id")
-        doccode = request.query_params.get("doccode")   # ex: "PV"
 
-        if not entity_id or not entityfinid_id or not doccode:
+        if not entity_id or not entityfinid_id:
             return Response(
-                {"error": "Parameters 'entity_id', 'entityfinid_id', and 'doccode' are required."},
+                {"error": "Parameters 'entity_id' and 'entityfinid_id' are required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         entity_id = int(entity_id)
         entityfinid_id = int(entityfinid_id)
 
-        # ✅ get the doc type row (PV)
+        doccode = self.PAYMENT_DOCCODE  # ✅ fixed
+
         doc_type = get_object_or_404(doctype, doccode=doccode, entity_id=entity_id)
 
-        # ✅ lock the settings row for this doc type + entity + year
         settings_obj = (
             SalesInvoiceSettings.objects
             .select_for_update()
@@ -6506,28 +6481,23 @@ class GetPaymentNumberAPIView(APIView):
         )
 
         today = date.today()
-
-        # ✅ reset if needed (monthly/yearly)
         _maybe_reset(settings_obj, today)
 
-        # ✅ reserve next number
-        settings_obj.current_number = (settings_obj.current_number or 0) + 1
-        reserved_number = settings_obj.current_number
+        current_number = int(settings_obj.current_number or 0)
+        next_number = current_number + 1
 
-        settings_obj.save(update_fields=["current_number", "last_reset_date"])
+        formatted = _format_doc_number(settings_obj, next_number, today)
 
-        formatted = _format_doc_number(settings_obj, reserved_number, today)
-
-        # ✅ NAV for create-screen buttons
         nav = self._nav_for_reserved(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
-            reserved_number=reserved_number,
+            reserved_number=next_number,
         )
 
         return Response(
             {
-                "pvoucherno": reserved_number,
+                "current_number": current_number,     # ✅ latest stored
+                "pvoucherno": next_number,            # ✅ show on UI
                 "document_no": formatted,
                 "doccode": doccode,
                 "reset_frequency": settings_obj.reset_frequency,
@@ -7481,6 +7451,122 @@ class PaymentPendingBillAPIView(GenericAPIView):
 
         serializer = self.get_serializer(result, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+class ReceiptVoucherCancelAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int):
+        rv = get_object_or_404(
+            ReceiptVoucher.objects.select_for_update(),
+            pk=pk
+        )
+
+        if rv.is_cancelled:
+            return Response({"error": "Receipt voucher is already cancelled."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if rv.is_posted:
+            return Response(
+                {"error": "Cannot cancel a posted receipt voucher. Unpost/reverse first."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reason = (request.data.get("reason") or "").strip()
+
+        rv.is_cancelled = True
+        rv.cancelled_at = timezone.now()
+        rv.cancelled_by = request.user
+        rv.cancel_reason = reason or None
+
+        # optional: keep it unposted
+        rv.is_posted = False
+
+        rv.save(update_fields=[
+            "is_cancelled", "cancelled_at", "cancelled_by", "cancel_reason", "is_posted"
+        ])
+
+        return Response(ReceiptVoucherSerializer(rv).data, status=status.HTTP_200_OK)
+
+
+class ReceiptVoucherActivateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int):
+        rv = get_object_or_404(
+            ReceiptVoucher.objects.select_for_update(),
+            pk=pk
+        )
+
+        if not rv.is_cancelled:
+            return Response({"error": "Receipt voucher is already active."}, status=status.HTTP_400_BAD_REQUEST)
+
+        rv.is_cancelled = False
+        rv.cancelled_at = None
+        rv.cancelled_by = None
+        rv.cancel_reason = None
+        rv.save(update_fields=["is_cancelled", "cancelled_at", "cancelled_by", "cancel_reason"])
+
+        return Response(ReceiptVoucherSerializer(rv).data, status=status.HTTP_200_OK)
+
+
+
+class PaymentVoucherCancelAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int):
+        pv = get_object_or_404(
+            PaymentVoucher.objects.select_for_update(),
+            pk=pk
+        )
+
+        if pv.is_cancelled:
+            return Response({"error": "Payment voucher is already cancelled."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if pv.is_posted:
+            return Response(
+                {"error": "Cannot cancel a posted payment voucher. Unpost/reverse first."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reason = (request.data.get("reason") or "").strip()
+
+        pv.is_cancelled = True
+        pv.cancelled_at = timezone.now()
+        pv.cancelled_by = request.user
+        pv.cancel_reason = reason or None
+
+        pv.is_posted = False
+
+        pv.save(update_fields=[
+            "is_cancelled", "cancelled_at", "cancelled_by", "cancel_reason", "is_posted"
+        ])
+
+        return Response(PaymentVoucherSerializer(pv).data, status=status.HTTP_200_OK)
+
+
+class PaymentVoucherActivateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int):
+        pv = get_object_or_404(
+            PaymentVoucher.objects.select_for_update(),
+            pk=pk
+        )
+
+        if not pv.is_cancelled:
+            return Response({"error": "Payment voucher is already active."}, status=status.HTTP_400_BAD_REQUEST)
+
+        pv.is_cancelled = False
+        pv.cancelled_at = None
+        pv.cancelled_by = None
+        pv.cancel_reason = None
+        pv.save(update_fields=["is_cancelled", "cancelled_at", "cancelled_by", "cancel_reason"])
+
+        return Response(PaymentVoucherSerializer(pv).data, status=status.HTTP_200_OK)
 
 
 
