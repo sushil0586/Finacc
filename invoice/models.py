@@ -1433,52 +1433,7 @@ class journaldetails(TrackingModel):  # or inherit your TrackingModel if you hav
 
 
 
-class PaymentVoucher(TrackingModel):
-    voucher_number = models.IntegerField()
-    vouchernumber = models.CharField(max_length=50, null=True)
-    voucherdate = models.DateTimeField(verbose_name='Voucher Date', null=True, blank=True)
-    
-    paid_from = models.ForeignKey(account, on_delete=models.CASCADE)  # Bank/Cash account
-    paid_to = models.ForeignKey(account, related_name='payment_vouchers', on_delete=models.CASCADE)  # Vendor/Supplier account
-    
-    account_type = models.ForeignKey(accounttype, related_name='payment_account_type', null=True, blank=True, on_delete=models.CASCADE)
-    payment_mode = models.ForeignKey(Paymentmodes, related_name='Payment_mode_paid', null=True, on_delete=models.CASCADE)
-    
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    narration = models.TextField(blank=True, null=True)
-    reference_number = models.CharField(max_length=100, blank=True, null=True)
-    
-    isledgerposting = models.BooleanField(default=False)
-    payeebankname = models.CharField(max_length=100, null=True, blank=True)
-    chqno = models.CharField(max_length=50, null=True, blank=True)
-    chqdate = models.DateTimeField(verbose_name='Cheque Date', null=True, blank=True)
-    
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_payment_vouchers')
-    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_payment_vouchers')
-    created_at = models.DateTimeField(auto_now_add=True)
-    approved_at = models.DateTimeField(null=True, blank=True)
-    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True)
-    
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, null=True, verbose_name='Entity')
-    entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, verbose_name='Entity Financial Year', null=True)
 
-    def __str__(self):
-        return f"Payment Voucher #{self.voucher_number}"
-
-
-class PaymentVoucherInvoiceAllocation(models.Model):
-    payment_voucher = models.ForeignKey(PaymentVoucher, related_name='invoice_allocations', on_delete=models.CASCADE)
-    invoice = models.ForeignKey('purchaseorder', on_delete=models.CASCADE)  # or 'ExpenseInvoiceHeader' based on use case
-    
-    trans_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0, null=True, blank=True)
-    otheraccount = models.ForeignKey(account, on_delete=models.CASCADE, null=True, blank=True)
-    other_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0, null=True, blank=True)
-    
-    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    isfullamtpaid = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"{self.payment_voucher.voucher_number} - Invoice {self.invoice.invoicenumber}"
 
     
 
