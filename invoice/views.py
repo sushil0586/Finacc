@@ -28,17 +28,17 @@ import json
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView,UpdateAPIView
 from invoice.models import (
-    salesOrderdetails, SalesOder, SalesOderHeader, purchaseorder, PurchaseOrderDetails,
+    salesOrderdetails, SalesOder, SalesOderHeader, purchaseorder, PurchaseOrderDetails,PaymentVoucherAllocation,
     journal, salereturn, salereturnDetails, PurchaseReturn, Purchasereturndetails,
     StockTransactions, journalmain, entry, stockdetails, stockmain, goodstransaction,
     purchasetaxtype, tdsmain, tdstype, productionmain, tdsreturns, gstorderservices,SalesQuotationHeader,
     jobworkchalan, jobworkchalanDetails, debitcreditnote, closingstock, purchaseorderimport,SalesQuotationDetail,
     newpurchaseorder, InvoiceType,PurchaseOrderAttachment,defaultvaluesbyentity,Paymentmodes,
-    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,EInvoiceDetails,ReceiptVoucher,ReceiptVoucherAllocation
+    SalesInvoiceSettings, PurchaseSettings, ReceiptSettings,doctype,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,EInvoiceDetails,ReceiptVoucher,ReceiptVoucherAllocation,
 )
 
 from invoice.serializers import (
-    SalesOderHeaderSerializer, salesOrderdetailsSerializer, purchaseorderSerializer,
+    SalesOderHeaderSerializer, salesOrderdetailsSerializer, purchaseorderSerializer,PendingBillSerializer,
     PurchaseOrderDetailsSerializer, POSerializer, SOSerializer, journalSerializer,
     SRSerializer, salesreturnSerializer, salesreturnDetailsSerializer, JournalVSerializer,
     PurchasereturnSerializer, purchasereturndetailsSerializer, PRSerializer,
@@ -61,10 +61,10 @@ from invoice.serializers import (
     PISerializer, PurchaseimportcancelSerializer, newpurchaseorderSerializer,
     newPurchaseOrderDetailsSerializer, newPOSerializer, SalesOrderSerializer,
     SOnewSerializer, SalesordercancelSerializer, PurchaseordercancelSerializer,
-    SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,
+    SalesOrderGSTSummarySerializer,InvoiceTypeSerializer,SalesOrderHeaderSerializer,PaymentVoucherSerializer,
     SalesOrderDetailSerializerB2C,SalesOrderAggregateSerializer,PurchaseOrderHeaderSerializer,PurchaseReturnSerializer,SalesReturnSerializer,PurchaseOrderAttachmentSerializer,
     SalesOrdereinvoiceSerializer,subentitySerializerbyentity,DefaultValuesByEntitySerializer,DefaultValuesByEntitySerializerlist,PaymentmodesSerializer,
-    SalesInvoiceSettingsSerializer,
+    SalesInvoiceSettingsSerializer,PaymentVoucher,
     PurchaseSettingsSerializer,SalesQuotationHeaderSerializer,ReceiptVoucherSerializer,
     ReceiptSettingsSerializer,DoctypeSerializer,SalesOrderHeadeListSerializer,PayDtlsSerializer,RefDtlsSerializer,AddlDocDtlsSerializer,EwbDtlsSerializer,ExpDtlsSerializer,PurchaseReturnPDFSerializer,SaleReturnPDFSerializer,PurchaseSupplierEInvoiceCaptureSerializer,PurchaseInvoiceEWayCaptureSerializer,PendingInvoiceSerializer
 )
@@ -6423,6 +6423,118 @@ class GetReceiptNumberAPIView(APIView):
             },
             status=status.HTTP_200_OK
         )
+
+
+
+class GetPaymentNumberAPIView(APIView):
+    """
+    FINAL:
+    - Locks the row (select_for_update)
+    - Applies reset logic
+    - Increments current_number
+    - Saves
+    - Returns reserved next number + formatted doc no
+    - ✅ Also returns nav info (previous/next payment voucher id)
+    """
+
+    def _nav_for_reserved(self, *, entity_id: int, entityfinid_id: int, reserved_number: int) -> dict:
+        """
+        Compute previous/next ids around a RESERVED voucher number (no PV row exists yet).
+        Ordering: voucher_no then id (stable).
+        """
+
+        base_qs = PaymentVoucher.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+        )
+
+        # Previous = last existing with voucher_no < reserved_number
+        prev_obj = (
+            base_qs
+            .filter(voucher_no__lt=reserved_number)
+            .order_by("-voucher_no", "-id")
+            .values("id")
+            .first()
+        )
+
+        # Next = first existing with voucher_no > reserved_number (usually None)
+        next_obj = (
+            base_qs
+            .filter(voucher_no__gt=reserved_number)
+            .order_by("voucher_no", "id")
+            .values("id")
+            .first()
+        )
+
+        previous_id = prev_obj["id"] if prev_obj else None
+        next_id = next_obj["id"] if next_obj else None
+
+        return {
+            "previous_id": previous_id,
+            "next_id": next_id,
+            "has_previous": previous_id is not None,
+            "has_next": next_id is not None,
+        }
+
+    @transaction.atomic
+    def get(self, request):
+        entity_id = request.query_params.get("entity_id")
+        entityfinid_id = request.query_params.get("entityfinid_id")
+        doccode = request.query_params.get("doccode")   # ex: "PV"
+
+        if not entity_id or not entityfinid_id or not doccode:
+            return Response(
+                {"error": "Parameters 'entity_id', 'entityfinid_id', and 'doccode' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        entity_id = int(entity_id)
+        entityfinid_id = int(entityfinid_id)
+
+        # ✅ get the doc type row (PV)
+        doc_type = get_object_or_404(doctype, doccode=doccode, entity_id=entity_id)
+
+        # ✅ lock the settings row for this doc type + entity + year
+        settings_obj = (
+            SalesInvoiceSettings.objects
+            .select_for_update()
+            .get(
+                doctype=doc_type,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+            )
+        )
+
+        today = date.today()
+
+        # ✅ reset if needed (monthly/yearly)
+        _maybe_reset(settings_obj, today)
+
+        # ✅ reserve next number
+        settings_obj.current_number = (settings_obj.current_number or 0) + 1
+        reserved_number = settings_obj.current_number
+
+        settings_obj.save(update_fields=["current_number", "last_reset_date"])
+
+        formatted = _format_doc_number(settings_obj, reserved_number, today)
+
+        # ✅ NAV for create-screen buttons
+        nav = self._nav_for_reserved(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            reserved_number=reserved_number,
+        )
+
+        return Response(
+            {
+                "pvoucherno": reserved_number,
+                "document_no": formatted,
+                "doccode": doccode,
+                "reset_frequency": settings_obj.reset_frequency,
+                "nav": nav,
+            },
+            status=status.HTTP_200_OK
+        )
     
 
 
@@ -7168,6 +7280,207 @@ class ReceiptVoucherPDFAPIView(APIView):
         resp = HttpResponse(pdf, content_type="application/pdf")
         resp["Content-Disposition"] = f'attachment; filename="{filename}"'
         return resp
+
+
+class PaymentVoucherListCreateAPIView(GenericAPIView):
+    serializer_class = PaymentVoucherSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = (
+            PaymentVoucher.objects
+            .select_related(
+                "entity", "entityfinid",
+                "paid_from", "paid_to",
+                "payment_mode",
+                "place_of_supply_state",
+            )
+            .prefetch_related("allocations", "adjustments")
+            .order_by("-voucher_date", "-id")
+        )
+
+        entity_id = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if entityfinid:
+            qs = qs.filter(entityfinid_id=entityfinid)
+
+        return qs
+
+    def get(self, request):
+        ser = self.serializer_class(self.get_queryset(), many=True)
+        return Response(ser.data)
+
+    def post(self, request):
+        ser = self.serializer_class(data=request.data, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return Response(self.serializer_class(obj).data, status=status.HTTP_201_CREATED)
+
+
+class PaymentVoucherDetailAPIView(GenericAPIView):
+    serializer_class = PaymentVoucherSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self, pk):
+        return get_object_or_404(
+            PaymentVoucher.objects
+            .select_related(
+                "entity",
+                "entityfinid",
+                "paid_from",
+                "paid_to",
+                "payment_mode",
+                "place_of_supply_state",
+                "created_by",
+                "approved_by",
+            )
+            .prefetch_related(
+                "allocations",
+                "allocations__bill",
+                "adjustments",
+                "adjustments__ledger_account",
+                "adjustments__allocation",
+                "adjustments__allocation__bill",
+            ),
+            pk=pk
+        )
+
+    def _nav_for(self, obj: PaymentVoucher) -> dict:
+        base_qs = PaymentVoucher.objects.filter(
+            entity_id=obj.entity_id,
+            entityfinid_id=obj.entityfinid_id,
+        )
+
+        prev_obj = (
+            base_qs
+            .filter(
+                Q(voucher_no__lt=obj.voucher_no) |
+                Q(voucher_no=obj.voucher_no, id__lt=obj.id)
+            )
+            .order_by("-voucher_no", "-id")
+            .values("id")
+            .first()
+        )
+
+        next_obj = (
+            base_qs
+            .filter(
+                Q(voucher_no__gt=obj.voucher_no) |
+                Q(voucher_no=obj.voucher_no, id__gt=obj.id)
+            )
+            .order_by("voucher_no", "id")
+            .values("id")
+            .first()
+        )
+
+        previous_id = prev_obj["id"] if prev_obj else None
+        next_id = next_obj["id"] if next_obj else None
+
+        return {
+            "previous_id": previous_id,
+            "next_id": next_id,
+            "has_previous": previous_id is not None,
+            "has_next": next_id is not None,
+        }
+
+    def _response_with_nav(self, obj, request=None):
+        data = self.serializer_class(obj, context={"request": request} if request else {}).data
+        data["nav"] = self._nav_for(obj)
+        return Response(data, status=status.HTTP_200_OK)
+
+    def get(self, request, pk):
+        obj = self.get_object(pk)
+        return self._response_with_nav(obj, request)
+
+    def put(self, request, pk):
+        obj = self.get_object(pk)
+        ser = self.serializer_class(obj, data=request.data, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return self._response_with_nav(obj, request)
+
+    def patch(self, request, pk):
+        obj = self.get_object(pk)
+        ser = self.serializer_class(obj, data=request.data, partial=True, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return self._response_with_nav(obj, request)
+
+
+class PaymentVoucherPostAPIView(GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        pv = get_object_or_404(PaymentVoucher, pk=pk)
+
+        if pv.is_posted:
+            return Response({"detail": "Already posted."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # TODO: call your double-entry posting service here
+        pv.is_posted = True
+        pv.save(update_fields=["is_posted"])
+
+        return Response({"status": "success", "is_posted": True}, status=status.HTTP_200_OK)
+
+
+
+class PaymentPendingBillAPIView(GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PendingBillSerializer
+
+    def get(self, request):
+        entity = request.query_params.get("entity")
+        entityfinid = request.query_params.get("entityfinid")
+        party = request.query_params.get("party")  # vendor/account id
+
+        if not entity or not entityfinid or not party:
+            return Response(
+                {"detail": "entity, entityfinid and party are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        bills = (
+            purchaseorder.objects
+            .filter(
+                entity_id=entity,
+                entityfinid_id=entityfinid,
+                account_id=party,   # ✅ vendor/party
+                isactive=True,
+            )
+            .order_by("billdate", "id")  # FIFO
+        )
+
+        result = []
+
+        for b in bills:
+            bill_total = Decimal(b.gtotal or 0)
+
+            settled = (
+                PaymentVoucherAllocation.objects
+                .filter(
+                    bill_id=b.id,
+                    payment_voucher__entity_id=entity,
+                    payment_voucher__entityfinid_id=entityfinid,
+                    payment_voucher__is_posted=True,
+                )
+                .aggregate(total=Sum("settled_amount"))["total"]
+                or Decimal("0.00")
+            )
+
+            pending = (bill_total - settled)
+
+            if pending > 0:
+                result.append({
+                    "bill": b.id,
+                    "billno": b.billno,
+                    "billdate": b.billdate,
+                    "pendingamount": pending.quantize(Decimal("0.01")),
+                })
+
+        serializer = self.get_serializer(result, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 

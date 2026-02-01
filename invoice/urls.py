@@ -1,6 +1,6 @@
 from django.urls import path
 from invoice import views
-from .views import ReceiptVoucherPDFAPIView,PurchaseOrderAttachmentAPIView,ReceiptPendingInvoiceAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView,  ReceiptVoucherListCreateAPIView,ReceiptVoucherDetailAPIView, ReceiptVoucherPostAPIView
+from .views import ReceiptVoucherPDFAPIView,PurchaseOrderAttachmentAPIView,ReceiptPendingInvoiceAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView,  ReceiptVoucherListCreateAPIView,ReceiptVoucherDetailAPIView,   PaymentVoucherListCreateAPIView,PaymentVoucherDetailAPIView,PaymentVoucherPostAPIView,PaymentPendingBillAPIView, ReceiptVoucherPostAPIView
 
 
 app_name = 'invoice'
@@ -174,8 +174,24 @@ urlpatterns  = [
         name="receipt-pending-invoices"
     ),
 
+    
+
     path("receipt-vouchers/<int:pk>/pdf/", ReceiptVoucherPDFAPIView.as_view(), name="receipt_voucher_pdf"),
    
+    path('getlatestpaymentvno/', views.GetPaymentNumberAPIView.as_view(), name='doctype-detail'),
+    path("payment-vouchers/", PaymentVoucherListCreateAPIView.as_view(), name="payment-voucher-list-create"),
+    path("payment-vouchers/<int:pk>/", PaymentVoucherDetailAPIView.as_view(), name="payment-voucher-detail"),
+
+    # ----------------------------
+    # Posting (lock into ledger)
+    # ----------------------------
+    path("payment-vouchers/<int:pk>/post/", PaymentVoucherPostAPIView.as_view(), name="payment-voucher-post"),
+
+    # ----------------------------
+    # Pending Bills (FIFO)
+    # Example: /api/invoice/payment-vouchers/pending-bills/?entity=1&entityfinid=2&party=10
+    # ----------------------------
+    path("payment-vouchers/pending-bills/", PaymentPendingBillAPIView.as_view(), name="payment-voucher-pending-bills"),
    
   
     path('sales-orders/<int:pk>/pdf/', views.SalesOrderPDFViewlatest.as_view(), name='sales-order-pdf'),
@@ -192,7 +208,7 @@ urlpatterns  = [
     path("sales/quotations/<int:id>/status", SalesQuotationStatusAPIView.as_view(), name="quotation-status"),
     path("sales/quotations/<int:id>/convert", SalesQuotationConvertAPIView.as_view(), name="quotation-convert"),
     path("purchaseorder/<int:pk>/capture-supplier-einvoice/", PurchaseOrderCaptureSupplierEInvoiceApiView.as_view()),
-     path("purchaseorder/<int:pk>/capture-eway/", PurchaseOrderCaptureEWayApiView.as_view()),
+    path("purchaseorder/<int:pk>/capture-eway/", PurchaseOrderCaptureEWayApiView.as_view()),
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
 
