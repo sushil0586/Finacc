@@ -2291,6 +2291,196 @@ class ReceiptVoucherAdjustment(models.Model):
 
 
 
+class PaymentVoucher(models.Model):
+    class PaymentType(models.TextChoices):
+        AGAINST_BILL = "AGAINST_BILL", "Against Bill"
+        ADVANCE      = "ADVANCE", "Advance Payment"
+        ON_ACCOUNT   = "ON_ACCOUNT", "On Account"
+
+    class SupplyType(models.TextChoices):
+        GOODS    = "GOODS", "Goods"
+        SERVICES = "SERVICES", "Services"
+        MIXED    = "MIXED", "Mixed/Unknown"
+
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+    entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE)
+
+    voucher_no = models.IntegerField()
+    voucher_code = models.CharField(max_length=50)  # e.g. PV/2025-26/0001
+    voucher_date = models.DateField()
+
+    payment_type = models.CharField(
+        max_length=20,
+        choices=PaymentType.choices,
+        default=PaymentType.AGAINST_BILL
+    )
+
+    # Useful for ADVANCE scenarios (especially services)
+    supply_type = models.CharField(
+        max_length=10,
+        choices=SupplyType.choices,
+        default=SupplyType.SERVICES
+    )
+
+    paid_from = models.ForeignKey(
+        account,
+        on_delete=models.PROTECT,
+        related_name="pv_paid_from"
+    )  # Bank/Cash (Credit)
+
+    paid_to = models.ForeignKey(
+        account,
+        on_delete=models.PROTECT,
+        related_name="pv_paid_to"
+    )  # Vendor/Party (Debit)
+
+    payment_mode = models.ForeignKey(Paymentmodes, on_delete=models.PROTECT, null=True, blank=True)
+
+    cash_paid_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.00"))]
+    )  # actual bank/cash movement
+
+    reference_number = models.CharField(max_length=100, null=True, blank=True)
+    narration = models.TextField(null=True, blank=True)
+
+    # Instrument details (optional; cheque/upi/neft/rtgs/card etc.)
+    instrument_bank_name = models.CharField(max_length=100, null=True, blank=True)
+    instrument_no = models.CharField(max_length=50, null=True, blank=True)
+    instrument_date = models.DateField(null=True, blank=True)
+
+    # Advance GST fields (commonly meaningful for SERVICES advance; for GOODS typically not needed in GST)
+    place_of_supply_state = models.ForeignKey(State, null=True, blank=True, on_delete=models.SET_NULL)
+    vendor_gstin = models.CharField(max_length=15, null=True, blank=True)
+
+    advance_taxable_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    advance_cgst = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    advance_sgst = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    advance_igst = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    advance_cess = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # Posting / approvals
+    is_posted = models.BooleanField(default=False)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="pv_created"
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pv_approved"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ("entity", "entityfinid", "voucher_no")
+        indexes = [
+            models.Index(fields=["entity", "entityfinid", "voucher_date"]),
+            models.Index(fields=["payment_type", "voucher_date"]),
+            models.Index(fields=["paid_to", "voucher_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.voucher_code} ({self.entity_id})"
+
+
+class PaymentVoucherAllocation(models.Model):
+    """
+    Links payment settlement to vendor bills.
+    For ADVANCE / ON_ACCOUNT: keep bill = NULL and settled_amount can be 0.
+    """
+    payment_voucher = models.ForeignKey(PaymentVoucher, related_name="allocations", on_delete=models.CASCADE)
+
+    # Replace with your actual purchase bill / vendor invoice model:
+    bill = models.ForeignKey(
+        purchaseorder,   # <-- CHANGE THIS to your vendor bill model
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT
+    )
+
+    settled_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.00"))]
+    )
+
+    is_full_settlement = models.BooleanField(default=False)
+    is_advance_adjustment = models.BooleanField(default=False)
+
+    def __str__(self):
+        b = self.bill_id or "NO-BILL"
+        return f"{self.payment_voucher_id} -> {b}: {self.settled_amount}"
+
+
+class PaymentVoucherAdjustment(models.Model):
+    """
+    Multiple adjustments per payment (TDS, Discount Received, Bank Charges, RoundOff...).
+    These adjustments affect settlement math similar to receipt.
+    """
+    class AdjType(models.TextChoices):
+        TDS              = "TDS", "TDS"
+        TCS              = "TCS", "TCS"
+        DISCOUNT_RCVD    = "DISCOUNT_RCVD", "Discount Received"
+        BANK_CHARGES     = "BANK_CHARGES", "Bank Charges"
+        ROUND_OFF        = "ROUND_OFF", "Round Off"
+        WRITE_OFF        = "WRITE_OFF", "Write Off"
+        FX_DIFF          = "FX_DIFF", "Forex Difference"
+        OTHER            = "OTHER", "Other"
+
+    class Effect(models.TextChoices):
+        PLUS  = "PLUS", "Plus"
+        MINUS = "MINUS", "Minus"
+
+    payment_voucher = models.ForeignKey(PaymentVoucher, related_name="adjustments", on_delete=models.CASCADE)
+
+    # Optional: tie adjustment to a specific bill allocation row
+    allocation = models.ForeignKey(
+        PaymentVoucherAllocation,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="adjustments"
+    )
+
+    adj_type = models.CharField(max_length=20, choices=AdjType.choices)
+
+    ledger_account = models.ForeignKey(
+        account,
+        on_delete=models.PROTECT
+    )
+    # Examples:
+    # - TDS Payable ledger
+    # - Discount Received ledger
+    # - Bank Charges ledger
+    # - Round off ledger, etc.
+
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.00"))]
+    )
+
+    # Settlement effect (how it impacts the bill settlement math):
+    # PLUS  => increases bill settlement without extra cash (TDS, discount received, writeoff, roundoff...)
+    # MINUS => reduces bill settlement (policy-dependent)
+    settlement_effect = models.CharField(max_length=5, choices=Effect.choices, default=Effect.PLUS)
+
+    remarks = models.CharField(max_length=200, null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.payment_voucher_id} {self.adj_type} {self.amount} {self.settlement_effect}"
+
+
+
+
 
 
 

@@ -12,7 +12,7 @@ from typing import Optional, Any, TYPE_CHECKING
 
 from rest_framework import serializers
 from invoice.models import SalesOderHeader,SalesOder,salesOrderdetails,salesOrderdetail,purchaseorder,PurchaseOrderDetails,\
-    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader,DetailKind,VoucherType 
+    journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock,saleothercharges,purchaseothercharges,salereturnothercharges,Purchasereturnothercharges,purchaseotherimportcharges,purchaseorderimport,PurchaseOrderimportdetails,newPurchaseOrderDetails,newpurchaseorder,InvoiceType,PurchaseOrderAttachment,gstorderservicesAttachment,purchaseotherimporAttachment,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,PurchaseSettings, ReceiptSettings,doctype,EInvoiceDetails,ExpDtls,RefDtls,AddlDocDtls,PayDtls,EwbDtls,TxnType,SalesQuotationDetail,SalesQuotationHeader,DetailKind,VoucherType,PaymentVoucherAllocation,PaymentVoucherAdjustment,PaymentVoucher
 from financial.models import account,accountHead,ShippingDetails,staticacounts,staticacountsmapping
 from catalog.models import Product,ProductPrice,ProductGstRate
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
@@ -10862,6 +10862,283 @@ class PendingInvoiceSerializer(serializers.Serializer):
     invoice = serializers.IntegerField()
     invoiceno = serializers.CharField()
     invoicedate =  serializers.DateTimeField(allow_null=True)
+    pendingamount = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
+def q2(x):
+    return Decimal(x or 0).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+# -----------------------------------
+# ALLOCATION SERIALIZER
+# -----------------------------------
+class PaymentVoucherAllocationSerializer(serializers.ModelSerializer):
+    billno = serializers.SerializerMethodField()
+    billdate = serializers.SerializerMethodField()
+    pendingamount = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PaymentVoucherAllocation
+        fields = [
+            "id",
+            "bill",
+            "billno",
+            "billdate",
+            "pendingamount",
+            "settled_amount",
+            "is_full_settlement",
+            "is_advance_adjustment",
+        ]
+
+    def get_billno(self, obj):
+        b = getattr(obj, "bill", None)
+        return getattr(b, "billno", None) if b else None
+
+    def get_billdate(self, obj):
+        b = getattr(obj, "bill", None)
+        if not b:
+            return None
+
+        dt = getattr(b, "billdate", None)  # DateTimeField
+        if not dt:
+            return None
+
+        return dt.date() if hasattr(dt, "date") else dt
+
+    def get_pendingamount(self, obj):
+        """
+        Pending for this bill while EDITING this voucher:
+
+        pending = bill_total - (sum of allocations from OTHER posted payment vouchers)
+
+        Excludes current voucher to avoid double counting.
+        """
+        b = getattr(obj, "bill", None)
+        if not b:
+            return q2(0)
+
+        bill_total = q2(getattr(b, "gtotal", 0))
+
+        settled_other = (
+            PaymentVoucherAllocation.objects
+            .filter(bill_id=b.id, payment_voucher__is_posted=True)
+            .exclude(payment_voucher_id=obj.payment_voucher_id)
+            .aggregate(t=Sum("settled_amount"))["t"] or Decimal("0.00")
+        )
+
+        pending = bill_total - q2(settled_other)
+        return q2(pending)
+
+
+# -----------------------------------
+# ADJUSTMENT SERIALIZER
+# -----------------------------------
+class PaymentVoucherAdjustmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentVoucherAdjustment
+        fields = ["id", "allocation", "adj_type", "ledger_account", "amount", "settlement_effect", "remarks"]
+
+    def validate(self, attrs):
+        if q2(attrs.get("amount")) < 0:
+            raise serializers.ValidationError("Adjustment amount cannot be negative.")
+        return attrs
+
+
+# -----------------------------------
+# MAIN PAYMENT VOUCHER SERIALIZER
+# -----------------------------------
+class PaymentVoucherSerializer(serializers.ModelSerializer):
+    allocations = PaymentVoucherAllocationSerializer(many=True, required=False)
+    adjustments = PaymentVoucherAdjustmentSerializer(many=True, required=False)
+
+    class Meta:
+        model = PaymentVoucher
+        fields = [
+            "id",
+            "entity", "entityfinid",
+            "voucher_no", "voucher_code", "voucher_date",
+            "payment_type", "supply_type",
+            "paid_from", "paid_to", "payment_mode",
+            "cash_paid_amount",
+            "reference_number", "narration",
+            "instrument_bank_name", "instrument_no", "instrument_date",
+            "place_of_supply_state", "vendor_gstin",
+            "advance_taxable_value", "advance_cgst", "advance_sgst", "advance_igst", "advance_cess",
+            "is_posted",
+            "created_by", "approved_by", "created_at", "approved_at",
+            "allocations", "adjustments",
+        ]
+        read_only_fields = ["is_posted", "created_at", "approved_at", "created_by", "approved_by"]
+
+    # ---------- helpers ----------
+    def _sum_allocations(self, rows):
+        total = Decimal("0.00")
+        for r in rows or []:
+            total += q2(r.get("settled_amount"))
+        return q2(total)
+
+    def _sum_adjustments(self, rows):
+        plus = Decimal("0.00")
+        minus = Decimal("0.00")
+        for r in rows or []:
+            amt = q2(r.get("amount"))
+            if (r.get("settlement_effect") == "MINUS"):
+                minus += amt
+            else:
+                plus += amt
+        return q2(plus), q2(minus), q2(plus - minus)
+
+    def _sum_advance(self, data):
+        taxable = q2(data.get("advance_taxable_value"))
+        cgst = q2(data.get("advance_cgst"))
+        sgst = q2(data.get("advance_sgst"))
+        igst = q2(data.get("advance_igst"))
+        cess = q2(data.get("advance_cess"))
+        total = q2(taxable + cgst + sgst + igst + cess)
+        return taxable, cgst, sgst, igst, cess, total
+
+    def validate(self, attrs):
+        allocations_payload = self.initial_data.get("allocations", [])
+        adjustments_payload = self.initial_data.get("adjustments", [])
+
+        instance = getattr(self, "instance", None)
+
+        def getv(name, default=None):
+            if name in attrs:
+                return attrs.get(name)
+            if instance is not None:
+                return getattr(instance, name)
+            return default
+
+        payment_type = getv("payment_type", PaymentVoucher.PaymentType.AGAINST_BILL)
+        supply_type = getv("supply_type", PaymentVoucher.SupplyType.SERVICES)
+
+        cash_paid = q2(getv("cash_paid_amount", 0))
+        if cash_paid < 0:
+            raise serializers.ValidationError({"cash_paid_amount": "Must be >= 0."})
+
+        alloc_sum = self._sum_allocations(allocations_payload)
+        plus, minus, adj_effect = self._sum_adjustments(adjustments_payload)
+        expected_settlement = q2(cash_paid + adj_effect)
+
+        taxable, cgst, sgst, igst, cess, adv_total = self._sum_advance({
+            "advance_taxable_value": getv("advance_taxable_value", 0),
+            "advance_cgst": getv("advance_cgst", 0),
+            "advance_sgst": getv("advance_sgst", 0),
+            "advance_igst": getv("advance_igst", 0),
+            "advance_cess": getv("advance_cess", 0),
+        })
+
+        # ---- AGAINST BILL ----
+        if payment_type == PaymentVoucher.PaymentType.AGAINST_BILL:
+            if not allocations_payload:
+                raise serializers.ValidationError({"allocations": "Required for AGAINST_BILL."})
+
+            for i, row in enumerate(allocations_payload):
+                if not row.get("bill"):
+                    raise serializers.ValidationError({"allocations": f"Row {i+1}: bill is required."})
+
+            if alloc_sum != expected_settlement:
+                raise serializers.ValidationError({
+                    "allocations": f"Total settled {alloc_sum} must equal cash_paid {cash_paid} "
+                                   f"+ (plus {plus} - minus {minus}) = {expected_settlement}."
+                })
+
+            if adv_total != Decimal("0.00"):
+                raise serializers.ValidationError("Advance GST values must be 0 for AGAINST_BILL.")
+
+        # ---- ADVANCE ----
+        elif payment_type == PaymentVoucher.PaymentType.ADVANCE:
+            # No bill allowed
+            for i, row in enumerate(allocations_payload or []):
+                if row.get("bill"):
+                    raise serializers.ValidationError({"allocations": f"Row {i+1}: bill must be blank for ADVANCE."})
+
+            pos = getv("place_of_supply_state", None)
+            if supply_type in (PaymentVoucher.SupplyType.SERVICES, PaymentVoucher.SupplyType.MIXED) and not pos:
+                raise serializers.ValidationError({"place_of_supply_state": "Required for service/mixed ADVANCE."})
+
+            # Keep same rule-set as your receipt side
+            if supply_type == PaymentVoucher.SupplyType.GOODS:
+                if (cgst + sgst + igst + cess) != Decimal("0.00"):
+                    raise serializers.ValidationError("For GOODS ADVANCE, GST amounts must be 0.")
+                if taxable != cash_paid:
+                    raise serializers.ValidationError({
+                        "cash_paid_amount": f"For GOODS ADVANCE, cash_paid_amount must equal taxable {taxable}."
+                    })
+            else:
+                if taxable <= 0:
+                    raise serializers.ValidationError({"advance_taxable_value": "Must be > 0 for SERVICES/MIXED ADVANCE."})
+                if adv_total != cash_paid:
+                    raise serializers.ValidationError({
+                        "cash_paid_amount": f"cash_paid_amount {cash_paid} must equal advance total {adv_total}."
+                    })
+                if igst > 0 and (cgst > 0 or sgst > 0):
+                    raise serializers.ValidationError("Advance cannot have both IGST and CGST/SGST.")
+                if (cgst > 0) != (sgst > 0):
+                    raise serializers.ValidationError("CGST and SGST must both be present or both be 0.")
+
+        # ---- ON ACCOUNT ----
+        elif payment_type == PaymentVoucher.PaymentType.ON_ACCOUNT:
+            for i, row in enumerate(allocations_payload or []):
+                if row.get("bill"):
+                    raise serializers.ValidationError({"allocations": f"Row {i+1}: bill must be blank for ON_ACCOUNT."})
+            if adv_total != Decimal("0.00"):
+                raise serializers.ValidationError("Advance GST values must be 0 for ON_ACCOUNT.")
+
+        else:
+            raise serializers.ValidationError({"payment_type": "Invalid payment_type."})
+
+        return attrs
+
+    # ---------- create/update ----------
+    @transaction.atomic
+    def create(self, validated_data):
+        allocations_data = validated_data.pop("allocations", [])
+        adjustments_data = validated_data.pop("adjustments", [])
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and user.is_authenticated:
+            validated_data["created_by"] = user
+
+        pv = PaymentVoucher.objects.create(**validated_data)
+
+        for row in allocations_data:
+            PaymentVoucherAllocation.objects.create(payment_voucher=pv, **row)
+
+        for row in adjustments_data:
+            PaymentVoucherAdjustment.objects.create(payment_voucher=pv, **row)
+
+        return pv
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        allocations_data = validated_data.pop("allocations", None)
+        adjustments_data = validated_data.pop("adjustments", None)
+
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+
+        # Replace strategy (simple + safe)
+        if allocations_data is not None:
+            instance.allocations.all().delete()
+            for row in allocations_data:
+                PaymentVoucherAllocation.objects.create(payment_voucher=instance, **row)
+
+        if adjustments_data is not None:
+            instance.adjustments.all().delete()
+            for row in adjustments_data:
+                PaymentVoucherAdjustment.objects.create(payment_voucher=instance, **row)
+
+        return instance
+
+
+class PendingBillSerializer(serializers.Serializer):
+    bill = serializers.IntegerField()
+    billno = serializers.IntegerField()
+    billdate = serializers.DateTimeField(allow_null=True)
     pendingamount = serializers.DecimalField(max_digits=12, decimal_places=2)
 
 
