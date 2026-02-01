@@ -1,6 +1,34 @@
 from django.urls import path
 from invoice import views
-from .views import ReceiptVoucherPDFAPIView,PurchaseOrderAttachmentAPIView,ReceiptPendingInvoiceAPIView, PurchaseOrderAttachmentDownloadAPIView, PurchaseOrderAttachmentDeleteAPIView,SalesQuotationListCreateAPIView,SalesQuotationRetrieveUpdateDestroyAPIView,SalesQuotationStatusAPIView,SalesQuotationConvertAPIView,PurchaseOrderCaptureSupplierEInvoiceApiView,PurchaseOrderCaptureEWayApiView,  ReceiptVoucherListCreateAPIView,ReceiptVoucherDetailAPIView,   PaymentVoucherListCreateAPIView,PaymentVoucherDetailAPIView,PaymentVoucherPostAPIView,PaymentPendingBillAPIView, ReceiptVoucherPostAPIView
+from .views import (
+    ReceiptVoucherPDFAPIView,
+    PurchaseOrderAttachmentAPIView,
+    ReceiptPendingInvoiceAPIView,
+    PurchaseOrderAttachmentDownloadAPIView,
+    PurchaseOrderAttachmentDeleteAPIView,
+
+    SalesQuotationListCreateAPIView,
+    SalesQuotationRetrieveUpdateDestroyAPIView,
+    SalesQuotationStatusAPIView,
+    SalesQuotationConvertAPIView,
+
+    PurchaseOrderCaptureSupplierEInvoiceApiView,
+    PurchaseOrderCaptureEWayApiView,
+
+    ReceiptVoucherListCreateAPIView,
+    ReceiptVoucherDetailAPIView,
+    ReceiptVoucherPostAPIView,
+    ReceiptVoucherCancelAPIView,
+    ReceiptVoucherActivateAPIView,
+
+    PaymentVoucherListCreateAPIView,
+    PaymentVoucherDetailAPIView,
+    PaymentVoucherPostAPIView,
+    PaymentPendingBillAPIView,
+    PaymentVoucherCancelAPIView,
+    PaymentVoucherActivateAPIView,
+)
+
 
 
 app_name = 'invoice'
@@ -209,6 +237,13 @@ urlpatterns  = [
     path("sales/quotations/<int:id>/convert", SalesQuotationConvertAPIView.as_view(), name="quotation-convert"),
     path("purchaseorder/<int:pk>/capture-supplier-einvoice/", PurchaseOrderCaptureSupplierEInvoiceApiView.as_view()),
     path("purchaseorder/<int:pk>/capture-eway/", PurchaseOrderCaptureEWayApiView.as_view()),
+
+    path("receipt-vouchers/<int:pk>/cancel/", ReceiptVoucherCancelAPIView.as_view()),
+    path("receipt-vouchers/<int:pk>/activate/", ReceiptVoucherActivateAPIView.as_view()),
+
+    # Payment Voucher
+    path("payment-vouchers/<int:pk>/cancel/", PaymentVoucherCancelAPIView.as_view()),
+    path("payment-vouchers/<int:pk>/activate/", PaymentVoucherActivateAPIView.as_view()),
     # path('settings/purchase/', views.PurchaseSettingsView.as_view()),
     # path('settings/purchase/<int:pk>/', views.PurchaseSettingsView.as_view()),
 

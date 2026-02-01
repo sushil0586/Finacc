@@ -2213,6 +2213,17 @@ class ReceiptVoucher(models.Model):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="rv_approved")
     created_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+    is_cancelled = models.BooleanField(default=False)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="receipt_vouchers_cancelled",
+        related_query_name="receipt_voucher_cancelled",
+    )
+    cancel_reason = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         unique_together = ("entity", "entityfinid", "voucher_no")
@@ -2378,6 +2389,17 @@ class PaymentVoucher(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+    is_cancelled = models.BooleanField(default=False)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payment_vouchers_cancelled",
+        related_query_name="payment_voucher_cancelled",
+    )
+    cancel_reason = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         unique_together = ("entity", "entityfinid", "voucher_no")
