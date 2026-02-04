@@ -12962,10 +12962,14 @@ class StockLedgerAPIView(APIView):
     """
     POST /api/reports/stock-ledger/
     Body: StockLedgerRequestSerializer
-    """
 
-    #permission_classes = (permissions.IsAuthenticated,)
- #   permission_classes = (permissions.IsAuthenticated,)
+    Behavior:
+    - FIFO valuation engine to build running stock balance (qty/value)
+    - For OUT rows: if InventoryMove.unit_cost/ext_cost already stored (posting-time valuation),
+      display those (to match accounting postings). If not stored, fall back to FIFO-derived.
+    - Handles negative stock: fallback to last-known cost instead of 0.
+    - ordering=date_desc reverses range rows for UI display (balances remain correct).
+    """
 
     def post(self, request):
         ser = StockLedgerRequestSerializer(data=request.data)
@@ -12978,10 +12982,7 @@ class StockLedgerAPIView(APIView):
         to_date = p["to_date"]
         method = p.get("valuation_method", StockValuationMethod.FIFO)
 
-        base = InventoryMove.objects.filter(
-            entity_id=entity_id,
-            product_id=product_id,
-        )
+        base = InventoryMove.objects.filter(entity_id=entity_id, product_id=product_id)
 
         # location filter (NULL allowed)
         if "location" in p:
@@ -12993,82 +12994,121 @@ class StockLedgerAPIView(APIView):
         if "exclude_txn_types" in p:
             base = base.exclude(transactiontype__in=p["exclude_txn_types"])
 
-        # Ordering
-        if p["ordering"] == "date_desc":
-            order_by = ["-entrydate", "-id"]
-        else:
-            order_by = ["entrydate", "id"]
+        requested_ordering = p.get("ordering", "date_asc")
+        order_by_range = ["-entrydate", "-id"] if requested_ordering == "date_desc" else ["entrydate", "id"]
 
-        # Opening moves = strictly before from_date
-        opening_qs = base.filter(entrydate__lt=from_date).order_by("entrydate", "id").values(
-            "entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost"
+        # ✅ Include ext_cost to prefer posted valuation
+        OPENING_FIELDS = [
+            "entrydate", "transactiontype", "transactionid", "detailid",
+            "voucherno", "qty", "unit_cost", "ext_cost"
+        ]
+
+        opening_moves = list(
+            base.filter(entrydate__lt=from_date)
+                .order_by("entrydate", "id")
+                .values(*OPENING_FIELDS)
         )
 
-        # Moves in range
-        range_qs = base.filter(entrydate__gte=from_date, entrydate__lte=to_date).order_by(*order_by).values(
-            "entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost"
+        range_moves = list(
+            base.filter(entrydate__gte=from_date, entrydate__lte=to_date)
+                .order_by(*order_by_range)
+                .values(*OPENING_FIELDS)
         )
 
-        opening_moves = list(opening_qs)
-        range_moves = list(range_qs)
-
-        # Compute opening and rows
         if method == StockValuationMethod.FIFO:
             opening_qty, opening_val = fifo_opening(opening_moves)
 
-            # For FIFO rows we must compute running from opening layers,
-            # easiest approach: process all moves up to to_date and collect range rows.
-            all_qs = base.filter(entrydate__lte=to_date).order_by("entrydate", "id").values(
-                "entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost"
+            # FIFO must run forward for correct balances
+            all_moves = list(
+                base.filter(entrydate__lte=to_date)
+                    .order_by("entrydate", "id")
+                    .values(*OPENING_FIELDS)
             )
-            all_moves = list(all_qs)
 
-            # Collect range rows with running balances (FIFO)
-            # We'll compute opening separately (already done).
-            # Now run FIFO from scratch and output only range rows.
-            layers = []
+            layers = []  # [[qty_remaining, unit_cost], ...]
             bal_qty = Decimal("0")
             bal_val = Decimal("0")
             rows = []
 
+            # For negative stock fallback
+            last_known_cost = Decimal("0")
+
             for m in all_moves:
                 dt = m["entrydate"]
                 qty = Decimal(m["qty"])
-                unit_cost_in = Decimal(m["unit_cost"] or 0)
+                stored_uc = Decimal(m["unit_cost"] or 0)
+                stored_ext = Decimal(m["ext_cost"] or 0)
 
                 if qty > 0:
-                    layers.append([qty, unit_cost_in])
-                    move_cost = qty * unit_cost_in
+                    # IN: layer uses posted unit_cost (should be purchase/receipt cost)
+                    layers.append([qty, stored_uc])
+                    if stored_uc > 0:
+                        last_known_cost = stored_uc
+
+                    # amount/value change should match posted ext_cost if available
+                    move_cost = stored_ext if stored_ext > 0 else (qty * stored_uc)
+
                     bal_qty += qty
                     bal_val += move_cost
-                    used_uc = unit_cost_in
+
+                    used_uc_display = stored_uc if stored_uc > 0 else (move_cost / qty if qty else Decimal("0"))
+
                 else:
+                    # OUT
                     out_qty = -qty
                     remaining = out_qty
-                    issue_val = Decimal("0")
-                    issue_uc_weighted = Decimal("0")
+
+                    fifo_issue_val = Decimal("0")
+                    fifo_issue_weighted = Decimal("0")
+                    last_consumed_cost = None
 
                     while remaining > 0 and layers:
                         lq, lc = layers[0]
                         take = lq if lq <= remaining else remaining
-                        issue_val += take * lc
-                        issue_uc_weighted += take * lc
+
+                        fifo_issue_val += take * lc
+                        fifo_issue_weighted += take * lc
+                        last_consumed_cost = lc
+
                         lq -= take
                         remaining -= take
+
                         if lq == 0:
                             layers.pop(0)
                         else:
                             layers[0][0] = lq
 
+                    # Negative stock fallback (never value at 0)
                     if remaining > 0:
-                        last_cost = layers[-1][1] if layers else Decimal("0")
-                        issue_val += remaining * last_cost
-                        issue_uc_weighted += remaining * last_cost
+                        fallback_cost = (
+                            last_consumed_cost
+                            if last_consumed_cost is not None
+                            else (layers[-1][1] if layers else None)
+                        )
+                        if fallback_cost is None or fallback_cost == 0:
+                            fallback_cost = last_known_cost
+                        if fallback_cost == 0:
+                            fallback_cost = stored_uc  # final fallback (if your posting stored something)
 
+                        fifo_issue_val += remaining * fallback_cost
+                        fifo_issue_weighted += remaining * fallback_cost
+
+                    # ✅ Display cost for OUT:
+                    # Prefer posted values (stored_uc/stored_ext) because they match accounting postings.
+                    if stored_ext > 0:
+                        issue_val = stored_ext
+                    else:
+                        issue_val = fifo_issue_val
+
+                    # Update balances using chosen issue_val
                     move_cost = -issue_val
                     bal_qty -= out_qty
                     bal_val += move_cost
-                    used_uc = (issue_uc_weighted / out_qty) if out_qty != 0 else Decimal("0")
+
+                    if stored_uc > 0:
+                        used_uc_display = stored_uc
+                    else:
+                        used_uc_display = (fifo_issue_weighted / out_qty) if out_qty else Decimal("0")
 
                 if from_date <= dt <= to_date:
                     rows.append({
@@ -13079,17 +13119,22 @@ class StockLedgerAPIView(APIView):
                         "voucherno": m["voucherno"],
                         "qty_in": q4(qty) if qty > 0 else DEC_QTY,
                         "qty_out": q4(-qty) if qty < 0 else DEC_QTY,
-                        "unit_cost": q4(used_uc),
+                        "unit_cost": q4(used_uc_display),
                         "amount": q2(move_cost),
                         "balance_qty": q4(bal_qty),
                         "balance_value": q2(bal_val),
                     })
 
-        else:  # WAVG
+            # UI ordering (balances computed forward already)
+            if requested_ordering == "date_desc":
+                rows = list(reversed(rows))
+
+        else:
+            # WAVG branch unchanged
             opening_qty, opening_val = wavg_opening(opening_moves)
             rows = wavg_rows(range_moves, opening_qty, opening_val)
 
-        # Paging (on rows in range)
+        # Paging
         page = p["page"]
         size = p["page_size"]
         start = (page - 1) * size
@@ -13110,23 +13155,13 @@ class StockLedgerAPIView(APIView):
         }
 
         if p.get("include_opening", True):
-            resp["opening"] = {
-                "qty": str(opening_qty),
-                "value": str(opening_val),
-            }
+            resp["opening"] = {"qty": str(opening_qty), "value": str(opening_val)}
 
         if p.get("include_closing", True):
-            # closing is last row's balance if exists, else opening
             if rows:
-                resp["closing"] = {
-                    "qty": str(rows[-1]["balance_qty"]),
-                    "value": str(rows[-1]["balance_value"]),
-                }
+                resp["closing"] = {"qty": str(rows[-1]["balance_qty"]), "value": str(rows[-1]["balance_value"])}
             else:
-                resp["closing"] = {
-                    "qty": str(opening_qty),
-                    "value": str(opening_val),
-                }
+                resp["closing"] = {"qty": str(opening_qty), "value": str(opening_val)}
 
         return Response(resp)
 

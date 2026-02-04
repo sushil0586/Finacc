@@ -1,7 +1,11 @@
 # posting.py
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, List, Optional
+import uuid
 from django.db.models import Q
+from invoice.models import entry as EntryModel  # adjust
+import logging
+logger = logging.getLogger(__name__)
 
 from django.db import transaction, models
 from django.db.models import Sum
@@ -10,7 +14,7 @@ from .models import DetailKind
 from .services.config import EffectivePostingConfig
 
 from invoice.models import (
-    JournalLine, InventoryMove, salesOrderdetails, tdsmain,PostingConfig,TxnType,VoucherType
+    JournalLine, InventoryMove, salesOrderdetails, tdsmain,PostingConfig,TxnType,VoucherType,JournalLineHistory
 )
 from .stocktransconstant import stocktransconstant
 
@@ -287,35 +291,66 @@ class Poster:
     def _journal_type_bucket(self):
         return [TxnType.JOURNAL, TxnType.JOURNAL_CASH, TxnType.JOURNAL_BANK]
 
+    import logging
+    logger = logging.getLogger(__name__)
+
     def clear_existing(self):
-        """
-        JOURNAL family: delete strictly by (entity, transactionid) so updates are idempotent
-        and different vouchers sharing the same voucherno never touch each other.
-
-        OPTIONAL legacy cleanup by voucherno runs ONLY for truly legacy rows
-        (transactionid NULL or 0) and is constrained to the current transactiontype.
-        """
-
         if getattr(self, "txntype", None) in self._journal_type_bucket():
-            # --- primary, safe delete: only THIS header
-            jl_q = Q(entity=self.entity, transactionid=self.txnid,
-                    transactiontype__in=self._journal_type_bucket())
-            JournalLine.objects.filter(jl_q).delete()
+            qs = JournalLine.objects.filter(
+                entity=self.entity,
+                transactiontype=self.txntype,   # "RV"
+                transactionid=self.txnid
+            )
 
-            # --- OPTIONAL: extremely narrow legacy cleanup ---
-            # Run only if you want to purge ancient rows that were saved without transactionid.
-            # Comment this block out entirely if you don't need it.
+            batch_key = f"rv:{self.txnid}:{uuid.uuid4().hex[:10]}"
+            rows = list(qs.select_related("entry", "entity", "account", "accounthead", "createdby"))
+            if rows:
+                JournalLineHistory.objects.bulk_create([
+                    JournalLineHistory(
+                        journalline_id=j.id,
+                        entry=j.entry,
+                        entity=j.entity,
+                        transactiontype=j.transactiontype,
+                        transactionid=j.transactionid,
+                        detailid=j.detailid,
+                        voucherno=j.voucherno,
+                        accounthead=j.accounthead,
+                        account=j.account,
+                        drcr=j.drcr,
+                        amount=j.amount,
+                        desc=j.desc,
+                        entrydate=j.entrydate,
+                        entrydatetime=j.entrydatetime,
+                        createdby=j.createdby,
+                        action="DELETE_BEFORE_REPOST",
+                        batch_key=batch_key,
+                        archived_at=now(),
+                        archived_by=getattr(self, "user", None),
+                    )
+                    for j in rows
+                ])
+
+            qs.delete()
+
             if getattr(self, "voucherno", None):
-                legacy_q = (
+                legacy_qs = JournalLine.objects.filter(
                     Q(entity=self.entity, voucherno=self.voucherno)
-                    & Q(transactiontype=self.txntype)  # <-- only current subtype (no family)
-                    & (Q(transactionid__isnull=True) | Q(transactionid=0))  # <-- true legacy only
+                    & Q(transactiontype=self.txntype)
+                    & (Q(transactionid__isnull=True) | Q(transactionid=0))
                 )
-                JournalLine.objects.filter(legacy_q).delete()
+                logger.info(
+                    "CLEAR_EXISTING(LEGACY): txnid=%s vno=%s txntype=%s deleting_legacy_jl=%s",
+                    self.txnid, self.voucherno, self.txntype, legacy_qs.count()
+                )
+                legacy_qs.delete()
 
-            # Inventory moves (if any for journals) — scope strictly to this header
-            im_q = Q(entity=self.entity, transactionid=self.txnid)
-            InventoryMove.objects.filter(im_q).delete()
+            im_qs = InventoryMove.objects.filter(Q(entity=self.entity, transactionid=self.txnid))
+            logger.info(
+                "CLEAR_EXISTING(IM): txnid=%s deleting_im=%s",
+                self.txnid, im_qs.count()
+            )
+            im_qs.delete()
+
 
         else:
             # --- keep your existing non-journal behavior unchanged ---
@@ -428,6 +463,304 @@ class Poster:
             mv.extcost = ext_val
         else:
             setattr(mv, "ext_cost", ext_val)
+
+    
+    @transaction.atomic
+    def post_payment_voucher(self, pv):
+        """
+        Payment Voucher posting:
+        Cr Bank/Cash (paid_from)        : cash_paid_amount
+        Dr Party (paid_to)              : cash + (PLUS - MINUS)
+
+        Adjustments:
+            - settlement_effect == "PLUS"  -> Cr adjustment ledger (e.g. TDS payable)
+            - settlement_effect == "MINUS" -> Dr adjustment ledger (e.g. bank charges expense)
+
+        Notes:
+        - allocations do NOT create GL lines directly; they are settlement mapping only.
+        - idempotent: clear_existing() removes old JL for same txnid.
+        """
+
+        self.header = pv
+
+        # Ensure correct txn bucket
+        self.txntype = TxnType.PAYMENT
+        self.txnid = pv.id
+        self.voucherno = pv.voucher_code
+        self.entrydate = pv.voucher_date
+        self.entrydt = now()
+
+        # ✅ Ensure entry exists (important for update + bulk_create)
+        if getattr(self, "entry", None) is None:
+            self.entry, _ = EntryModel.objects.get_or_create(
+                entrydate1=pv.voucher_date,
+                entity=pv.entity
+            )
+
+        logger.info("POST PV start: txnid=%s txntype=%s vno=%s", self.txnid, self.txntype, self.voucherno)
+
+        # Remove previously posted lines (safe re-post)
+        self.clear_existing()
+
+        jl = []
+
+        cash_amt = q2(getattr(pv, "cash_paid_amount", ZERO2))
+        if cash_amt <= ZERO2:
+            raise ValueError("PaymentVoucher cash_paid_amount must be > 0 to post.")
+
+        bank_cash_acct = getattr(pv, "paid_from", None)
+        party_acct     = getattr(pv, "paid_to", None)
+
+        if bank_cash_acct is None:
+            raise ValueError("PaymentVoucher.paid_from (bank/cash) is required.")
+        if party_acct is None:
+            raise ValueError("PaymentVoucher.paid_to (party) is required.")
+
+        # 1) Cr Bank/Cash
+        jl.append(self._jl(
+            account=bank_cash_acct,
+            cr=cash_amt,
+            desc=f"Payment {pv.voucher_code}"
+        ))
+
+        # 2) Adjustments
+        plus_adj = ZERO2
+        minus_adj = ZERO2
+
+        adjs = list(getattr(pv, "adjustments").all()) if hasattr(pv, "adjustments") else []
+
+        for adj in adjs:
+            amt = q2(getattr(adj, "amount", ZERO2))
+            if amt <= ZERO2:
+                continue
+
+            adj_acct = getattr(adj, "ledger_account", None)
+            if adj_acct is None:
+                raise ValueError("PaymentVoucherAdjustment.ledger_account is required.")
+
+            effect = getattr(adj, "settlement_effect", "PLUS")
+
+            if effect == "MINUS":
+                # MINUS -> Dr adjustment ledger (e.g., bank charges)
+                jl.append(self._jl(
+                    account=adj_acct,
+                    dr=amt,
+                    desc=f"{adj.adj_type} ({pv.voucher_code})"
+                ))
+                minus_adj = q2(minus_adj + amt)
+            else:
+                # PLUS -> Cr adjustment ledger (e.g., TDS payable)
+                jl.append(self._jl(
+                    account=adj_acct,
+                    cr=amt,
+                    desc=f"{adj.adj_type} ({pv.voucher_code})"
+                ))
+                plus_adj = q2(plus_adj + amt)
+
+        party_debit = q2(cash_amt + plus_adj - minus_adj)
+        if party_debit <= ZERO2:
+            raise ValueError("Computed party debit is not positive; check adjustments.")
+
+        # 3) Dr Party
+        jl.append(self._jl(
+            account=party_acct,
+            dr=party_debit,
+            desc=f"Payment {pv.voucher_code}"
+        ))
+
+        # ✅ Force required fields on every JL row (bulk_create won't run save/signals)
+        for x in jl:
+            if x is None:
+                continue
+
+            if getattr(x, "entry_id", None) is None:
+                x.entry = self.entry
+
+            if hasattr(x, "entity_id") and getattr(x, "entity_id", None) is None:
+                x.entity = self.entity
+
+            if hasattr(x, "transactiontype"):
+                x.transactiontype = self.txntype
+
+            if hasattr(x, "transactionid"):
+                x.transactionid = self.txnid
+
+            if hasattr(x, "voucherno") and getattr(self, "voucherno", None):
+                x.voucherno = self.voucherno
+
+        # 4) Balance guard
+        dr_mem = q2(sum(x.amount for x in jl if x is not None and x.drcr is True))
+        cr_mem = q2(sum(x.amount for x in jl if x is not None and x.drcr is False))
+        if dr_mem != cr_mem:
+            raise ValueError(f"PaymentVoucher imbalance: DR {dr_mem} != CR {cr_mem}")
+
+        try:
+            JournalLine.objects.bulk_create([x for x in jl if x is not None])
+
+            self._assert_balanced()
+
+            jl_count = JournalLine.objects.filter(
+                entity=self.entity,
+                transactionid=self.txnid,
+                transactiontype=self.txntype
+            ).count()
+            logger.info("POST PV committed: txnid=%s jl_count_now=%s", self.txnid, jl_count)
+
+        except Exception as e:
+            logger.exception("POST PV FAILED: txnid=%s error=%s", self.txnid, str(e))
+            raise
+
+
+    @transaction.atomic
+    def post_receipt_voucher(self, rv):
+        """
+        Receipt Voucher posting:
+        Dr Bank/Cash (received_in) : cash_received_amount
+        Dr Adjustment ledger(s)    : each adjustment.amount
+        Cr Party (received_from)   : cash + (PLUS - MINUS)
+
+        Notes:
+        - allocations do NOT create GL lines directly; they are settlement mapping only.
+        - idempotent: clear_existing() removes old JL for same txnid.
+        """
+
+        self.header = rv
+
+        # Ensure we are posting in the correct txn bucket
+        self.txntype = TxnType.RECEIPT
+        self.txnid = rv.id
+        self.voucherno = rv.voucher_code
+        self.entrydate = rv.voucher_date
+        self.entrydt = now()
+
+        # ✅ Ensure entry is always available (important for update + bulk_create)
+        if getattr(self, "entry", None) is None:
+            self.entry, _ = EntryModel.objects.get_or_create(
+                entrydate1=rv.voucher_date,
+                entity=rv.entity
+            )
+
+        # Remove previously posted lines for this voucher (safe re-post)
+
+        logger.info("POST RV start: txnid=%s txntype=%s vno=%s", self.txnid, self.txntype, self.voucherno)
+
+        self.clear_existing()
+
+        jl = []
+
+        cash_amt = q2(getattr(rv, "cash_received_amount", ZERO2))
+        if cash_amt <= ZERO2:
+            raise ValueError("ReceiptVoucher cash_received_amount must be > 0 to post.")
+
+        bank_cash_acct = getattr(rv, "received_in", None)
+        party_acct     = getattr(rv, "received_from", None)
+
+        if bank_cash_acct is None:
+            raise ValueError("ReceiptVoucher.received_in (bank/cash) is required.")
+        if party_acct is None:
+            raise ValueError("ReceiptVoucher.received_from (party) is required.")
+
+        # 1) Dr Bank/Cash
+        jl.append(self._jl(
+            account=bank_cash_acct,
+            dr=cash_amt,
+            desc=f"Receipt {rv.voucher_code}"
+        ))
+
+        # 2) Adjustments (Dr adjustment ledger); compute net effect for party credit
+        plus_adj = ZERO2
+        minus_adj = ZERO2
+
+        # IMPORTANT: make sure adjustments are loaded
+        adjs = list(getattr(rv, "adjustments").all()) if hasattr(rv, "adjustments") else []
+
+        for adj in adjs:
+            amt = q2(getattr(adj, "amount", ZERO2))
+            if amt <= ZERO2:
+                continue
+
+            # Dr adjustment ledger account
+            adj_acct = getattr(adj, "ledger_account", None)
+            if adj_acct is None:
+                raise ValueError("ReceiptVoucherAdjustment.ledger_account is required.")
+
+            jl.append(self._jl(
+                account=adj_acct,
+                dr=amt,
+                desc=f"{adj.adj_type} ({rv.voucher_code})"
+            ))
+
+            if getattr(adj, "settlement_effect", "PLUS") == "MINUS":
+                minus_adj = q2(minus_adj + amt)
+            else:
+                plus_adj = q2(plus_adj + amt)
+
+        party_credit = q2(cash_amt + plus_adj - minus_adj)
+        if party_credit <= ZERO2:
+            raise ValueError("Computed party credit is not positive; check adjustments.")
+
+        # 3) Cr Party
+        jl.append(self._jl(
+            account=party_acct,
+            cr=party_credit,
+            desc=f"Receipt {rv.voucher_code}"
+        ))
+
+        # ✅ Force required fields on every JL row (bulk_create won't run save/signals)
+        for x in jl:
+            if x is None:
+                continue
+
+            # entry must always be set
+            if getattr(x, "entry_id", None) is None:
+                x.entry = self.entry
+
+            # keep metadata consistent for clear_existing() & reporting
+            if hasattr(x, "entity_id") and getattr(x, "entity_id", None) is None:
+                x.entity = self.entity
+
+            if hasattr(x, "transactiontype"):
+                x.transactiontype = self.txntype
+
+            if hasattr(x, "transactionid"):
+                x.transactionid = self.txnid
+
+            if hasattr(x, "voucherno") and getattr(self, "voucherno", None):
+                x.voucherno = self.voucherno
+
+        # 4) Balance guard (safer if drcr is boolean)
+        dr_mem = q2(sum(x.amount for x in jl if x is not None and x.drcr is True))
+        cr_mem = q2(sum(x.amount for x in jl if x is not None and x.drcr is False))
+        if dr_mem != cr_mem:
+            raise ValueError(f"ReceiptVoucher imbalance: DR {dr_mem} != CR {cr_mem}")
+
+        try:
+            JournalLine.objects.bulk_create([x for x in jl if x is not None])
+
+            # If this fails, transaction will rollback and lines will disappear later
+            self._assert_balanced()
+
+            rows = list(
+                JournalLine.objects.filter(
+                    entity=self.entity,
+                    transactionid=self.txnid,
+                    transactiontype=self.txntype
+                ).values("id", "account_id", "amount", "drcr", "entry_id")
+            )
+            logger.info("POST RV committed: txnid=%s jl_count_now=%s", self.txnid, len(rows))
+            logger.info("POST RV rows: txnid=%s rows=%s", self.txnid, rows)
+
+            # ✅ log only AFTER all validations pass
+            jl_count = JournalLine.objects.filter(
+                entity=self.entity,
+                transactionid=self.txnid,
+                transactiontype=self.txntype
+            ).count()
+            logger.info("POST RV committed: txnid=%s jl_count_now=%s", self.txnid, jl_count)
+
+        except Exception as e:
+            logger.exception("POST RV FAILED: txnid=%s error=%s", self.txnid, str(e))
+            raise
 
 
         # ======================================================

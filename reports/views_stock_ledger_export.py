@@ -1,11 +1,17 @@
 # reports/views_stock_ledger_export.py
+# ✅ Corrected exports to use the SAME common compute_stock_ledger() output (including fixed OUT unit_cost logic)
+# ✅ Safer number conversions (no float() on Decimal/""/None issues)
+# ✅ Better totals formatting + alignment
+# ✅ Common helpers reused by both Excel + PDF
 
 import io
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.platypus.tables import LongTable
@@ -20,20 +26,72 @@ from openpyxl.utils import get_column_letter
 from reports.serializers import StockLedgerRequestSerializer
 from reports.services.stock_ledger_service import compute_stock_ledger
 
-
 THIN = Side(style="thin", color="999999")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 
-def _set_cell(ws, row, col, value, bold=False, size=None, align="left", fill=None):
+# -----------------------------
+# Common helpers
+# -----------------------------
+def _safe_decimal(v, default=Decimal("0")) -> Decimal:
+    if v is None:
+        return default
+    if isinstance(v, Decimal):
+        return v
+    try:
+        s = str(v).strip()
+        if s == "":
+            return default
+        return Decimal(s)
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+
+
+def _safe_float(v, default=0.0) -> float:
+    # Excel likes native numbers; keep it robust
+    d = _safe_decimal(v, default=Decimal(str(default)))
+    try:
+        return float(d)
+    except Exception:
+        return default
+
+
+def _fmt_date(d):
+    # rows["entrydate"] might be date object or string depending on your service
+    if not d:
+        return ""
+    if hasattr(d, "strftime"):
+        return d.strftime("%Y-%m-%d")
+    return str(d)
+
+
+def _set_cell(ws, row, col, value, bold=False, size=None, align="left", fill=None, border=True):
     c = ws.cell(row=row, column=col, value=value)
     c.font = Font(bold=bold, size=size) if (bold or size) else Font()
     c.alignment = Alignment(horizontal=align, vertical="center")
     if fill:
         c.fill = fill
+    if border:
+        c.border = BORDER
     return c
 
 
+def _build_filename(ext: str, data: dict) -> str:
+    return f"stock_ledger_{data['product']}_{data['from_date']}_to_{data['to_date']}.{ext}"
+
+
+def _footer(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.grey)
+    # right side in landscape A4
+    canvas.drawRightString(285 * mm, 10 * mm, f"Page {doc.page}")
+    canvas.restoreState()
+
+
+# -----------------------------
+# Excel Export
+# -----------------------------
 class StockLedgerExcelAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -42,8 +100,8 @@ class StockLedgerExcelAPIView(APIView):
         ser.is_valid(raise_exception=True)
         p = ser.validated_data
 
-        data = compute_stock_ledger(p)
-        rows = data["results"]
+        data = compute_stock_ledger(p)  # ✅ must match the same service as API (includes OUT unit_cost fix)
+        rows = data.get("results", [])
 
         wb = Workbook()
         ws = wb.active
@@ -52,29 +110,36 @@ class StockLedgerExcelAPIView(APIView):
         header_fill = PatternFill("solid", fgColor="EDEDED")
 
         # Title
-        _set_cell(ws, 1, 1, "Stock Ledger", bold=True, size=14)
+        _set_cell(ws, 1, 1, "Stock Ledger", bold=True, size=14, border=False)
         ws.merge_cells("A1:K1")
 
         # Meta
-        _set_cell(ws, 2, 1, f"Entity: {data['entity_name']} (#{data['entity']})", bold=True)
+        _set_cell(ws, 2, 1, f"Entity: {data.get('entity_name','')} (#{data.get('entity')})", bold=True, border=False)
         ws.merge_cells("A2:K2")
-        _set_cell(ws, 3, 1, f"Product: {data['product_name']} (#{data['product']})", bold=True)
+        _set_cell(ws, 3, 1, f"Product: {data.get('product_name','')} (#{data.get('product')})", bold=True, border=False)
         ws.merge_cells("A3:K3")
 
-        loc_txt = "ALL" if data["location"] is None else str(data["location"])
-        _set_cell(ws, 4, 1, f"Location: {loc_txt}    Period: {data['from_date']} to {data['to_date']}    Method: {data['valuation_method']}")
+        loc_txt = "ALL" if data.get("location") is None else str(data.get("location"))
+        _set_cell(
+            ws, 4, 1,
+            f"Location: {loc_txt}    Period: {data.get('from_date')} to {data.get('to_date')}    Method: {data.get('valuation_method')}",
+            border=False
+        )
         ws.merge_cells("A4:K4")
 
         # Opening/Closing
+        opening = data.get("opening", {"qty": "0", "value": "0"})
+        closing = data.get("closing", {"qty": "0", "value": "0"})
+
         _set_cell(ws, 5, 1, "Opening Qty", bold=True)
-        _set_cell(ws, 5, 2, float(data["opening"]["qty"]))
+        _set_cell(ws, 5, 2, _safe_float(opening.get("qty")))
         _set_cell(ws, 5, 4, "Opening Value", bold=True)
-        _set_cell(ws, 5, 5, float(data["opening"]["value"]))
+        _set_cell(ws, 5, 5, _safe_float(opening.get("value")))
 
         _set_cell(ws, 6, 1, "Closing Qty", bold=True)
-        _set_cell(ws, 6, 2, float(data["closing"]["qty"]))
+        _set_cell(ws, 6, 2, _safe_float(closing.get("qty")))
         _set_cell(ws, 6, 4, "Closing Value", bold=True)
-        _set_cell(ws, 6, 5, float(data["closing"]["value"]))
+        _set_cell(ws, 6, 5, _safe_float(closing.get("value")))
 
         # Table header
         headers = [
@@ -83,8 +148,7 @@ class StockLedgerExcelAPIView(APIView):
         ]
         start_row = 8
         for col, h in enumerate(headers, 1):
-            c = _set_cell(ws, start_row, col, h, bold=True, align="center", fill=header_fill)
-            c.border = BORDER
+            _set_cell(ws, start_row, col, h, bold=True, align="center", fill=header_fill)
 
         # Freeze panes below header
         ws.freeze_panes = ws["A9"]
@@ -93,41 +157,40 @@ class StockLedgerExcelAPIView(APIView):
         r = start_row + 1
         for row in rows:
             values = [
-                row["entrydate"].strftime("%Y-%m-%d") if row["entrydate"] else "",
-                row["transactiontype"],
-                row["transactionid"],
-                row["detailid"],
-                row["voucherno"],
-                float(row["qty_in"]),
-                float(row["qty_out"]),
-                float(row["unit_cost"]),
-                float(row["amount"]),
-                float(row["balance_qty"]),
-                float(row["balance_value"]),
+                _fmt_date(row.get("entrydate")),
+                row.get("transactiontype") or "",
+                row.get("transactionid") or "",
+                row.get("detailid") or "",
+                row.get("voucherno") or "",
+                _safe_float(row.get("qty_in")),
+                _safe_float(row.get("qty_out")),
+                _safe_float(row.get("unit_cost")),
+                _safe_float(row.get("amount")),
+                _safe_float(row.get("balance_qty")),
+                _safe_float(row.get("balance_value")),
             ]
+
             for col, v in enumerate(values, 1):
                 c = ws.cell(row=r, column=col, value=v)
                 c.border = BORDER
-                if col >= 6:
-                    c.alignment = Alignment(horizontal="right", vertical="center")
-                else:
-                    c.alignment = Alignment(horizontal="left", vertical="center")
+                c.alignment = Alignment(horizontal="right" if col >= 6 else "left", vertical="center")
             r += 1
 
-        # Auto filter
-        ws.auto_filter.ref = f"A{start_row}:K{r-1}"
+        last_data_row = r - 1
 
-        # Totals row
+        # Auto filter
+        ws.auto_filter.ref = f"A{start_row}:K{last_data_row}"
+
+        # Totals row (after one blank line)
         r += 1
         _set_cell(ws, r, 1, "TOTALS", bold=True)
         ws.merge_cells(f"A{r}:E{r}")
 
-        totals = data["totals"]
-        ws.cell(r, 6, float(totals["total_in_qty"])).font = Font(bold=True)
-        ws.cell(r, 7, float(totals["total_out_qty"])).font = Font(bold=True)
-        ws.cell(r, 9, float(totals["total_amount"])).font = Font(bold=True)
+        totals = data.get("totals", {})
+        ws.cell(r, 6, _safe_float(totals.get("total_in_qty"))).font = Font(bold=True)
+        ws.cell(r, 7, _safe_float(totals.get("total_out_qty"))).font = Font(bold=True)
+        ws.cell(r, 9, _safe_float(totals.get("total_amount"))).font = Font(bold=True)
 
-        # Borders for totals row
         for col in range(1, 12):
             ws.cell(r, col).border = BORDER
             ws.cell(r, col).alignment = Alignment(horizontal="right" if col >= 6 else "left", vertical="center")
@@ -137,7 +200,7 @@ class StockLedgerExcelAPIView(APIView):
         for i, w in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
 
-        # Number formats
+        # Number formats (apply to data rows + totals row)
         for rr in range(start_row + 1, r + 1):
             ws.cell(rr, 6).number_format = "0.0000"
             ws.cell(rr, 7).number_format = "0.0000"
@@ -148,9 +211,9 @@ class StockLedgerExcelAPIView(APIView):
 
         # Signature block
         r += 3
-        _set_cell(ws, r, 1, "Prepared By:", bold=True)
-        _set_cell(ws, r, 4, "Checked By:", bold=True)
-        _set_cell(ws, r, 7, "Approved By:", bold=True)
+        _set_cell(ws, r, 1, "Prepared By:", bold=True, border=False)
+        _set_cell(ws, r, 4, "Checked By:", bold=True, border=False)
+        _set_cell(ws, r, 7, "Approved By:", bold=True, border=False)
         r += 2
         ws.merge_cells(f"A{r}:C{r}")
         ws.merge_cells(f"D{r}:F{r}")
@@ -160,7 +223,7 @@ class StockLedgerExcelAPIView(APIView):
         ws.cell(r, 7, "_______________________")
 
         r += 2
-        _set_cell(ws, r, 1, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        _set_cell(ws, r, 1, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", border=False)
         ws.merge_cells(f"A{r}:K{r}")
 
         # Output
@@ -168,23 +231,18 @@ class StockLedgerExcelAPIView(APIView):
         wb.save(buf)
         buf.seek(0)
 
-        filename = f"stock_ledger_{data['product']}_{data['from_date']}_to_{data['to_date']}.xlsx"
+        filename = _build_filename("xlsx", data)
         response = HttpResponse(
             buf.getvalue(),
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
-    
-
-def _footer(canvas, doc):
-    canvas.saveState()
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(colors.grey)
-    canvas.drawRightString(285 * mm, 10 * mm, f"Page {doc.page}")
-    canvas.restoreState()
 
 
+# -----------------------------
+# PDF Export
+# -----------------------------
 class StockLedgerPDFAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -193,8 +251,8 @@ class StockLedgerPDFAPIView(APIView):
         ser.is_valid(raise_exception=True)
         p = ser.validated_data
 
-        data = compute_stock_ledger(p)
-        rows = data["results"]
+        data = compute_stock_ledger(p)  # ✅ same service, same OUT unit_cost fix
+        rows = data.get("results", [])
 
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -210,52 +268,67 @@ class StockLedgerPDFAPIView(APIView):
         story = []
 
         story.append(Paragraph("Stock Ledger", styles["Title"]))
-        story.append(Paragraph(f"Entity: {data['entity_name']} (#{data['entity']})", styles["Normal"]))
-        story.append(Paragraph(f"Product: {data['product_name']} (#{data['product']})", styles["Normal"]))
-        loc_txt = "ALL" if data["location"] is None else str(data["location"])
+        story.append(Paragraph(f"Entity: {data.get('entity_name','')} (#{data.get('entity')})", styles["Normal"]))
+        story.append(Paragraph(f"Product: {data.get('product_name','')} (#{data.get('product')})", styles["Normal"]))
+        loc_txt = "ALL" if data.get("location") is None else str(data.get("location"))
         story.append(Paragraph(f"Location: {loc_txt}", styles["Normal"]))
-        story.append(Paragraph(f"Period: {data['from_date']} to {data['to_date']} &nbsp;&nbsp;&nbsp; Method: {data['valuation_method']}", styles["Normal"]))
+        story.append(
+            Paragraph(
+                f"Period: {data.get('from_date')} to {data.get('to_date')} &nbsp;&nbsp;&nbsp; Method: {data.get('valuation_method')}",
+                styles["Normal"],
+            )
+        )
         story.append(Spacer(1, 6))
 
-        story.append(Paragraph(f"Opening Qty: {data['opening']['qty']} &nbsp;&nbsp; Opening Value: {data['opening']['value']}", styles["Normal"]))
-        story.append(Paragraph(f"Closing Qty: {data['closing']['qty']} &nbsp;&nbsp; Closing Value: {data['closing']['value']}", styles["Normal"]))
+        opening = data.get("opening", {"qty": "0", "value": "0"})
+        closing = data.get("closing", {"qty": "0", "value": "0"})
+        story.append(
+            Paragraph(
+                f"Opening Qty: {opening.get('qty')} &nbsp;&nbsp; Opening Value: {opening.get('value')}",
+                styles["Normal"],
+            )
+        )
+        story.append(
+            Paragraph(
+                f"Closing Qty: {closing.get('qty')} &nbsp;&nbsp; Closing Value: {closing.get('value')}",
+                styles["Normal"],
+            )
+        )
         story.append(Spacer(1, 8))
 
-        # Table
         header = [
             "Date", "Txn", "TxnID", "DtlID", "Voucher",
-            "Qty In", "Qty Out", "Unit Cost", "Amount", "Bal Qty", "Bal Value"
+            "Qty In", "Qty Out", "Unit Cost", "Amount", "Bal Qty", "Bal Value",
         ]
         table_data = [header]
 
-        for r in rows:
+        for rr in rows:
             table_data.append([
-                r["entrydate"].strftime("%Y-%m-%d") if r["entrydate"] else "",
-                r["transactiontype"] or "",
-                str(r["transactionid"] or ""),
-                str(r["detailid"] or ""),
-                r["voucherno"] or "",
-                str(r["qty_in"]),
-                str(r["qty_out"]),
-                str(r["unit_cost"]),
-                str(r["amount"]),
-                str(r["balance_qty"]),
-                str(r["balance_value"]),
+                _fmt_date(rr.get("entrydate")),
+                rr.get("transactiontype") or "",
+                str(rr.get("transactionid") or ""),
+                str(rr.get("detailid") or ""),
+                rr.get("voucherno") or "",
+                str(rr.get("qty_in") or "0"),
+                str(rr.get("qty_out") or "0"),
+                str(rr.get("unit_cost") or "0"),
+                str(rr.get("amount") or "0"),
+                str(rr.get("balance_qty") or "0"),
+                str(rr.get("balance_value") or "0"),
             ])
 
-        # Totals row
-        totals = data["totals"]
+        totals = data.get("totals", {})
         table_data.append([
             "", "", "", "", "TOTALS",
-            totals["total_in_qty"],
-            totals["total_out_qty"],
+            str(totals.get("total_in_qty") or "0"),
+            str(totals.get("total_out_qty") or "0"),
             "",
-            totals["total_amount"],
+            str(totals.get("total_amount") or "0"),
             "",
             "",
         ])
 
-        # Better widths for landscape A4
+        # Landscape widths tuned
         col_widths = [20*mm, 12*mm, 16*mm, 14*mm, 30*mm, 18*mm, 18*mm, 20*mm, 22*mm, 20*mm, 24*mm]
 
         tbl = LongTable(table_data, repeatRows=1, colWidths=col_widths)
@@ -264,19 +337,19 @@ class StockLedgerPDFAPIView(APIView):
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-
-            ("ALIGN", (5, 1), (-1, -1), "RIGHT"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (5, 1), (-1, -2), "RIGHT"),  # numeric columns, exclude header and totals style override below
 
-            # Totals row highlight (last row)
+            # Totals row (last row)
             ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
             ("BACKGROUND", (0, -1), (-1, -1), colors.whitesmoke),
+            ("ALIGN", (5, -1), (-1, -1), "RIGHT"),
         ]))
 
         story.append(tbl)
         story.append(Spacer(1, 12))
 
-        # Signature footer section
+        # Signature section
         sig_tbl = Table([
             ["Prepared By", "Checked By", "Approved By"],
             ["__________________________", "__________________________", "__________________________"],
@@ -298,7 +371,7 @@ class StockLedgerPDFAPIView(APIView):
         doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
 
         buf.seek(0)
-        filename = f"stock_ledger_{data['product']}_{data['from_date']}_to_{data['to_date']}.pdf"
+        filename = _build_filename("pdf", data)
         response = HttpResponse(buf.getvalue(), content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response

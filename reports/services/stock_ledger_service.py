@@ -17,6 +17,15 @@ def q4(x) -> Decimal:
 def q2(x) -> Decimal:
     return (Decimal(x) if x is not None else DEC_VAL).quantize(DEC_VAL, rounding=ROUND_HALF_UP)
 
+def _pos_unit_cost_from_amount(amount: Decimal, out_qty: Decimal) -> Decimal:
+    """
+    amount is signed (OUT negative), out_qty positive
+    returns positive unit cost that MATCHES the amount.
+    """
+    if out_qty == 0:
+        return Decimal("0")
+    return abs(Decimal(amount)) / Decimal(out_qty)
+
 
 def fifo_opening(moves_upto_before_from_date):
     layers = []
@@ -48,8 +57,8 @@ def fifo_opening(moves_upto_before_from_date):
                     layers[0][0] = layer_qty
 
             if remaining > 0:
-                last_cost = layers[-1][1] if layers else Decimal("0")
-                issue_val += remaining * last_cost
+                last_cost = layers[-1][1] if layers else unit_cost_in
+                issue_val += remaining * (last_cost or Decimal("0"))
 
             bal_qty -= out_qty
             bal_val -= issue_val
@@ -185,13 +194,16 @@ def compute_stock_ledger(p: Dict[str, Any]) -> Dict[str, Any]:
     opening_moves = list(
         base.filter(entrydate__lt=from_date)
         .order_by("entrydate", "id")
-        .values("entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost")
+        .values("entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost", "ext_cost")
+
     )
 
     range_moves = list(
         base.filter(entrydate__gte=from_date, entrydate__lte=to_date)
         .order_by(*order_by)
-        .values("entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost")
+        .values("entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost", "ext_cost")
+
+
     )
 
     if method == StockValuationMethod.FIFO:
@@ -200,52 +212,92 @@ def compute_stock_ledger(p: Dict[str, Any]) -> Dict[str, Any]:
         all_moves = list(
             base.filter(entrydate__lte=to_date)
             .order_by("entrydate", "id")
-            .values("entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost")
+            .values("entrydate", "transactiontype", "transactionid", "detailid", "voucherno", "qty", "unit_cost", "ext_cost")
+
         )
 
         layers = []
         bal_qty = Decimal("0")
         bal_val = Decimal("0")
         rows = []
+        last_known_cost = Decimal("0")
 
         for m in all_moves:
             dt = m["entrydate"]
             qty = Decimal(m["qty"])
-            unit_cost_in = Decimal(m["unit_cost"] or 0)
+
+            stored_uc = Decimal(m.get("unit_cost") or 0)
+            stored_ext = Decimal(m.get("ext_cost") or 0)  # in your model: positive abs value
 
             if qty > 0:
-                layers.append([qty, unit_cost_in])
-                move_cost = qty * unit_cost_in
+                # IN: layer uses stored unit_cost
+                layers.append([qty, stored_uc])
+
+                if stored_uc > 0:
+                    last_known_cost = stored_uc
+
+                # amount: prefer stored ext_cost if available else qty*unit_cost
+                move_cost = stored_ext if stored_ext > 0 else (qty * stored_uc)
+
                 bal_qty += qty
                 bal_val += move_cost
-                used_uc = unit_cost_in
+
+                used_uc = stored_uc if stored_uc > 0 else (move_cost / qty if qty else Decimal("0"))
+
             else:
+                # OUT
                 out_qty = -qty
                 remaining = out_qty
-                issue_val = Decimal("0")
-                issue_uc_weighted = Decimal("0")
 
+                fifo_issue_val = Decimal("0")
+                fifo_issue_weighted = Decimal("0")
+                last_consumed_cost = None
+
+                # consume FIFO layers
                 while remaining > 0 and layers:
                     lq, lc = layers[0]
                     take = lq if lq <= remaining else remaining
-                    issue_val += take * lc
-                    issue_uc_weighted += take * lc
+
+                    fifo_issue_val += take * lc
+                    fifo_issue_weighted += take * lc
+                    last_consumed_cost = lc
+
                     lq -= take
                     remaining -= take
+
                     if lq == 0:
                         layers.pop(0)
                     else:
                         layers[0][0] = lq
 
+                # negative stock fallback (never use 0)
                 if remaining > 0:
-                    last_cost = layers[-1][1] if layers else Decimal("0")
-                    issue_val += remaining * last_cost
-                    issue_uc_weighted += remaining * last_cost
+                    fallback_cost = (
+                        last_consumed_cost
+                        if last_consumed_cost is not None
+                        else (layers[-1][1] if layers else None)
+                    )
+                    if fallback_cost is None or fallback_cost == 0:
+                        fallback_cost = last_known_cost
+                    if fallback_cost == 0:
+                        fallback_cost = stored_uc  # last resort (if posting stored something)
 
-                move_cost = -issue_val
+                    fifo_issue_val += remaining * fallback_cost
+                    fifo_issue_weighted += remaining * fallback_cost
+
+                # ✅ amount: prefer posted ext_cost if available
+                # stored_ext is ABS, so move_cost should be negative for OUT
+                if stored_ext > 0:
+                    move_cost = -stored_ext
+                else:
+                    move_cost = -fifo_issue_val
+
+                # ✅ unit_cost MUST match amount
+                used_uc = _pos_unit_cost_from_amount(move_cost, out_qty)
+
+                # update balances using chosen amount
                 bal_qty -= out_qty
                 bal_val += move_cost
-                used_uc = (issue_uc_weighted / out_qty) if out_qty != 0 else Decimal("0")
 
             if from_date <= dt <= to_date:
                 rows.append({

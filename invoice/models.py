@@ -3,6 +3,7 @@
 from django.db import models
 from django.forms import DateField
 from helpers.models import TrackingModel
+from django.utils.timezone import now
 from django.core.validators import MinValueValidator
 from django.conf import settings
 from Authentication.models import User
@@ -1858,6 +1859,8 @@ class TxnType(models.TextChoices):
     PURCHASE_RETURN = "PR", "Purchase Return"
     JOURNAL_CASH = "C", "Journal (Cash)"      # ← NEW
     JOURNAL_BANK = "B", "Journal (Bank)"      # ← NEW
+    RECEIPT = "RV", "Receipt Voucher"      # ← NEW
+    PAYMENT = "PV", "Payment Voucher"      # ← NEW
 
 class PostingConfig(models.Model):
     # Who carries adjustments when target == "CARRIER"
@@ -1952,6 +1955,55 @@ class JournalLine(models.Model):
         side = "Dr" if self.drcr else "Cr"
         return f"{side} {self.amount} · {self.account or self.accounthead} · {self.transactiontype}#{self.transactionid}"
 
+
+class JournalLineHistory(models.Model):
+    # Reference to original JournalLine row
+    journalline_id = models.IntegerField(null=True, blank=True, db_index=True)
+
+    # Same key columns as JournalLine
+    entry = models.ForeignKey(entry, on_delete=models.SET_NULL, null=True, blank=True)
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
+
+    transactiontype = models.CharField(max_length=20, db_index=True)
+    transactionid = models.IntegerField(db_index=True)
+    detailid = models.IntegerField(null=True, blank=True)
+    voucherno = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+
+    accounthead = models.ForeignKey(accountHead, on_delete=models.SET_NULL, null=True, blank=True)
+    account = models.ForeignKey(account, on_delete=models.SET_NULL, null=True, blank=True)
+
+    drcr = models.BooleanField()
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    desc = models.CharField(max_length=500, null=True, blank=True)
+    entrydate = models.DateField(db_index=True)
+    entrydatetime = models.DateTimeField(null=True, blank=True)
+
+    createdby = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # Audit columns
+    action = models.CharField(max_length=30, db_index=True)  # e.g. DELETE_BEFORE_REPOST, LEGACY_DELETE
+    batch_key = models.CharField(max_length=64, db_index=True)  # to group rows deleted together
+    archived_at = models.DateTimeField(default=now, db_index=True)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="jl_history_archived_by"
+    )
+    note = models.CharField(max_length=250, null=True, blank=True)
+    source = models.CharField(max_length=80, null=True, blank=True)
+
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "transactiontype", "transactionid"], name="ix_jlh_txn_locator"),
+            models.Index(fields=["voucherno"], name="ix_jlh_voucherno"),
+            models.Index(fields=["batch_key"], name="ix_jlh_batch"),
+            models.Index(fields=["archived_at"], name="ix_jlh_archived_at"),
+        ]
+
+    def __str__(self):
+        side = "Dr" if self.drcr else "Cr"
+        return f"[{self.action}] {side} {self.amount} {self.transactiontype}#{self.transactionid}"
 
 class InventoryMove(models.Model):
     # Inventory movement (quantities/costing).
