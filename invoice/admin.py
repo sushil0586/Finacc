@@ -1,11 +1,12 @@
 from django.contrib import admin
+from django.utils.timezone import localtime
 from .models import (
     purchasetaxtype, InvoiceType, gstorderservices, gstorderservicesdetails, 
     SalesOderHeader,  salesOrderdetail, saleothercharges, PurchaseReturn, Purchasereturndetails, Purchasereturnothercharges,SalesOder,
     jobworkchalan, jobworkchalanDetails, purchaseorderimport, PurchaseOrderimportdetails, purchaseotherimportcharges,purchaseorder, PurchaseOrderDetails, purchaseothercharges, newpurchaseorder, newPurchaseOrderDetails, salereturn,
     salereturnDetails, salereturnothercharges, journalmain, journaldetails, stockmain, 
     stockdetails, productionmain, productiondetails, journal, Transactions, entry, 
-    accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,
+    accountentry, StockTransactions,goodstransaction, tdsreturns, tdstype, tdsmain,JournalLineHistory,
     debitcreditnote, closingstock, supplytype,PurchaseOrderAttachment,salesOrderdetails,defaultvaluesbyentity,Paymentmodes,SalesInvoiceSettings,doctype,invoicetypes,EInvoiceDetails,ExpDtls,EwbDtls,AddlDocDtls,RefDtls,PayDtls,JournalLine, InventoryMove, TxnType,SalesQuotationDetail,SalesQuotationHeader,PostingConfig,
     ReceiptVoucher,
     ReceiptVoucherAllocation,
@@ -675,6 +676,7 @@ admin.site.register(RefDtls)
 admin.site.register(AddlDocDtls)
 admin.site.register(EwbDtls)
 admin.site.register(ExpDtls)
+admin.site.register(JournalLineHistory)
 
 ZERO2 = Decimal("0.00")
 
@@ -733,21 +735,50 @@ class JournalLineAdmin(admin.ModelAdmin):
         "entity", "account", "accounthead",
         "side", "debit", "credit",
         "amount", "desc",
-        "transactionid", "detailid", "createdby", "entry",
+        "transactionid", "detailid",
+        "createdby",
+        "updated_by_display", "updated_on_display",
+        "entry",
     )
+
+    # ✅ list_filter must contain ONLY real fields
     list_filter = ("transactiontype", "entity", "entrydate", "createdby")
+
     search_fields = ("id", "voucherno", "desc", "transactionid", "detailid")
     ordering = ("-entrydate", "-id")
     list_select_related = ("entity", "account", "accounthead", "entry", "createdby")
 
-    # FIX: use raw_id_fields instead of autocomplete_fields
     raw_id_fields = ("entity", "account", "accounthead", "entry", "createdby")
 
     actions = [export_as_csv, show_totals]
 
-    def side(self, obj): return "Debit" if obj.drcr else "Credit"
-    def debit(self, obj): return obj.amount if obj.drcr else ZERO2
-    def credit(self, obj): return obj.amount if not obj.drcr else ZERO2
+    @admin.display(description="Side")
+    def side(self, obj):
+        return "Debit" if obj.drcr else "Credit"
+
+    @admin.display(description="Debit")
+    def debit(self, obj):
+        return obj.amount if obj.drcr else ZERO2
+
+    @admin.display(description="Credit")
+    def credit(self, obj):
+        return obj.amount if not obj.drcr else ZERO2
+
+    @admin.display(description="Updated By")
+    def updated_by_display(self, obj):
+        for f in ("updatedby", "modifiedby", "updated_by", "modified_by"):
+            val = getattr(obj, f, None)
+            if val:
+                return val
+        return "-"
+
+    @admin.display(description="Updated On")
+    def updated_on_display(self, obj):
+        for f in ("updatedon", "modifiedon", "updated_at", "modified_at", "updated_on", "modified_on"):
+            dt = getattr(obj, f, None)
+            if dt:
+                return dt
+        return "-"
 
 
 @admin.register(InventoryMove)

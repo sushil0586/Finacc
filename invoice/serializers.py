@@ -3,6 +3,7 @@
 from itertools import product
 from os import device_encoding
 from django.shortcuts import get_object_or_404
+from django.utils.timezone import now
 from pprint import isreadable
 from invoice.utils.document_numbering import _maybe_reset,_format_doc_number
 import logging
@@ -10874,19 +10875,59 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
 
         for row in adjustments_data:
             ReceiptVoucherAdjustment.objects.create(receipt_voucher=rv, **row)
+        
+        entry_obj, _ = EntryModel.objects.get_or_create(
+            entrydate1=rv.voucher_date,
+            entity=rv.entity)
+        
+        poster = Poster(
+            entry=entry_obj,
+            entity=rv.entity,
+            user=rv.created_by,
+            transactiontype=TxnType.RECEIPT,     # ✅ align
+            transactionid=rv.id,
+            voucherno=rv.voucher_code,           # ✅ better than voucher_no
+            entrydate=rv.voucher_date,
+            entrydt=now(),
+        )
 
+        rv = ReceiptVoucher.objects.prefetch_related("adjustments").get(id=rv.id)
+        poster.post_receipt_voucher(rv)
         return rv
 
+   
     @transaction.atomic
     def update(self, instance, validated_data):
         allocations_data = validated_data.pop("allocations", None)
         adjustments_data = validated_data.pop("adjustments", None)
 
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if user and hasattr(instance, "updated_by"):
+            validated_data["updated_by"] = user
+
+        # 1) update header
         for k, v in validated_data.items():
             setattr(instance, k, v)
+        
+        logger.info("RV UPDATE validated keys=%s", sorted(list(validated_data.keys())))
+        logger.info(
+            "RV BEFORE save cash=%s received_in=%s received_from=%s",
+            getattr(instance, "cash_received_amount", None),
+            getattr(instance, "received_in_id", None),
+            getattr(instance, "received_from_id", None),
+        )
         instance.save()
 
-        # Replace strategy (simple + safe)
+        logger.info(
+            "RV AFTER  save cash=%s received_in=%s received_from=%s",
+            getattr(instance, "cash_received_amount", None),
+            getattr(instance, "received_in_id", None),
+            getattr(instance, "received_from_id", None),
+        )
+
+        # 2) replace nested
         if allocations_data is not None:
             instance.allocations.all().delete()
             for row in allocations_data:
@@ -10897,9 +10938,8 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
             for row in adjustments_data:
                 ReceiptVoucherAdjustment.objects.create(receipt_voucher=instance, **row)
 
-        # ✅ After update, ensure settings current_number is >= voucher_no (doccode fixed to 1002)
+        # 3) settings sync
         doccode = self._get_doccode()
-
         entity_id = getattr(instance, "entity_id", None)
         entityfinid_id = getattr(instance, "entityfinid_id", None)
         vno = int(getattr(instance, "voucher_no", 0) or 0)
@@ -10912,6 +10952,35 @@ class ReceiptVoucherSerializer(serializers.ModelSerializer):
             if int(settings_obj.current_number or 0) < vno:
                 settings_obj.current_number = vno
                 settings_obj.save(update_fields=["current_number", "last_reset_date"])
+
+        # 4) reload
+        instance = (
+            ReceiptVoucher.objects
+            .prefetch_related("allocations", "adjustments")
+            .get(id=instance.id)
+        )
+
+        # 5) post
+        entry_obj, _ = EntryModel.objects.get_or_create(
+            entrydate1=instance.voucher_date,
+            entity=instance.entity
+        )
+
+        poster = Poster(
+            entry=entry_obj,
+            entity=instance.entity,
+            user=(user or getattr(instance, "updated_by", None) or instance.created_by),
+            transactiontype=TxnType.RECEIPT,
+            transactionid=instance.id,
+            voucherno=instance.voucher_code,
+            entrydate=instance.voucher_date,
+            entrydt=now(),
+        )
+
+        try:
+            poster.post_receipt_voucher(instance)
+        except Exception as e:
+            raise ValidationError({"posting_error": str(e)})
 
         return instance
 
@@ -11059,8 +11128,11 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
         total = q2(taxable + cgst + sgst + igst + cess)
         return taxable, cgst, sgst, igst, cess, total
 
-    def _lock_settings(self, *, entity_id: int, entityfinid_id: int):
-        doc_type = get_object_or_404(doctype, doccode=self.PAYMENT_DOCCODE, entity_id=entity_id)
+    def _get_doccode(self) -> str:
+        return self.PAYMENT_DOCCODE
+
+    def _lock_settings(self, *, entity_id: int, entityfinid_id: int, doccode: str):
+        doc_type = get_object_or_404(doctype, doccode=doccode, entity_id=entity_id)
         settings_obj = (
             SalesInvoiceSettings.objects
             .select_for_update()
@@ -11072,7 +11144,9 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
         )
         return settings_obj
 
-    # validate() same as your current one (no changes required)
+    # ✅ Keep your existing validate() (same structure as receipt, but using payment fields)
+    # validate() not repeated here.
+
     # ---------- create/update ----------
     @transaction.atomic
     def create(self, validated_data):
@@ -11081,8 +11155,10 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if user and user.is_authenticated:
+        if user:
             validated_data["created_by"] = user
+
+        doccode = self._get_doccode()
 
         entity_id = validated_data.get("entity_id") or getattr(validated_data.get("entity"), "id", None)
         entityfinid_id = validated_data.get("entityfinid_id") or getattr(validated_data.get("entityfinid"), "id", None)
@@ -11091,12 +11167,11 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
         incoming_vno = int(incoming_vno) if incoming_vno not in (None, "", 0, "0") else None
 
         if entity_id and entityfinid_id:
-            settings_obj = self._lock_settings(entity_id=entity_id, entityfinid_id=entityfinid_id)
+            settings_obj = self._lock_settings(entity_id=entity_id, entityfinid_id=entityfinid_id, doccode=doccode)
             today = date.today()
             _maybe_reset(settings_obj, today)
 
             if incoming_vno is None:
-                # ✅ consume next number
                 settings_obj.current_number = (settings_obj.current_number or 0) + 1
                 reserved_number = int(settings_obj.current_number)
                 settings_obj.save(update_fields=["current_number", "last_reset_date"])
@@ -11104,7 +11179,6 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
                 validated_data["voucher_no"] = reserved_number
                 validated_data["voucher_code"] = _format_doc_number(settings_obj, reserved_number, today)
             else:
-                # manual voucher_no -> keep settings in sync
                 if int(settings_obj.current_number or 0) < incoming_vno:
                     settings_obj.current_number = incoming_vno
                     settings_obj.save(update_fields=["current_number", "last_reset_date"])
@@ -11117,6 +11191,26 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
         for row in adjustments_data:
             PaymentVoucherAdjustment.objects.create(payment_voucher=pv, **row)
 
+        # ✅ POST (same as ReceiptVoucher)
+        entry_obj, _ = EntryModel.objects.get_or_create(
+            entrydate1=pv.voucher_date,
+            entity=pv.entity
+        )
+
+        poster = Poster(
+            entry=entry_obj,
+            entity=pv.entity,
+            user=pv.created_by,
+            transactiontype=TxnType.PAYMENT,
+            transactionid=pv.id,
+            voucherno=pv.voucher_code,
+            entrydate=pv.voucher_date,
+            entrydt=now(),
+        )
+
+        pv = PaymentVoucher.objects.prefetch_related("adjustments").get(id=pv.id)
+        poster.post_payment_voucher(pv)
+
         return pv
 
     @transaction.atomic
@@ -11124,10 +11218,19 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
         allocations_data = validated_data.pop("allocations", None)
         adjustments_data = validated_data.pop("adjustments", None)
 
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and hasattr(instance, "updated_by"):
+            validated_data["updated_by"] = user
+
+        # 1) update header
         for k, v in validated_data.items():
             setattr(instance, k, v)
+
+        logger.info("PV UPDATE validated keys=%s", sorted(list(validated_data.keys())))
         instance.save()
 
+        # 2) replace nested
         if allocations_data is not None:
             instance.allocations.all().delete()
             for row in allocations_data:
@@ -11138,19 +11241,49 @@ class PaymentVoucherSerializer(serializers.ModelSerializer):
             for row in adjustments_data:
                 PaymentVoucherAdjustment.objects.create(payment_voucher=instance, **row)
 
-        # ✅ sync settings after update
+        # 3) settings sync
+        doccode = self._get_doccode()
         entity_id = getattr(instance, "entity_id", None)
         entityfinid_id = getattr(instance, "entityfinid_id", None)
         vno = int(getattr(instance, "voucher_no", 0) or 0)
 
         if entity_id and entityfinid_id and vno > 0:
-            settings_obj = self._lock_settings(entity_id=entity_id, entityfinid_id=entityfinid_id)
+            settings_obj = self._lock_settings(entity_id=entity_id, entityfinid_id=entityfinid_id, doccode=doccode)
             today = date.today()
             _maybe_reset(settings_obj, today)
 
             if int(settings_obj.current_number or 0) < vno:
                 settings_obj.current_number = vno
                 settings_obj.save(update_fields=["current_number", "last_reset_date"])
+
+        # 4) reload
+        instance = (
+            PaymentVoucher.objects
+            .prefetch_related("allocations", "adjustments")
+            .get(id=instance.id)
+        )
+
+        # 5) post
+        entry_obj, _ = EntryModel.objects.get_or_create(
+            entrydate1=instance.voucher_date,
+            entity=instance.entity
+        )
+
+        poster = Poster(
+            entry=entry_obj,
+            entity=instance.entity,
+            user=(user or getattr(instance, "updated_by", None) or instance.created_by),
+            transactiontype=TxnType.PAYMENT,
+            transactionid=instance.id,
+            voucherno=instance.voucher_code,
+            entrydate=instance.voucher_date,
+            entrydt=now(),
+        )
+
+        try:
+            poster.post_payment_voucher(instance)
+        except Exception as e:
+            raise ValidationError({"posting_error": str(e)})
 
         return instance
 

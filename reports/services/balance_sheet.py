@@ -13,7 +13,7 @@ from django.db.models import (
 # Adjust app labels if needed
 from invoice.models import JournalLine, InventoryMove, Product
 from .trading_account import STRATEGIES
-from .profit_and_loss import build_profit_and_loss_statement  # ← used for prior & current earnings
+from .profit_and_loss import build_profit_and_loss_statement  # for prior & current earnings
 
 
 # --------------------------- Helpers ---------------------------
@@ -22,12 +22,14 @@ def Q2(x) -> Decimal:
     q = Decimal(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return q if q != Decimal("-0.00") else Decimal("0.00")
 
-def _in_rate(qty: Decimal, unit_cost, ext_cost) -> Decimal:
+
+def _rate_from_move(qty: Decimal, unit_cost, ext_cost) -> Decimal:
     if unit_cost is not None:
         return Decimal(str(unit_cost))
     if ext_cost is not None and qty:
         return Decimal(str(ext_cost)) / Decimal(str(qty))
     return Decimal('0')
+
 
 def _nest_under_accounthead(rows: list, *, head_field: str = "_head") -> list:
     from collections import OrderedDict
@@ -59,12 +61,6 @@ def _inventory_value_asof(entity_id: int, enddate, method: str) -> Decimal:
     _opening, _cogs, closing = strat(entity_id, enddate, enddate)
     return closing
 
-def _rate_from_move(qty: Decimal, unit_cost, ext_cost) -> Decimal:
-    if unit_cost is not None:
-        return Decimal(str(unit_cost))
-    if ext_cost is not None and qty:
-        return Decimal(str(ext_cost)) / Decimal(str(qty))
-    return Decimal('0')
 
 def _inventory_breakdown_asof(
     *,
@@ -87,6 +83,7 @@ def _inventory_breakdown_asof(
     total_qty = Decimal('0')
     total_val = Decimal('0')
 
+    # Align with your Product model's name field (productname)
     if product_ids:
         prod_map = {p.id: p.productname for p in Product.objects.filter(id__in=product_ids)}
     else:
@@ -216,11 +213,12 @@ def _build_label(level: str, row: dict) -> str:
         vno = row.get('voucherno')
         return vno or f"{vt}#{vid}"
     if level == 'product':
-        return row.get('product__name') or "Unmapped Product"
+        # align with Product.productname
+        return row.get('product__productname') or "Unmapped Product"
     return row.get('accounthead__name') or "Row"
 
 
-# --------------------------- GL aggregation ---------------------------
+# --------------------------- GL aggregation (CONSISTENT) ---------------------------
 
 def _aggregate_balance_sheet_gl(
     *,
@@ -230,6 +228,13 @@ def _aggregate_balance_sheet_gl(
     bs_detailsingroup_values: tuple = (3,),
     exclude_head_ids: Optional[set] = None,
 ) -> Tuple[List[Dict], List[Dict], Decimal, Decimal]:
+    """
+    Consistent aggregation across levels:
+    - Compute signed net per group row.
+    - For levels with children (account/voucher/product): group by HEAD first,
+      sum signed children to a head total, then place the HEAD on its side.
+    - For level='head': simply place heads by sign.
+    """
     base = JournalLine.objects.filter(
         entity_id=entity_id,
         entrydate__lte=end,
@@ -238,13 +243,18 @@ def _aggregate_balance_sheet_gl(
     if exclude_head_ids:
         base = base.exclude(accounthead_id__in=list(exclude_head_ids))
 
+    # Choose group fields + label builder
     if level == 'head':
         qs = base.values('accounthead_id', 'accounthead__name')
+        label_build = lambda r: (r.get('accounthead__name') or f"Head {r.get('accounthead_id')}")
     elif level == 'account':
         qs = base.values('accounthead_id', 'accounthead__name', 'account_id', 'account__accountname')
+        label_build = lambda r: (r.get('account__accountname') or f"Account {r.get('account_id')}")
     elif level == 'voucher':
         qs = base.values('accounthead_id', 'accounthead__name', 'transactiontype', 'transactionid', 'voucherno')
+        label_build = lambda r: (r.get('voucherno') or f"{r.get('transactiontype') or 'TXN'}#{r.get('transactionid')}")
     elif level == 'product':
+        # Subqueries aligned with your InventoryMove linkage and Product.productname
         prod_id_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
@@ -259,59 +269,85 @@ def _aggregate_balance_sheet_gl(
                 transactiontype=OuterRef('transactiontype'),
                 transactionid=OuterRef('transactionid'),
                 detailid=OuterRef('detailid')
-            ).values('product__name')[:1]
+            ).values('product__productname')[:1]
         )
-        qs = base.annotate(product_id=prod_id_sub, product__name=prod_name_sub)\
-                 .values('product_id', 'product__name')
+        qs = (base.annotate(product_id=prod_id_sub, product__productname=prod_name_sub)
+                  .values('accounthead_id', 'accounthead__name', 'product_id', 'product__productname'))
+        label_build = lambda r: (r.get('product__productname') or f"Product {r.get('product_id')}")
     else:
+        # default to head
         qs = base.values('accounthead_id', 'accounthead__name')
+        label_build = lambda r: (r.get('accounthead__name') or f"Head {r.get('accounthead_id')}")
         level = 'head'
 
     agg = qs.annotate(
-        debits=Sum(Case(When(drcr=True, then=F('amount')),
-                        default=V(0),
+        debits=Sum(Case(When(drcr=True, then=F('amount')), default=V(0),
                         output_field=DecimalField(max_digits=18, decimal_places=2))),
-        credits=Sum(Case(When(drcr=False, then=F('amount')),
-                         default=V(0),
+        credits=Sum(Case(When(drcr=False, then=F('amount')), default=V(0),
                          output_field=DecimalField(max_digits=18, decimal_places=2))),
     )
 
-    assets_rows: List[Dict] = []
-    liab_rows: List[Dict] = []
-    total_assets = Decimal('0')
-    total_liab   = Decimal('0')
+    # Signed rows
+    signed_rows = []
+    for r in agg:
+        net = (r['debits'] or Decimal('0')) - (r['credits'] or Decimal('0'))
+        if net == 0:
+            continue
+        signed_rows.append({
+            "_head_id": r.get('accounthead_id'),
+            "_head": r.get('accounthead__name') or f"Head {r.get('accounthead_id')}",
+            "label": label_build(r),
+            "net": Q2(net),  # signed
+        })
 
-    for row in agg:
-        net = (row['debits'] or Decimal('0')) - (row['credits'] or Decimal('0'))
+    # With-children levels: group by head first
+    if level in ('account', 'voucher', 'product'):
+        from collections import OrderedDict
+        heads = OrderedDict()  # head_id -> {label, amount (signed), children:[{label, amount(signed)}]}
+        for row in signed_rows:
+            hid = row["_head_id"]
+            if hid not in heads:
+                heads[hid] = {"label": row["_head"], "amount": Decimal('0'), "children": []}
+            heads[hid]["amount"] += row["net"]
+            heads[hid]["children"].append({"label": row["label"], "amount": float(Q2(row["net"]))})  # signed
 
-        if level == 'account':
-            head_name = row.get('accounthead__name') or f"Head {row.get('accounthead_id')}"
-            account_label = row.get('account__accountname') or f"Account {row.get('account_id')}"
-            label = account_label
+        assets_rows, liab_rows = [], []
+        total_assets = Decimal('0'); total_liab = Decimal('0')
+
+        for h in heads.values():
+            head_amt = Q2(h["amount"])
+            h_out = {
+                "label": h["label"],
+                "amount": float(Q2(abs(head_amt))),  # parent displayed as absolute on its side
+                "children": sorted(h["children"], key=lambda x: x["amount"], reverse=True)
+            }
+            if head_amt > 0:
+                assets_rows.append(h_out)
+                total_assets += head_amt
+            else:
+                liab_rows.append(h_out)
+                total_liab += (-head_amt)
+
+        assets_rows.sort(key=lambda x: x["amount"], reverse=True)
+        liab_rows.sort(key=lambda x: x["amount"], reverse=True)
+        return assets_rows, liab_rows, Q2(total_assets), Q2(total_liab)
+
+    # level='head': just place heads by sign
+    assets_rows, liab_rows = [], []
+    total_assets = Decimal('0'); total_liab = Decimal('0')
+
+    for row in signed_rows:
+        if row["net"] > 0:
+            assets_rows.append({"label": row["_head"], "amount": float(Q2(row["net"]))})
+            total_assets += row["net"]
         else:
-            head_name = None
-            label = _build_label(level, row)
+            liab_rows.append({"label": row["_head"], "amount": float(Q2(-row["net"]))})
+            total_liab += (-row["net"])
 
-        if net > 0:
-            amt = Q2(net)
-            item = {"label": label, "amount": float(amt)}
-            if level == 'account':
-                item["_head"] = head_name
-            assets_rows.append(item)
-            total_assets += amt
-        elif net < 0:
-            amt = Q2(-net)
-            item = {"label": label, "amount": float(amt)}
-            if level == 'account':
-                item["_head"] = head_name
-            liab_rows.append(item)
-            total_liab += amt
+    assets_rows.sort(key=lambda x: x["amount"], reverse=True)
+    liab_rows.sort(key=lambda x: x["amount"], reverse=True)
 
-    if level == 'account':
-        assets_rows = _nest_under_accounthead(assets_rows)
-        liab_rows   = _nest_under_accounthead(liab_rows)
-
-    return assets_rows, liab_rows, total_assets, total_liab
+    return assets_rows, liab_rows, Q2(total_assets), Q2(total_liab)
 
 
 # --------------------------- Builder ---------------------------
@@ -332,12 +368,8 @@ def build_balance_sheet_statement(
     inventory_breakdown: bool = True,
     inventory_include_zero: bool = False,
     inventory_product_ids: Optional[List[int]] = None,
-
-    # prevent double counting of GL stock if you later add it: pass head ids here
-    inventory_replace_gl: bool = True,
+    inventory_replace_gl: bool = True,          # reserved for future: exclude GL stock heads if needed
     inventory_gl_head_ids: tuple = (),
-
-    # NEW: bring forward retained earnings (profit/loss prior to startdate)
     include_prior_earnings: bool = True,
     prior_earnings_label: str = "Retained Earnings",
 ):
@@ -345,10 +377,10 @@ def build_balance_sheet_statement(
     end   = datetime.strptime(enddate,   '%Y-%m-%d').date()
     opening_asof = start - timedelta(days=1)
 
-    # Optionally exclude GL stock heads (if you use them) to avoid double counting
+    # If you keep stock heads in GL, you can exclude them here to avoid double counting
     exclude_heads: set = set(inventory_gl_head_ids or ())
 
-    # 1) GL closing aggregation
+    # 1) GL closing aggregation (now consistent across levels)
     assets_rows, liab_rows, total_assets, total_liab = _aggregate_balance_sheet_gl(
         entity_id=entity_id, end=end, level=level,
         bs_detailsingroup_values=bs_detailsingroup_values,
@@ -364,9 +396,9 @@ def build_balance_sheet_statement(
     inv_item = None
     if inventory_source.lower() == "valuation":
         closing_inv = _inventory_value_asof(entity_id, end, valuation_method)
-        inv_item = {"label": inventory_label, "amount": float(closing_inv)}
+        inv_item = {"label": inventory_label, "amount": float(Q2(closing_inv))}
         assets_rows.append(inv_item)
-        total_assets += closing_inv
+        total_assets += Q2(closing_inv)
         notes.append(f"Inventory valued via '{valuation_method}' strategy as of {end}.")
     else:
         notes.append("Inventory taken from GL balances (no valuation override).")
@@ -394,13 +426,8 @@ def build_balance_sheet_statement(
         inv_item["children"] = inv_children
         notes.append("Inventory details nested under the Inventory (Closing Stock) line (qty and amount per product).")
 
-    # 3) Prior earnings (up to start-1) → Equity
-    if include_prior_earnings and opening_asof >= start:  # defensive, though usually always true
-        pass  # keeps mypy happy; real check in next block
-
+    # 3) Prior earnings (from inception to start-1) → Equity
     if include_prior_earnings:
-        # From inception (or far past) to start-1
-        # You can change "1900-01-01" to your org's opening date if you store it.
         prior = build_profit_and_loss_statement(
             entity_id=entity_id,
             startdate="1900-01-01",
