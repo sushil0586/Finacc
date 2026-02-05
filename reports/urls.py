@@ -4,6 +4,8 @@ from reports.views_stock_ledger_export import StockLedgerExcelAPIView, StockLedg
 from reports.views_stock_daybook import StockDayBookAPIView
 from reports.views_stock_daybook_export import StockDayBookExcelAPIView, StockDayBookPDFAPIView
 from reports.views_stock_movement import StockMovementAPIView
+from reports.views_stock_aging import StockAgingAPIView
+from reports.views_stock_aging_export import StockAgingExcelAPIView, StockAgingPDFAPIView
 from reports.views_stock_movement_export import StockMovementExcelAPIView, StockMovementPDFAPIView
 
 
@@ -122,6 +124,9 @@ urlpatterns  = [
     path("stock-movement/", StockMovementAPIView.as_view(), name="stock-movement"),
     path("stock-movement/excel/", StockMovementExcelAPIView.as_view(), name="stock-movement-excel"),
     path("stock-movement/pdf/", StockMovementPDFAPIView.as_view(), name="stock-movement-pdf"),
+    path("stock-aging/", StockAgingAPIView.as_view(), name="stock-aging"),
+    path("stock-aging/excel/", StockAgingExcelAPIView.as_view(), name="stock-aging-excel"),
+    path("stock-aging/pdf/", StockAgingPDFAPIView.as_view(), name="stock-aging-pdf"),
 
     
     
