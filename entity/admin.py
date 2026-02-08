@@ -7,7 +7,7 @@ from entity.models import (
     GstAccountsdetails, Mastergstdetails,Bankdetails,GstRegitrationTypes,OwnerShipTypes
 )
 from import_export.admin import ImportExportMixin
-from numbering.services import seed_sequences_for_entity
+
 
 # Admin classes
 class UnitTypeAdmin(ImportExportMixin,admin.ModelAdmin):
@@ -53,64 +53,64 @@ class EntityAdmin(admin.ModelAdmin):
     actions     = ['action_seed_sequences_quick', 'action_seed_sequences']
     action_form = SeedSeqActionForm
 
-    @admin.action(description="Seed numbering sequences (quick)")
-    def action_seed_sequences_quick(self, request, queryset):
-        total_created = total_skipped = 0
-        for ent in queryset:
-            fin = entityfinancialyear.objects.filter(entity=ent).order_by('-id').first()
-            if not fin:
-                messages.error(request, f"{ent} → No financial year found.")
-                continue
-            created, skipped, msg = seed_sequences_for_entity(
-                entity=ent, finyear=fin, subentity=None,
-                start=1, intstart=1, override_reset=None
-            )
-            total_created += created
-            total_skipped += skipped
-            messages.success(request, f"{ent}: {msg} (created={created}, skipped={skipped})")
-        messages.info(request, f"Done. Total created={total_created}, skipped={total_skipped}.")
+    # @admin.action(description="Seed numbering sequences (quick)")
+    # def action_seed_sequences_quick(self, request, queryset):
+    #     total_created = total_skipped = 0
+    #     for ent in queryset:
+    #         fin = entityfinancialyear.objects.filter(entity=ent).order_by('-id').first()
+    #         if not fin:
+    #             messages.error(request, f"{ent} → No financial year found.")
+    #             continue
+    #         created, skipped, msg = seed_sequences_for_entity(
+    #             entity=ent, finyear=fin, subentity=None,
+    #             start=1, intstart=1, override_reset=None
+    #         )
+    #         total_created += created
+    #         total_skipped += skipped
+    #         messages.success(request, f"{ent}: {msg} (created={created}, skipped={skipped})")
+    #     messages.info(request, f"Done. Total created={total_created}, skipped={total_skipped}.")
 
-    @admin.action(description="Seed numbering sequences (choose FY/Subentity/reset above)")
-    def action_seed_sequences(self, request, queryset):
-        finyear_id   = request.POST.get('finyear') or None
-        subentity_id = request.POST.get('subentity') or None
-        start        = int(request.POST.get('start') or 1)
-        intstart     = int(request.POST.get('intstart') or 1)
-        reset        = request.POST.get('reset') or None  # "", "yearly", "monthly", "none"
+    # @admin.action(description="Seed numbering sequences (choose FY/Subentity/reset above)")
+    # def action_seed_sequences(self, request, queryset):
+    #     finyear_id   = request.POST.get('finyear') or None
+    #     subentity_id = request.POST.get('subentity') or None
+    #     start        = int(request.POST.get('start') or 1)
+    #     intstart     = int(request.POST.get('intstart') or 1)
+    #     reset        = request.POST.get('reset') or None  # "", "yearly", "monthly", "none"
 
-        total_created = total_skipped = 0
-        for ent in queryset:
-            if finyear_id:
-                try:
-                    fin = entityfinancialyear.objects.get(id=finyear_id, entity=ent)
-                except entityfinancialyear.DoesNotExist:
-                    messages.error(request, f"{ent} → FY id={finyear_id} not found for this entity.")
-                    continue
-            else:
-                fin = entityfinancialyear.objects.filter(entity=ent).order_by('-id').first()
-                if not fin:
-                    messages.error(request, f"{ent} → No financial year found.")
-                    continue
+    #     total_created = total_skipped = 0
+    #     for ent in queryset:
+    #         if finyear_id:
+    #             try:
+    #                 fin = entityfinancialyear.objects.get(id=finyear_id, entity=ent)
+    #             except entityfinancialyear.DoesNotExist:
+    #                 messages.error(request, f"{ent} → FY id={finyear_id} not found for this entity.")
+    #                 continue
+    #         else:
+    #             fin = entityfinancialyear.objects.filter(entity=ent).order_by('-id').first()
+    #             if not fin:
+    #                 messages.error(request, f"{ent} → No financial year found.")
+    #                 continue
 
-            se = None
-            if subentity_id:
-                try:
-                    se = subentity.objects.get(id=subentity_id)
-                except subentity.DoesNotExist:
-                    messages.error(request, f"{ent} → Subentity id={subentity_id} not found.")
-                    continue
+    #         se = None
+    #         if subentity_id:
+    #             try:
+    #                 se = subentity.objects.get(id=subentity_id)
+    #             except subentity.DoesNotExist:
+    #                 messages.error(request, f"{ent} → Subentity id={subentity_id} not found.")
+    #                 continue
 
-            override = reset if reset in ('yearly', 'monthly', 'none') else None
+    #         override = reset if reset in ('yearly', 'monthly', 'none') else None
 
-            created, skipped, msg = seed_sequences_for_entity(
-                entity=ent, finyear=fin, subentity=se,
-                start=start, intstart=intstart, override_reset=override
-            )
-            total_created += created
-            total_skipped += skipped
-            messages.success(request, f"{ent}: {msg} (created={created}, skipped={skipped})")
+    #         created, skipped, msg = seed_sequences_for_entity(
+    #             entity=ent, finyear=fin, subentity=se,
+    #             start=start, intstart=intstart, override_reset=override
+    #         )
+    #         total_created += created
+    #         total_skipped += skipped
+    #         messages.success(request, f"{ent}: {msg} (created={created}, skipped={skipped})")
 
-        messages.info(request, f"Done. Total created={total_created}, skipped={total_skipped}.")
+    #     messages.info(request, f"Done. Total created={total_created}, skipped={total_skipped}.")
 
 class SubEntityAdmin(admin.ModelAdmin):
     list_display = ['subentityname', 'address','entity']
