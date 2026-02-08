@@ -67,6 +67,8 @@ INSTALLED_APPS = [
     'numbering',
     'catalog',
     "localization",
+    "localization",
+    "purchase",
     
 ]
 
