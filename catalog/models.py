@@ -207,6 +207,8 @@ class Product(EntityScopedModel):
         help_text="Whether ITC is generally eligible for this product/service (optional helper)."
     )
 
+    itc_block_reason = models.CharField(max_length=500, blank=True)
+
     product_status = models.CharField(
         max_length=20,
         choices=ProductStatus.choices,
@@ -356,6 +358,11 @@ class ProductGstRate(TimeStampedModel):
                 condition=Q(isdefault=True),
                 name="uq_product_one_default_gst_rate"
             ),
+        ]
+        indexes = [
+            models.Index(fields=["product", "-isdefault", "-valid_from", "-id"], name="ix_gst_best_row"),
+            models.Index(fields=["product", "isdefault"], name="ix_gst_prod_default"),
+            models.Index(fields=["product", "valid_from"], name="ix_gst_prod_validfrom"),
         ]
         ordering = ["product", "valid_from"]
 
@@ -899,6 +906,10 @@ class ProductPrice(TimeStampedModel):
                 fields=['product', 'pricelist', 'uom', 'effective_from'],
                 name='uq_productprice_key'
             )
+        ]
+
+        indexes = [
+            models.Index(fields=["product", "-effective_from", "-id"], name="ix_price_prod_eff"),
         ]
         ordering = ['product', 'pricelist', 'uom', 'effective_from']
 
