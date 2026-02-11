@@ -32,8 +32,10 @@ from .views import (
     ProductBarcodeListCreateAPIView,
     ProductBarcodeRUDAPIView,
     ProductBarcodeDownloadPDFAPIView,
-    BarcodeLayoutOptionsAPIView,
+    BarcodeLayoutOptionsAPIView,PurchaseInvoiceProductListAPIView,
 )
+
+
 
 urlpatterns = [
     # ------------------------------------------------------------------
@@ -93,4 +95,9 @@ urlpatterns = [
     path("barcodes/<int:pk>/", ProductBarcodeRUDAPIView.as_view(), name="barcode-detail"),
     path("barcodes/download/", ProductBarcodeDownloadPDFAPIView.as_view(), name="barcode-download-pdf"),
     path("barcodes/layout-options/", BarcodeLayoutOptionsAPIView.as_view(), name="barcode-layout-options"),
+    path(
+        "purchaseinvoice-products/",
+        PurchaseInvoiceProductListAPIView.as_view(),
+        name="invoice-products",
+    ),
 ]

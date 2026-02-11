@@ -798,3 +798,131 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
             ProductBarcode.objects.filter(product=obj.product).exclude(pk=obj.pk).update(isprimary=False)
 
         return obj
+    
+
+
+
+class InvoiceProductListItemSerializer(serializers.Serializer):
+    """
+    Flat, invoice-line-ready product response.
+    Works on annotated Product queryset (no ModelSerializer required).
+    """
+
+    id = serializers.IntegerField()
+    productname = serializers.CharField()
+    productdesc = serializers.CharField(allow_null=True, required=False)
+    sku = serializers.CharField(allow_null=True, required=False)
+
+    is_service = serializers.BooleanField()
+    is_pieces = serializers.BooleanField(required=False)
+
+    # UOM
+    uom_id = serializers.IntegerField(allow_null=True, required=False)
+    uom_code = serializers.CharField(allow_null=True, required=False)
+
+    # Prices (as string for accuracy)
+    mrp = serializers.CharField(allow_null=True, required=False)
+    salesprice = serializers.CharField(allow_null=True, required=False)
+    purchaserate = serializers.CharField(allow_null=True, required=False)
+
+    # GST/HSN
+    hsn_sac = serializers.CharField(allow_null=True, required=False)
+    gst_type = serializers.CharField(allow_null=True, required=False)
+
+    default_taxability = serializers.IntegerField()
+    gst_rate = serializers.CharField(allow_null=True, required=False)
+    default_cgst_percent = serializers.CharField(required=False)
+    default_sgst_percent = serializers.CharField(required=False)
+    default_igst_percent = serializers.CharField(required=False)
+
+    cess = serializers.CharField(allow_null=True, required=False)
+    cesstype = serializers.CharField(allow_null=True, required=False)
+    cess_specific_amount = serializers.CharField(allow_null=True, required=False)
+
+    # ITC defaults
+    default_is_itc_eligible = serializers.BooleanField()
+    default_itc_block_reason = serializers.CharField(allow_null=True, required=False)
+
+    def to_representation(self, obj):
+        """
+        obj is a Product instance with annotations:
+          gst_* and price_* fields, plus base_uom_id/base_uom.code, gst_type on product model.
+        """
+
+        # pick GST (default if present else latest)
+        has_default_gst = getattr(obj, "gst_hsn_id", None) is not None
+
+        hsn_code = getattr(obj, "_hsn_code", None)
+
+        cgst = getattr(obj, "gst_cgst", None) if has_default_gst else getattr(obj, "gst_cgst2", None)
+        sgst = getattr(obj, "gst_sgst", None) if has_default_gst else getattr(obj, "gst_sgst2", None)
+        igst = getattr(obj, "gst_igst", None) if has_default_gst else getattr(obj, "gst_igst2", None)
+        gst_rate = getattr(obj, "gst_rate", None) if has_default_gst else getattr(obj, "gst_rate2", None)
+        cess = getattr(obj, "gst_cess", None) if has_default_gst else getattr(obj, "gst_cess2", None)
+        cess_type = getattr(obj, "gst_cess_type", None) if has_default_gst else getattr(obj, "gst_cess_type2", None)
+        cess_specific = getattr(obj, "gst_cess_specific", None) if has_default_gst else getattr(obj, "gst_cess_specific2", None)
+
+        # pick prices (default pricelist if present else latest)
+        mrp = getattr(obj, "price_mrp", None)
+        mrp = mrp if mrp is not None else getattr(obj, "price_mrp2", None)
+
+        salesprice = getattr(obj, "price_sales", None)
+        salesprice = salesprice if salesprice is not None else getattr(obj, "price_sales2", None)
+
+        purchaserate = getattr(obj, "price_purchase", None)
+        purchaserate = purchaserate if purchaserate is not None else getattr(obj, "price_purchase2", None)
+
+        gst_type_val = getattr(obj, "gst_type", None)
+
+        # Map product gst_type -> invoice default_taxability (1..4)
+        # regular->1, exempt->2, nil_rated->3, non_gst->4, composition->1 (but ITC default false depends on vendor; product-only default = true)
+        if gst_type_val == "exempt":
+            default_taxability = 2
+        elif gst_type_val == "nil_rated":
+            default_taxability = 3
+        elif gst_type_val == "non_gst":
+            default_taxability = 4
+        else:
+            default_taxability = 1
+
+        # ITC default (product-only)
+        # Exempt/nil/non_gst => false
+        default_is_itc_eligible = gst_type_val not in ("exempt", "nil_rated", "non_gst")
+        default_itc_block_reason = "Exempt/Nil/Non-GST" if not default_is_itc_eligible else None
+
+        uom = getattr(obj, "base_uom", None)
+        uom_code = getattr(uom, "code", None) if uom else None
+
+        return {
+            "id": obj.id,
+            "productname": obj.productname,
+            "productdesc": getattr(obj, "productdesc", None),
+            "sku": getattr(obj, "sku", None),
+
+            "is_service": getattr(obj, "is_service", False),
+            "is_pieces": getattr(obj, "is_pieces", False),
+
+            "uom_id": getattr(obj, "base_uom_id", None),
+            "uom_code": uom_code,
+
+            "mrp": str(mrp) if mrp is not None else None,
+            "salesprice": str(salesprice) if salesprice is not None else None,
+            "purchaserate": str(purchaserate) if purchaserate is not None else None,
+
+            "hsn_sac": hsn_code,
+            "gst_type": gst_type_val,
+
+            "default_taxability": default_taxability,
+
+            "gst_rate": str(gst_rate) if gst_rate is not None else None,
+            "default_cgst_percent": str(cgst) if cgst is not None else "0.00",
+            "default_sgst_percent": str(sgst) if sgst is not None else "0.00",
+            "default_igst_percent": str(igst) if igst is not None else "0.00",
+
+            "cess": str(cess) if cess is not None else None,
+            "cesstype": cess_type,
+            "cess_specific_amount": str(cess_specific) if cess_specific is not None else None,
+
+            "default_is_itc_eligible": bool(default_is_itc_eligible),
+            "default_itc_block_reason": default_itc_block_reason,
+        }

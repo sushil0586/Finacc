@@ -5,6 +5,8 @@ from datetime import date
 from typing import Optional, Dict, Tuple
 
 from django.db.models import Q
+from numbering.models import DocumentType
+from numbering.services.document_number_service import DocumentNumberService  # adjust import
 
 from purchase.models.purchase_config import (
     PurchaseSettings,
@@ -43,6 +45,36 @@ class PurchasePolicy:
 
 
 class PurchaseSettingsService:
+
+    @staticmethod
+    def get_current_doc_no(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_key: str,
+        doc_code: str,
+    ) -> dict:
+        doc_type = DocumentType.objects.filter(
+            module="purchase",
+            doc_key=doc_key,
+            is_active=True,
+        ).only("id").first()
+
+        if not doc_type:
+            return {"enabled": False, "reason": f"DocumentType not found: purchase/{doc_key}", "current_number": None}
+
+        try:
+            res = DocumentNumberService.peek_preview(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=doc_type.id,
+                doc_code=doc_code,
+            )
+            return {"enabled": True, "doc_type_id": doc_type.id, "current_number": res.doc_no}
+        except Exception as e:
+            return {"enabled": False, "reason": str(e), "doc_type_id": doc_type.id, "current_number": None}
     @staticmethod
     def get_settings(entity_id: int, subentity_id: Optional[int]) -> PurchaseSettings:
         """

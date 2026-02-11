@@ -12,9 +12,33 @@ class PurchaseSettingsAPIView(APIView):
         entity_id = int(request.query_params.get("entity"))
         subentity_id = request.query_params.get("subentity")
         subentity_id = int(subentity_id) if subentity_id not in (None, "", "null") else None
+        entityfinid_id = int(request.query_params.get("entityfinid"))
 
         settings = PurchaseSettingsService.get_settings(entity_id, subentity_id)
         overrides = PurchaseSettingsService.get_choice_overrides(entity_id, subentity_id)
+        invoice_current = PurchaseSettingsService.get_current_doc_no(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_key="PURCHASE_TAX_INVOICE",          # ✅ align with your DocumentType.doc_key
+            doc_code=settings.default_doc_code_invoice,
+        )
+
+        cn_current = PurchaseSettingsService.get_current_doc_no(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_key="PURCHASE_CREDIT_NOTE",          # ✅ align with your DocumentType.doc_key
+            doc_code=settings.default_doc_code_cn,
+        )
+
+        dn_current = PurchaseSettingsService.get_current_doc_no(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_key="PURCHASE_DEBIT_NOTE",           # ✅ align with your DocumentType.doc_key
+            doc_code=settings.default_doc_code_dn,
+        )
 
         return Response({
             "settings": {
@@ -30,5 +54,10 @@ class PurchaseSettingsAPIView(APIView):
                 "round_grand_total_to": settings.round_grand_total_to,
                 "enable_round_off": settings.enable_round_off,
             },
-            "choice_overrides": overrides,
+            # "choice_overrides": overrides,
+            "current_doc_numbers": {
+                "invoice": invoice_current,
+                "credit_note": cn_current,
+                "debit_note": dn_current,
+            }   
         })

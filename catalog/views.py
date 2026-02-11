@@ -15,6 +15,7 @@ from io import BytesIO
 import math
 
 from django.db import transaction
+from rest_framework.generics import ListAPIView
 from django.db.models import Q, Prefetch, OuterRef, Subquery
 from django.shortcuts import get_object_or_404
 
@@ -24,6 +25,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from django.http import FileResponse
+
+from catalog.serializers import InvoiceProductListItemSerializer
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
@@ -826,3 +829,179 @@ class BarcodeLayoutOptionsAPIView(APIView):
                 "label": f"{layout} sticker{'s' if layout > 1 else ''} per page ({self.SIZE_LABELS.get(layout)})",
             })
         return Response(layouts)
+    
+
+def _taxability_from_hsn(hsn_row) -> int:
+    """
+    Align with PurchaseInvoiceHeader.Taxability:
+    1 TAXABLE, 2 EXEMPT, 3 NIL_RATED, 4 NON_GST
+    """
+    if not hsn_row:
+        return 1
+    if hsn_row.get("is_exempt"):
+        return 2
+    if hsn_row.get("is_nil_rated"):
+        return 3
+    if hsn_row.get("is_non_gst"):
+        return 4
+    return 1
+    
+
+
+class PurchaseInvoiceProductListAPIView(APIView):
+    """
+    GET /api/catalog/entity/<entity_id>/invoice-products/?search=<text>&limit=50&offset=0
+
+    Postgres-optimized:
+    - Query products (paged)
+    - Query best GST row per product using DISTINCT ON (default first else latest)
+    - Query best Price row per product using DISTINCT ON (default pricelist first else latest)
+    - Query HSN ids once
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, format=None):
+        entity = self.request.query_params.get('entity')
+
+        # ---- Pagination ----
+        # sensible defaults (do NOT allow unbounded)
+        try:
+            limit = int(request.query_params.get("limit") or 50)
+        except Exception:
+            limit = 50
+        try:
+            offset = int(request.query_params.get("offset") or 0)
+        except Exception:
+            offset = 0
+
+        limit = max(1, min(limit, 200))  # hard cap
+        offset = max(0, offset)
+
+        # ---- Base product query (paged) ----
+        prod_qs = (
+            Product.objects
+            .filter(entity_id=entity, isactive=True)
+            .select_related("base_uom")
+            .only(
+                "id", "productname", "productdesc", "sku",
+                "base_uom_id", "base_uom__code",
+                "is_service", "is_pieces",
+                # ITC defaults (if you added them on product)
+                "is_itc_eligible", "itc_block_reason",
+            )
+            .order_by("productname", "id")
+        )
+
+        
+
+        total = prod_qs.count()  # optional; remove if you don't need total for UI
+
+        products = list(prod_qs[offset: offset + limit])
+        if not products:
+            return Response({"count": total, "items": []}, status=status.HTTP_200_OK)
+
+        product_ids = [p.id for p in products]
+
+        # ---- GST rows: best row per product (default first else latest valid_from) ----
+        # DISTINCT ON is Postgres-specific: keep one row per product_id based on ordering.
+        gst_rows = list(
+            ProductGstRate.objects
+            .filter(product_id__in=product_ids)
+            .order_by("product_id", "-isdefault", "-valid_from", "-id")
+            .distinct("product_id")
+            .values(
+                "product_id",
+                "hsn_id",
+                "cgst", "sgst", "igst", "gst_rate",
+                "cess", "cess_type", "cess_specific_amount",
+            )
+        )
+        gst_map = {r["product_id"]: r for r in gst_rows}
+
+        # ---- Price rows: best row per product (default pricelist first else latest) ----
+        price_rows = list(
+            ProductPrice.objects
+            .filter(product_id__in=product_ids)
+            .select_related("pricelist")
+            .order_by("product_id", "-pricelist__isdefault", "-effective_from", "-id")
+            .distinct("product_id")
+            .values(
+                "product_id",
+                "mrp", "selling_price", "purchase_rate",
+            )
+        )
+        price_map = {r["product_id"]: r for r in price_rows}
+
+        # ---- HSN fetch once ----
+        hsn_ids = {gst_map[p.id]["hsn_id"] for p in products if p.id in gst_map and gst_map[p.id]["hsn_id"]}
+        hsn_rows = list(
+            HsnSac.objects
+            .filter(id__in=hsn_ids)
+            .values("id", "code", "is_service", "is_exempt", "is_nil_rated", "is_non_gst")
+        )
+        hsn_map = {h["id"]: h for h in hsn_rows}
+
+        # ---- Build response ----
+        items = []
+        for p in products:
+            gst = gst_map.get(p.id) or {}
+            pr = price_map.get(p.id) or {}
+
+            hsn_id = gst.get("hsn_id")
+            hsn = hsn_map.get(hsn_id) if hsn_id else None
+
+            taxability = _taxability_from_hsn(hsn)
+
+            # ITC defaults (product policy) + taxability guard
+            if taxability in (2, 3, 4):
+                itc_eligible = False
+                itc_reason = "No GST / no ITC"
+            else:
+                itc_eligible = bool(getattr(p, "default_is_itc_eligible", True))
+                itc_reason = getattr(p, "default_itc_block_reason", None)
+
+            items.append({
+                "id": p.id,
+                "productname": p.productname,
+                "productdesc": p.productdesc,
+                "sku": p.sku,
+
+                # UOM
+                "uom_id": p.base_uom_id,
+                "uom": p.base_uom.code if p.base_uom else None,
+
+                "is_service": p.is_service,
+                "is_pieces": p.is_pieces,
+
+                # Prices
+                "mrp": float(pr["mrp"]) if pr.get("mrp") is not None else None,
+                "salesprice": float(pr["selling_price"]) if pr.get("selling_price") is not None else None,
+                "purchaserate": float(pr["purchase_rate"]) if pr.get("purchase_rate") is not None else None,
+
+                # HSN
+                "hsn_id": hsn_id,
+                "hsn": hsn.get("code") if hsn else None,
+                "hsn_is_service": hsn.get("is_service") if hsn else None,
+
+                # Taxability aligned to PurchaseInvoiceHeader.Taxability
+                "taxability": taxability,
+
+                # GST
+                "cgst": float(gst["cgst"]) if gst.get("cgst") is not None else None,
+                "sgst": float(gst["sgst"]) if gst.get("sgst") is not None else None,
+                "igst": float(gst["igst"]) if gst.get("igst") is not None else None,
+                "gst_rate": float(gst["gst_rate"]) if gst.get("gst_rate") is not None else None,
+
+                # CESS
+                "cess": float(gst["cess"]) if gst.get("cess") is not None else None,
+                "cesstype": gst.get("cess_type"),
+                "cess_specific_amount": float(gst["cess_specific_amount"])
+                if gst.get("cess_specific_amount") is not None else None,
+                "is_itc_eligible": itc_eligible,
+                "itc_block_reason": itc_reason,
+
+                
+                
+            })
+
+        return Response(items, status=status.HTTP_200_OK)
