@@ -1,4 +1,3 @@
-# purchase/models/purchase_core.py
 from __future__ import annotations
 
 from decimal import Decimal
@@ -6,10 +5,10 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
-from geography.models import Country, State, District, City
+from geography.models import State
+from entity.models import Entity,entityfinancialyear,subentity
+from financial.models import account
 from catalog.models import Product,UnitOfMeasure
-
-from .base import TrackingModel
 
 User = settings.AUTH_USER_MODEL
 
@@ -17,7 +16,7 @@ ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 
 
-class PurchaseInvoiceHeader(TrackingModel):
+class PurchaseInvoiceHeader(models.Model):
     # ---- enums (ALL header enums live here) ----
     class DocType(models.IntegerChoices):
         TAX_INVOICE = 1, "Tax Invoice"
@@ -76,7 +75,7 @@ class PurchaseInvoiceHeader(TrackingModel):
     )
 
     vendor = models.ForeignKey(
-        "financial.account", on_delete=models.PROTECT, null=True, blank=True, related_name="purchase_documents"
+       account, on_delete=models.PROTECT, null=True, blank=True, related_name="purchase_documents"
     )
 
     # snapshot fields
@@ -107,11 +106,14 @@ class PurchaseInvoiceHeader(TrackingModel):
     )
 
     itc_claim_status = models.IntegerField(choices=ItcClaimStatus.choices, default=ItcClaimStatus.PENDING)
-    itc_claim_period = models.CharField(max_length=7, null=True, blank=True)
+    itc_claim_period = models.CharField(max_length=7, null=True, blank=True)  # "YYYY-MM"
     itc_claimed_at = models.DateTimeField(null=True, blank=True)
     itc_block_reason = models.CharField(max_length=200, null=True, blank=True)
 
-    # totals
+    # ✅ default pricing behavior for UI (line can still override)
+    is_rate_inclusive_of_tax_default = models.BooleanField(default=False)
+
+    # totals (computed, persisted)
     total_taxable = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     total_cgst = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     total_sgst = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
@@ -124,23 +126,24 @@ class PurchaseInvoiceHeader(TrackingModel):
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT)
 
     # SaaS scope
-    subentity = models.ForeignKey("entity.subentity", on_delete=models.PROTECT, null=True)
-    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, null=True)
-    entityfinid = models.ForeignKey("entity.entityfinancialyear", on_delete=models.PROTECT, null=True)
-    created_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, related_name="created_purchase_documents")
+    subentity = models.ForeignKey(subentity, on_delete=models.PROTECT, null=True, blank=True)
+    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, null=True, blank=True)
+    entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.PROTECT, null=True, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name="created_purchase_documents")
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
-            # ✅ strongly recommended for SaaS numbering safety
             models.UniqueConstraint(
                 fields=("entity", "entityfinid", "doc_type", "doc_code", "doc_no"),
                 name="uq_purchase_doc_entity_fin_type_code_no",
             ),
-            # ✅ CN/DN require reference; defined safely using alias below
-            # (see DocType alias after class)
             models.CheckConstraint(
                 name="ck_purchase_ref_required_for_notes",
-                check=(
+                condition=(
                     (Q(doc_type=1) & Q(ref_document__isnull=True)) |
                     (Q(doc_type__in=[2, 3]) & Q(ref_document__isnull=False))
                 ),
@@ -148,13 +151,15 @@ class PurchaseInvoiceHeader(TrackingModel):
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "bill_date"], name="ix_pur_ent_fin_dt"),
+            models.Index(fields=["entity", "entityfinid", "vendor"], name="ix_pur_ent_fin_vendor"),
+            models.Index(fields=["entity", "entityfinid", "doc_code", "doc_no"], name="ix_pur_docno_lookup"),
         ]
 
     def __str__(self):
         return self.purchase_number or f"{self.doc_code}-{self.doc_no}"
 
 
-# ✅ Safe aliases AFTER the model exists (use these in services/serializers if needed)
+# ✅ Safe aliases AFTER the model exists
 DocType = PurchaseInvoiceHeader.DocType
 Status = PurchaseInvoiceHeader.Status
 Taxability = PurchaseInvoiceHeader.Taxability
@@ -163,7 +168,12 @@ Gstr2bMatchStatus = PurchaseInvoiceHeader.Gstr2bMatchStatus
 ItcClaimStatus = PurchaseInvoiceHeader.ItcClaimStatus
 
 
-class PurchaseInvoiceLine(TrackingModel):
+class PurchaseInvoiceLine(models.Model):
+    class DiscountType(models.TextChoices):
+        NONE = "N", "None"
+        PERCENT = "P", "Percent"
+        AMOUNT = "A", "Amount"
+
     header = models.ForeignKey(PurchaseInvoiceHeader, related_name="lines", on_delete=models.CASCADE)
     line_no = models.PositiveIntegerField()
 
@@ -173,16 +183,29 @@ class PurchaseInvoiceLine(TrackingModel):
     hsn_sac = models.CharField(max_length=10, null=True, blank=True)
 
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True)
-    qty = models.DecimalField(max_digits=14, decimal_places=4, default=ZERO4)
-    rate = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    # ✅ quantities
+    qty = models.DecimalField(max_digits=14, decimal_places=4, default=ZERO4)        # billable qty
+    free_qty = models.DecimalField(max_digits=14, decimal_places=4, default=ZERO4)   # free qty (inventory only)
+
+    # ✅ pricing
+    rate = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)       # as entered (inclusive or exclusive)
+    is_rate_inclusive_of_tax = models.BooleanField(default=False)
+
+    # ✅ discount (client can send; server recomputes and persists final values)
+    discount_type = models.CharField(max_length=1, choices=DiscountType.choices, default=DiscountType.NONE)
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)   # 0..100
+    discount_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)  # absolute
 
     taxability = models.IntegerField(
         choices=PurchaseInvoiceHeader.Taxability.choices,
         default=PurchaseInvoiceHeader.Taxability.TAXABLE
     )
 
+    # ✅ computed monetary base (server authoritative)
     taxable_value = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
+    # GST
     gst_rate = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)
     cgst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)
     sgst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)
@@ -191,15 +214,35 @@ class PurchaseInvoiceLine(TrackingModel):
     cgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     sgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     igst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    # ✅ cess support (percent + amount). You already had amount; percent makes it complete.
+    cess_percent = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)
     cess_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
+    # ITC line-level
     is_itc_eligible = models.BooleanField(default=True)
     itc_block_reason = models.CharField(max_length=200, null=True, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=("header", "line_no"), name="uq_purchase_line_header_lineno"),
+            # safe sanity checks
+            models.CheckConstraint(name="ck_pur_qty_nonneg", condition=Q(qty__gte=0)),
+            models.CheckConstraint(name="ck_pur_freeqty_nonneg", condition=Q(free_qty__gte=0)),
+            models.CheckConstraint(name="ck_pur_rate_nonneg", condition=Q(rate__gte=0)),
+            models.CheckConstraint(name="ck_pur_disc_pct_range", condition=Q(discount_percent__gte=0) & Q(discount_percent__lte=100)),
+            models.CheckConstraint(name="ck_pur_disc_amt_nonneg", condition=Q(discount_amount__gte=0)),
+            models.CheckConstraint(name="ck_pur_gst_rate_range", condition=Q(gst_rate__gte=0) & Q(gst_rate__lte=100)),
+            models.CheckConstraint(name="ck_pur_cess_rate_range", condition=Q(cess_percent__gte=0) & Q(cess_percent__lte=100)),
+        ]
+        indexes = [
+            models.Index(fields=["header", "product"], name="ix_pur_line_header_product"),
+            models.Index(fields=["header", "hsn_sac"], name="ix_pur_line_header_hsn"),
         ]
 
     def __str__(self):
@@ -233,6 +276,9 @@ class PurchaseTaxSummary(models.Model):
                 fields=("header", "taxability", "hsn_sac", "is_service", "gst_rate", "is_reverse_charge"),
                 name="uq_pur_taxsum_bucket",
             ),
+        ]
+        indexes = [
+            models.Index(fields=["header"], name="ix_pur_taxsum_header"),
         ]
 
     def __str__(self):

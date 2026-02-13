@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
+from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
+
 
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
@@ -36,29 +38,44 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseInvoiceLine
         fields = [
-            "id",
-            "line_no",
-            "product",
-            "product_desc",
-            "is_service",
-            "hsn_sac",
-            "uom",
-            "qty",
-            "rate",
-            "taxability",
-            "taxable_value",
-            "gst_rate",
-            "cgst_percent",
-            "sgst_percent",
-            "igst_percent",
-            "cgst_amount",
-            "sgst_amount",
-            "igst_amount",
-            "cess_amount",
-            "line_total",
-            "is_itc_eligible",
-            "itc_block_reason",
-        ]
+        "id",
+        "line_no",
+        "product",
+        "product_desc",
+        "is_service",
+        "hsn_sac",
+        "uom",
+
+        "qty",
+        "free_qty",
+
+        "rate",
+        "is_rate_inclusive_of_tax",
+
+        "discount_type",
+        "discount_percent",
+        "discount_amount",
+
+        "taxability",
+        "taxable_value",
+        "gst_rate",
+
+        "cgst_percent",
+        "sgst_percent",
+        "igst_percent",
+
+        "cgst_amount",
+        "sgst_amount",
+        "igst_amount",
+
+        "cess_percent",
+        "cess_amount",
+
+        "line_total",
+        "is_itc_eligible",
+        "itc_block_reason",
+    ]
+
 
     def validate(self, attrs):
         qty = q4(attrs.get("qty"))
@@ -86,6 +103,32 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
                 # don't force for all cases, but good governance
                 attrs["itc_block_reason"] = attrs.get("itc_block_reason") or "ITC not eligible"
 
+        free_qty = q4(attrs.get("free_qty"))
+        if free_qty < 0:
+            raise serializers.ValidationError({"free_qty": "Free qty cannot be negative"})
+
+        dt = attrs.get("discount_type", PurchaseInvoiceLine.DiscountType.NONE)
+
+        disc_pct = q2(attrs.get("discount_percent"))
+        disc_amt = q2(attrs.get("discount_amount"))
+
+        if dt == PurchaseInvoiceLine.DiscountType.PERCENT:
+            if disc_pct < 0 or disc_pct > 100:
+                raise serializers.ValidationError({"discount_percent": "Discount percent must be between 0 and 100."})
+            attrs["discount_amount"] = q2(0)
+        elif dt == PurchaseInvoiceLine.DiscountType.AMOUNT:
+            if disc_amt < 0:
+                raise serializers.ValidationError({"discount_amount": "Discount amount cannot be negative."})
+            attrs["discount_percent"] = q2(0)
+        else:
+            attrs["discount_percent"] = q2(0)
+            attrs["discount_amount"] = q2(0)
+
+        cess_percent = q2(attrs.get("cess_percent"))
+        if cess_percent < 0 or cess_percent > 100:
+            raise serializers.ValidationError({"cess_percent": "Cess percent must be between 0 and 100."})
+
+
         return attrs
 
 
@@ -96,6 +139,11 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     # preview fields
     preview_doc_no = serializers.SerializerMethodField()
     preview_purchase_number = serializers.SerializerMethodField()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["navigation"] = PurchaseInvoiceNavService.get_prev_next_for_instance(instance)
+        return data
 
     class Meta:
         model = PurchaseInvoiceHeader
@@ -257,6 +305,25 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 taxabilities = {ln.get("taxability", Taxability.TAXABLE) for ln in lines}
                 if len(taxabilities) > 1:
                     raise serializers.ValidationError({"lines": "Mixed taxability in one bill is disabled for this entity."})
+        lines = attrs.get("lines", None)
+        if lines is not None:
+            default_inclusive = attrs.get(
+                "is_rate_inclusive_of_tax_default",
+                getattr(self.instance, "is_rate_inclusive_of_tax_default", False) if self.instance else False
+            )
+            for ln in lines:
+                if ln.get("is_rate_inclusive_of_tax") in (None, ""):
+                    ln["is_rate_inclusive_of_tax"] = bool(default_inclusive)
+                if ln.get("free_qty") is None:
+                    ln["free_qty"] = Decimal("0.0000")
+                if ln.get("discount_type") is None:
+                    ln["discount_type"] = PurchaseInvoiceLine.DiscountType.NONE
+                if ln.get("discount_percent") is None:
+                    ln["discount_percent"] = Decimal("0.00")
+                if ln.get("discount_amount") is None:
+                    ln["discount_amount"] = Decimal("0.00")
+                if ln.get("cess_percent") is None:
+                    ln["cess_percent"] = Decimal("0.00")
 
         return attrs
 

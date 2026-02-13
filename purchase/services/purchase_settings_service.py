@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Dict, Tuple
+from numbering.models import DocumentType, DocumentNumberSeries
+
+from purchase.models.purchase_core import PurchaseInvoiceHeader, DocType
 
 from django.db.models import Q
 from numbering.models import DocumentType
@@ -47,6 +50,18 @@ class PurchasePolicy:
 class PurchaseSettingsService:
 
     @staticmethod
+    def _purchase_doc_type_from_doc_key(doc_key: str) -> int:
+        """
+        Map DocumentType.doc_key to PurchaseInvoiceHeader.DocType
+        """
+        k = (doc_key or "").upper()
+        if "CREDIT" in k:
+            return int(DocType.CREDIT_NOTE)
+        if "DEBIT" in k:
+            return int(DocType.DEBIT_NOTE)
+        return int(DocType.TAX_INVOICE)
+
+    @staticmethod
     def get_current_doc_no(
         *,
         entity_id: int,
@@ -62,8 +77,15 @@ class PurchaseSettingsService:
         ).only("id").first()
 
         if not doc_type:
-            return {"enabled": False, "reason": f"DocumentType not found: purchase/{doc_key}", "current_number": None}
+            return {
+                "enabled": False,
+                "reason": f"DocumentType not found: purchase/{doc_key}",
+                "doc_type_id": None,
+                "current_number": None,
+                "previous_number": None,
+            }
 
+        # 1) Peek current (next-to-issue) number
         try:
             res = DocumentNumberService.peek_preview(
                 entity_id=entity_id,
@@ -72,9 +94,68 @@ class PurchaseSettingsService:
                 doc_type_id=doc_type.id,
                 doc_code=doc_code,
             )
-            return {"enabled": True, "doc_type_id": doc_type.id, "current_number": res.doc_no}
+            current_no = int(res.doc_no)
         except Exception as e:
-            return {"enabled": False, "reason": str(e), "doc_type_id": doc_type.id, "current_number": None}
+            return {
+                "enabled": False,
+                "reason": str(e),
+                "doc_type_id": doc_type.id,
+                "current_number": None,
+                "previous_number": None,
+            }
+
+        # 2) Find starting_number for bounds
+        series = (
+            DocumentNumberSeries.objects.filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=doc_type.id,
+                doc_code=doc_code,
+                is_active=True,
+            )
+            .only("starting_number")
+            .first()
+        )
+        starting_number = int(getattr(series, "starting_number", 1) or 1)
+
+        prev_candidate = current_no - 1
+        previous_number = None
+        previous_invoice_id = None
+        previous_purchase_number = None
+
+        # 3) Return previous only if within bounds AND invoice exists
+        if prev_candidate >= starting_number:
+            purchase_doc_type = PurchaseSettingsService._purchase_doc_type_from_doc_key(doc_key)
+
+            prev_doc = (
+                PurchaseInvoiceHeader.objects.filter(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_type=purchase_doc_type,
+                    doc_code=doc_code,
+                    doc_no=prev_candidate,
+                )
+                .only("id", "purchase_number", "doc_no")
+                .first()
+            )
+
+            if prev_doc:
+                previous_number = int(prev_doc.doc_no)
+                previous_invoice_id = prev_doc.id
+                previous_purchase_number = prev_doc.purchase_number
+
+        return {
+            "enabled": True,
+            "doc_type_id": doc_type.id,
+            "current_number": current_no,
+
+            # ✅ new
+            "previous_number": previous_number,
+            "previous_invoice_id": previous_invoice_id,
+            "previous_purchase_number": previous_purchase_number,
+        }
     @staticmethod
     def get_settings(entity_id: int, subentity_id: Optional[int]) -> PurchaseSettings:
         """

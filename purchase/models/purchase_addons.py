@@ -34,7 +34,7 @@ class PurchaseChargeLine(TrackingModel):
             models.UniqueConstraint(fields=("header", "line_no"), name="uq_purchase_charge_header_lineno"),
             models.CheckConstraint(
                 name="ck_purchase_charge_nonneg",
-                check=(Q(taxable_value__gte=0) & Q(gst_rate__gte=0) & Q(gst_rate__lte=100) &
+                condition=(Q(taxable_value__gte=0) & Q(gst_rate__gte=0) & Q(gst_rate__lte=100) &
                        Q(cgst_amount__gte=0) & Q(sgst_amount__gte=0) & Q(igst_amount__gte=0) &
                        Q(total_value__gte=0)),
             ),

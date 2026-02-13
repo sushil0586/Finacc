@@ -83,7 +83,7 @@ class Gstr2bImportRow(TrackingModel):
         constraints = [
             models.CheckConstraint(
                 name="ck_gstr2b_row_nonneg",
-                check=(
+                condition=(
                     Q(taxable_value__gte=0) &
                     Q(igst__gte=0) & Q(cgst__gte=0) & Q(sgst__gte=0) & Q(cess__gte=0)
                 ),
