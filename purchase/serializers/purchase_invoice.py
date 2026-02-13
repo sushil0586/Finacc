@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
+from datetime import timedelta
+
 
 from rest_framework import serializers
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
@@ -151,6 +153,9 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "id",
             "doc_type",
             "bill_date",
+            "posting_date",        # ✅ NEW
+            "due_date",            # ✅ NEW
+            "credit_days",         # ✅ NEW
             "doc_code",
             "doc_no",
             "purchase_number",
@@ -269,6 +274,28 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         entity_id = attrs.get("entity") or getattr(inst, "entity_id", None)
         subentity_id = attrs.get("subentity") or getattr(inst, "subentity_id", None)
         bill_date = attrs.get("bill_date") or getattr(inst, "bill_date", None)
+        bill_date = attrs.get("bill_date") or getattr(inst, "bill_date", None)
+        posting_date = attrs.get("posting_date") or getattr(inst, "posting_date", None)
+        credit_days = attrs.get("credit_days") if "credit_days" in attrs else getattr(inst, "credit_days", None)
+        due_date = attrs.get("due_date") if "due_date" in attrs else getattr(inst, "due_date", None)
+
+        # ✅ Default posting_date to bill_date if not provided
+        if bill_date and not posting_date:
+            attrs["posting_date"] = bill_date
+
+        # ✅ If due_date not provided, derive from bill_date + credit_days (if credit_days exists)
+        if bill_date and not due_date and credit_days is not None:
+            attrs["due_date"] = bill_date + timedelta(days=int(credit_days))
+
+        # ✅ If due_date provided, basic sanity check
+        due_date_final = attrs.get("due_date") or due_date
+        if bill_date and due_date_final and due_date_final < bill_date:
+            raise serializers.ValidationError({"due_date": "Due date cannot be before bill date."})
+
+        # ✅ If posting_date provided, sanity check
+        posting_date_final = attrs.get("posting_date") or posting_date
+        if bill_date and posting_date_final and posting_date_final < bill_date:
+            raise serializers.ValidationError({"posting_date": "Posting date cannot be before bill date."})
 
         if inst and inst.status in (Status.POSTED, Status.CANCELLED):
             raise serializers.ValidationError("Cannot edit a POSTED or CANCELLED purchase document.")

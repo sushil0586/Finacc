@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
+
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -66,6 +68,35 @@ class PurchaseInvoiceService:
     # ---------------------------
     # Vendor snapshot
     # ---------------------------
+
+    @staticmethod
+    def apply_dates(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
+        bill_date = attrs.get("bill_date") or (instance.bill_date if instance else None)
+
+        # posting_date default
+        if bill_date and not (attrs.get("posting_date") or (instance.posting_date if instance else None)):
+            attrs["posting_date"] = bill_date
+
+        # due_date derivation
+        credit_days = attrs.get("credit_days")
+        existing_due = instance.due_date if instance else None
+
+        if bill_date:
+            if attrs.get("due_date") is None:
+                # if credit_days provided, derive
+                if credit_days is not None:
+                    attrs["due_date"] = bill_date + timedelta(days=int(credit_days))
+                else:
+                    # keep existing if update
+                    if existing_due:
+                        attrs["due_date"] = existing_due
+
+        # validations
+        if bill_date and attrs.get("due_date") and attrs["due_date"] < bill_date:
+            raise ValueError("Due date cannot be before bill date.")
+
+        if bill_date and attrs.get("posting_date") and attrs["posting_date"] < bill_date:
+            raise ValueError("Posting date cannot be before bill date.")
     @staticmethod
     def apply_vendor_snapshot(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
         vendor = attrs.get("vendor") or (instance.vendor if instance else None)
@@ -518,6 +549,8 @@ class PurchaseInvoiceService:
 
         # snapshot + derive
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data)
+        PurchaseInvoiceService.apply_dates(validated_data)
+
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data)
 
         # enforce derived values
@@ -581,6 +614,8 @@ class PurchaseInvoiceService:
 
         # snapshot + derive
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data, instance=instance)
+        PurchaseInvoiceService.apply_dates(validated_data, instance=instance)
+
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data, instance=instance)
 
         # enforce derived values

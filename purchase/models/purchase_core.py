@@ -63,6 +63,13 @@ class PurchaseInvoiceHeader(models.Model):
     # ---- identity ----
     doc_type = models.IntegerField(choices=DocType.choices, default=DocType.TAX_INVOICE)
     bill_date = models.DateField(default=timezone.now)
+    posting_date = models.DateField(null=True, blank=True, db_index=True)
+
+    # ✅ NEW: terms for due date derivation
+    credit_days = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    # ✅ NEW: due date for AP aging & overdue reports
+    due_date = models.DateField(null=True, blank=True, db_index=True)
     doc_code = models.CharField(max_length=10, default="PINV")
     doc_no = models.PositiveIntegerField(null=True, blank=True)
     purchase_number = models.CharField(max_length=50, null=True, blank=True)
@@ -153,6 +160,7 @@ class PurchaseInvoiceHeader(models.Model):
             models.Index(fields=["entity", "entityfinid", "bill_date"], name="ix_pur_ent_fin_dt"),
             models.Index(fields=["entity", "entityfinid", "vendor"], name="ix_pur_ent_fin_vendor"),
             models.Index(fields=["entity", "entityfinid", "doc_code", "doc_no"], name="ix_pur_docno_lookup"),
+            models.Index(fields=["entity", "entityfinid", "vendor", "due_date"], name="ix_pur_ap_due"),
         ]
 
     def __str__(self):
@@ -259,6 +267,7 @@ class PurchaseTaxSummary(models.Model):
     is_service = models.BooleanField(default=False)
     gst_rate = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)
     is_reverse_charge = models.BooleanField(default=False)
+    
 
     taxable_value = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     cgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
