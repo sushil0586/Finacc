@@ -36,6 +36,9 @@ def q4(x) -> Decimal:
 
 class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    product_name = serializers.CharField(source="product.productname", read_only=True)
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+    taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
 
     class Meta:
         model = PurchaseInvoiceLine
@@ -47,6 +50,11 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
         "is_service",
         "hsn_sac",
         "uom",
+        # ✅ extra display fields (read-only)
+        "product_name",
+        "uom_code",
+        "taxability_name",
+
 
         "qty",
         "free_qty",

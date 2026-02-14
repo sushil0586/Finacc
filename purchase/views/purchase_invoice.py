@@ -1,6 +1,8 @@
 from rest_framework import generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
+from django.db.models import Prefetch
+from purchase.models.purchase_core import PurchaseInvoiceLine
 
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader
@@ -52,5 +54,11 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
                 "entity", "entityfinid", "subentity",
                 "ref_document",
             )
-            .prefetch_related("lines", "tax_summaries")
+            .prefetch_related(
+                Prefetch(
+                    "lines",
+                    queryset=PurchaseInvoiceLine.objects.select_related("product", "uom")
+                ),
+                "tax_summaries",
+            )
         )
