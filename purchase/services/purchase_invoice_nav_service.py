@@ -73,8 +73,8 @@ class PurchaseInvoiceNavService:
         """
         Returns:
         {
-          "previous": {...} | None,
-          "next": {...} | None
+        "previous": {...},
+        "next": {...}
         }
         """
         allowed_statuses = allowed_statuses or PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES
@@ -100,7 +100,13 @@ class PurchaseInvoiceNavService:
                 bill_date=prev_obj.bill_date,
             ).to_dict()
             if prev_obj
-            else None
+            else {
+                "id": -1,
+                "doc_no": None,
+                "purchase_number": "",
+                "status": None,
+                "bill_date": None,
+            }
         )
 
         next_item = (
@@ -112,10 +118,17 @@ class PurchaseInvoiceNavService:
                 bill_date=next_obj.bill_date,
             ).to_dict()
             if next_obj
-            else None
+            else {
+                "id": -1,
+                "doc_no": None,
+                "purchase_number": "",
+                "status": None,
+                "bill_date": None,
+            }
         )
 
         return {"previous": prev_item, "next": next_item}
+
 
     @staticmethod
     def get_prev_next_for_instance(
