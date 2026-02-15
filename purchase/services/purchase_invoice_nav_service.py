@@ -47,15 +47,20 @@ class PurchaseInvoiceNavService:
         doc_code: str,
         allowed_statuses: Sequence[int],
     ):
+        filters = dict(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            doc_type=doc_type,
+            doc_code=doc_code,
+            status__in=list(allowed_statuses),
+        )
+
+        if subentity_id is not None:
+            filters["subentity_id"] = subentity_id
+
         return (
-            PurchaseInvoiceHeader.objects.filter(
-                entity_id=entity_id,
-                entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
-                doc_type=doc_type,
-                doc_code=doc_code,
-                status__in=list(allowed_statuses),
-            )
+            PurchaseInvoiceHeader.objects
+            .filter(**filters)
             .only("id", "doc_no", "purchase_number", "status", "bill_date")
         )
 
