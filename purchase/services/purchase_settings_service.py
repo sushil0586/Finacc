@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional, Dict, Any
 
 from dataclasses import dataclass
 from datetime import date
@@ -69,29 +70,44 @@ class PurchaseSettingsService:
         subentity_id: Optional[int],
         doc_key: str,
         doc_code: str,
-    ) -> dict:
-        doc_type = DocumentType.objects.filter(
-            module="purchase",
-            doc_key=doc_key,
-            is_active=True,
-        ).only("id").first()
+    ) -> Dict[str, Any]:
+        """
+        - current_number: preview (next-to-issue) from numbering series (uses doc_code)
+        - previous_*: last saved invoice by ID for given entity + FY + subentity + doc_type
+                     (ignores doc_code and status)
+        """
 
-        if not doc_type:
+        # 1) Find DocumentType row (for numbering preview)
+        doc_type_row = (
+            DocumentType.objects.filter(
+                module="purchase",
+                doc_key=doc_key,
+                is_active=True,
+            )
+            .only("id")
+            .first()
+        )
+
+        if not doc_type_row:
             return {
                 "enabled": False,
                 "reason": f"DocumentType not found: purchase/{doc_key}",
                 "doc_type_id": None,
                 "current_number": None,
                 "previous_number": None,
+                "previous_invoice_id": None,
+                "previous_purchase_number": None,
+                "previous_status": None,
+                "previous_bill_date": None,
             }
 
-        # 1) Peek current (next-to-issue) number
+        # 2) Peek current (next-to-issue) number (still uses doc_code)
         try:
             res = DocumentNumberService.peek_preview(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
                 subentity_id=subentity_id,
-                doc_type_id=doc_type.id,
+                doc_type_id=doc_type_row.id,
                 doc_code=doc_code,
             )
             current_no = int(res.doc_no)
@@ -99,62 +115,47 @@ class PurchaseSettingsService:
             return {
                 "enabled": False,
                 "reason": str(e),
-                "doc_type_id": doc_type.id,
+                "doc_type_id": doc_type_row.id,
                 "current_number": None,
                 "previous_number": None,
+                "previous_invoice_id": None,
+                "previous_purchase_number": None,
+                "previous_status": None,
+                "previous_bill_date": None,
             }
 
-        # 2) Find starting_number for bounds
-        series = (
-            DocumentNumberSeries.objects.filter(
-                entity_id=entity_id,
-                entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
-                doc_type_id=doc_type.id,
-                doc_code=doc_code,
-                is_active=True,
-            )
-            .only("starting_number")
+        # 3) Get PurchaseInvoiceHeader doc_type enum value from doc_key
+        purchase_doc_type = PurchaseSettingsService._purchase_doc_type_from_doc_key(doc_key)
+
+        # 4) Previous = last saved row by id (scope: entity, FY, subentity, doc_type ONLY)
+        inv_filters = dict(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            doc_type=purchase_doc_type,
+        )
+        if subentity_id is None:
+            inv_filters["subentity__isnull"] = True
+        else:
+            inv_filters["subentity_id"] = subentity_id
+
+        prev_doc = (
+            PurchaseInvoiceHeader.objects.filter(**inv_filters)
+            .only("id", "purchase_number", "doc_no", "status", "bill_date")
+            .order_by("-id")
             .first()
         )
-        starting_number = int(getattr(series, "starting_number", 1) or 1)
-
-        prev_candidate = current_no - 1
-        previous_number = None
-        previous_invoice_id = None
-        previous_purchase_number = None
-
-        # 3) Return previous only if within bounds AND invoice exists
-        if prev_candidate >= starting_number:
-            purchase_doc_type = PurchaseSettingsService._purchase_doc_type_from_doc_key(doc_key)
-
-            prev_doc = (
-                PurchaseInvoiceHeader.objects.filter(
-                    entity_id=entity_id,
-                    entityfinid_id=entityfinid_id,
-                    subentity_id=subentity_id,
-                    doc_type=purchase_doc_type,
-                    doc_code=doc_code,
-                    doc_no=prev_candidate,
-                )
-                .only("id", "purchase_number", "doc_no")
-                .first()
-            )
-
-            if prev_doc:
-                previous_number = int(prev_doc.doc_no)
-                previous_invoice_id = prev_doc.id
-                previous_purchase_number = prev_doc.purchase_number
 
         return {
             "enabled": True,
-            "doc_type_id": doc_type.id,
+            "doc_type_id": doc_type_row.id,
             "current_number": current_no,
 
-            # ✅ new
-            "previous_number": previous_number,
-            "previous_invoice_id": previous_invoice_id,
-            "previous_purchase_number": previous_purchase_number,
+            # ✅ previous from last saved record (any status)
+            "previous_number": int(prev_doc.doc_no) if (prev_doc and prev_doc.doc_no is not None) else None,
+            "previous_invoice_id": prev_doc.id if prev_doc else None,
+            "previous_purchase_number": prev_doc.purchase_number if prev_doc else None,
+            "previous_status": int(prev_doc.status) if prev_doc else None,
+            "previous_bill_date": prev_doc.bill_date if prev_doc else None,
         }
     @staticmethod
     def get_settings(entity_id: int, subentity_id: Optional[int]) -> PurchaseSettings:
