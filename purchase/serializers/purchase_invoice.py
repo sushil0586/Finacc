@@ -149,6 +149,11 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     # preview fields
     preview_doc_no = serializers.SerializerMethodField()
     preview_purchase_number = serializers.SerializerMethodField()
+    # ✅ NEW: human-readable status
+    status_name = serializers.SerializerMethodField()
+
+    def get_status_name(self, obj):
+        return obj.get_status_display()
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -199,6 +204,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "grand_total",
 
             "status",
+            "status_name", 
             "entity",
             "entityfinid",
             "subentity",
@@ -399,3 +405,71 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         updated.refresh_from_db()
         return updated
+    
+
+
+class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
+    # UI friendly display fields (no extra joins beyond select_related)
+    doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
+    status_name = serializers.CharField(source="get_status_display", read_only=True)
+    supply_category_name = serializers.CharField(source="get_supply_category_display", read_only=True)
+    taxability_name = serializers.CharField(source="get_default_taxability_display", read_only=True)
+    tax_regime_name = serializers.CharField(source="get_tax_regime_display", read_only=True)
+    gstr2b_match_status_name = serializers.CharField(source="get_gstr2b_match_status_display", read_only=True)
+    itc_claim_status_name = serializers.CharField(source="get_itc_claim_status_display", read_only=True)
+
+    entity_id = serializers.IntegerField(read_only=True)
+    entityfinid_id = serializers.IntegerField(read_only=True)
+    subentity_id = serializers.IntegerField(read_only=True)
+    vendor_id = serializers.IntegerField(read_only=True)
+    vendor_state_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = PurchaseInvoiceHeader
+        fields = [
+            # identity / scope
+            "id",
+            "entity_id", "entityfinid_id", "subentity_id",
+            "doc_type", "doc_type_name",
+            "status", "status_name",
+            "doc_code", "doc_no", "purchase_number",
+
+            # dates / terms
+            "bill_date",
+            "posting_date",
+            "credit_days",
+            "due_date",
+
+            # supplier/vendor refs
+            "supplier_invoice_number",
+            "supplier_invoice_date",
+            "vendor_id",
+            "vendor_name",
+            "vendor_gstin",
+            "vendor_state_id",
+
+            # GST / compliance
+            "supply_category", "supply_category_name",
+            "default_taxability", "taxability_name",
+            "tax_regime", "tax_regime_name",
+            "is_igst",
+            "is_reverse_charge",
+            "is_itc_eligible",
+            "gstr2b_match_status", "gstr2b_match_status_name",
+            "itc_claim_status", "itc_claim_status_name",
+            "itc_claim_period",
+            "itc_block_reason",
+
+            # totals (summary)
+            "total_taxable",
+            "total_gst",
+            "round_off",
+            "grand_total",
+
+            # audit
+            "created_at",
+            "updated_at",
+        ]
+
+
+
