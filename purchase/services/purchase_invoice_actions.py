@@ -12,6 +12,9 @@ from purchase.models.purchase_core import (
     ItcClaimStatus,
 )
 
+from posting.adapters.purchase_invoice import PurchaseInvoicePostingAdapter, PurchaseInvoicePostingConfig
+
+
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
@@ -132,6 +135,17 @@ class PurchaseInvoiceActions:
           - later: integrate GL/Stock posting engine here
         """
         h = PurchaseInvoiceActions._get(pk)
+        lines = list(h.lines.all())  # change to your related_name
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice(
+            header=h,
+            lines=lines,
+            user_id=getattr(getattr(h, "updated_by", None), "id", None) or getattr(getattr(h, "created_by", None), "id", None),
+            config=PurchaseInvoicePostingConfig(
+                capitalize_header_expenses_to_inventory=False,
+                rcm_supplier_includes_tax=False,
+            ),
+        )
 
         PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date)
 

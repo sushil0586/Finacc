@@ -311,6 +311,27 @@ class Mastergstdetails(TrackingModel):
 
     def __str__(self):
          return f'{self.username}'
+    
+
+class Godown(models.Model):
+    name = models.CharField(max_length=150)
+    code = models.CharField(max_length=50, unique=True)
+    address = models.TextField()
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    pincode = models.CharField(max_length=10)
+    capacity = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = "Godown"
+        verbose_name_plural = "Godowns"
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
 
 
 
