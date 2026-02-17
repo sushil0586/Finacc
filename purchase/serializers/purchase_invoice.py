@@ -423,6 +423,7 @@ class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
     subentity_id = serializers.IntegerField(read_only=True)
     vendor_id = serializers.IntegerField(read_only=True)
     vendor_state_id = serializers.IntegerField(read_only=True)
+    
 
     class Meta:
         model = PurchaseInvoiceHeader
