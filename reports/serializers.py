@@ -9,7 +9,7 @@ from invoice.models import SalesOderHeader,salesOrderdetails,purchaseorder,Purch
     journal,salereturn,salereturnDetails,Transactions,StockTransactions,PurchaseReturn,Purchasereturndetails,journalmain,journaldetails,entry,goodstransaction,stockdetails,stockmain,accountentry,purchasetaxtype,tdsmain,tdstype,productionmain,productiondetails,tdsreturns,gstorderservices,gstorderservicesdetails,jobworkchalan,jobworkchalanDetails,debitcreditnote,closingstock
 from financial.models import account,accountHead
 from inventory.models import Product
-from entity.models import entityfinancialyear
+from entity.models import EntityFinancialYear
 from django.db.models import Sum,Count,F
 from datetime import timedelta,date,datetime
 from entity.models import Entity
@@ -472,7 +472,7 @@ class  ledgerserializer(serializers.ModelSerializer):
 
     def get_openingquantity(self, obj):
 
-        currentdates = entityfinancialyear.objects.get(entity = obj.entity,isactive = 1)
+        currentdates = EntityFinancialYear.objects.get(entity = obj.entity,isactive = 1)
 
         yesterday = currentdates.finstartyear
 
@@ -504,7 +504,7 @@ class  ledgerserializer(serializers.ModelSerializer):
 
     def get_openingbalance(self, obj):
 
-        currentdates = entityfinancialyear.objects.get(entity = obj.entity,isactive = 1)
+        currentdates = EntityFinancialYear.objects.get(entity = obj.entity,isactive = 1)
 
         yesterday = currentdates.finstartyear
 

@@ -66,7 +66,7 @@ from rest_framework.renderers import JSONRenderer
 from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
-from entity.models import Entity,entityconstitution,entityfinancialyear,entityfinancialyear as FinancialYear
+from entity.models import Entity,EntityConstitution,EntityFinancialYear,EntityFinancialYear as FinancialYear
 from django_pandas.io import read_frame
 from django.db.models import Q
 import numpy as np
@@ -82,7 +82,6 @@ from django_pandas.io import read_frame
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from entity.models import Entity, entityfinancialyear
 from financial.models import account
 from inventory.models import Product
 import pandas as pd
@@ -791,7 +790,7 @@ class generalfunctions:
 
         utc = pytz.UTC
 
-        currentdates = entityfinancialyear.objects.get(
+        currentdates = EntityFinancialYear.objects.get(
             entity=self.entityid,
             finendyear__gte=self.startdate,
             finstartyear__lte=self.startdate
@@ -944,7 +943,7 @@ class generalfunctions:
 
         utc=pytz.UTC
         
-        currentdates = entityfinancialyear.objects.get(entity = self.entityid,finendyear__gte = self.startdate  ,finstartyear__lte =  self.startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = self.entityid,finendyear__gte = self.startdate  ,finstartyear__lte =  self.startdate)
 
         if currentdates.isactive == 1 or utc.localize(datetime.strptime(self.enddate, '%Y-%m-%d')):
             pl1 =StockTransactions.objects.filter(isactive = 1,entity = self.entityid,entrydatetime__range=(self.startdate, self.enddate),account__accounthead__detailsingroup = 2).exclude(accounttype = 'MD').values('account__accounthead__name','account__accounthead','account__id','account__accountname').annotate(balance = Sum('creditamount',default = 0) - Sum('debitamount',default = 0)).filter(balance__gte = 0)
@@ -1223,7 +1222,7 @@ class BalanceStatement(ListAPIView):
 
         # Step 2: Pre-fetch related data for `account` and `entityfinancialyear` queries
         acc = account.objects.select_related().get(accountcode=9000, entity=entity1)
-        currentdates = entityfinancialyear.objects.get(
+        currentdates = EntityFinancialYear.objects.get(
             entity=entity1, finendyear__gte=startdate, finstartyear__lte=startdate
         )
 
@@ -2244,7 +2243,7 @@ class ledgerdetails(ListAPIView):
         startdate = request.data.get('startdate', None)
         enddate = request.data.get('enddate')
         print(account)
-        currentdates = entityfinancialyear.objects.filter(
+        currentdates = EntityFinancialYear.objects.filter(
                 entity=entity,
                 finstartyear__lte=enddate,  
                 finendyear__gte=startdate   
@@ -2427,7 +2426,7 @@ class interestdetails(ListAPIView):
         # if request.data.get('account'):
         #     accounts =  [int(x) for x in request.GET.get('account', '').split(',')]
         print(account)
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
@@ -2718,7 +2717,7 @@ class stockledgersummary(ListAPIView):
         startdate = self.request.query_params.get('startdate')
         enddate = self.request.query_params.get('enddate')
             
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
@@ -2808,7 +2807,7 @@ class stockledgersummarypost(ListAPIView):
         startdate = request.data.get('startdate')
         enddate = request.data.get('enddate')
             
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
@@ -2894,7 +2893,7 @@ class daybookdetails(ListAPIView):
         startdate = self.request.query_params.get('startdate')
         enddate = self.request.query_params.get('enddate')
             
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
 
@@ -3059,12 +3058,12 @@ class DayDetails(APIView):
 
         # Get financial year for the entity
         try:
-            currentdates = entityfinancialyear.objects.get(
+            currentdates = EntityFinancialYear.objects.get(
                 entity=entity,
                 finendyear__gte=startdate,
                 finstartyear__lte=startdate
             )
-        except entityfinancialyear.DoesNotExist:
+        except EntityFinancialYear.DoesNotExist:
             return Response({"error": "Financial year not found."}, status=404)
 
         # Combine filters to reduce redundant queries
@@ -3201,7 +3200,7 @@ class cashbooksummary(ListAPIView):
 
 
             
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
 
@@ -3314,7 +3313,7 @@ class cashbookdetails(ListAPIView):
         #     finstartyear__lte=start_date,
         # ).first()
 
-        current_fin_year = entityfinancialyear.objects.filter(
+        current_fin_year = EntityFinancialYear.objects.filter(
             entity=entity,
             finstartyear__lte=start_date,  
             finendyear__gte=end_date   
@@ -3322,11 +3321,11 @@ class cashbookdetails(ListAPIView):
 
         # If no exact match is found, extend to the earliest and latest available financial years
         if not current_fin_year:
-            min_finstartyear = entityfinancialyear.objects.filter(entity=entity).aggregate(Min('finstartyear'))['finstartyear__min']
-            max_finendyear = entityfinancialyear.objects.filter(entity=entity).aggregate(Max('finendyear'))['finendyear__max']
+            min_finstartyear = EntityFinancialYear.objects.filter(entity=entity).aggregate(Min('finstartyear'))['finstartyear__min']
+            max_finendyear = EntityFinancialYear.objects.filter(entity=entity).aggregate(Max('finendyear'))['finendyear__max']
 
             if min_finstartyear and max_finendyear:
-                current_fin_year = entityfinancialyear.objects.filter(
+                current_fin_year = EntityFinancialYear.objects.filter(
                     entity=entity,
                     finstartyear=min_finstartyear,
                     finendyear=max_finendyear
@@ -3430,7 +3429,7 @@ class stockledgerdetails(ListAPIView):
         startdate = request.data.get('startdate',None)
         enddate = request.data.get('enddate',None)
             
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d') if startdate else None
         enddate = datetime.strptime(enddate, '%Y-%m-%d') if enddate else None
@@ -3552,7 +3551,7 @@ class stockledgerdetailsget(ListAPIView):
         startdate = self.request.query_params.get('startdate')
         enddate = self.request.query_params.get('enddate')
             
-        currentdates = entityfinancialyear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,finendyear__gte = startdate  ,finstartyear__lte =  startdate)
         utc=pytz.UTC
         startdate = datetime.strptime(startdate, '%Y-%m-%d')
         enddate = datetime.strptime(enddate, '%Y-%m-%d')
@@ -4040,7 +4039,7 @@ class TrialbalanceApiView(ListAPIView):
 
         # Fetch the financial year details for the given entity and startdate
         try:
-            currentdates = entityfinancialyear.objects.filter(
+            currentdates = EntityFinancialYear.objects.filter(
                 entity=entity,
                 finstartyear__lte=enddate,  
                 finendyear__gte=startdate   
@@ -4060,7 +4059,7 @@ class TrialbalanceApiView(ListAPIView):
                 # Now, max() and min() will work without errors
                 startdate = max(startdate, finstartyear)
                 enddate = min(enddate, finendyear)
-        except entityfinancialyear.DoesNotExist:
+        except EntityFinancialYear.DoesNotExist:
             currentdates = None  # Or handle the exception as needed
 
                 # Common filters and configurations
@@ -4272,7 +4271,7 @@ class TrialbalancebyaccountheadApiView(ListAPIView):
         exclude_transaction_types = ['PC']
 
         # Get financial year details
-        currentdates = entityfinancialyear.objects.filter(
+        currentdates = EntityFinancialYear.objects.filter(
                 entity=entity,
                 finstartyear__lte=enddate,  
                 finendyear__gte=startdate   
@@ -5916,7 +5915,7 @@ class TrialbalanceApiViewJournal(ListAPIView):
         if startdate > enddate:
             return Response([], status=status.HTTP_200_OK)
 
-        fy = (entityfinancialyear.objects
+        fy = (EntityFinancialYear.objects
               .filter(entity_id=entity_id, finstartyear__date__lte=enddate, finendyear__date__gte=startdate)
               .order_by("-finstartyear").first())
         if fy:
@@ -6101,26 +6100,26 @@ def _bool(s: Optional[str], default: bool = False) -> bool:
 def _fy_covering_date(entity_id: int, d: date):
     """Return FY row covering date d (entityfinancialyear has finstartyear/finendyear)."""
     return (
-        entityfinancialyear.objects
+        EntityFinancialYear.objects
         .filter(entity_id=entity_id, finstartyear__date__lte=d, finendyear__date__gte=d)
         .order_by("finstartyear")
         .first()
     )
 
-def _fys_overlapping_range(entity_id: int, d1: date, d2: date) -> List[entityfinancialyear]:
+def _fys_overlapping_range(entity_id: int, d1: date, d2: date) -> List[EntityFinancialYear]:
     return list(
-        entityfinancialyear.objects
+        EntityFinancialYear.objects
         .filter(entity_id=entity_id)
         .filter(finstartyear__date__lte=d2, finendyear__date__gte=d1)
         .order_by("finstartyear")
     )
 
-def _clip_to_fy(d1: date, d2: date, fy: entityfinancialyear) -> Tuple[date, date]:
+def _clip_to_fy(d1: date, d2: date, fy: EntityFinancialYear) -> Tuple[date, date]:
     fy_start = fy.finstartyear.date()
     fy_end   = fy.finendyear.date()
     return max(d1, fy_start), min(d2, fy_end)
 
-def _fy_name(fy: entityfinancialyear) -> str:
+def _fy_name(fy: EntityFinancialYear) -> str:
     s = fy.finstartyear.date()
     e = fy.finendyear.date()
     return f"FY {s.year}-{str(e.year)[-2:]}"
@@ -7122,7 +7121,7 @@ class TrialbalanceApiViewJournalByAccount(ListAPIView):
 
         # --- Clamp to FY if present ---
         fy = (
-            entityfinancialyear.objects
+            EntityFinancialYear.objects
             .filter(entity_id=entity_id,
                     finstartyear__date__lte=enddate,
                     finendyear__date__gte=startdate)
@@ -7309,7 +7308,7 @@ class TrialbalanceApiViewJournalByAccountLedger(ListAPIView):
 
         # ---- Clamp to FY, if any ----
         fy = (
-            entityfinancialyear.objects
+            EntityFinancialYear.objects
             .filter(entity_id=entity_id,
                     finstartyear__date__lte=enddate,
                     finendyear__date__gte=startdate)
@@ -8622,7 +8621,7 @@ class ledgerjournaldetails(ListAPIView):
         edate  = p['enddate']
 
         # Resolve FY that covers the requested range
-        fy = (entityfinancialyear.objects
+        fy = (EntityFinancialYear.objects
               .filter(entity=entity, finstartyear__lte=edate, finendyear__gte=sdate)
               .first())
         if not fy:
@@ -9516,7 +9515,7 @@ class TrialbalanceExcelApiView(APIView):
             return self._xlsx_response(wb, startdate, enddate)
 
         # Clamp to FY boundaries, if any
-        fy = (entityfinancialyear.objects
+        fy = (EntityFinancialYear.objects
               .filter(entity_id=entity_id, finstartyear__date__lte=enddate, finendyear__date__gte=startdate)
               .order_by("-finstartyear").first())
         if fy:
@@ -10924,7 +10923,7 @@ class LedgerJournalExcelAPIView(APIView):
             )
 
         # Resolve FY
-        fy = (entityfinancialyear.objects
+        fy = (EntityFinancialYear.objects
               .filter(entity=entity, finstartyear__lte=edate, finendyear__gte=sdate)
               .first())
         if not fy:

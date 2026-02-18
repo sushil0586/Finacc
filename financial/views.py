@@ -18,7 +18,7 @@ import pandas as pd
 from rest_framework.response import Response
 from invoice.models import entry,StockTransactions
 from django_pandas.io import read_frame
-from entity.models import Entity,entityfinancialyear,GstAccountsdetails,Mastergstdetails
+from entity.models import Entity,EntityFinancialYear,GstAccountDetail,MasterGstDetail
 from geography.models import Country,State,District,City
 from entity.views import generateeinvoice
 from rest_framework.permissions import IsAuthenticated
@@ -278,7 +278,7 @@ class accountListApiView(ListAPIView):
     def get_queryset(self):
         entity = self.request.query_params.get('entity')
 
-        currentdates = entityfinancialyear.objects.get(entity = entity,isactive = 1)
+        currentdates = EntityFinancialYear.objects.get(entity = entity,isactive = 1)
         queryset =  account.objects.filter( Q(entity = entity),Q(accounttrans__accounttype__in = ['M','DD'])).values('accountname','city__cityname','id','gstno','pan','accounthead__name','creditaccounthead__name','canbedeleted').annotate(debit = Sum('accounttrans__debitamount',default = 0),credit = Sum('accounttrans__creditamount',default = 0),balance = Sum('accounttrans__debitamount',default = 0) - Sum('accounttrans__creditamount',default = 0))
 
         #query = queryset.exclude(accounttrans__accounttype  = 'MD')
@@ -328,8 +328,8 @@ class AccountBindApiView(APIView):
             return Response({"error": "Entity parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            fy = entityfinancialyear.objects.get(entity=entity, isactive=1)
-        except entityfinancialyear.DoesNotExist:
+            fy = EntityFinancialYear.objects.get(entity=entity, isactive=1)
+        except EntityFinancialYear.DoesNotExist:
             return Response({"error": "Active financial year not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Get transactions with balance
@@ -409,8 +409,8 @@ class InvoiceBindApiView(APIView):
             return Response({"error": "Entity parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            fy = entityfinancialyear.objects.get(entity=entity, isactive=1)
-        except entityfinancialyear.DoesNotExist:
+            fy = EntityFinancialYear.objects.get(entity=entity, isactive=1)
+        except EntityFinancialYear.DoesNotExist:
             return Response({"error": "Active financial year not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Get transactions with balances
@@ -508,7 +508,7 @@ class AccountListNewApiView(ListAPIView):
     
     def get_queryset(self, entity):
         # Fetch the financial year start and end for the given entity
-        current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
+        current_dates = EntityFinancialYear.objects.get(entity=entity, isactive=1)
         
         # Fetch StockTransactions and Account data with aggregation
         stock_queryset = StockTransactions.objects.filter(
@@ -592,8 +592,8 @@ class AccountListPostApiView(ListAPIView):
             return Response({"error": "Entity is required"}, status=400)
 
         try:
-            current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
-        except entityfinancialyear.DoesNotExist:
+            current_dates = EntityFinancialYear.objects.get(entity=entity, isactive=1)
+        except EntityFinancialYear.DoesNotExist:
             return Response({"error": "Financial year not found for the entity"}, status=404)
 
         stock_filter = {
@@ -840,10 +840,10 @@ class GetGstinDetails(ListAPIView):
             return {"error": str(e)}
 
         # Check if GSTIN already exists
-        if GstAccountsdetails.objects.filter(gstin=gst_data['Gstin']).exists():
-            gstdetails = GstAccountsdetails.objects.filter(gstin=gst_data['Gstin']).values()
+        if GstAccountDetail.objects.filter(gstin=gst_data['Gstin']).exists():
+            gstdetails = GstAccountDetail.objects.filter(gstin=gst_data['Gstin']).values()
         else:
-            new_gst = GstAccountsdetails.objects.create(
+            new_gst = GstAccountDetail.objects.create(
                 gstin=gst_data['Gstin'],
                 tradeName=gst_data['TradeName'],
                 legalName=gst_data['LegalName'],

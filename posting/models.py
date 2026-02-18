@@ -6,7 +6,6 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q, Index, UniqueConstraint, CheckConstraint
 from django.utils import timezone
-from entity.models import Entity,entityfinancialyear,subentity,Godown
 from financial.models import account, accountHead
 from catalog.models import Product,UnitOfMeasure
 
@@ -74,7 +73,7 @@ class EntityStaticAccountMap(models.Model):
     Per-entity mapping: StaticAccount -> actual ledger account.
     Use is_active to replace mappings over time without deleting.
     """
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE,related_name="posting_static_account_maps",)
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE,related_name="posting_static_account_maps",)
     static_account = models.ForeignKey(StaticAccount, on_delete=models.PROTECT,related_name="entity_maps",)
     account = models.ForeignKey(account, on_delete=models.PROTECT, related_name="+",)
 
@@ -112,9 +111,9 @@ class PostingBatch(models.Model):
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
 
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE)
-    entityfin = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
-    subentity = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE)
+    entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, null=True, blank=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True)
 
     txn_type = models.CharField(max_length=20, choices=TxnType.choices, db_index=True)
     txn_id = models.IntegerField(db_index=True)
@@ -147,9 +146,9 @@ class Entry(models.Model):
     """
     Ledger posting header for reporting and grouping.
     """
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name="+",)
-    entityfin = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
-    subentity = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="+",)
+    entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, null=True, blank=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True)
 
     txn_type = models.CharField(max_length=20, choices=TxnType.choices, db_index=True)
     txn_id = models.IntegerField(db_index=True)
@@ -195,9 +194,9 @@ class JournalLine(models.Model):
     entry = models.ForeignKey(Entry, on_delete=models.CASCADE,  related_name="posting_journal_lines",)
     posting_batch = models.ForeignKey(PostingBatch, on_delete=models.CASCADE, related_name="journal_lines")
 
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE,related_name="+",)
-    entityfin = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
-    subentity = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE,related_name="+",)
+    entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, null=True, blank=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True)
 
     txn_type = models.CharField(max_length=20, choices=TxnType.choices, db_index=True)
     txn_id = models.IntegerField(db_index=True)
@@ -266,9 +265,9 @@ class InventoryMove(models.Model):
     entry = models.ForeignKey(Entry, on_delete=models.CASCADE, related_name="posting_inventory_moves",)
     posting_batch = models.ForeignKey(PostingBatch, on_delete=models.CASCADE, related_name="inventory_moves_posting")
 
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name="+",)
-    entityfin = models.ForeignKey(entityfinancialyear, on_delete=models.CASCADE, null=True, blank=True)
-    subentity = models.ForeignKey(subentity, on_delete=models.CASCADE, null=True, blank=True)
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="+",)
+    entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, null=True, blank=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True)
 
     txn_type = models.CharField(max_length=20, choices=TxnType.choices, db_index=True)
     txn_id = models.IntegerField(db_index=True)
@@ -278,7 +277,7 @@ class InventoryMove(models.Model):
     product = models.ForeignKey(Product, on_delete=models.PROTECT,  related_name="+",)
 
     # Optional: switch to FK if you have Godown model
-    location = models.ForeignKey(Godown, on_delete=models.PROTECT, null=True, blank=True)
+    location = models.ForeignKey("entity.Godown", on_delete=models.PROTECT, null=True, blank=True)
 
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True, related_name="inv_moves_uom")
     base_uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True, related_name="inv_moves_base_uom")

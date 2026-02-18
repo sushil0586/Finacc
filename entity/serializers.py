@@ -1,7 +1,7 @@
 #import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import Entity,entity_details,unitType,entityfinancialyear,entityconstitution,Constitution,subentity,Role,Rolepriv,Userrole,GstRegitrationTypes,BankAccount
+from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,EntityConstitution,Constitution,SubEntity,Role,RolePrivilege,UserRole,GstRegistrationType,BankAccount
 from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
@@ -36,7 +36,7 @@ class RolePrivDetailSerializer(serializers.ModelSerializer):
     
 
     class Meta:
-        model = Rolepriv
+        model = RolePrivilege
         fields =  ('role','submenu','entity',)
 
 
@@ -55,8 +55,8 @@ class RoleMainSerializer(serializers.ModelSerializer):
         role = Role.objects.create(**validated_data)
         
         # Bulk create RolePriv instances
-        Rolepriv.objects.bulk_create([
-            Rolepriv(role=role, **roledetail_data) for roledetail_data in roledetails_data
+        RolePrivilege.objects.bulk_create([
+            RolePrivilege(role=role, **roledetail_data) for roledetail_data in roledetails_data
         ])
         
         return role
@@ -71,12 +71,12 @@ class RoleMainSerializer(serializers.ModelSerializer):
         instance.save()
 
         # Clear old RolePriv entries and add new ones
-        Rolepriv.objects.filter(role=instance, entity=instance.entity).delete()
+        RolePrivilege.objects.filter(role=instance, entity=instance.entity).delete()
         roledetails_data = validated_data.get('submenudetails', [])
 
         # Bulk create RolePriv instances
-        Rolepriv.objects.bulk_create([
-            Rolepriv(role=instance, **roledetail_data) for roledetail_data in roledetails_data
+        RolePrivilege.objects.bulk_create([
+            RolePrivilege(role=instance, **roledetail_data) for roledetail_data in roledetails_data
         ])
 
         return instance
@@ -89,7 +89,7 @@ class RoleMainSerializer(serializers.ModelSerializer):
 class roleSerializer(serializers.ModelSerializer):
 
     class Meta:
-        model = Rolepriv
+        model = RolePrivilege
         fields = '__all__'
 
 
@@ -104,14 +104,14 @@ class ConstitutionSerializer(serializers.ModelSerializer):
 class unitTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
-        model = unitType
+        model = UnitType
         fields = '__all__'
 
 
 class entityconstitutionSerializer(serializers.ModelSerializer):
 
     class Meta:
-        model = entityconstitution
+        model = EntityConstitution
         fields = '__all__'
 
 
@@ -121,7 +121,7 @@ class EntityFinancialYearSerializecreate(serializers.ModelSerializer):
     gst = serializers.CharField(source='entity.gstno', read_only=True)
 
     class Meta:
-        model = entityfinancialyear
+        model = EntityFinancialYear
         fields = (
             'id', 'entity', 'entityname', 'gst', 'desc',
             'finstartyear', 'finendyear', 'createdby', 'isactive',
@@ -132,10 +132,10 @@ class EntityFinancialYearSerializecreate(serializers.ModelSerializer):
         with transaction.atomic():
             entity_id = validated_data['entity'].id
             # Update all previous records for the entity to inactive
-            entityfinancialyear.objects.filter(entity=entity_id).update(isactive=False)
+            EntityFinancialYear.objects.filter(entity=entity_id).update(isactive=False)
 
             # Create a new financial year record for the entity
-            return entityfinancialyear.objects.create(**validated_data)
+            return EntityFinancialYear.objects.create(**validated_data)
 
 
 
@@ -157,7 +157,7 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
     isactive = serializers.SerializerMethodField()
 
     class Meta:
-        model = entityfinancialyear
+        model = EntityFinancialYear
         fields = (
             'id', 'entity', 'entityname', 'gst', 'desc',
             'finstartyear', 'finendyear', 'createdby', 'isactive',
@@ -168,10 +168,10 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
         """Fetch financial year based on financialyearid or active year"""
         financialyearid = self.context.get('financialyearid')
         if financialyearid == 0:
-            return entityfinancialyear.objects.filter(isactive=True).first()
+            return EntityFinancialYear.objects.filter(isactive=True).first()
         try:
-            return entityfinancialyear.objects.get(id=financialyearid)
-        except entityfinancialyear.DoesNotExist:
+            return EntityFinancialYear.objects.get(id=financialyearid)
+        except EntityFinancialYear.DoesNotExist:
             return None
 
     def get_finstartyear(self, obj):
@@ -197,8 +197,8 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         with transaction.atomic():
             entity_id = validated_data['entity'].id
-            entityfinancialyear.objects.filter(entity=entity_id).update(isactive=False)
-            return entityfinancialyear.objects.create(**validated_data)
+            EntityFinancialYear.objects.filter(entity=entity_id).update(isactive=False)
+            return EntityFinancialYear.objects.create(**validated_data)
     
 
 
@@ -206,7 +206,7 @@ class entityfinancialyearListSerializer(serializers.ModelSerializer):
 
     class Meta:
 
-        model = entityfinancialyear
+        model = EntityFinancialYear
         fields = ('id','finstartyear','finendyear','isactive',)
 
 
@@ -214,7 +214,7 @@ class subentitySerializer(serializers.ModelSerializer):
 
     class Meta:
 
-        model = subentity
+        model = SubEntity
         fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','ismainentity', 'entity')
 
 
@@ -222,7 +222,7 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
 
     class Meta:
 
-        model = subentity
+        model = SubEntity
         fields = ('id','subentityname','ismainentity',)
 
 
@@ -313,13 +313,13 @@ class entityAddSerializer(serializers.ModelSerializer):
         # Prepare financial year objects
 
         fy_details = [
-            entityfinancialyear(entity=newentity, **data, createdby=users[0])
+            EntityFinancialYear(entity=newentity, **data, createdby=users[0])
             for data in fydata
         ]
 
         # Bulk create financial years
         if fy_details:
-            entityfinancialyear.objects.bulk_create(fy_details)
+            EntityFinancialYear.objects.bulk_create(fy_details)
 
         # Retrieve account start date
         accountdate1 = fy_details[0].finstartyear if fy_details else None
@@ -332,10 +332,10 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Create admin role and user role
         roleid = Role.objects.get(entity=newentity, rolename="Admin")
-        Userrole.objects.create(entity=newentity, role=roleid, user=users[0])
+        UserRole.objects.create(entity=newentity, role=roleid, user=users[0])
 
         # Create default subentity
-        subentity.objects.create(
+        SubEntity.objects.create(
             subentityname="Main-Branch",
             address=newentity.address,
             country=newentity.country,
@@ -351,16 +351,16 @@ class entityAddSerializer(serializers.ModelSerializer):
         # Bulk create role privileges
         submenus = Submenu.objects.all()
         role_privileges = [
-            Rolepriv(role=roleid, submenu=submenu, entity=newentity) for submenu in submenus
+            RolePrivilege(role=roleid, submenu=submenu, entity=newentity) for submenu in submenus
         ]
-        Rolepriv.objects.bulk_create(role_privileges)
+        RolePrivilege.objects.bulk_create(role_privileges)
 
         # Process constitution data
         constitution_details = []
         account_details = []
 
         for data in constitutiondata:
-            detail = entityconstitution(entity=newentity, **data, createdby=users[0])
+            detail = EntityConstitution(entity=newentity, **data, createdby=users[0])
             constitution_details.append(detail)
 
             # Logic for account creation based on constitution code
@@ -403,7 +403,7 @@ class entityAddSerializer(serializers.ModelSerializer):
                     )
                 )
 
-        entityconstitution.objects.bulk_create(constitution_details)
+        EntityConstitution.objects.bulk_create(constitution_details)
         account.objects.bulk_create(account_details)
 
         # Update accounts in bulk
@@ -426,7 +426,7 @@ class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
     end_date = serializers.SerializerMethodField()
 
     class Meta:
-        model = entityfinancialyear
+        model = EntityFinancialYear
         fields = ['id', 'financial_year', 'start_date', 'end_date', 'isactive']
 
     def get_financial_year(self, obj):
@@ -503,7 +503,7 @@ class useroleentitySerializer(serializers.ModelSerializer):
       
 
     class Meta:
-        model = Userrole
+        model = UserRole
         fields = ('user','role','entity',)
 
         
@@ -523,7 +523,7 @@ class useroleentitySerializer(serializers.ModelSerializer):
         #     return 1
         # else:
         user = User.objects.create(**userdetails)
-        userrole = Userrole.objects.create(user = user,**validated_data )
+        userrole = UserRole.objects.create(user = user,**validated_data )
         return userrole
 
         
@@ -543,7 +543,7 @@ class useroleentitySerializer(serializers.ModelSerializer):
             User.objects.filter(id = instance.user.id).update(**userdetails)
 
         
-        newuser = Userrole.objects.filter(id = instance.id).update(role = validated_data.get('role'))
+        newuser = UserRole.objects.filter(id = instance.id).update(role = validated_data.get('role'))
 
         # fields = ['role','entity']
         # for field in fields:
@@ -592,7 +592,7 @@ class userbyentitySerializer(serializers.ModelSerializer):
 
 
     class Meta:
-        model = Userrole
+        model = UserRole
         #fields = ('id','entityName','fy',)
         fields = ('username','first_name','last_name','email','password','roleid','entityid',)
 
@@ -606,7 +606,7 @@ class userbyentitySerializer(serializers.ModelSerializer):
 
         userid = User.objects.create(**validated_data,password = password)
 
-        roleinstance = Userrole.objects.create(entity = entityid,role = roleid,user =userid)
+        roleinstance = UserRole.objects.create(entity = entityid,role = roleid,user =userid)
 
         
         # package = validated_data.pop('user', [])
@@ -662,7 +662,7 @@ class userbyentitySerializer(serializers.ModelSerializer):
 class entityDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
-        model = entity_details
+        model = EntityDetail
         fields = ('entity','email',)
 
 
@@ -703,7 +703,7 @@ class entityDetailsSerializer(serializers.ModelSerializer):
 
 class GstRegitrationTypesSerializer(serializers.ModelSerializer):
     class Meta:
-        model = GstRegitrationTypes
+        model = GstRegistrationType
         fields = ['id', 'Name', 'Description']
 
 
@@ -733,42 +733,43 @@ class BankAccountSerializer(serializers.ModelSerializer):
 class BankAccountNewSerializer(serializers.ModelSerializer):
     class Meta:
         model = BankAccount
-        exclude = ['entity']
+        exclude = ["entity"]
 
 
 class SubEntityNewSerializer(serializers.ModelSerializer):
     class Meta:
-        model = subentity
-        exclude = ['entity']
+        model = SubEntity
+        exclude = ["entity"]
 
 
 class EntityFinancialYearNewSerializer(serializers.ModelSerializer):
     class Meta:
-        model = entityfinancialyear
-        exclude = ['entity']
+        model = EntityFinancialYear
+        exclude = ["entity", "createdby"]  # createdby set from request.user
 
 
 class EntityConstitutionNewSerializer(serializers.ModelSerializer):
     class Meta:
-        model = entityconstitution
-        exclude = ['entity']
+        model = EntityConstitution
+        exclude = ["entity", "createdby"]  # createdby set from request.user
+
 
 
 class EntityNewSerializer(serializers.ModelSerializer):
-    bank_accounts = BankAccountNewSerializer(many=True)
-    subentity = SubEntityNewSerializer(many=True)
-    fy = EntityFinancialYearNewSerializer(many=True)
-    constitution = EntityConstitutionNewSerializer(many=True)
+    bank_accounts = BankAccountNewSerializer(many=True, required=False)
+    subentity = SubEntityNewSerializer(many=True, required=False)
+    fy = EntityFinancialYearNewSerializer(many=True, required=False)
+    constitution = EntityConstitutionNewSerializer(many=True, required=False)
 
     class Meta:
         model = Entity
-        fields = '__all__'
+        fields = "__all__"
+        read_only_fields = ("id",)  # important
 
+    # mapping for account.json seeding
     serializer = AccountHeadSerializer
     accounthead = accountHeadSerializer2
-    roleserializer = rolemainSerializer1
 
- 
     rateerializer = RateCalculateSerializer
     uomser = UOMSerializer
     TOGSR = TOGSerializer
@@ -779,76 +780,196 @@ class EntityNewSerializer(serializers.ModelSerializer):
     pcategory = ProductCategoryMainSerializer
     acounttype = AccountTypeJsonSerializer
 
-    def process_json_file(self, newentity, users, accountdate1):
-        # Load JSON data once
+    # -------------------------
+    # seed masters (account.json)
+    # -------------------------
+    def process_json_file(self, newentity, user, accountdate1):
         file_path = os.path.join(os.getcwd(), "account.json")
-        with open(file_path, 'r') as jsonfile:
+        if not os.path.exists(file_path):
+            return
+
+        with open(file_path, "r") as jsonfile:
             json_data = json.load(jsonfile)
 
-        # Mapping serializers to corresponding JSON keys
         serializers_mapping = {
-            "acconttype": (self.acounttype, {"entity": newentity, "createdby": users}),
-            # "accountheads": (self.accounthead, {"entity": newentity, "createdby": users[0]}),
-            "Roles": (self.roleserializer, {"entity": newentity}),
-            "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": users}),
-            "UOM": (self.uomser, {"entity": newentity, "createdby": users}),
-            "TOG": (self.TOGSR, {"entity": newentity, "createdby": users}),
-            "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": users}),
-          #  "ACCOUNTTYPE": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
-            "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": users}),
-            "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": users}),
-            "productcategory": (self.pcategory, {"createdby": users}),
+            "acconttype": (self.acounttype, {"createdby": user}),
+            "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": user}),
+            "UOM": (self.uomser, {"entity": newentity, "createdby": user}),
+            "TOG": (self.TOGSR, {"entity": newentity, "createdby": user}),
+            "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": user}),
+            "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": user}),
+            "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": user}),
+            "productcategory": (self.pcategory, {"createdby": user}),
         }
 
-        # Iterate through the JSON keys and process data
         for key, (serializer_class, extra_kwargs) in serializers_mapping.items():
-            if key in json_data:
-                objects_to_create = []
-                for item in json_data[key]:
-                    serializer = serializer_class(data=item)
-                    serializer.is_valid(raise_exception=True)
-                    objects_to_create.append(serializer.save(**extra_kwargs))
+            if key not in json_data:
+                continue
+            for item in json_data[key]:
+                ser = serializer_class(data=item)
+                ser.is_valid(raise_exception=True)
+                ser.save(**extra_kwargs)
 
-    from django.db import transaction
+    # -------------------------
+    # generic nested upsert
+    # -------------------------
+    def _upsert_nested(self, model, related_name, parent_instance, parent_field, items, user=None):
+        """
+        Upsert by id:
+        - id exists -> update
+        - id missing/0 -> create
+        - delete existing rows not included in incoming ids
+        """
+        items = items or []
+        existing_qs = getattr(parent_instance, related_name).all()
+        existing_map = {obj.id: obj for obj in existing_qs}
+        keep_ids = set()
 
+        for raw in items:
+            data = dict(raw or {})
+
+            # ✅ never allow client to pass parent / createdby
+            data.pop(parent_field, None)
+            data.pop(f"{parent_field}_id", None)
+            data.pop("createdby", None)
+            data.pop("updatedby", None)
+
+            obj_id = int(data.get("id") or 0)
+
+            if obj_id and obj_id in existing_map:
+                obj = existing_map[obj_id]
+                for k, v in data.items():
+                    if k == "id":
+                        continue
+                    setattr(obj, k, v)
+                obj.save()
+                keep_ids.add(obj_id)
+            else:
+                data.pop("id", None)
+                create_kwargs = {parent_field: parent_instance}
+                if user is not None and hasattr(model, "createdby_id"):
+                    create_kwargs["createdby"] = user
+
+                obj = model.objects.create(**data, **create_kwargs)
+                keep_ids.add(obj.id)
+
+        # delete removed
+        for obj_id, obj in existing_map.items():
+            if obj_id not in keep_ids:
+                obj.delete()
+
+    # -------------------------
+    # CREATE
+    # -------------------------
+   # @transaction.atomic
     @transaction.atomic
     def create(self, validated_data):
-        bank_data = validated_data.pop('bank_accounts', [])
-        subentities_data = validated_data.pop('subentity', [])
-        financial_years_data = validated_data.pop('fy', [])
-        constitutions_data = validated_data.pop('constitution', [])
+        # -------------------------
+        # Extract nested payload
+        # -------------------------
+        bank_data = validated_data.pop("bank_accounts", [])
+        subentities_data = validated_data.pop("subentity", [])
+        fy_data = validated_data.pop("fy", [])
+        constitution_data = validated_data.pop("constitution", [])
+
+        # -------------------------
+        # User (MUST be passed from view)
+        # serializer.save(createdby=request.user)
+        # -------------------------
         user = validated_data.get("createdby")
-        account_details = []
 
-        # Create the main entity
-        entity = Entity.objects.create(**validated_data)
+        # -------------------------
+        # HARDEN: never accept system keys from payload
+        # -------------------------
+        validated_data.pop("id", None)         # UI sends id: 0
+        validated_data.pop("pk", None)
+        validated_data.pop("createdby", None)  # avoid duplicate createdby
 
-        # Create related financial years
-        for f in financial_years_data:
-            entityfinancialyear.objects.create(entity=entity, **f)
+        # -------------------------
+        # Create Entity (server-side createdby)
+        # -------------------------
+        if not user:
+            raise serializers.ValidationError({"createdby": "Pass createdby from view: serializer.save(createdby=request.user)"})
 
-        accountdate = financial_years_data[0]['finstartyear'] if financial_years_data else None
+        entity = Entity.objects.create(createdby=user, **validated_data)
 
-        # Process uploaded chart of accounts (if applicable)
-        self.process_json_file(newentity=entity, users=user, accountdate1=accountdate)
+        # -------------------------
+        # Create Financial Years (createdby required in model)
+        # -------------------------
+        for f in fy_data:
+            f = dict(f)
+            f.pop("id", None)
+            f.pop("entity", None)
+            f.pop("entity_id", None)
+            f.pop("createdby", None)
+            EntityFinancialYear.objects.create(entity=entity, createdby=user, **f)
 
-        # Create Admin role association
-        roleid = Role.objects.get(entity=entity, rolename="Admin")
-        Userrole.objects.create(entity=entity, role=roleid, user=user)
+        # optional: used by your downstream seeding/account creation
+        accountdate = fy_data[0]["finstartyear"] if fy_data else None
 
-        # Create related bank accounts
+        # -------------------------
+        # Seed masters from account.json
+        # -------------------------
+        self.process_json_file(newentity=entity, user=user, accountdate1=accountdate)
+
+        # -------------------------
+        # Assign Admin role to creator
+        # -------------------------
+        roleid, _ = Role.objects.get_or_create(
+            entity=entity,
+            rolename="Admin",
+            defaults={
+                "roledesc": "System Admin",
+                "rolelevel": 1,
+              
+            },
+        )
+
+        UserRole.objects.create(entity=entity, role=roleid, user=user)
+
+        # -------------------------
+        # Give all submenu privileges to Admin
+        # -------------------------
+        submenus = Submenu.objects.all()
+        RolePrivilege.objects.bulk_create(
+            [RolePrivilege(role=roleid, submenu=submenu, entity=entity) for submenu in submenus]
+        )
+
+        # -------------------------
+        # Create Bank Accounts
+        # -------------------------
         for b in bank_data:
+            b = dict(b)
+            b.pop("id", None)
+            b.pop("entity", None)
+            b.pop("entity_id", None)
             BankAccount.objects.create(entity=entity, **b)
 
-        # Create sub-entities
+        # -------------------------
+        # Create SubEntities
+        # -------------------------
         for s in subentities_data:
-            subentity.objects.create(entity=entity, **s)
+            s = dict(s)
+            s.pop("id", None)
+            s.pop("entity", None)
+            s.pop("entity_id", None)
+            SubEntity.objects.create(entity=entity, **s)
 
-        # Create constitutions
-        for c in constitutions_data:
-            detail = entityconstitution.objects.create(entity=entity, **c)
+        # -------------------------
+        # Create Constitution + Partner/Shareholder Accounts
+        # -------------------------
+        account_details = []
+        for c in constitution_data:
+            c = dict(c)
+            c.pop("id", None)
+            c.pop("entity", None)
+            c.pop("entity_id", None)
+            c.pop("createdby", None)
 
-            if entity.const.constcode == "01":
+            detail = EntityConstitution.objects.create(entity=entity, createdby=user, **c)
+
+            # Partner/shareholder accounts based on constitution code
+            if getattr(entity.const, "constcode", None) == "01":
                 achead = accountHead.objects.get(entity=entity, code=6200)
                 account_details.append(
                     account(
@@ -867,7 +988,7 @@ class EntityNewSerializer(serializers.ModelSerializer):
                         accountdate=accountdate,
                     )
                 )
-            elif entity.const.id == "02":
+            elif getattr(entity.const, "constcode", None) == "02":
                 achead = accountHead.objects.get(entity=entity, code=6300)
                 account_details.append(
                     account(
@@ -883,86 +1004,62 @@ class EntityNewSerializer(serializers.ModelSerializer):
                         district=entity.district,
                         city=entity.city,
                         emailid=entity.email,
-                        accountdate=entity,
+                        accountdate=accountdate,
                     )
                 )
 
-        
+        if account_details:
+            account.objects.bulk_create(account_details)
 
-        submenus = Submenu.objects.all()
-        role_privileges = [
-            Rolepriv(role=roleid, submenu=submenu, entity=entity) for submenu in submenus
-        ]
-        Rolepriv.objects.bulk_create(role_privileges)
-
-        # Process constitution data
-        
-        
-
-       
-
-            # Logic for account creation based on constitution code
-        
-
-       
-        account.objects.bulk_create(account_details)
-
-        # Update accounts in bulk
+        # -------------------------
+        # Update default credit heads mapping
+        # -------------------------
         account_updates = [
             {"code": 1000, "credit_code": 3000},
             {"code": 6000, "credit_code": 6100},
             {"code": 8000, "credit_code": 7000},
         ]
-        for update in account_updates:
-            account.objects.filter(accounthead__code=update["code"], entity=entity).update(
-                creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=entity)
+        for upd in account_updates:
+            credit_head = accountHead.objects.filter(code=upd["credit_code"], entity=entity).first()
+            if not credit_head:
+                print(f"[WARN] Missing credit accountHead code={upd['credit_code']} for entity={entity.id}. Skipping mapping.")
+                continue
+
+            updated = account.objects.filter(accounthead__code=upd["code"], entity=entity).update(
+                creditaccounthead=credit_head
             )
+            if updated == 0:
+                print(f"[WARN] No account rows found for mapping code={upd['code']} for entity={entity.id}.")
 
         return entity
 
-    
-
+    # -------------------------
+    # UPDATE
+    # -------------------------
+    @transaction.atomic
     def update(self, instance, validated_data):
-        def update_nested_data(model, related_name, child_data, parent_instance, parent_field, lookup_field='id'):
-            existing_items = getattr(parent_instance, related_name).all()
-            existing_map = {getattr(item, lookup_field): item for item in existing_items}
-            new_ids = []
+        bank_data = validated_data.pop("bank_accounts", [])
+        subentity_data = validated_data.pop("subentity", [])
+        fy_data = validated_data.pop("fy", [])
+        constitution_data = validated_data.pop("constitution", [])
 
-            for item_data in child_data:
-                item_id = item_data.get(lookup_field)
-                if item_id and item_id in existing_map:
-                    # Update existing item
-                    child_instance = existing_map[item_id]
-                    for attr, value in item_data.items():
-                        setattr(child_instance, attr, value)
-                    child_instance.save()
-                    new_ids.append(item_id)
-                else:
-                    # Create new item
-                    model.objects.create(**item_data, **{parent_field: parent_instance})
+        user = validated_data.get("updatedby") or validated_data.get("createdby")
 
-            # Delete removed items
-            for item_id, item in existing_map.items():
-                if item_id not in new_ids:
-                    item.delete()
+        # base entity update
+        validated_data.pop("id", None)
+        validated_data.pop("pk", None)
 
-        bank_data = validated_data.pop('bank_accounts', [])
-        subentity_data = validated_data.pop('subentity', [])
-        fy_data = validated_data.pop('fy', [])
-        constitution_data = validated_data.pop('constitution', [])
-
-        # Update base fields of entity
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        update_nested_data(BankAccount, 'bank_accounts', bank_data, instance, parent_field='entity')
-        update_nested_data(subentity, 'subentity', subentity_data, instance, parent_field='entity')
-        update_nested_data(entityfinancialyear, 'fy', fy_data, instance, parent_field='entity')
-        update_nested_data(entityconstitution, 'constitution', constitution_data, instance, parent_field='entity')
+        # nested upsert
+        self._upsert_nested(BankAccount, "bank_accounts", instance, "entity", bank_data, user=None)
+        self._upsert_nested(SubEntity, "subentity", instance, "entity", subentity_data, user=None)
+        self._upsert_nested(EntityFinancialYear, "fy", instance, "entity", fy_data, user=user)
+        self._upsert_nested(EntityConstitution, "constitution", instance, "entity", constitution_data, user=user)
 
         return instance
-    
 
 class UserEntityRoleSerializer(serializers.ModelSerializer):
     entityid = serializers.IntegerField(source='entity.id')
@@ -973,7 +1070,7 @@ class UserEntityRoleSerializer(serializers.ModelSerializer):
     roleid = serializers.IntegerField(source='role.id')
 
     class Meta:
-        model = Userrole
+        model = UserRole
         fields = ['entityid', 'entityname', 'email', 'gstno', 'role', 'roleid']
 
     def get_role(self, obj):
@@ -990,6 +1087,6 @@ class UserSerializerentities(serializers.ModelSerializer):
         fields = ['userid', 'first_name', 'last_name', 'email', 'user', 'uentity']
 
     def get_uentity(self, obj):
-        userroles = Userrole.objects.filter(user=obj).select_related('entity', 'role')
+        userroles = UserRole.objects.filter(user=obj).select_related('entity', 'role')
         return UserEntityRoleSerializer(userroles, many=True).data
 

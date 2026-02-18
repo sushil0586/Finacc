@@ -12,7 +12,7 @@ from urllib3.util.retry import Retry
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad as pkcs7_pad
 
-from entity.models import Mastergstdetails
+from entity.models import MasterGstDetail
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +104,8 @@ def _api_error(resp: Dict[str, Any], fallback: str) -> Dict[str, Any]:
     }
 
 
-def _get_gst_details_or_error() -> Union[Mastergstdetails, Dict[str, Any]]:
-    gst_details = Mastergstdetails.objects.first()
+def _get_gst_details_or_error() -> Union[MasterGstDetail, Dict[str, Any]]:
+    gst_details = MasterGstDetail.objects.first()
     if not gst_details:
         return {"error": "GST configuration not found in database (Mastergstdetails is empty)."}
     return gst_details
@@ -115,7 +115,7 @@ def _get_gst_details_or_error() -> Union[Mastergstdetails, Dict[str, Any]]:
 # Auth
 # -----------------------------
 
-def authenticate_gst(gst_details: Mastergstdetails) -> Union[str, Dict[str, Any]]:
+def authenticate_gst(gst_details: MasterGstDetail) -> Union[str, Dict[str, Any]]:
     """
     Authenticate with the e-Invoice API and return AuthToken string.
     """
@@ -147,7 +147,7 @@ def authenticate_gst(gst_details: Mastergstdetails) -> Union[str, Dict[str, Any]
         return {"error": "Network error during GST authentication", "details": str(e)}
 
 
-def authenticate_ewaybill(gst_details: Mastergstdetails) -> Union[Dict[str, Any], Dict[str, Any]]:
+def authenticate_ewaybill(gst_details: MasterGstDetail) -> Union[Dict[str, Any], Dict[str, Any]]:
     """
     Authenticate with the e-Way Bill API.
     Returns a dict containing headers returned by MasterGST (often includes auth-token, sek, etc.),
@@ -191,7 +191,7 @@ def authenticate_ewaybill(gst_details: Mastergstdetails) -> Union[Dict[str, Any]
 # Common header builders
 # -----------------------------
 
-def _einvoice_headers(gst_details: Mastergstdetails, auth_token: str) -> Dict[str, str]:
+def _einvoice_headers(gst_details: MasterGstDetail, auth_token: str) -> Dict[str, str]:
     return {
         "accept": "*/*",
         "Content-Type": "application/json",
@@ -204,7 +204,7 @@ def _einvoice_headers(gst_details: Mastergstdetails, auth_token: str) -> Dict[st
     }
 
 
-def _eway_headers(gst_details: Mastergstdetails, eway_auth_header: Dict[str, Any]) -> Dict[str, str]:
+def _eway_headers(gst_details: MasterGstDetail, eway_auth_header: Dict[str, Any]) -> Dict[str, str]:
     """
     MasterGST eway authenticate returns a header dict.
     Typically contains an 'auth-token' key; we pass it through.
@@ -362,7 +362,7 @@ def gst_ewaybill(order, payload: dict):
     Generate E-Way Bill from IRN via MasterGST.
     IMPORTANT: send plain JSON (no encryption).
     """
-    gst_details = Mastergstdetails.objects.first()
+    gst_details = MasterGstDetail.objects.first()
     if not gst_details:
         return {"status_cd": "0", "status_desc": "GST configuration not found."}
 

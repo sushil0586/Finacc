@@ -6,7 +6,6 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 from geography.models import State
-from entity.models import Entity,entityfinancialyear,subentity
 from financial.models import account
 from catalog.models import Product,UnitOfMeasure
 
@@ -133,9 +132,9 @@ class PurchaseInvoiceHeader(models.Model):
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT)
 
     # SaaS scope
-    subentity = models.ForeignKey(subentity, on_delete=models.PROTECT, null=True, blank=True)
-    entity = models.ForeignKey(Entity, on_delete=models.PROTECT, null=True, blank=True)
-    entityfinid = models.ForeignKey(entityfinancialyear, on_delete=models.PROTECT, null=True, blank=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, null=True, blank=True)
+    entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, null=True, blank=True)
     created_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True,
                                    related_name="created_purchase_documents")
 

@@ -20,7 +20,7 @@ from financial.models import account,accountHead,ShippingDetails,staticacounts,s
 from catalog.models import Product,ProductPrice,ProductGstRate
 from django.db.models import Sum,Count,F, Case, When, FloatField, Q
 from datetime import timedelta,date,datetime
-from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
+from entity.models import Entity,EntityFinancialYear,MasterGstDetail,SubEntity
 from django.db.models.functions import Abs
 from num2words import num2words
 import string
@@ -669,9 +669,9 @@ class einvoicebody:
     def createeinvoce(self):
 
         try:
-                mgst = Mastergstdetails.objects.get()
+                mgst = MasterGstDetail.objects.get()
                 #mgst = Mastergstdetails.objects.get(gstin = entitygst)
-        except Mastergstdetails.DoesNotExist:
+        except MasterGstDetail.DoesNotExist:
                 mgst = None
                 return 1
           
@@ -1283,7 +1283,7 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
 
     class Meta:
 
-        model = subentity
+        model = SubEntity
         fields = ('id','subentityname',)
 
 
@@ -8669,7 +8669,7 @@ class entityfinancialyearSerializer(serializers.ModelSerializer):
     gst = serializers.SerializerMethodField()
 
     class Meta:
-        model = entityfinancialyear
+        model = EntityFinancialYear
         fields = ('id','entity','entityname','gst','desc','finstartyear','finendyear','createdby','isactive',)
 
 
@@ -8688,13 +8688,13 @@ class entityfinancialyearSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
 
 
-        r1 = entityfinancialyear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
+        r1 = EntityFinancialYear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
 
 
 
         #entity= validated_data['entity'].id
 
-        fy = entityfinancialyear.objects.create(**validated_data)
+        fy = EntityFinancialYear.objects.create(**validated_data)
 
 
         return fy
@@ -8716,8 +8716,8 @@ class balancesheetclosingserializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
 
-        entityfinancialyear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
-        entityfinancialyear.objects.create(entity = validated_data['entity'],finstartyear = validated_data['startdate'],finendyear = validated_data['enddate'],createdby = validated_data['createdby'])
+        EntityFinancialYear.objects.filter(entity= validated_data['entity'].id).update(isactive=0)
+        EntityFinancialYear.objects.create(entity = validated_data['entity'],finstartyear = validated_data['startdate'],finendyear = validated_data['enddate'],createdby = validated_data['createdby'])
 
 
         print(validated_data)

@@ -6,7 +6,7 @@ from django.db.models import Q
 from helpers.models import TrackingModel
 from Authentication.models import User
 from geography.models import Country, State, District, City
-from entity.models import Entity
+
 
 
 # ============================================================
@@ -17,8 +17,8 @@ Debit = "Debit"
 Credit = "Credit"
 
 BALANCE_TYPE_CHOICES = [
-    (Credit, _("Credit")),
-    (Debit, _("Debit")),
+    (Credit, _("Yes")),
+    (Debit, _("No")),
 ]
 
 PARTY_TYPE_CHOICES = [
@@ -125,7 +125,7 @@ class accounttype(TrackingModel):
     accounttypecode = models.CharField(max_length=255, verbose_name=_("Acc Type Code"))
     balanceType = models.BooleanField(verbose_name=_("Balance details"), default=True)
 
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):
@@ -184,7 +184,7 @@ class accountHead(TrackingModel):
 
     detailsingroup = models.IntegerField(null=True, blank=True)
 
-    entity = models.ForeignKey(Entity, related_name="entity_accountheads", null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", related_name="entity_accountheads", null=True, blank=True, on_delete=models.CASCADE)
 
     canbedeleted = models.BooleanField(verbose_name=_("Can be deleted"), default=True)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
@@ -301,7 +301,7 @@ class account(TrackingModel):
 
     tdsno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Tds A/c No"))
 
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE, db_index=True)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE, db_index=True)
 
     rtgsno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Rtgs no"))
     bankname = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Bank Name"))
@@ -397,7 +397,7 @@ class ShippingDetails(models.Model):
     gstno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Gst No"))
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name="shipping_details", db_index=True)
 
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_("Address Line 1"))
@@ -436,7 +436,7 @@ class ShippingDetails(models.Model):
 class ContactDetails(models.Model):
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name="contact_details", db_index=True)
 
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_("Address Line 1"))
@@ -472,7 +472,7 @@ class staticacounts(TrackingModel):
     accounttype = models.ForeignKey(to=accounttype, on_delete=models.SET_NULL, null=True, blank=True)
     staticaccount = models.CharField(max_length=255, verbose_name=_("static acount"))
     code = models.CharField(max_length=255, verbose_name=_("Code"))
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):
@@ -492,7 +492,7 @@ class staticacounts(TrackingModel):
 class staticacountsmapping(TrackingModel):
     staticaccount = models.ForeignKey(to=staticacounts, on_delete=models.SET_NULL, null=True, blank=True)
     account = models.ForeignKey(to=account, on_delete=models.SET_NULL, null=True, blank=True)
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     class Meta:
@@ -507,7 +507,7 @@ class staticacountsmapping(TrackingModel):
 
 class AccountBankDetails(TrackingModel):
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name="bank_details")
-    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.CASCADE)
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     bankname = models.CharField(max_length=100, null=True, blank=True, verbose_name=_("Bank Name"))

@@ -20,7 +20,7 @@ from django.utils.translation import gettext_lazy as _
 
 from PIL import Image, ImageDraw, ImageFont
 
-from entity.models import Entity, subentity
+from entity.models import Entity, SubEntity
 from financial.models import account
 
 try:
@@ -45,7 +45,7 @@ class TimeStampedModel(models.Model):
 
 class EntityScopedModel(TimeStampedModel):
     entity = models.ForeignKey(
-        Entity,
+        "entity.Entity",
         on_delete=models.PROTECT,
         related_name='catalog_%(class)s_set',
     )
@@ -785,7 +785,7 @@ class ProductImage(TimeStampedModel):
 
 class OpeningStockByLocation(TimeStampedModel):
     entity = models.ForeignKey(
-        Entity,
+        "entity.Entity",
         on_delete=models.PROTECT,
         related_name='catalog_opening_stocks',
     )
@@ -795,7 +795,7 @@ class OpeningStockByLocation(TimeStampedModel):
         related_name='opening_stocks'
     )
     location = models.ForeignKey(
-        subentity,
+        "entity.SubEntity",
         on_delete=models.PROTECT,
         related_name='opening_stocks'
     )

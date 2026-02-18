@@ -24,7 +24,7 @@ import csv
 from financial.models import account
 from inventory.models import Product
 from financial.models import ShippingDetails
-from entity.models import Entity, subentity, entityfinancialyear
+from entity.models import Entity, SubEntity, EntityFinancialYear
 
 # Helper to (re)register with search_fields
 def ensure_admin_with_search(model, admin_class, **kwargs):

@@ -3,7 +3,7 @@ from rest_framework import serializers
 from inventory.models import Product,ProductCategory, Ratecalculate, UnitofMeasurement, typeofgoods, gsttype, HsnCode,BillOfMaterial, BOMItem,ProductionOrder, ProductionConsumption,BarcodeDetail
 from invoice.models import entry, StockTransactions
 from financial.models import account
-from entity.models import entityfinancialyear
+from entity.models import EntityFinancialYear
 from PIL import Image, ImageDraw, ImageFont
 from barcode import Code128
 from barcode.writer import ImageWriter

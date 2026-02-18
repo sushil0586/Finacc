@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+
 User = settings.AUTH_USER_MODEL
 
 
@@ -54,8 +55,8 @@ class DocumentNumberSeries(TrackingModel):
     ]
 
     entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT)
-    entityfinid = models.ForeignKey("entity.entityfinancialyear", on_delete=models.PROTECT)
-    subentity = models.ForeignKey("entity.subentity", on_delete=models.PROTECT, null=True, blank=True)
+    entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
 
     doc_type = models.ForeignKey(DocumentType, on_delete=models.PROTECT)
 
