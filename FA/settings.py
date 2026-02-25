@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "localization",
     "purchase",
     "posting",
+    "sales",
     
 ]
 
