@@ -57,6 +57,6 @@ urlpatterns = [
     path("purchase-tax-summaries/", PurchaseTaxSummaryListAPIView.as_view(), name="purchase-tax-summaries-list"),
     path("settings/", PurchaseSettingsAPIView.as_view(), name="purchase-settings"),
     path("choices/", PurchaseCompiledChoicesAPIView.as_view(), name="purchase-compiled-choices"),
-     path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),
+    path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),
 
 ]
