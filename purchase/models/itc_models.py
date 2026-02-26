@@ -67,7 +67,7 @@ class PurchaseItcAction(TrackingModel):
         constraints = [
             models.CheckConstraint(
                 name="ck_pur_itc_action_nonneg",
-                check=Q(igst__gte=0) & Q(cgst__gte=0) & Q(sgst__gte=0) & Q(cess__gte=0),
+                condition=Q(igst__gte=0) & Q(cgst__gte=0) & Q(sgst__gte=0) & Q(cess__gte=0),
             ),
         ]
 

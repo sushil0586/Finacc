@@ -2,9 +2,9 @@ from django.contrib import admin,messages
 from django import forms
 from django.contrib.admin.helpers import ActionForm  # <-- correct base
 from entity.models import (
-    unitType, Entity, entity_details, entityfinancialyear, Constitution,
-    entityconstitution, subentity, Rolepriv, Role, Userrole,
-    GstAccountsdetails, Mastergstdetails,Bankdetails,GstRegitrationTypes,OwnerShipTypes
+    UnitType, Entity, EntityDetail,Constitution,
+    EntityFinancialYear, SubEntity, RolePrivilege, Role, UserRole,
+    GstAccountDetail, MasterGstDetail,BankDetail,GstRegistrationType,OwnerShipTypes,EntityConstitution,EntityOwnership
 )
 from import_export.admin import ImportExportMixin
 
@@ -28,11 +28,11 @@ class OwnerShipTypesAdmin(ImportExportMixin,admin.ModelAdmin):
 
 class SeedSeqActionForm(ActionForm):  # <-- subclass ActionForm, not forms.Form
     finyear   = forms.ModelChoiceField(
-        queryset=entityfinancialyear.objects.all(),
+        queryset=EntityFinancialYear.objects.all(),
         required=False, label="Financial Year"
     )
     subentity = forms.ModelChoiceField(
-        queryset=subentity.objects.all(),
+        queryset=SubEntity.objects.all(),
         required=False, label="Subentity"
     )
     start     = forms.IntegerField(required=False, min_value=1, initial=1, label="Start display #")
@@ -152,18 +152,16 @@ class GstAccountAdmin(admin.ModelAdmin):
 
 
 # Register models with admin site
-admin.site.register(unitType, UnitTypeAdmin)
-admin.site.register(GstRegitrationTypes, GstRegitrationTypesAdmin)
+admin.site.register(UnitType, UnitTypeAdmin)
 admin.site.register(OwnerShipTypes, OwnerShipTypesAdmin)
 
-admin.site.register(entity_details)
-admin.site.register(entityfinancialyear)
-admin.site.register(entityconstitution)
+admin.site.register(EntityDetail)
+admin.site.register(EntityFinancialYear)
+admin.site.register(EntityOwnership)
 admin.site.register(Constitution)
-admin.site.register(subentity,SubEntityAdmin)
-admin.site.register(Rolepriv, MenuAdmin)
+admin.site.register(SubEntity,SubEntityAdmin)
+admin.site.register(RolePrivilege, MenuAdmin)
 admin.site.register(Role, RoleAdmin)
-admin.site.register(Userrole, UserRoleAdmin)
-admin.site.register(GstAccountsdetails, GstAccountAdmin)
-admin.site.register(Mastergstdetails)
-admin.site.register(Bankdetails)
+admin.site.register(UserRole, UserRoleAdmin)
+admin.site.register(MasterGstDetail)
+admin.site.register(BankDetail)

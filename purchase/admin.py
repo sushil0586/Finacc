@@ -139,6 +139,7 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
 
     # Make admin safer (no accidental deletes on posted docs)
     actions = [
+        "delete_selected",
         "action_rebuild_tax_summary",
         "action_confirm",
         "action_post",

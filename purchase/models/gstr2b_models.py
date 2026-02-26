@@ -8,6 +8,7 @@ User = settings.AUTH_USER_MODEL
 from decimal import Decimal
 from geography.models import Country, State, District, City
 
+
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 
@@ -20,8 +21,8 @@ class Gstr2bImportBatch(TrackingModel):
     Store period and metadata; rows in Gstr2bImportRow.
     """
     entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT)
-    entityfinid = models.ForeignKey("entity.entityfinancialyear", on_delete=models.PROTECT)
-    subentity = models.ForeignKey("entity.subentity", on_delete=models.PROTECT, null=True, blank=True)
+    entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
 
     period = models.CharField(max_length=7)  # "YYYY-MM"
     source = models.CharField(max_length=50, default="gstr2b")  # future: api/manual/etc.
@@ -83,7 +84,7 @@ class Gstr2bImportRow(TrackingModel):
         constraints = [
             models.CheckConstraint(
                 name="ck_gstr2b_row_nonneg",
-                check=(
+                condition=(
                     Q(taxable_value__gte=0) &
                     Q(igst__gte=0) & Q(cgst__gte=0) & Q(sgst__gte=0) & Q(cess__gte=0)
                 ),

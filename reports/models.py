@@ -3,7 +3,7 @@ from django.db.models.deletion import CASCADE
 from helpers.models import TrackingModel
 from Authentication.models import User
 from django.utils.translation import gettext as _
-from entity.models import Entity,entityfinancialyear
+from entity.models import Entity,EntityFinancialYear
 from financial.models import account
 import barcode                      # additional imports
 from barcode.writer import ImageWriter

@@ -3,7 +3,7 @@ from django.shortcuts import render
 from rest_framework.views import APIView
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView
-from entity.models import Entity,entity_details,unitType,entityfinancialyear,Constitution,subentity,Rolepriv,Role,Userrole,Mastergstdetails,GstAccountsdetails,GstRegitrationTypes,BankAccount
+from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,Constitution,SubEntity,RolePrivilege,Role,UserRole,MasterGstDetail,GstAccountDetail,GstRegistrationType,BankAccount
 from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer,EntityNewSerializer,UserEntityRoleSerializer,UserSerializerentities
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
@@ -46,7 +46,7 @@ class generateeinvoice:
         Fetch credentials from the database and authenticate with the GST API.
         """
         # Fetch the first or only record in the database
-        gst_details = Mastergstdetails.objects.first()
+        gst_details = MasterGstDetail.objects.first()
         
         if not gst_details:
             return {"error": "No GST details found in the database."}
@@ -176,8 +176,8 @@ class userAddApiView(CreateAPIView):
             userid = User.objects.create(first_name = first_name,last_name=last_name,username= username,password = password,email = email)
             roleid = Role.objects.get(entity = entityid,id = roleid)
             entity = Entity.objects.get(id = entityid)
-            Userrole.objects.create(entity =entity,role =roleid,user=userid)
-            stk = Userrole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','user__password','role__rolename','role__id')
+            UserRole.objects.create(entity =entity,role =roleid,user=userid)
+            stk = UserRole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','user__password','role__rolename','role__id')
             df = read_frame(stk)
             df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','user__password':'password','role__rolename':'rolename','role__id':'roleid'}, inplace = True)
             return Response(df.T.to_dict().values())
@@ -206,7 +206,7 @@ class userroleApiView(ListCreateAPIView):
         return serializer.save()
     
     def get_queryset(self):
-        return Userrole.objects.filter()
+        return UserRole.objects.filter()
 
 
 
@@ -220,7 +220,7 @@ class userroleupdatedel(RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        return Userrole.objects.filter()
+        return UserRole.objects.filter()
 
 
 
@@ -236,7 +236,7 @@ class entityDetailsApiView(ListCreateAPIView):
         return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
-        return entity_details.objects.filter(createdby = self.request.user)
+        return EntityDetail.objects.filter(createdby = self.request.user)
 
 
 class unitTypeApiView(ListCreateAPIView):
@@ -251,7 +251,7 @@ class unitTypeApiView(ListCreateAPIView):
         return serializer.save(createdby = self.request.user)
     
     def get_queryset(self):
-        return unitType.objects.filter()
+        return UnitType.objects.filter()
     
 
 
@@ -341,7 +341,7 @@ class EntityFinancialYearApiView(ListCreateAPIView):
         return serializer.save(createdby=self.request.user)
 
     def get_queryset(self):
-        queryset = entityfinancialyear.objects.filter(isactive=True)
+        queryset = EntityFinancialYear.objects.filter(isactive=True)
 
         entity = self.request.query_params.get('entity')
         financialyearid = self.request.query_params.get('financialyearid')
@@ -371,7 +371,7 @@ class subentityApiView(ListCreateAPIView):
         return serializer.save()
     
     def get_queryset(self):
-        return subentity.objects.filter()
+        return SubEntity.objects.filter()
     
 class rolenewApiView(ListCreateAPIView):
 
@@ -400,7 +400,7 @@ class subentitybyentityApiView(ListCreateAPIView):
         return serializer.save()
     
     def get_queryset(self):
-        return subentity.objects.filter()
+        return SubEntity.objects.filter()
     
 
 class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
@@ -412,7 +412,7 @@ class subentityupdatedelview(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
       #  entity = self.request.query_params.get('entity')
-        return subentity.objects.filter()
+        return SubEntity.objects.filter()
     
 
 class rolenewupdatedelview(RetrieveUpdateDestroyAPIView):
@@ -449,7 +449,7 @@ class entityfinancialyeaListView(ListAPIView):
     
     
     def get_queryset(self):
-        return entityfinancialyear.objects.filter().order_by('-isactive')
+        return EntityFinancialYear.objects.filter().order_by('-isactive')
     
 
 
@@ -504,7 +504,7 @@ class menudetails(ListAPIView):
         #entity = self.request.query_params.get('entity')
         entity1 = self.request.query_params.get('entity')
         role1 = self.request.query_params.get('role')
-        stk = Rolepriv.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl','submenu__submenucode').order_by('submenu__mainmenu__order')
+        stk = RolePrivilege.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl','submenu__submenucode').order_by('submenu__mainmenu__order')
 
         df = read_frame(stk)
         df.rename(columns = {'submenu__mainmenu__mainmenu':'mainmenu','submenu__mainmenu__menuurl':'menuurl','submenu__mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl','submenu__submenucode':'submenucode'}, inplace = True)
@@ -535,7 +535,7 @@ class entitydetailsbyuser(ListAPIView):
         # role1 = self.request.query_params.get('role')
         
        
-        stk = Userrole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
+        stk = UserRole.objects.filter(user = self.request.user).values('user__first_name','user__last_name','user__email','role','entity__entityname','entity__state','entity__gstno','entity__id','role__id','user__id','user')
 
         df = read_frame(stk)
         df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','entity__entityname':'entityname','entity__state':'state','entity__gstno':'gstno','user__id':'userid','entity__id':'entityid','role__id':'roleid'}, inplace = True)
@@ -570,7 +570,7 @@ class userdetailsbyentity(ListAPIView):
         entity = self.request.query_params.get('entity')
         # role1 = self.request.query_params.get('role')
        
-        stk = Userrole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','role__rolename','role__id','user__is_active','id')
+        stk = UserRole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','role__rolename','role__id','user__is_active','id')
 
         df = read_frame(stk)
         df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','role__rolename':'rolename','role__id':'roleid','user__is_active':'is_active','id':'userid'}, inplace = True)
@@ -619,10 +619,10 @@ class getgstindetails(ListAPIView):
             return {"error": str(e)}
 
         # Check if GSTIN already exists
-        if GstAccountsdetails.objects.filter(gstin=gst_data['Gstin']).exists():
-            gstdetails = GstAccountsdetails.objects.filter(gstin=gst_data['Gstin']).values()
+        if GstAccountDetail.objects.filter(gstin=gst_data['Gstin']).exists():
+            gstdetails = GstAccountDetail.objects.filter(gstin=gst_data['Gstin']).values()
         else:
-            new_gst = GstAccountsdetails.objects.create(
+            new_gst = GstAccountDetail.objects.create(
                 gstin=gst_data['Gstin'],
                 tradeName=gst_data['TradeName'],
                 legalName=gst_data['LegalName'],
@@ -702,16 +702,16 @@ class EntityFinancialYearView(ListAPIView):
     def get_queryset(self):
         entity_id = self.request.query_params.get('entity')  # Get entity from query params
         if entity_id:
-            return entityfinancialyear.objects.filter(entity_id=entity_id)
-        return entityfinancialyear.objects.none()  # Return empty if no entity provided
+            return EntityFinancialYear.objects.filter(entity_id=entity_id)
+        return EntityFinancialYear.objects.none()  # Return empty if no entity provided
     
 
 
 
 class MasterDataView(ListAPIView):
     def get(self, request):
-        unit_types = unitType.objects.all()
-        gst_types = GstRegitrationTypes.objects.all()
+        unit_types = UnitType.objects.all()
+        gst_types = GstRegistrationType.objects.all()
 
         unit_serializer = unitTypeSerializer(unit_types, many=True)
         gst_serializer = GstRegitrationTypesSerializer(gst_types, many=True)
@@ -762,7 +762,7 @@ class EntityCreateUpdateAPIView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = EntityNewSerializer(data=request.data)
         if serializer.is_valid():
-            entity = serializer.save(createdby = self.request.user)
+            entity = serializer.save(createdby=request.user)
             return Response(EntityNewSerializer(entity).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

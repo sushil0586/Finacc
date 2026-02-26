@@ -3,7 +3,7 @@ from rest_framework import serializers
 from rest_framework.fields import ChoiceField
 from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
 from invoice.models import entry,StockTransactions
-from entity.models import Entity,entityfinancialyear
+from entity.models import Entity,EntityFinancialYear
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, Sum
@@ -350,7 +350,7 @@ class AccountSerializer(serializers.ModelSerializer):
 
     def _first_fin_start_date(self, entity):
         return (
-            entityfinancialyear.objects.filter(entity=entity)
+            EntityFinancialYear.objects.filter(entity=entity)
             .order_by("finstartyear")
             .values_list("finstartyear", flat=True)
             .first()
@@ -573,7 +573,7 @@ class AccountListtopSerializer(serializers.ModelSerializer):
         entity = request.GET.get('entity')
         
         if entity:
-            current_dates = entityfinancialyear.objects.get(entity=entity, isactive=1)
+            current_dates = EntityFinancialYear.objects.get(entity=entity, isactive=1)
             transaction = StockTransactions.objects.filter(
                 entity=entity,
                 isactive=1,
@@ -721,6 +721,10 @@ class AccountTypeJsonSerializer(serializers.ModelSerializer):
             user = validated_data.get('createdby')
 
             for head_data in heads_data:
+                head_data.pop("entity", None)
+                head_data.pop("entity_id", None)
+                head_data.pop("createdby", None)
+                head_data.pop("updatedby", None)
                 accounts_data = head_data.pop('accounthead_accounts', [])
                 head = accountHead.objects.create(accounttype=acc_type, **head_data,entity = entity,createdby = user)
 

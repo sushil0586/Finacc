@@ -8,7 +8,7 @@ from django.utils.dateformat import DateFormat
 
 # Create your models here.
 
-class unitType(models.Model):
+class UnitType(models.Model):
     UnitName =    models.CharField(max_length= 100)
     UnitDesc =    models.CharField(max_length= 255)
     #createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
@@ -18,7 +18,7 @@ class unitType(models.Model):
         return f'{self.UnitName}'
     
 
-class GstRegitrationTypes(models.Model):
+class GstRegistrationType(models.Model):
     Name =           models.CharField(max_length= 100)
     Description =    models.CharField(max_length= 255)
     #createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
@@ -51,7 +51,7 @@ class Constitution(models.Model):
         return f'{self.constitutionname}'
     
 
-class Bankdetails(TrackingModel):
+class BankDetail(TrackingModel):
     bankname =  models.CharField(max_length= 100)
     bankcode =  models.CharField(max_length= 100,null=True)
     ifsccode =  models.CharField(max_length= 100,null=True)
@@ -70,8 +70,8 @@ class Entity(TrackingModel):
     entityname =  models.CharField(max_length= 100)
     entitydesc =  models.CharField(max_length= 255,null=True)
     legalname =  models.CharField(max_length= 100,null=True)
-    unitType =        models.ForeignKey(unitType, on_delete=models.CASCADE,null= True)
-    GstRegitrationType =        models.ForeignKey(GstRegitrationTypes, on_delete=models.CASCADE,null= True)
+    unitType =        models.ForeignKey(UnitType, on_delete=models.CASCADE,null= True)
+    GstRegitrationType =        models.ForeignKey(GstRegistrationType, on_delete=models.CASCADE,null= True)
     website = models.URLField(blank=True, null=True)
     address =     models.CharField(max_length= 100)
     address2 =     models.CharField(max_length= 100,null= True,blank = True)
@@ -82,7 +82,7 @@ class Entity(TrackingModel):
     state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
     district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
     city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
-    bank =        models.ForeignKey(Bankdetails, on_delete=models.CASCADE,null= True)
+    bank =        models.ForeignKey(BankDetail, on_delete=models.CASCADE,null= True)
     bankacno =    models.CharField(max_length= 50,null= True)
     ifsccode     =    models.CharField(max_length= 50,null= True)
     pincode =    models.CharField(max_length= 50,null= True)
@@ -125,7 +125,7 @@ class BankAccount(models.Model):
         return f"{self.bank_name} - {self.account_number}"
     
 
-class GstAccountsdetails(TrackingModel):
+class GstAccountDetail(TrackingModel):
     gstin = models.CharField(max_length= 25,null= True)
     tradeName = models.CharField(max_length= 255,null= True)
     legalName = models.CharField(max_length= 255,null= True)
@@ -146,7 +146,7 @@ class GstAccountsdetails(TrackingModel):
 
     
 
-class subentity(TrackingModel):
+class SubEntity(TrackingModel):
     subentityname =  models.CharField(max_length= 255)
     address =     models.CharField(max_length= 255)
     country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
@@ -168,7 +168,7 @@ class subentity(TrackingModel):
     
 
 
-class entityfinancialyear(TrackingModel):
+class EntityFinancialYear(TrackingModel):
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True,related_name='fy',)
     desc =      models.CharField(max_length= 255,null= True,verbose_name='description')
     finstartyear =      models.DateTimeField(verbose_name='Fin Start Date',null = True)
@@ -186,7 +186,7 @@ class entityfinancialyear(TrackingModel):
         return f'{entity_str} | Financial Year'
     
 
-class entityconstitution(TrackingModel):
+class EntityConstitution(TrackingModel):
     entity =    models.ForeignKey(to= Entity, on_delete=models.CASCADE,null=True,related_name='constitution',)
     shareholder =      models.CharField(max_length= 255,null= True,verbose_name='shareholder')
     pan =      models.CharField(max_length= 25,null= True,verbose_name='pan')
@@ -230,7 +230,7 @@ class EntityOwnership(models.Model):
 
 
 
-class entity_details(models.Model): 
+class EntityDetail(models.Model): 
     entity = models.OneToOneField(Entity,
         on_delete=models.CASCADE,
         primary_key=True,)
@@ -272,7 +272,7 @@ class Role(TrackingModel):
 
     
 
-class Rolepriv(TrackingModel):
+class RolePrivilege(TrackingModel):
     role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='submenudetails')
     submenu =     models.ForeignKey(Submenu,null= True,on_delete= models.CASCADE)
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
@@ -290,7 +290,7 @@ class Rolepriv(TrackingModel):
     
 
 
-class Userrole(TrackingModel):
+class UserRole(TrackingModel):
     role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='userrole')
     user =     models.ForeignKey(User,null= True,on_delete= models.CASCADE)
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
@@ -300,7 +300,7 @@ class Userrole(TrackingModel):
     
 
 
-class Mastergstdetails(TrackingModel):
+class MasterGstDetail(TrackingModel):
     email = models.CharField(max_length=100, null=True,verbose_name='email')
     username = models.CharField(max_length=100, null=True,verbose_name='username')
     password = models.CharField(max_length=100, null=True,verbose_name='password')
@@ -311,6 +311,27 @@ class Mastergstdetails(TrackingModel):
 
     def __str__(self):
          return f'{self.username}'
+    
+
+class Godown(models.Model):
+    name = models.CharField(max_length=150)
+    code = models.CharField(max_length=50, unique=True)
+    address = models.TextField()
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    pincode = models.CharField(max_length=10)
+    capacity = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = "Godown"
+        verbose_name_plural = "Godowns"
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
 
 
 

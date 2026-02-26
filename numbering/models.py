@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+
 User = settings.AUTH_USER_MODEL
 
 
@@ -54,8 +55,8 @@ class DocumentNumberSeries(TrackingModel):
     ]
 
     entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT)
-    entityfinid = models.ForeignKey("entity.entityfinancialyear", on_delete=models.PROTECT)
-    subentity = models.ForeignKey("entity.subentity", on_delete=models.PROTECT, null=True, blank=True)
+    entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
 
     doc_type = models.ForeignKey(DocumentType, on_delete=models.PROTECT)
 
@@ -94,8 +95,8 @@ class DocumentNumberSeries(TrackingModel):
                 fields=("entity", "entityfinid", "subentity", "doc_type", "doc_code"),
                 name="uq_doc_series_scope_type_code",
             ),
-            models.CheckConstraint(name="ck_doc_series_start_gte_1", check=Q(starting_number__gte=1)),
-            models.CheckConstraint(name="ck_doc_series_current_gte_1", check=Q(current_number__gte=1)),
+            models.CheckConstraint(name="ck_doc_series_start_gte_1", condition=Q(starting_number__gte=1)),
+            models.CheckConstraint(name="ck_doc_series_current_gte_1", condition=Q(current_number__gte=1)),
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "subentity"], name="ix_doc_series_scope"),

@@ -13,6 +13,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)  # <== this MUST be above the LOGGING config
 
+
+
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')  
 # Quick-start development settings - unsuitable for production
@@ -62,6 +64,13 @@ INSTALLED_APPS = [
     'reports',
     'simple_history',
     'errorlogger',
+    'numbering',
+    'catalog',
+    "localization",
+    "purchase",
+    "posting",
+    "sales",
+    
 ]
 
 INSTALLED_APPS += ['auditlogger']
@@ -104,11 +113,12 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 DATABASES = {
    'default': {
        'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'accounting',
-       'USER': 'postgres',
-       'PASSWORD': 'ansh@1789',
+       'NAME': 'finacc',
+       'USER': 'finaccuser',
+       'PASSWORD': 'Ansh@1789',
        'HOST': 'localhost',
-       'PORT': '',
+       'PORT': '5432',
+
    }
 }
 # # Database
@@ -200,7 +210,14 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'Authentication.jwt.JwtAuthentication',
     ],
-    'EXCEPTION_HANDLER': 'errorlogger.drf_exception_handler.custom_exception_handler'
+    'EXCEPTION_HANDLER': 'errorlogger.drf_exception_handler.custom_exception_handler',
+    "DATE_INPUT_FORMATS": [
+        "%Y-%m-%d",                 # Standard DRF date format
+        "%Y-%m-%dT%H:%M:%S.%fZ",    # 2025-12-20T00:00:00.000Z
+        "%Y-%m-%dT%H:%M:%SZ",       # 2025-12-20T00:00:00Z
+        "%Y-%m-%dT%H:%M:%S.%f",     # 2025-12-20T00:00:00.000 (no Z)
+        "%Y-%m-%dT%H:%M:%S",        # 2025-12-20T00:00:00 (no ms, no Z)
+    ],
 
 }
 # Internationalization
@@ -223,6 +240,10 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/3.2/howto/static-files/
 STATIC_URL = '/static/'
+
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

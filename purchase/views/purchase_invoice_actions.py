@@ -12,30 +12,46 @@ from purchase.services.purchase_note_factory import PurchaseNoteFactory
 
 class PurchaseInvoiceConfirmAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    def post(self, request, pk: int):
+
+    def get(self, request, pk: int):
         result = PurchaseInvoiceActions.confirm(pk)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response({
+            "message": result.message,
+            "data": PurchaseInvoiceHeaderSerializer(result.header).data
+        })
 
 
 class PurchaseInvoicePostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    def post(self, request, pk: int):
+
+    def get(self, request, pk: int):
         result = PurchaseInvoiceActions.post(pk)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response({
+            "message": result.message,
+            "data": PurchaseInvoiceHeaderSerializer(result.header).data
+        })
 
 
 class PurchaseInvoiceCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    def post(self, request, pk: int):
+
+    def get(self, request, pk: int):
         result = PurchaseInvoiceActions.cancel(pk)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response({
+            "message": result.message,
+            "data": PurchaseInvoiceHeaderSerializer(result.header).data
+        })
 
 
 class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    def post(self, request, pk: int):
+
+    def get(self, request, pk: int):
         result = PurchaseInvoiceActions.rebuild_tax_summary(pk)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response({
+            "message": result.message,
+            "data": PurchaseInvoiceHeaderSerializer(result.header).data
+        })
 
 
 # ---- Create CN/DN ----

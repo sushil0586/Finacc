@@ -85,7 +85,7 @@ from rest_framework.renderers import JSONRenderer
 from drf_excel.mixins import XLSXFileMixin
 from drf_excel.renderers import XLSXRenderer
 from rest_framework.viewsets import ReadOnlyModelViewSet
-from entity.models import Entity,GstAccountsdetails,Mastergstdetails
+from entity.models import Entity,GstAccountDetail,MasterGstDetail
 from django_pandas.io import read_frame
 from django.db.models import Q,Sum, F, Case, When, DecimalField
 import numpy as np
@@ -103,7 +103,7 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
-from entity.models import Entity,entityfinancialyear,Mastergstdetails,subentity
+from entity.models import Entity,EntityFinancialYear,MasterGstDetail,SubEntity
 from django.db.models.functions import Coalesce
 
 import tempfile
@@ -165,7 +165,7 @@ class CombinedTypeApiView(ListCreateAPIView):
         entity = self.request.query_params.get('entity')
         purchase_queryset = purchasetaxtype.objects.filter(entity=entity)
         invoice_queryset = InvoiceType.objects.filter(entity=entity)
-        subentity_queryset = subentity.objects.filter(entity=entity)
+        subentity_queryset = SubEntity.objects.filter(entity=entity)
         default_queryset = defaultvaluesbyentity.objects.filter(entity=entity).order_by('-created_at')[:1]
         return purchase_queryset, invoice_queryset, subentity_queryset, default_queryset
     
@@ -213,7 +213,7 @@ class getgstindetails(ListAPIView):
        # acc = self.request.query_params.get('acc')
         entitygst = self.request.query_params.get('entitygst')
         accountgst = self.request.query_params.get('accountgst')
-        mgst = Mastergstdetails.objects.get(gstin = entitygst)
+        mgst = MasterGstDetail.objects.get(gstin = entitygst)
         einv = generateeinvoice(mgst)
         r = einv.getauthentication()
         res = r.json()
@@ -257,7 +257,7 @@ class getgstindetails(ListAPIView):
 
         print(data['Gstin'])
 
-        GstAccountsdetails.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = data['AddrLoc'],stateCode = data['StateCode'],addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
+        GstAccountDetail.objects.create(gstin = data['Gstin'],tradeName = data['TradeName'],legalName = data['LegalName'],addrFlno = data['AddrFlno'],addrBnm =data['AddrBnm'],addrBno = data['AddrBno'],addrSt = data['AddrSt'],addrLoc = data['AddrLoc'],stateCode = data['StateCode'],addrPncd = data['AddrPncd'],txpType = data['TxpType'],status = data['Status'],blkStatus = data['BlkStatus'],dtReg = data['DtReg'],dtDReg = data['DtDReg'])
   
 
      
