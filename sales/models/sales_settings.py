@@ -142,7 +142,7 @@ class SalesChoiceOverride(TrackingModel):
             ),
             models.CheckConstraint(
                 name="ck_sales_choice_override_group_key_nn",
-                condition=Q(choice_group__isnull=False) & Q(choice_key__isnull=False),
+                check=Q(choice_group__isnull=False) & Q(choice_key__isnull=False),
             ),
         ]
         indexes = [

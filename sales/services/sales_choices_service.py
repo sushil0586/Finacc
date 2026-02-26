@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from sales.models import SalesChoiceOverride, SalesInvoiceHeader
+from sales.models import SalesChoiceOverride, SalesInvoiceHeader,SalesInvoiceLine
 
 
 def _enum_choices_to_payload(enum_cls) -> List[dict]:
@@ -32,6 +32,7 @@ class SalesChoicesService:
             "TaxRegime": _enum_choices_to_payload(SalesInvoiceHeader.TaxRegime),
             "GstComplianceMode": _enum_choices_to_payload(SalesInvoiceHeader.GstComplianceMode),
             "Status": _enum_choices_to_payload(SalesInvoiceHeader.Status),
+            "DiscountType": _enum_choices_to_payload(SalesInvoiceLine.DiscountType),
         }
 
         overrides = list(

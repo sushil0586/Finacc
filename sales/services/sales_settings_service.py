@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from entity.models import Entity, SubEntity  # adjust import paths
+
 from datetime import date
 from typing import Optional, Dict, Any, Tuple
 
@@ -72,6 +74,50 @@ class SalesPolicy:
 
 
 class SalesSettingsService:
+
+
+    @staticmethod
+    def get_seller_profile(*, entity_id: int, subentity_id: int | None) -> dict:
+        entity = (
+            Entity.objects
+            .select_related("state", "country", "district", "city")
+            .get(id=entity_id)
+        )
+
+        se = None
+        if subentity_id:
+            se = (
+                SubEntity.objects
+                .select_related("state", "country", "district", "city")
+                .get(id=subentity_id, entity_id=entity_id)
+            )
+
+        # ✅ state preference: SubEntity.state > Entity.state
+        seller_state_id = (se.state_id if se and se.state_id else entity.state_id)
+
+        return {
+            "entity_id": entity.id,
+            "subentity_id": se.id if se else None,
+
+            # ✅ GST always from Entity (since SubEntity has no gstno field)
+            "gstno": entity.gstno,
+
+            "state_id": seller_state_id,
+
+            # optional info for print/einvoice payloads
+            "entityname": entity.entityname,
+            "legalname": entity.legalname,
+            "address": (se.address if se and se.address else entity.address),
+            "address2": (getattr(se, "address2", None) if se else entity.address2),  # SubEntity doesn't have address2; safe
+            "pincode": (se.pincode if se and se.pincode else entity.pincode),
+
+            "country_id": (se.country_id if se and se.country_id else entity.country_id),
+            "district_id": (se.district_id if se and se.district_id else entity.district_id),
+            "city_id": (se.city_id if se and se.city_id else entity.city_id),
+
+            "phoneoffice": (se.phoneoffice if se and se.phoneoffice else entity.phoneoffice),
+            "email": (se.email if se and se.email else entity.email),
+        }
 
     @staticmethod
     def _sales_doc_type_from_doc_key(doc_key: str) -> int:

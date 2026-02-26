@@ -21,33 +21,37 @@ class SalesSettingsAPIView(APIView):
 
         settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
 
-        # preview doc numbers (same idea as Purchase)
-        # doc_key examples depend on your DocumentType lookup; keep consistent with Purchase pattern.
+        seller = SalesSettingsService.get_seller_profile(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+        )
+
         current_doc_numbers = {
-        "invoice": SalesSettingsService.get_current_doc_no(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_key="sales_invoice",      # must match DocumentType.doc_key
-            doc_code=settings_obj.default_doc_code_invoice,
-        ),
-        "credit_note": SalesSettingsService.get_current_doc_no(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_key="sales_credit_note",
-            doc_code=settings_obj.default_doc_code_cn,
-        ),
-        "debit_note": SalesSettingsService.get_current_doc_no(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_key="sales_debit_note",
-            doc_code=settings_obj.default_doc_code_dn,
-        ),
+            "invoice": SalesSettingsService.get_current_doc_no(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_key="sales_invoice",
+                doc_code=settings_obj.default_doc_code_invoice,
+            ),
+            "credit_note": SalesSettingsService.get_current_doc_no(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_key="sales_credit_note",
+                doc_code=settings_obj.default_doc_code_cn,
+            ),
+            "debit_note": SalesSettingsService.get_current_doc_no(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_key="sales_debit_note",
+                doc_code=settings_obj.default_doc_code_dn,
+            ),
         }
 
         payload = {
+            "seller": seller,  # ✅ NEW
             "settings": {
                 "default_doc_code_invoice": settings_obj.default_doc_code_invoice,
                 "default_doc_code_cn": settings_obj.default_doc_code_cn,
