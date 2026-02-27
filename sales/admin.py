@@ -10,6 +10,10 @@ from sales.models.sales_core import (
     SalesInvoiceHeader,
     SalesInvoiceLine,
     SalesTaxSummary,
+    SalesEInvoiceDetails,
+    SalesEWayBillDetails,
+    SalesEWayEvent,
+    SalesInvoiceShipToSnapshot,
 )
 from sales.services.sales_invoice_service import SalesInvoiceService
 
@@ -78,6 +82,72 @@ class SalesTaxSummaryInline(admin.TabularInline):
 
     def has_change_permission(self, request, obj=None):
         return False
+    
+class SalesInvoiceShipToSnapshotInline(admin.StackedInline):
+    model = SalesInvoiceShipToSnapshot
+    extra = 0
+    can_delete = False
+    show_change_link = False
+
+    readonly_fields = (
+        "address1", "address2", "city", "state_code", "pincode",
+        "full_name", "phone", "email",
+    )
+    fields = readonly_fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+    
+class SalesEInvoiceDetailsInline(admin.StackedInline):
+    model = SalesEInvoiceDetails
+    extra = 0
+    can_delete = False
+    show_change_link = True
+
+    readonly_fields = (
+        "status",
+        "irn", "ack_no", "ack_date",
+        "generated_at",
+        "cancelled_at", "cancel_reason_code", "cancel_remarks",
+        "request_payload", "response_payload", "last_error",
+        "signed_invoice", "signed_qr_code",
+    )
+    fields = readonly_fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+    
+class SalesEWayBillDetailsInline(admin.StackedInline):
+    model = SalesEWayBillDetails
+    extra = 0
+    can_delete = False
+    show_change_link = True
+
+    readonly_fields = (
+        "status",
+        "generated_via_irp",
+        "eway_bill_no", "eway_bill_date", "valid_upto",
+        "transporter_id", "transporter_name",
+        "transport_mode", "distance_km",
+        "transport_doc_no", "transport_doc_date",
+        "from_place", "from_pincode",
+        "vehicle_no", "vehicle_type",
+        "cancelled_at", "cancel_reason_code", "cancel_remarks",
+        "last_vehicle_update_at",
+        "original_valid_upto", "current_valid_upto",
+        "extension_count", "last_extension_at",
+        "last_extension_reason_code", "last_extension_remarks",
+        "last_extension_from_place", "last_extension_from_pincode",
+        "last_transporter_update_at",
+        "request_payload", "response_payload", "last_error",
+    )
+    fields = readonly_fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 # ----------------------------
@@ -86,7 +156,7 @@ class SalesTaxSummaryInline(admin.TabularInline):
 
 @admin.register(SalesInvoiceHeader)
 class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
-    inlines = [SalesInvoiceLineInline, SalesTaxSummaryInline]
+    inlines = [SalesInvoiceShipToSnapshotInline,SalesEInvoiceDetailsInline,SalesEWayBillDetailsInline, SalesInvoiceLineInline, SalesTaxSummaryInline]
 
     list_display = (
         "id",
@@ -138,6 +208,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
 
     raw_id_fields = (
         "customer",
+        "shipping_detail",
         "entity",
         "entityfinid",
         "subentity",
@@ -166,6 +237,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
                 ("customer",),
                 ("customer_name", "customer_gstin"),
                 ("customer_state_code",),
+                ("shipping_detail",),   # ✅ add
             )
         }),
         ("Seller / POS / Tax", {
@@ -409,6 +481,58 @@ class SalesInvoiceLineAdmin(admin.ModelAdmin):
     list_filter = ("is_service",)
     search_fields = ("hsn_sac_code", "header__invoice_number")
     ordering = ("-id",)
+
+
+
+@admin.register(SalesEInvoiceDetails)
+class SalesEInvoiceDetailsAdmin(admin.ModelAdmin):
+    list_display = ("id", "header", "status", "irn", "ack_no", "ack_date", "entity", "entityfinid", "subentity")
+    list_select_related = ("header", "entity", "entityfinid", "subentity")
+    list_filter = ("status", "entity", "entityfinid", "subentity")
+    search_fields = ("header__invoice_number", "irn", "ack_no")
+    ordering = ("-id",)
+
+    def has_add_permission(self, request):
+        return False
+    
+@admin.register(SalesEWayBillDetails)
+class SalesEWayBillDetailsAdmin(admin.ModelAdmin):
+    list_display = ("id", "header", "status", "eway_bill_no", "eway_bill_date", "valid_upto", "entity", "entityfinid", "subentity")
+    list_select_related = ("header", "entity", "entityfinid", "subentity")
+    list_filter = ("status", "entity", "entityfinid", "subentity", "generated_via_irp")
+    search_fields = ("header__invoice_number", "eway_bill_no", "transporter_id", "vehicle_no")
+    ordering = ("-id",)
+
+    def has_add_permission(self, request):
+        return False
+    
+
+@admin.register(SalesEWayEvent)
+class SalesEWayEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "eway", "event_type", "event_at", "eway_bill_no", "is_success", "error_code")
+    list_select_related = ("eway",)
+    list_filter = ("event_type", "is_success")
+    search_fields = ("eway_bill_no", "reference_no", "error_code", "error_message")
+    ordering = ("-event_at", "-id")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+    
+@admin.register(SalesInvoiceShipToSnapshot)
+class SalesInvoiceShipToSnapshotAdmin(admin.ModelAdmin):
+    list_display = ("header", "city", "state_code", "pincode", "full_name", "phone")
+    list_select_related = ("header",)
+    search_fields = ("header__invoice_number", "city", "pincode", "full_name", "phone", "email")
+    ordering = ("-header_id",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # ----------------------------

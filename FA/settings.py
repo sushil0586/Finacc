@@ -69,7 +69,7 @@ INSTALLED_APPS = [
     "localization",
     "purchase",
     "posting",
-    "sales",
+    "sales.apps.SalesConfig",
     
 ]
 
@@ -226,6 +226,10 @@ LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_L10N = True
+EINVOICE_PROVIDER = "mastergst"
+MASTERGST_ENV = "SANDBOX"
+MASTERGST_BASE_URL = "https://api.mastergst.com"   # if they use different base, change here
+MASTERGST_IP_ADDRESS = "10.14.676.200"                   # set to your EC2 public IP in production
 
     
           

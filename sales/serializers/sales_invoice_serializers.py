@@ -7,6 +7,10 @@ from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.serializers.sales_compliance_serializers import (
+    SalesEInvoiceArtifactReadSerializer,
+    SalesEWayArtifactReadSerializer,
+)
 
 
 
@@ -77,6 +81,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     # nested
     lines = SalesInvoiceLineSerializer(many=True, required=False)
     tax_summaries = SalesTaxSummarySerializer(many=True, read_only=True)
+    einvoice_artifact = SalesEInvoiceArtifactReadSerializer(read_only=True)
+    eway_artifact = SalesEWayArtifactReadSerializer(read_only=True)
 
     # ✅ explicit FK field so null works cleanly
     shipping_detail = serializers.PrimaryKeyRelatedField(
@@ -169,6 +175,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "lines",
             "tax_summaries",
             "navigation",
+            "einvoice_artifact",
+            "eway_artifact",
         ]
         read_only_fields = [
             "status",
@@ -192,6 +200,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             # nav + summaries
             "tax_summaries",
             "navigation",
+            "einvoice_artifact",
+            "eway_artifact",
         ]
 
     def get_navigation(self, obj):

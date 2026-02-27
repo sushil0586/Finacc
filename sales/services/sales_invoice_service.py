@@ -124,7 +124,7 @@ class SalesInvoiceService:
 
                 address1=sd.address1 or "",
                 address2=sd.address2 or "",
-                city=(sd.city.name if sd.city_id else "") or "",
+                city=(sd.city.cityname if sd.city_id else "") or "",
                 state_code=state_code or "",
                 pincode=(sd.pincode or "")[:10],
                 full_name=sd.full_name or "",
