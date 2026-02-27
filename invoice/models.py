@@ -359,13 +359,13 @@ class SalesOderHeader(TrackingModel):  # keep your base class if TrackingModel; 
             # - if isigst=False → igst=0
             CheckConstraint(
                 name="ck_igst_vs_cgst_sgst_hdr",
-                condition=(Q(isigst=True) & Q(cgst=0) & Q(sgst=0)) | (Q(isigst=False) & Q(igst=0)),
+                check=(Q(isigst=True) & Q(cgst=0) & Q(sgst=0)) | (Q(isigst=False) & Q(igst=0)),
             ),
 
             # Non-negative header money amounts
             CheckConstraint(
                 name="ck_header_amounts_nonneg",
-                condition=(
+                check=(
                     Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) & Q(cess__gte=0) &
                     Q(stbefdiscount__gte=0) & Q(discount__gte=0) & Q(subtotal__gte=0) &
                     Q(totalgst__gte=0) & Q(expenses__gte=0) & Q(addless__gte=0) &
@@ -430,17 +430,17 @@ class salesOrderdetails(TrackingModel):  # keep your base class if TrackingModel
             # Detail-level IGST vs CGST/SGST exclusivity
             CheckConstraint(
                 name="ck_igst_vs_cgst_sgst_dtl",
-                condition=(Q(isigst=True) & Q(cgst=0) & Q(sgst=0)) | (Q(isigst=False) & Q(igst=0)),
+                check=(Q(isigst=True) & Q(cgst=0) & Q(sgst=0)) | (Q(isigst=False) & Q(igst=0)),
             ),
             # Non-negative amounts and percent range 0..100
             CheckConstraint(
                 name="ck_detail_amounts_nonneg",
-                condition=Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) & Q(cess__gte=0) &
+                check=Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) & Q(cess__gte=0) &
                       Q(amount__gte=0) & Q(linetotal__gte=0) & Q(orderqty__gte=0) & Q(pieces__gte=0),
             ),
             CheckConstraint(
                 name="ck_detail_percent_bounds",
-                condition=(Q(cgstpercent__gte=0) & Q(cgstpercent__lte=100) &
+                check=(Q(cgstpercent__gte=0) & Q(cgstpercent__lte=100) &
                        Q(sgstpercent__gte=0) & Q(sgstpercent__lte=100) &
                        Q(igstpercent__gte=0) & Q(igstpercent__lte=100)),
             ),
@@ -990,7 +990,7 @@ class purchaseorder(TrackingModel):  # keep name to avoid breaking references
             models.UniqueConstraint(fields=['billno', 'account', 'entity', 'entityfinid'], name='uq_po_billno_party_entity_fin'),
             models.CheckConstraint(
                 name='ck_po_nonneg',
-                condition=(
+                check=(
                     Q(subtotal__gte=0) & Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) &
                     Q(cess__gte=0) & Q(expenses__gte=0) & Q(gtotal__gte=0)
                 )
@@ -1053,7 +1053,7 @@ class PurchaseOrderDetails(TrackingModel):
             # IGST vs CGST/SGST validity
             models.CheckConstraint(
                 name="ck_po_line_tax_combo",
-                condition=(
+                check=(
                     Q(isigst=True,  cgst=0, sgst=0) |
                     Q(isigst=False, igst=0)
                 ),
@@ -1061,7 +1061,7 @@ class PurchaseOrderDetails(TrackingModel):
             # Non-negative guards
             models.CheckConstraint(
                 name="ck_po_line_nonneg",
-                condition=(
+                check=(
                     Q(orderqty__gte=0) & Q(pieces__gte=0) &
                     Q(rate__gte=0) & Q(amount__gte=0) &
                     Q(cgst__gte=0) & Q(sgst__gte=0) & Q(igst__gte=0) &
@@ -1326,14 +1326,14 @@ class journalmain(TrackingModel):
             # mainaccount required for Bank/Cash; must be NULL for Journal
             CheckConstraint(
                 name="ck_mainaccount_by_type",
-                condition=(
+                check=(
                     Q(vouchertype__in=[VoucherType.BANK, VoucherType.CASH], mainaccountid__isnull=False) |
                     Q(vouchertype=VoucherType.JOURNAL, mainaccountid__isnull=True)
                 ),
             ),
             # enforce balance only when posted
             CheckConstraint(name="ck_balanced_when_posted",
-                            condition=Q(is_posted=False) | Q(total_debit=F("total_credit"))),
+                            check=Q(is_posted=False) | Q(total_debit=F("total_credit"))),
         ]
         indexes = [
             Index(fields=["entity", "vouchertype", "voucherdate"], name="ix_voucher_list"),
@@ -1399,13 +1399,13 @@ class journaldetails(TrackingModel):  # or inherit your TrackingModel if you hav
             # Non-negative rule (UI safety)
             CheckConstraint(
                 name="ck_jd_non_negative",
-                condition=Q(debitamount__gte=0) & Q(creditamount__gte=0) &
+                check=Q(debitamount__gte=0) & Q(creditamount__gte=0) &
                       Q(discount__gte=0) & Q(bankcharges__gte=0) & Q(tds__gte=0)
             ),
             # Exactly one side must be > 0 (either debit or credit, not both, not neither)
             CheckConstraint(
                 name="ck_jd_one_side_only",
-                condition=(
+                check=(
                     (Q(debitamount__gt=0) & Q(creditamount=0)) |
                     (Q(creditamount__gt=0) & Q(debitamount=0))
                 ),
@@ -1413,7 +1413,7 @@ class journaldetails(TrackingModel):  # or inherit your TrackingModel if you hav
             # Optional: drcr should match which side is non-zero (soft guard at DB level)
             CheckConstraint(
                 name="ck_jd_drcr_consistent",
-                condition=(
+                check=(
                     (Q(drcr=True)  & Q(debitamount__gt=0)  & Q(creditamount=0)) |
                     (Q(drcr=False) & Q(creditamount__gt=0) & Q(debitamount=0))
                 ),
@@ -1941,7 +1941,7 @@ class JournalLine(models.Model):
 
     class Meta:
         constraints = [
-            CheckConstraint(name="ck_amount_gt_zero", condition=Q(amount__gt=0)),
+            CheckConstraint(name="ck_amount_gt_zero", check=Q(amount__gt=0)),
         ]
         indexes = [
             Index(fields=['entity', 'transactiontype', 'transactionid'], name='ix_jl_txn_locator'),
@@ -2029,8 +2029,8 @@ class InventoryMove(models.Model):
 
     class Meta:
         constraints = [
-            CheckConstraint(name="ck_qty_nonzero", condition=~Q(qty=0)),
-            CheckConstraint(name="ck_cost_nonneg", condition=Q(unit_cost__gte=0) & Q(ext_cost__gte=0)),
+            CheckConstraint(name="ck_qty_nonzero", check=~Q(qty=0)),
+            CheckConstraint(name="ck_cost_nonneg", check=Q(unit_cost__gte=0) & Q(ext_cost__gte=0)),
         ]
         indexes = [
             Index(fields=['entity', 'product', 'entrydate'], name='ix_im_entity_product_date'),
@@ -2116,7 +2116,7 @@ class SalesQuotationHeader(TrackingModel):
             UniqueConstraint(fields=("quote_no", "entity", "entityfinid"), name="uq_quote_no_entity_fin"),
             CheckConstraint(
                 name="ck_quote_amounts_nonneg",
-                condition=(
+                check=(
                     Q(stbefdiscount__gte=0)
                     & Q(discount__gte=0)
                     & Q(subtotal__gte=0)
@@ -2134,13 +2134,13 @@ class SalesQuotationHeader(TrackingModel):
             # - If intra-state (isigst=False) => IGST must be 0
             CheckConstraint(
                 name="ck_quote_tax_mode_consistency",
-                condition=(Q(isigst=True, cgst=0, sgst=0) | Q(isigst=False, igst=0)),
+                check=(Q(isigst=True, cgst=0, sgst=0) | Q(isigst=False, igst=0)),
             ),
             # Optional (strict): totalgst must equal cgst+sgst+igst.
             # Comment out if rounding differences are expected.
             CheckConstraint(
                 name="ck_quote_totalgst_sum",
-                condition=Q(totalgst=F("cgst") + F("sgst") + F("igst")),
+                check=Q(totalgst=F("cgst") + F("sgst") + F("igst")),
             ),
         ]
         indexes = [
@@ -2189,11 +2189,11 @@ class SalesQuotationDetail(TrackingModel):
         constraints = [
             models.CheckConstraint(
                 name="ck_quote_detail_amounts_nonneg",
-                condition=(Q(amount__gte=0) & Q(linetotal__gte=0) & Q(qty__gte=0) & Q(pieces__gte=0))
+                check=(Q(amount__gte=0) & Q(linetotal__gte=0) & Q(qty__gte=0) & Q(pieces__gte=0))
             ),
             models.CheckConstraint(
                 name="ck_quote_detail_percent_bounds",
-                condition=((Q(cgstpercent__isnull=True) | (Q(cgstpercent__gte=0) & Q(cgstpercent__lte=100))) &
+                check=((Q(cgstpercent__isnull=True) | (Q(cgstpercent__gte=0) & Q(cgstpercent__lte=100))) &
                        (Q(sgstpercent__isnull=True) | (Q(sgstpercent__gte=0) & Q(sgstpercent__lte=100))) &
                        (Q(igstpercent__isnull=True) | (Q(igstpercent__gte=0) & Q(igstpercent__lte=100))))
             ),

@@ -149,7 +149,7 @@ class PurchaseInvoiceHeader(models.Model):
             ),
             models.CheckConstraint(
                 name="ck_purchase_ref_required_for_notes",
-                condition=(
+                check=(
                     (Q(doc_type=1) & Q(ref_document__isnull=True)) |
                     (Q(doc_type__in=[2, 3]) & Q(ref_document__isnull=False))
                 ),
@@ -239,13 +239,13 @@ class PurchaseInvoiceLine(models.Model):
         constraints = [
             models.UniqueConstraint(fields=("header", "line_no"), name="uq_purchase_line_header_lineno"),
             # safe sanity checks
-            models.CheckConstraint(name="ck_pur_qty_nonneg", condition=Q(qty__gte=0)),
-            models.CheckConstraint(name="ck_pur_freeqty_nonneg", condition=Q(free_qty__gte=0)),
-            models.CheckConstraint(name="ck_pur_rate_nonneg", condition=Q(rate__gte=0)),
-            models.CheckConstraint(name="ck_pur_disc_pct_range", condition=Q(discount_percent__gte=0) & Q(discount_percent__lte=100)),
-            models.CheckConstraint(name="ck_pur_disc_amt_nonneg", condition=Q(discount_amount__gte=0)),
-            models.CheckConstraint(name="ck_pur_gst_rate_range", condition=Q(gst_rate__gte=0) & Q(gst_rate__lte=100)),
-            models.CheckConstraint(name="ck_pur_cess_rate_range", condition=Q(cess_percent__gte=0) & Q(cess_percent__lte=100)),
+            models.CheckConstraint(name="ck_pur_qty_nonneg", check=Q(qty__gte=0)),
+            models.CheckConstraint(name="ck_pur_freeqty_nonneg", check=Q(free_qty__gte=0)),
+            models.CheckConstraint(name="ck_pur_rate_nonneg", check=Q(rate__gte=0)),
+            models.CheckConstraint(name="ck_pur_disc_pct_range", check=Q(discount_percent__gte=0) & Q(discount_percent__lte=100)),
+            models.CheckConstraint(name="ck_pur_disc_amt_nonneg", check=Q(discount_amount__gte=0)),
+            models.CheckConstraint(name="ck_pur_gst_rate_range", check=Q(gst_rate__gte=0) & Q(gst_rate__lte=100)),
+            models.CheckConstraint(name="ck_pur_cess_rate_range", check=Q(cess_percent__gte=0) & Q(cess_percent__lte=100)),
         ]
         indexes = [
             models.Index(fields=["header", "product"], name="ix_pur_line_header_product"),
