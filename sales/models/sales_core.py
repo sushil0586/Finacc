@@ -77,7 +77,7 @@ class SalesInvoiceHeader(EntityScopedModel):
     bill_date = models.DateField(default=timezone.localdate)
     posting_date = models.DateField(null=True, blank=True)  # derived (default bill_date)
 
-    doc_code = models.CharField(max_length=20)  # e.g. "SINV"
+    doc_code = models.CharField(max_length=20, blank=True, default="")
     doc_no = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     invoice_number = models.CharField(max_length=50, null=True, blank=True,db_index=True)
 
@@ -92,7 +92,7 @@ class SalesInvoiceHeader(EntityScopedModel):
         null=True,
         blank=True,
     )
-    customer_name = models.CharField(max_length=255)
+    customer_name = models.CharField(max_length=255, blank=True, default="")
     customer_gstin = models.CharField(max_length=20, blank=True, default="")
     customer_state_code = models.CharField(max_length=2, blank=True, default="")  # GST state code
 
@@ -113,11 +113,14 @@ class SalesInvoiceHeader(EntityScopedModel):
     bill_to_state_code = models.CharField(max_length=2, blank=True, default="")
     bill_to_pincode = models.CharField(max_length=10, blank=True, default="")
 
-    ship_to_address1 = models.CharField(max_length=255, blank=True, default="")
-    ship_to_address2 = models.CharField(max_length=255, blank=True, default="")
-    ship_to_city = models.CharField(max_length=100, blank=True, default="")
-    ship_to_state_code = models.CharField(max_length=2, blank=True, default="")
-    ship_to_pincode = models.CharField(max_length=10, blank=True, default="")
+    shipping_detail = models.ForeignKey(
+        "financial.ShippingDetails",  # adjust app label
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="sales_invoices",
+        db_index=True,
+    )
 
     # Place of supply
     place_of_supply_state_code = models.CharField(max_length=2, blank=True, default="")
@@ -467,5 +470,34 @@ class SalesEWayEvent(EntityScopedModel):
             models.Index(fields=["eway", "event_at"], name="ix_sales_eway_ev_eway_dt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "event_type"], name="ix_sales_eway_ev_type"),
             models.Index(fields=["entity", "entityfinid", "subentity", "eway_bill_no"], name="ix_sales_eway_ev_no"),
+        ]
+
+class SalesInvoiceShipToSnapshot(models.Model):
+    header = models.OneToOneField(
+        "sales.SalesInvoiceHeader",
+        on_delete=models.CASCADE,
+        related_name="shipto_snapshot",
+        primary_key=True,
+    )
+
+    # store scope ids for quick filtering (no FK)
+    entity_id = models.IntegerField(db_index=True,null=True, blank=True,)
+    entityfinid_id = models.IntegerField(db_index=True,null=True, blank=True,)
+    subentity_id = models.IntegerField(null=True, blank=True, db_index=True)
+
+    address1 = models.CharField(max_length=255, blank=True, default="")
+    address2 = models.CharField(max_length=255, blank=True, default="")
+    city = models.CharField(max_length=100, blank=True, default="")
+    state_code = models.CharField(max_length=2, blank=True, default="")
+    pincode = models.CharField(max_length=10, blank=True, default="")
+
+    full_name = models.CharField(max_length=255, blank=True, default="")
+    phone = models.CharField(max_length=50, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+
+    class Meta:
+        db_table = "sales_invoice_shipto_snapshot"
+        indexes = [
+            models.Index(fields=["entity_id", "entityfinid_id", "subentity_id"], name="ix_sales_shipto_scope"),
         ]
 
