@@ -7,6 +7,12 @@ from sales.views.sales_invoice_views import (
     SalesInvoicePostAPIView,
     SalesInvoiceCancelAPIView,
 )
+
+from sales.views.sales_invoice_compliance_api import (
+    SalesInvoiceEnsureComplianceAPIView,
+    SalesInvoiceGenerateIRNAPIView,
+    SalesInvoiceGenerateEWayAPIView,
+)
 from sales.views.sales_choices_views import SalesChoicesAPIView
 from sales.views.sales_settings_views import SalesSettingsAPIView
 
@@ -20,4 +26,7 @@ urlpatterns = [
 
     path("choices/", SalesChoicesAPIView.as_view(), name="sales-choices"),
     path("settings/", SalesSettingsAPIView.as_view(), name="sales-settings"),
+    path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/generate-eway/", SalesInvoiceGenerateEWayAPIView.as_view()),
 ]
