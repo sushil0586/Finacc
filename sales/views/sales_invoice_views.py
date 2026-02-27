@@ -16,15 +16,23 @@ class SalesInvoiceListCreateAPIView(generics.ListCreateAPIView):
     def get_queryset(self):
         qs = (
             SalesInvoiceHeader.objects.all()
-            .select_related("customer")
+            .select_related(
+                "customer",
+                "shipping_detail",              # ✅ new
+                "shipping_detail__state",       # ✅ optional
+                "shipping_detail__city",        # ✅ optional
+                "shipto_snapshot",              # ✅ new (OneToOne)
+            )
             .prefetch_related(
-                Prefetch("lines", queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no")),
+                Prefetch(
+                    "lines",
+                    queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no"),
+                ),
                 Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
             )
             .order_by("-doc_no")
         )
 
-        # Basic filters (extend like purchase filters)
         params = self.request.query_params
 
         entity_id = params.get("entity_id")
@@ -36,7 +44,6 @@ class SalesInvoiceListCreateAPIView(generics.ListCreateAPIView):
         if entityfinid_id:
             qs = qs.filter(entityfinid_id=entityfinid_id)
         if subentity_id is not None:
-            # treat empty as NULL
             qs = qs.filter(subentity_id=subentity_id or None)
 
         if params.get("doc_type"):
@@ -64,9 +71,18 @@ class SalesInvoiceRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
     def get_queryset(self):
         return (
             SalesInvoiceHeader.objects.all()
-            .select_related("customer")
+            .select_related(
+                "customer",
+                "shipping_detail",         # ✅ new
+                "shipping_detail__state",  # ✅ optional
+                "shipping_detail__city",   # ✅ optional
+                "shipto_snapshot",         # ✅ new (OneToOne)
+            )
             .prefetch_related(
-                Prefetch("lines", queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no")),
+                Prefetch(
+                    "lines",
+                    queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no"),
+                ),
                 Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
             )
         )

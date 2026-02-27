@@ -5,6 +5,10 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Tuple
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
+from financial.models import ShippingDetails
+from sales.models.sales_core import SalesInvoiceShipToSnapshot
+
+
 
 from django.db import transaction
 from django.utils import timezone
@@ -65,6 +69,69 @@ class SalesInvoiceService:
     # -------------------------
     # Settings / Lock validation
     # -------------------------
+
+    @staticmethod
+    def _validate_shipping_detail_for_customer(*, customer_id: Optional[int], shipping_detail_id: Optional[int]) -> None:
+        if not shipping_detail_id:
+            return
+        if not customer_id:
+            raise ValueError("Customer must be set before selecting shipping_detail.")
+
+        ok = ShippingDetails.objects.filter(id=shipping_detail_id, account_id=customer_id).exists()
+        if not ok:
+            raise ValueError("Shipping detail does not belong to selected customer.")
+
+    @staticmethod
+    def _resolve_default_shipping_detail_id(*, customer_id: Optional[int]) -> Optional[int]:
+        """
+        Optional convenience: pick customer's primary shipping detail.
+        """
+        if not customer_id:
+            return None
+        sd = (
+            ShippingDetails.objects
+            .filter(account_id=customer_id, isprimary=True)
+            .only("id")
+            .first()
+        )
+        return sd.id if sd else None
+
+    @staticmethod
+    def freeze_ship_to_snapshot(*, header: SalesInvoiceHeader) -> None:
+        """
+        Freeze ship-to address into snapshot for audit/printing.
+        Call on CONFIRM / POST (idempotent).
+        """
+        sd = header.shipping_detail
+        if not sd:
+            return
+
+        state_code = ""
+        if sd.state_id:
+            state_code = (
+                getattr(sd.state, "gst_state_code", None)
+                or getattr(sd.state, "code", None)
+                or ""
+            )
+
+        SalesInvoiceShipToSnapshot.objects.update_or_create(
+            header=header,
+            defaults=dict(
+                # ✅ include scope if your snapshot is EntityScopedModel
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+
+                address1=sd.address1 or "",
+                address2=sd.address2 or "",
+                city=(sd.city.name if sd.city_id else "") or "",
+                state_code=state_code or "",
+                pincode=(sd.pincode or "")[:10],
+                full_name=sd.full_name or "",
+                phone=sd.phoneno or "",
+                email=sd.emailid or "",
+            ),
+        )
 
     @staticmethod
     def _doc_key_for_doc_type(doc_type: int) -> str:
@@ -180,9 +247,42 @@ class SalesInvoiceService:
         lines_data: list,
         user,
     ) -> SalesInvoiceHeader:
-        # ensure locked check early
         bill_date = header_data.get("bill_date") or timezone.localdate()
         cls.assert_not_locked(entity_id=entity_id, subentity_id=subentity_id, bill_date=bill_date)
+
+        # ---- resolve customer_id ----
+        customer_id: Optional[int] = None
+        if header_data.get("customer_id"):
+            customer_id = int(header_data["customer_id"])
+        elif header_data.get("customer"):
+            customer_id = int(header_data["customer"].id)
+
+        # ---- resolve shipping_detail_id ----
+        shipping_detail_id: Optional[int] = None
+        if "shipping_detail_id" in header_data:
+            shipping_detail_id = int(header_data.get("shipping_detail_id") or 0) or None
+        elif header_data.get("shipping_detail"):
+            shipping_detail_id = int(header_data["shipping_detail"].id)
+
+        is_same = bool(header_data.get("is_bill_to_ship_to_same", True))
+
+        # auto-pick primary if same and not provided
+        if is_same and not shipping_detail_id:
+            shipping_detail_id = cls._resolve_default_shipping_detail_id(customer_id=customer_id)
+
+        cls._validate_shipping_detail_for_customer(
+            customer_id=customer_id,
+            shipping_detail_id=shipping_detail_id,
+        )
+
+        # ---- remove model instances from header_data ----
+        header_data = dict(header_data)
+        header_data.pop("customer", None)
+        header_data.pop("shipping_detail", None)
+        # keep ids only
+        if customer_id is not None:
+            header_data["customer_id"] = customer_id
+        header_data["shipping_detail_id"] = shipping_detail_id  # can be None
 
         header = SalesInvoiceHeader(
             entity_id=entity_id,
@@ -193,10 +293,8 @@ class SalesInvoiceService:
             **header_data,
         )
 
-        # backend controls status
         header.status = SalesInvoiceHeader.Status.DRAFT
 
-        # apply derived fields
         cls.apply_dates(header)
         cls.derive_tax_regime(header)
 
@@ -219,14 +317,50 @@ class SalesInvoiceService:
         lines_data: list,
         user,
     ) -> SalesInvoiceHeader:
-        # editing policy
         if header.status in (SalesInvoiceHeader.Status.POSTED, SalesInvoiceHeader.Status.CANCELLED):
             raise ValueError("Posted/Cancelled invoices cannot be edited.")
 
-        # lock check
         bill_date = header_data.get("bill_date") or header.bill_date
         cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=bill_date)
 
+        header_data = dict(header_data)
+
+        # ---- resolve customer_id ----
+        customer_id = header.customer_id
+        if header_data.get("customer_id"):
+            customer_id = int(header_data["customer_id"])
+        elif header_data.get("customer"):
+            customer_id = int(header_data["customer"].id)
+
+        # ---- resolve shipping_detail_id ----
+        shipping_detail_id = header.shipping_detail_id
+        shipping_detail_changed = ("shipping_detail_id" in header_data) or ("shipping_detail" in header_data)
+
+        if "shipping_detail_id" in header_data:
+            shipping_detail_id = int(header_data.get("shipping_detail_id") or 0) or None
+        elif "shipping_detail" in header_data:
+            sd_obj = header_data.get("shipping_detail")
+            shipping_detail_id = int(sd_obj.id) if sd_obj else None
+
+        is_same = bool(header_data.get("is_bill_to_ship_to_same", header.is_bill_to_ship_to_same))
+
+        if is_same and not shipping_detail_id:
+            shipping_detail_id = cls._resolve_default_shipping_detail_id(customer_id=customer_id)
+
+        customer_changed = ("customer_id" in header_data) or ("customer" in header_data)
+        if customer_changed or shipping_detail_changed:
+            cls._validate_shipping_detail_for_customer(
+                customer_id=customer_id,
+                shipping_detail_id=shipping_detail_id,
+            )
+
+        # ---- strip instances + assign ids ----
+        header_data.pop("customer", None)
+        header_data.pop("shipping_detail", None)
+        header_data["customer_id"] = customer_id
+        header_data["shipping_detail_id"] = shipping_detail_id
+
+        # ---- apply fields ----
         for k, v in header_data.items():
             setattr(header, k, v)
 
@@ -543,6 +677,11 @@ class SalesInvoiceService:
     def confirm(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
         if header.status != SalesInvoiceHeader.Status.DRAFT:
             raise ValueError("Only Draft invoices can be confirmed.")
+        
+        if header.is_eway_applicable and not header.shipping_detail_id:
+            raise ValueError("Shipping detail is required when E-Way is applicable.")
+
+        cls.freeze_ship_to_snapshot(header=header)
 
         cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
 
@@ -551,6 +690,7 @@ class SalesInvoiceService:
         cls.derive_tax_regime(header)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        
 
         # ✅ issue doc_no ONLY NOW
         cls.ensure_doc_number(header=header, user=user)
@@ -575,9 +715,15 @@ class SalesInvoiceService:
     def post(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
         if header.status != SalesInvoiceHeader.Status.CONFIRMED:
             raise ValueError("Only Confirmed invoices can be posted.")
+        
+        if header.is_eway_applicable and not header.shipping_detail_id:
+            raise ValueError("Shipping detail is required when E-Way is applicable.")
+        cls.freeze_ship_to_snapshot(header=header)
+
 
         # safety
         cls.ensure_doc_number(header=header, user=user)
+
 
 
         # Posting hook here...

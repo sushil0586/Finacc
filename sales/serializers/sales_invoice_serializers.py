@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rest_framework import serializers
+from financial.models import ShippingDetails
 
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
@@ -74,8 +75,15 @@ class SalesTaxSummarySerializer(serializers.ModelSerializer):
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     # nested
-    lines = SalesInvoiceLineSerializer(many=True)
+    lines = SalesInvoiceLineSerializer(many=True, required=False)
     tax_summaries = SalesTaxSummarySerializer(many=True, read_only=True)
+
+    # ✅ explicit FK field so null works cleanly
+    shipping_detail = serializers.PrimaryKeyRelatedField(
+        queryset=ShippingDetails.objects.all(),
+        required=False,
+        allow_null=True,
+    )
 
     # display fields
     doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
@@ -84,7 +92,6 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     tax_regime_name = serializers.CharField(source="get_tax_regime_display", read_only=True)
     supply_category_name = serializers.CharField(source="get_supply_category_display", read_only=True)
     navigation = serializers.SerializerMethodField()
-    
 
     class Meta:
         model = SalesInvoiceHeader
@@ -93,35 +100,57 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "entity",
             "entityfinid",
             "subentity",
+
             "doc_type",
             "doc_type_name",
             "doc_no",
             "invoice_number",
+
             "status",
             "status_name",
+
             "bill_date",
             "posting_date",
+
             "credit_days",
             "due_date",
+
             "doc_code",
+
             "customer",
             "customer_name",
             "customer_gstin",
             "customer_state_code",
+
+            "is_bill_to_ship_to_same",
+            "bill_to_address1",
+            "bill_to_address2",
+            "bill_to_city",
+            "bill_to_state_code",
+            "bill_to_pincode",
+
+            "shipping_detail",
+
             "seller_gstin",
             "seller_state_code",
             "place_of_supply_state_code",
+
             "supply_category",
             "supply_category_name",
+
             "taxability",
             "taxability_name",
+
             "tax_regime",
             "tax_regime_name",
+
             "is_igst",
             "is_reverse_charge",
+
             "gst_compliance_mode",
             "is_einvoice_applicable",
             "is_eway_applicable",
+
             # totals (computed)
             "total_taxable_value",
             "total_cgst",
@@ -132,13 +161,14 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_other_charges",
             "round_off",
             "grand_total",
+
             "reference",
             "remarks",
+
             # nested
             "lines",
             "tax_summaries",
             "navigation",
-          
         ]
         read_only_fields = [
             "status",
@@ -148,6 +178,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "due_date",
             "tax_regime",
             "is_igst",
+
             # totals
             "total_taxable_value",
             "total_cgst",
@@ -157,51 +188,63 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_discount",
             "round_off",
             "grand_total",
-            # navigation
-            
-        ]
 
+            # nav + summaries
+            "tax_summaries",
+            "navigation",
+        ]
 
     def get_navigation(self, obj):
         return SalesInvoiceNavService.get_prev_next_for_instance(obj)
 
-    
-
     def validate(self, attrs):
-        # enforce that UI cannot try to set backend-controlled fields
-        if "status" in attrs:
-            raise serializers.ValidationError({"status": "Status is controlled by backend."})
+        # hard-block backend-controlled fields if UI tries to push them
+        blocked = {
+            "status",
+            "doc_no",
+            "invoice_number",
+            "posting_date",
+            "due_date",
+            "tax_regime",
+            "is_igst",
+            "total_taxable_value",
+            "total_cgst",
+            "total_sgst",
+            "total_igst",
+            "total_cess",
+            "total_discount",
+            "round_off",
+            "grand_total",
+        }
+
+        incoming = set(getattr(self, "initial_data", {}).keys())
+        bad = sorted(incoming.intersection(blocked))
+        if bad:
+            raise serializers.ValidationError({k: "Field is controlled by backend." for k in bad})
+
         return attrs
 
     def create(self, validated_data):
         request = self.context["request"]
         lines = validated_data.pop("lines", [])
 
-        # scope should come from request/user context in your app
-        entity_id = validated_data.get("entity").id if validated_data.get("entity") else request.data.get("entity")
-        entityfinid_id = validated_data.get("entityfinid").id if validated_data.get("entityfinid") else request.data.get("entityfinid")
-        subentity_id = validated_data.get("subentity").id if validated_data.get("subentity") else request.data.get("subentity")
+        if not lines:
+            raise serializers.ValidationError({"lines": "At least one line is required."})
 
-        # Remove model instances from validated_data if DRF provided them
-        if "entity" in validated_data:
-            validated_data["entity_id"] = validated_data.pop("entity").id
-        if "entityfinid" in validated_data:
-            validated_data["entityfinid_id"] = validated_data.pop("entityfinid").id
-        if "subentity" in validated_data and validated_data["subentity"] is not None:
-            validated_data["subentity_id"] = validated_data.pop("subentity").id
-        elif "subentity" in validated_data:
-            validated_data.pop("subentity")
+        # Pop scope as ids
+        entity = validated_data.pop("entity", None)
+        entityfinid = validated_data.pop("entityfinid", None)
+        subentity = validated_data.pop("subentity", None)
 
-        header_data = dict(validated_data)
-        header_data.pop("entity_id", None)
-        header_data.pop("entityfinid_id", None)
-        header_data.pop("subentity_id", None)
+        entity_id = int(entity.id if entity else request.data.get("entity"))
+        entityfinid_id = int(entityfinid.id if entityfinid else request.data.get("entityfinid"))
+        subentity_id = int(subentity.id) if subentity else None
 
         header = SalesInvoiceService.create_with_lines(
-            entity_id=int(entity_id),
-            entityfinid_id=int(entityfinid_id),
-            subentity_id=int(subentity_id) if subentity_id else None,
-            header_data=header_data,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            header_data=validated_data,
             lines_data=lines,
             user=request.user,
         )
@@ -209,9 +252,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         request = self.context["request"]
-        lines = validated_data.pop("lines", [])
+        lines = validated_data.pop("lines", None)
 
-        # Remove scope fields updates (do not allow moving invoice across scopes)
+        # do not allow moving scope
         validated_data.pop("entity", None)
         validated_data.pop("entityfinid", None)
         validated_data.pop("subentity", None)
@@ -219,7 +262,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         header = SalesInvoiceService.update_with_lines(
             header=instance,
             header_data=validated_data,
-            lines_data=lines,
+            lines_data=lines or [],
             user=request.user,
         )
         return header
