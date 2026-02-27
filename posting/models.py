@@ -221,10 +221,10 @@ class JournalLine(models.Model):
 
     class Meta:
         constraints = [
-            CheckConstraint(name="ck_jl_amount_gt_zero", condition=Q(amount__gt=0)),
+            CheckConstraint(name="ck_jl_amount_gt_zero", check=Q(amount__gt=0)),
             CheckConstraint(
                 name="ck_jl_account_xor_head",
-                condition=(
+                check=(
                     (Q(account__isnull=False) & Q(accounthead__isnull=True)) |
                     (Q(account__isnull=True) & Q(accounthead__isnull=False))
                 ),
@@ -304,8 +304,8 @@ class InventoryMove(models.Model):
 
     class Meta:
         constraints = [
-            CheckConstraint(name="ck_im_qty_nonzero", condition=~Q(qty=0)),
-            CheckConstraint(name="ck_im_cost_nonneg", condition=Q(unit_cost__gte=0) & Q(ext_cost__gte=0)),
+            CheckConstraint(name="ck_im_qty_nonzero", check=~Q(qty=0)),
+            CheckConstraint(name="ck_im_cost_nonneg", check=Q(unit_cost__gte=0) & Q(ext_cost__gte=0)),
         ]
         indexes = [
             Index(fields=["entity", "txn_type", "txn_id"], name="ix_im_locator"),

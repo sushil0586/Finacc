@@ -211,7 +211,7 @@ class accountHead(TrackingModel):
         verbose_name_plural = _("Account Heads")
         constraints = [
             models.UniqueConstraint(fields=["entity", "code"], name="uq_accounthead_entity_code"),
-            models.CheckConstraint(condition=Q(code__gt=0), name="ck_accounthead_code_positive"),
+            models.CheckConstraint(check=Q(code__gt=0), name="ck_accounthead_code_positive"),
         ]
         indexes = [
             models.Index(fields=["entity", "code"], name="ix_accounthead_entity_code"),
@@ -377,11 +377,11 @@ class account(TrackingModel):
         verbose_name_plural = _("Accounts")
         constraints = [
             
-            models.CheckConstraint(condition=Q(openingbcr__gte=0) | Q(openingbcr__isnull=True), name="ck_account_openingbcr_nonneg"),
-            models.CheckConstraint(condition=Q(openingbdr__gte=0) | Q(openingbdr__isnull=True), name="ck_account_openingbdr_nonneg"),
-            models.CheckConstraint(condition=Q(accountcode__gt=0) | Q(accountcode__isnull=True), name="ck_account_accountcode_positive"),
-            models.CheckConstraint(condition=Q(creditdays__gte=0) | Q(creditdays__isnull=True), name="ck_account_creditdays_nonneg"),
-            models.CheckConstraint(condition=Q(creditlimit__gte=0) | Q(creditlimit__isnull=True), name="ck_account_creditlimit_nonneg"),
+            models.CheckConstraint(check=Q(openingbcr__gte=0) | Q(openingbcr__isnull=True), name="ck_account_openingbcr_nonneg"),
+            models.CheckConstraint(check=Q(openingbdr__gte=0) | Q(openingbdr__isnull=True), name="ck_account_openingbdr_nonneg"),
+            models.CheckConstraint(check=Q(accountcode__gt=0) | Q(accountcode__isnull=True), name="ck_account_accountcode_positive"),
+            models.CheckConstraint(check=Q(creditdays__gte=0) | Q(creditdays__isnull=True), name="ck_account_creditdays_nonneg"),
+            models.CheckConstraint(check=Q(creditlimit__gte=0) | Q(creditlimit__isnull=True), name="ck_account_creditlimit_nonneg"),
         ]
         indexes = [
             models.Index(fields=["entity", "accountname"], name="ix_account_entity_name"),
