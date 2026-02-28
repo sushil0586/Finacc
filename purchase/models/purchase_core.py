@@ -118,6 +118,19 @@ class PurchaseInvoiceHeader(models.Model):
 
     # ✅ default pricing behavior for UI (line can still override)
     is_rate_inclusive_of_tax_default = models.BooleanField(default=False)
+    withholding_enabled = models.BooleanField(default=False, db_index=True)
+
+    tds_section = models.ForeignKey(
+        "withholding.WithholdingSection",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="purchase_headers",
+        limit_choices_to={"tax_type": 1},  # TDS
+    )
+    tds_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    tds_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    tds_reason = models.CharField(max_length=255, null=True, blank=True)
 
     # totals (computed, persisted)
     total_taxable = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)

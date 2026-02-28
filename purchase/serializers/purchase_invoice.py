@@ -5,6 +5,8 @@ from datetime import timedelta
 
 
 from rest_framework import serializers
+from withholding.models import WithholdingSection, WithholdingTaxType
+    
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
 
 
@@ -145,6 +147,12 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
 class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     # ✅ nested lines
     lines = PurchaseInvoiceLineSerializer(many=True, required=False)
+    tds_section = serializers.PrimaryKeyRelatedField(
+        queryset=WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TDS, is_active=True),
+        required=False,
+        allow_null=True,
+    )
+
 
     # preview fields
     preview_doc_no = serializers.SerializerMethodField()
@@ -211,9 +219,13 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             "preview_doc_no",
             "preview_purchase_number",
+            "withholding_enabled",
+            "tds_section",
+            "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 
             "lines",
         ]
+        read_only_fields = ("tds_rate", "tds_base_amount", "tds_amount", "tds_reason")
 
         extra_kwargs = {
             "status": {"read_only": True},

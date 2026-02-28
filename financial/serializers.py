@@ -758,6 +758,30 @@ class AccountHeadListSerializer(serializers.ModelSerializer):
     class Meta:
         model = accountHead
         fields = ['id', 'name', 'code']
+
+
+class SimpleAccountSerializer(serializers.ModelSerializer):
+    statecode = serializers.SerializerMethodField()
+
+    class Meta:
+        model = account
+        fields = (
+            "id",
+            "accounthead",
+            "accountname",
+            "accountcode",
+            "state",
+            "statecode",
+            "district",
+            "city",
+            "pincode",
+            "gstno",
+            "pan",
+            "saccode",
+        )
+
+    def get_statecode(self, obj):
+        return obj.state.statecode if obj.state else None
            
 
 

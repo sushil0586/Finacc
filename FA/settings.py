@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     "purchase",
     "posting",
     "sales.apps.SalesConfig",
+    "withholding",
     
 ]
 
