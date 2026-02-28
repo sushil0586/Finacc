@@ -44,6 +44,7 @@ urlpatterns  = [
     path('top-account-head/', views.TopAccountHeadAPIView.as_view(), name='top-account-head'),
     path('accountheads/entity/<int:entity_id>/', views.AccountHeadListByEntityAPIView.as_view(), name='accounthead-list-by-entity'),   
     path("meta/account-choices/", AccountChoicesAPIView.as_view(), name="meta-account-choices"),
+    path("accounts/simple", views.SimpleAccountsAPIView.as_view()),
  
 
     

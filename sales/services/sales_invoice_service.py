@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
+
 from decimal import Decimal, ROUND_HALF_UP
+CUTOFF_DISABLE_206C_1H = date(2025, 4, 1)
 from typing import Dict, List, Optional, Tuple
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
+from sales.services.sales_withholding_service import SalesWithholdingService
 from financial.models import ShippingDetails
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
+from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
+
+
 
 
 
@@ -69,6 +76,79 @@ class SalesInvoiceService:
     # -------------------------
     # Settings / Lock validation
     # -------------------------
+
+    @classmethod
+    def _apply_tcs(cls, *, header: SalesInvoiceHeader, user) -> None:
+        """
+        Enforce: only ONE TCS section at a time (tcs_section FK).
+        Compute TCS AFTER totals are available.
+        """
+
+        # If not enabled => clear everything
+        if not getattr(header, "withholding_enabled", False):
+            header.tcs_section = None
+            header.tcs_rate = Decimal("0.0000")
+            header.tcs_base_amount = ZERO2
+            header.tcs_amount = ZERO2
+            header.tcs_reason = None
+            header.updated_by = user
+            header.save(update_fields=[
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "updated_by"
+            ])
+            return
+
+        # Enabled => section must be selected (one at a time)
+        if not header.tcs_section_id:
+            raise ValueError("TCS section is required when withholding_enabled is true (only one allowed).")
+
+        # Guard: 206C(1H) disabled from 2025-04-01 onwards
+        sec = header.tcs_section
+        if sec and sec.section_code and sec.section_code.strip().upper() in {"206C(1H)", "206C1H"}:
+            bill_date = header.bill_date or timezone.localdate()
+            if bill_date >= CUTOFF_DISABLE_206C_1H:
+                header.tcs_section = None
+                header.tcs_rate = Decimal("0.0000")
+                header.tcs_base_amount = ZERO2
+                header.tcs_amount = ZERO2
+                header.tcs_reason = "206C(1H) disabled from 2025-04-01"
+                header.updated_by = user
+                header.save(update_fields=[
+                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "updated_by"
+                ])
+                return
+
+        # Compute using authoritative totals (AFTER compute_and_persist_totals)
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=header.customer_id,
+            invoice_date=header.bill_date or timezone.localdate(),
+            taxable_total=q2(
+                getattr(header, "total_taxable_value", None)
+                or getattr(header, "total_taxable", None)
+                or ZERO2
+            ),
+            gross_total=q2(getattr(header, "grand_total", ZERO2) or ZERO2),
+        )
+
+        header.tcs_section = res.section  # still one FK
+        header.tcs_rate = res.rate
+        header.tcs_base_amount = res.base_amount
+        header.tcs_amount = res.amount
+        header.tcs_reason = res.reason
+        header.updated_by = user
+
+        # OPTIONAL: if you have receivable_total field
+        if hasattr(header, "customer_receivable"):
+            header.customer_receivable = q2((header.grand_total or ZERO2) + (header.tcs_amount or ZERO2))
+            header.save(update_fields=[
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                "customer_receivable",
+                "updated_by",
+            ])
+        else:
+            header.save(update_fields=[
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "updated_by"
+            ])
 
     @staticmethod
     def _validate_shipping_detail_for_customer(*, customer_id: Optional[int], shipping_detail_id: Optional[int]) -> None:
@@ -304,6 +384,8 @@ class SalesInvoiceService:
         cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._apply_tcs(header=header, user=user)
+
 
         return header
 
@@ -375,6 +457,8 @@ class SalesInvoiceService:
         cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._apply_tcs(header=header, user=user)
+
 
         return header
 
@@ -713,25 +797,72 @@ class SalesInvoiceService:
     @classmethod
     @transaction.atomic
     def post(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
-        if header.status != SalesInvoiceHeader.Status.CONFIRMED:
+        """
+        Mirrors Purchase post hook:
+          - requires CONFIRMED
+          - assert_not_locked
+          - freeze ship-to snapshot (idempotent)
+          - ensure doc number (idempotent)
+          - rebuild tax summary + recompute totals (safety)
+          - call posting adapter (GL/Stock)
+          - set POSTED
+        """
+        # ---- hard gates ----
+        if int(header.status) == int(SalesInvoiceHeader.Status.CANCELLED):
+            raise ValueError("Cannot post: document is cancelled.")
+        if int(header.status) == int(SalesInvoiceHeader.Status.POSTED):
+            return header
+        if int(header.status) != int(SalesInvoiceHeader.Status.CONFIRMED):
             raise ValueError("Only Confirmed invoices can be posted.")
-        
+
+        # ---- E-Way safety ----
         if header.is_eway_applicable and not header.shipping_detail_id:
             raise ValueError("Shipping detail is required when E-Way is applicable.")
+
+        # ---- lock-period validation ----
+        cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
+
+        # ---- snapshot (idempotent) ----
         cls.freeze_ship_to_snapshot(header=header)
 
-
-        # safety
+        # ---- safety: if someone bypassed confirm, ensure doc number exists ----
         cls.ensure_doc_number(header=header, user=user)
 
+        # ---- safety recompute (same idea as purchase hook: rebuild + totals) ----
+        # If you prefer no recompute at post time, you can remove these, but recommended.
+        cls.apply_dates(header)
+        cls.derive_tax_regime(header)
+        cls.rebuild_tax_summary(header)
+        cls.compute_and_persist_totals(header, user=user)
 
+        # reload lines list from DB (avoid stale in-memory objects)
+        header.refresh_from_db()
+        lines = list(header.lines.all())
 
-        # Posting hook here...
+        # ---- GL/Stock Posting (same as purchase adapter call) ----
+        SalesInvoicePostingAdapter.post_sales_invoice(
+            header=header,
+            lines=lines,
+            user_id=getattr(user, "id", None),
+            config=SalesInvoicePostingConfig(
+                totals_tolerance=Decimal("0.05"),
+                spread_cost_across_free_qty=True,
+                post_inventory=True,
+            ),
+        )
+
+        # ---- mark posted ----
         header.status = SalesInvoiceHeader.Status.POSTED
         header.posted_at = timezone.now()
         header.posted_by = user
         header.updated_by = user
-        header.save(update_fields=["status", "posted_at", "posted_by", "updated_by", "updated_at"])
+        header.save(update_fields=[
+            "status",
+            "posted_at",
+            "posted_by",
+            "updated_by",
+            "updated_at",
+        ])
         return header
 
 

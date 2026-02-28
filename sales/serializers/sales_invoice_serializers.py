@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 from financial.models import ShippingDetails
+from withholding.models import WithholdingSection, WithholdingTaxType
+
 
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
@@ -83,6 +85,12 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     tax_summaries = SalesTaxSummarySerializer(many=True, read_only=True)
     einvoice_artifact = SalesEInvoiceArtifactReadSerializer(read_only=True)
     eway_artifact = SalesEWayArtifactReadSerializer(read_only=True)
+
+    tcs_section = serializers.PrimaryKeyRelatedField(
+        queryset=WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TCS, is_active=True),
+        required=False,
+        allow_null=True,
+    )
 
     # ✅ explicit FK field so null works cleanly
     shipping_detail = serializers.PrimaryKeyRelatedField(
@@ -171,6 +179,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "reference",
             "remarks",
 
+            "withholding_enabled",
+            "tcs_section",
+            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+
             # nested
             "lines",
             "tax_summaries",
@@ -202,6 +214,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "navigation",
             "einvoice_artifact",
             "eway_artifact",
+            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
         ]
 
     def get_navigation(self, obj):

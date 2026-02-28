@@ -9,6 +9,8 @@ from posting.models import StaticAccount, EntityStaticAccountMap
 class StaticAccountCodes:
     # Purchase base (optional)
     PURCHASE_DEFAULT = "PURCHASE_DEFAULT"
+    SALES_REVENUE = "SALES_REVENUE"
+    SALES_OTHER_CHARGES_INCOME  = "SALES_OTHER_CHARGES_INCOME"
 
     # Sales base (optional)
     SALES_DEFAULT = "SALES_DEFAULT"
@@ -40,6 +42,9 @@ class StaticAccountCodes:
     RCM_SGST_PAYABLE = "RCM_SGST_PAYABLE"
     RCM_IGST_PAYABLE = "RCM_IGST_PAYABLE"
     RCM_CESS_PAYABLE = "RCM_CESS_PAYABLE"
+
+    TDS_PAYABLE = "TDS_PAYABLE"
+    TCS_PAYABLE = "TCS_PAYABLE"
 
 
 @dataclass

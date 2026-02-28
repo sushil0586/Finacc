@@ -8,8 +8,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
 from django.db.models import Max
+from django.utils import timezone
+
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from purchase.services.purchase_withholding_service import PurchaseWithholdingService
 from purchase.models.purchase_core import (
     PurchaseInvoiceHeader,
     PurchaseInvoiceLine,
@@ -535,43 +538,72 @@ class PurchaseInvoiceService:
     # ---------------------------
     # High-level orchestrators
     # ---------------------------
+
+    @classmethod
+    def _apply_tds(cls, *, header: PurchaseInvoiceHeader) -> None:
+        """
+        Enforce: only ONE TDS section at a time (tds_section FK).
+        Compute TDS AFTER totals are available.
+        """
+        if not getattr(header, "withholding_enabled", False):
+            header.tds_section = None
+            header.tds_rate = Decimal("0.0000")
+            header.tds_base_amount = ZERO2
+            header.tds_amount = ZERO2
+            header.tds_reason = None
+            return
+
+        if not header.tds_section_id:
+            raise ValueError("TDS section is required when withholding_enabled is true (only one allowed).")
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=header.vendor_id,
+            bill_date=header.bill_date or timezone.localdate(),
+            taxable_total=q2(getattr(header, "total_taxable", ZERO2) or ZERO2),
+            gross_total=q2(getattr(header, "grand_total", ZERO2) or ZERO2),
+        )
+
+        header.tds_section = res.section
+        header.tds_rate = res.rate
+        header.tds_base_amount = res.base_amount
+        header.tds_amount = res.amount
+        header.tds_reason = res.reason
+
+        if hasattr(header, "vendor_payable"):
+            header.vendor_payable = q2((header.grand_total or ZERO2) - (header.tds_amount or ZERO2))
+
+
     @staticmethod
     @transaction.atomic
     def create_with_lines(validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         lines_client = validated_data.pop("lines", []) or []
 
-        # lock check
         PurchaseInvoiceService.assert_not_locked(
             entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
             subentity_id=(validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity")),
             bill_date=validated_data.get("bill_date"),
         )
 
-        # snapshot + derive
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data)
         PurchaseInvoiceService.apply_dates(validated_data)
 
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data)
-
-        # enforce derived values
         validated_data["tax_regime"] = derived.tax_regime
         validated_data["is_igst"] = derived.is_igst
 
-        # basic validations
         PurchaseInvoiceService.validate_header(validated_data)
         PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived)
 
-        # compute + verify + overwrite
         lines_auth: List[Dict[str, Any]] = []
         for i, ln in enumerate(lines_client, start=1):
             auth = PurchaseInvoiceService.compute_line_authoritative(validated_data, ln, derived)
             PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i)
             lines_auth.append(auth)
 
-        # create header
         header = PurchaseInvoiceHeader.objects.create(**validated_data)
 
-        # create lines using authoritative values (bulk)
+        # lines
         max_ln = 0
         objs = []
         for ln in lines_auth:
@@ -583,20 +615,28 @@ class PurchaseInvoiceService:
                 max_ln = max(max_ln, int(ln_no))
             ln["line_no"] = ln_no
             objs.append(PurchaseInvoiceLine(header=header, **ln))
-
         if objs:
             PurchaseInvoiceLine.objects.bulk_create(objs)
 
-        # update totals from DB (source of truth) and persist
+        # totals
         db_lines = list(header.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
         totals = PurchaseInvoiceService.compute_totals(db_lines)
         PurchaseInvoiceService.apply_totals_to_header(header, totals)
-        header.save(update_fields=[
-            "total_taxable", "total_cgst", "total_sgst", "total_igst",
-            "total_cess", "total_gst", "round_off", "grand_total"
-        ])
 
-        # rebuild tax summary
+        # ✅ apply tds AFTER totals
+        PurchaseInvoiceService._apply_tds(header=header)
+
+        # ✅ single save for totals + tds (+ vendor_payable if exists)
+        update_fields = [
+            "total_taxable", "total_cgst", "total_sgst", "total_igst",
+            "total_cess", "total_gst", "round_off", "grand_total",
+            "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
+        ]
+        if hasattr(header, "vendor_payable"):
+            update_fields.append("vendor_payable")
+
+        header.save(update_fields=update_fields)
+
         PurchaseInvoiceService.rebuild_tax_summary(header)
         return header
 
@@ -605,32 +645,26 @@ class PurchaseInvoiceService:
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         lines_client = validated_data.pop("lines", []) or []
 
-        # lock check
         PurchaseInvoiceService.assert_not_locked(
-            entity_id=(instance.entity_id),
-            subentity_id=(instance.subentity_id),
+            entity_id=instance.entity_id,
+            subentity_id=instance.subentity_id,
             bill_date=(validated_data.get("bill_date") or instance.bill_date),
         )
 
-        # snapshot + derive
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data, instance=instance)
         PurchaseInvoiceService.apply_dates(validated_data, instance=instance)
 
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data, instance=instance)
-
-        # enforce derived values
         validated_data["tax_regime"] = derived.tax_regime
         validated_data["is_igst"] = derived.is_igst
 
         PurchaseInvoiceService.validate_header(validated_data, instance=instance)
         PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived, instance=instance)
 
-        # update header fields
         for k, v in validated_data.items():
             setattr(instance, k, v)
         instance.save()
 
-        # compute+verify+overwrite lines, then upsert
         header_ctx = {
             "default_taxability": instance.default_taxability,
             "is_reverse_charge": instance.is_reverse_charge,
@@ -645,14 +679,23 @@ class PurchaseInvoiceService:
 
         PurchaseInvoiceService.upsert_lines(instance, lines_auth)
 
-        # totals from DB
+        # totals
         db_lines = list(instance.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
         totals = PurchaseInvoiceService.compute_totals(db_lines)
         PurchaseInvoiceService.apply_totals_to_header(instance, totals)
-        instance.save(update_fields=[
+
+        # ✅ apply tds AFTER totals
+        PurchaseInvoiceService._apply_tds(header=instance)
+
+        update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
-            "total_cess", "total_gst", "round_off", "grand_total"
-        ])
+            "total_cess", "total_gst", "round_off", "grand_total",
+            "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
+        ]
+        if hasattr(instance, "vendor_payable"):
+            update_fields.append("vendor_payable")
+
+        instance.save(update_fields=update_fields)
 
         PurchaseInvoiceService.rebuild_tax_summary(instance)
         return instance

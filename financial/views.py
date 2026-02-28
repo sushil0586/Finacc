@@ -3,6 +3,8 @@ from django.shortcuts import render
 from rest_framework import response,status,permissions
 from django.db import transaction
 from rest_framework.viewsets import ModelViewSet
+from .serializers import SimpleAccountSerializer
+
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView
 from financial.models import account, accountHead,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
@@ -1261,6 +1263,25 @@ class AccountHeadListByEntityAPIView(APIView):
             "credit": credit_data,
             "debit": debit_data
         }, status=status.HTTP_200_OK)
+
+
+
+class SimpleAccountsAPIView(ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SimpleAccountSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {
+        "accounthead__code": ["in", "exact"],
+    }
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get("entity")
+        if not entity_id:
+            return account.objects.none()
+
+        return account.objects.filter(
+            entity_id=entity_id   # if entity is on account
+        ).order_by("accountname")
 
 
     

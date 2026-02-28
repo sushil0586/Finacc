@@ -93,22 +93,25 @@ class SalesSettingsService:
             )
 
         # ✅ state preference: SubEntity.state > Entity.state
-        seller_state_id = (se.state_id if se and se.state_id else entity.state_id)
+        seller_state = (se.state if se and se.state else entity.state)
+        seller_state_id = seller_state.id if seller_state else None
+        seller_statecode = seller_state.statecode if seller_state else None
 
         return {
             "entity_id": entity.id,
             "subentity_id": se.id if se else None,
 
-            # ✅ GST always from Entity (since SubEntity has no gstno field)
+            # GST always from Entity
             "gstno": entity.gstno,
 
             "state_id": seller_state_id,
+            "statecode": seller_statecode,  # ✅ ADDED
 
             # optional info for print/einvoice payloads
             "entityname": entity.entityname,
             "legalname": entity.legalname,
             "address": (se.address if se and se.address else entity.address),
-            "address2": (getattr(se, "address2", None) if se else entity.address2),  # SubEntity doesn't have address2; safe
+            "address2": (getattr(se, "address2", None) if se else entity.address2),
             "pincode": (se.pincode if se and se.pincode else entity.pincode),
 
             "country_id": (se.country_id if se and se.country_id else entity.country_id),

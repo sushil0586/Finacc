@@ -340,6 +340,28 @@ class PurchaseInvoicePostingAdapter:
                     description=f"{narration} (Round-off income)",
                 ))
 
+        ZERO2 = Decimal("0.00")
+
+        tds = q2(getattr(header, "tds_amount", None) or ZERO2)
+        if tds > ZERO2:
+            tds_payable_ac = resolver.get_account_id(StaticAccountCodes.TDS_PAYABLE, required=True)
+
+            # Dr Vendor Payable (reduce vendor liability)
+            jl.append(JLInput(
+                account_id=int(header.vendor_id),
+                drcr=True,  # DR
+                amount=tds,
+                description=f"{narration} (TDS deducted)",
+            ))
+
+            # Cr TDS Payable
+            jl.append(JLInput(
+                account_id=int(tds_payable_ac),
+                drcr=False,  # CR
+                amount=tds,
+                description=f"{narration} (TDS payable)",
+            ))
+
         # 1E) Vendor balancing line (works for Invoice/CN/DN)
         dr_sum = q2(sum(x.amount for x in jl if x.drcr))
         cr_sum = q2(sum(x.amount for x in jl if not x.drcr))

@@ -151,6 +151,21 @@ class SalesInvoiceHeader(EntityScopedModel):
     is_einvoice_applicable = models.BooleanField(default=False)
     is_eway_applicable = models.BooleanField(default=False)
 
+
+    withholding_enabled = models.BooleanField(default=False, db_index=True)
+
+    tcs_section = models.ForeignKey(
+        "withholding.WithholdingSection",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="sales_headers",
+        limit_choices_to={"tax_type": 2},  # TCS
+    )
+    tcs_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    tcs_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    tcs_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    tcs_reason = models.CharField(max_length=255, null=True, blank=True)
+
     # -------------------------
     # Totals (computed in service)
     # -------------------------

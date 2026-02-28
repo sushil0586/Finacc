@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from entity.models import Entity, subentity
+from entity.models import Entity, SubEntity
 from purchase.models.purchase_config import PurchaseChoiceOverride
 
 
@@ -20,7 +20,7 @@ class Command(BaseCommand):
         subentity_id = opts.get("subentity")
 
         ent = Entity.objects.get(pk=entity_id)
-        sub = subentity.objects.get(pk=subentity_id) if subentity_id else None
+        sub = SubEntity.objects.get(pk=subentity_id) if subentity_id else None
 
         self.stdout.write(self.style.SUCCESS("🔹 Seeding PurchaseChoiceOverride masters..."))
 
