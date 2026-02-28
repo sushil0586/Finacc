@@ -182,6 +182,61 @@ class MasterGSTClient:
             return data
 
         return {**debug, "_not_dict": True, "_raw": data}
+    
+
+    def generate_ewaybill(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        POST Generate E-Way Bill (V1_03)
+        - Uses dashboard client_id/client_secret ✅
+        - Uses auth-token ✅
+        - Retries once on ErrorCode 1005 (Invalid Token) ✅
+        """
+        token = self.get_token(force=False)
+
+        email_q = quote(self.cred.email)
+        url = f"{self.base_url}/einvoice/type/GENERATE_EWAYBILL/version/V1_03?email={email_q}"
+
+        headers = {
+            "accept": "*/*",
+            "Content-Type": "application/json",
+            "auth-token": token,
+            "client_id": self.cred.client_id,
+            "client_secret": self.cred.client_secret,
+            "gstin": self.cred.gstin,
+            "ip_address": self._resolve_ip(),
+            "username": self.cred.gst_username,
+            "txn": uuid.uuid4().hex,
+        }
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        data = self._safe_json(resp)
+
+        # Retry once on invalid token (1005)
+        try:
+            if str(data.get("status_cd")) == "0" and "1005" in str(data.get("status_desc", "")):
+                token = self.get_token(force=True)
+                headers["auth-token"] = token
+                resp = requests.post(url, json=payload, headers=headers, timeout=60)
+                data = self._safe_json(resp)
+        except Exception:
+            pass
+
+        # Attach debug info
+        debug = {
+            "_url": url,
+            "_payload_sent": payload,
+            "_http_status": str(resp.status_code),
+            "_content_length": str(len(resp.content or b"")),
+            "_content_type": resp.headers.get("Content-Type"),
+            "_resp_headers": dict(resp.headers),
+            "_client_id_used": self.cred.client_id,
+        }
+
+        if isinstance(data, dict):
+            data.update(debug)
+            return data
+
+        return {**debug, "_not_dict": True, "_raw": data}
 
     @staticmethod
     def _safe_json(resp: requests.Response) -> Dict[str, Any]:
@@ -199,3 +254,6 @@ class MasterGSTClient:
                 "_status": resp.status_code,
                 "_text": resp.text,
             }
+
+
+

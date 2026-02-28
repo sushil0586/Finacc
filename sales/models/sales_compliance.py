@@ -153,6 +153,8 @@ class SalesEWayBill(models.Model):
         db_index=True,
     )
 
+    vehicle_type = models.CharField(max_length=1, null=True, blank=True)  # "R" or "O"
+
     ewb_no = models.CharField(max_length=32, null=True, blank=True, db_index=True)
     ewb_date = models.DateTimeField(null=True, blank=True)
     valid_upto = models.DateTimeField(null=True, blank=True)
@@ -162,9 +164,11 @@ class SalesEWayBill(models.Model):
     transporter_name = models.CharField(max_length=128, null=True, blank=True)
     transport_mode = models.PositiveSmallIntegerField(null=True, blank=True)  # 1-Road,2-Rail,3-Air,4-Ship
     distance_km = models.PositiveIntegerField(null=True, blank=True)
+    doc_type = models.CharField(max_length=8, null=True, blank=True)  # e.g., INV / LR / GR etc.
 
     vehicle_no = models.CharField(max_length=32, null=True, blank=True)
-    vehicle_type = models.PositiveSmallIntegerField(null=True, blank=True)  # 1-Regular, 2-ODC
+    disp_dtls_json = models.JSONField(null=True, blank=True)
+    exp_ship_dtls_json = models.JSONField(null=True, blank=True)
     doc_no = models.CharField(max_length=32, null=True, blank=True)
     doc_date = models.DateField(null=True, blank=True)
 
