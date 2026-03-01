@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.db import transaction
+import json
 from typing import Any, Dict, Optional
 from sales.models.sales_compliance import NICEnvironment  # adjust import path
+from sales.services.eway.payload_b2c import build_b2c_direct_payload
+
 
 import inspect
 from sales.services.providers.mastergst_client import MasterGSTClient
@@ -642,4 +645,103 @@ class SalesComplianceService:
             "invoice_status": invoice.status,
             "irn": irn,
             "eway": self._ewb_state(ewb),
+        }
+    
+
+    def eway_prefill_b2c(self, invoice):
+            ewb = getattr(invoice, "ewaybill_artifact", None) or getattr(invoice, "eway_artifact", None)
+
+            # Eligibility for B2C: no IRN required; require ship-to snapshot + transport details
+            ship = getattr(invoice, "ship_to_snapshot", None)
+            ent = getattr(invoice, "entity", None)
+
+            missing = []
+            if not ent or not getattr(ent, "pincode", None): missing.append("entity.pincode")
+            if not ship or not getattr(ship, "pincode", None): missing.append("ship_to_snapshot.pincode")
+            if not ship or not getattr(ship, "state_code", None): missing.append("ship_to_snapshot.state_code")
+
+            if not ewb: missing.append("eway_artifact (create SalesEWayBill row)")
+            else:
+                if not ewb.distance_km: missing.append("eway.distance_km")
+                if ewb.transport_mode == 1 and not ewb.vehicle_no: missing.append("eway.vehicle_no (road)")
+                if not ewb.transport_mode: missing.append("eway.transport_mode")
+
+            if missing:
+                return {
+                    "eligible": False,
+                    "reason": f"Missing: {', '.join(missing)}",
+                    "invoice_id": invoice.id,
+                    "invoice_status": invoice.status,
+                    "eway": self._ewb_state(ewb),
+                }
+
+            return {
+                "eligible": True,
+                "reason": None,
+                "invoice_id": invoice.id,
+                "invoice_status": invoice.status,
+                "eway": self._ewb_state(ewb),
+            }
+    
+    def eway_generate_b2c(self, invoice, *, user=None) -> dict:
+        ewb = getattr(invoice, "ewaybill_artifact", None) or getattr(invoice, "eway_artifact", None)
+        if not ewb:
+            ewb = SalesEWayBill.objects.create(invoice=invoice)
+
+        if ewb.status == SalesEWayStatus.GENERATED and ewb.ewb_no:
+            return {"status": "SUCCESS", "ewb_no": ewb.ewb_no, "valid_upto": ewb.valid_upto}
+
+        cred = self._get_mastergst_cred_for_entity(invoice.entity)
+        client = MasterGSTClient(cred)
+
+        payload = build_b2c_direct_payload(invoice=invoice, ewb=ewb, entity_gstin=cred.gstin)
+
+        # save request snapshot
+        ewb.last_request_json = payload
+        ewb.last_error_code = None
+        ewb.last_error_message = None
+        ewb.attempt_count = int(ewb.attempt_count or 0) + 1
+        ewb.last_attempt_at = timezone.now()
+        ewb.status = SalesEWayStatus.PENDING
+        if user:
+            ewb.updated_by = user
+        ewb.save()
+
+        call = client.generate_eway_direct(payload)
+        resp = call["response"]
+        ewb.last_response_json = resp
+
+        status_cd = str(resp.get("status_cd") or "")
+        if status_cd == "1":
+            data = resp.get("data") or resp
+            ewb.ewb_no = str(data.get("ewayBillNo") or data.get("EwbNo") or "") or None
+            ewb.status = SalesEWayStatus.GENERATED
+            ewb.last_success_at = timezone.now()
+            if user:
+                ewb.updated_by = user
+            ewb.save()
+            return {"status": "SUCCESS", "ewb_no": ewb.ewb_no, "raw": resp}
+
+        # parse MasterGST error array string
+        status_desc = str(resp.get("status_desc") or "")
+        try:
+            arr = json.loads(status_desc)
+            if isinstance(arr, list) and arr:
+                ewb.last_error_code = str(arr[0].get("ErrorCode") or "")
+                ewb.last_error_message = str(arr[0].get("ErrorMessage") or status_desc)
+            else:
+                ewb.last_error_message = status_desc
+        except Exception:
+            ewb.last_error_message = status_desc or "E-Way failed"
+
+        ewb.status = SalesEWayStatus.FAILED
+        if user:
+            ewb.updated_by = user
+        ewb.save()
+
+        return {
+            "status": "FAILED",
+            "error_code": ewb.last_error_code or "EWB_FAILED",
+            "error_message": ewb.last_error_message or "E-Way failed",
+            "raw": resp,
         }

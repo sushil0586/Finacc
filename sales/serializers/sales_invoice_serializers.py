@@ -3,6 +3,8 @@ from __future__ import annotations
 from rest_framework import serializers
 from financial.models import ShippingDetails
 from withholding.models import WithholdingSection, WithholdingTaxType
+from decimal import Decimal
+
 
 
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
@@ -17,8 +19,10 @@ from sales.serializers.sales_compliance_serializers import (
 
 
 class SalesInvoiceLineSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source="product.name", read_only=True)
+    product_name = serializers.CharField(source="product.productname", read_only=True)
     uom_code = serializers.CharField(source="uom.code", read_only=True)
+
+    gstRateAmount = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesInvoiceLine
@@ -27,6 +31,7 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "line_no",
             "product",
             "product_name",
+            "productDesc",
             "uom",
             "uom_code",
             "hsn_sac_code",
@@ -46,6 +51,7 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "cgst_amount",
             "sgst_amount",
             "igst_amount",
+            "gstRateAmount",   # ✅ NEW
             "line_total",
             "sales_account",
         ]
@@ -54,8 +60,26 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "cgst_amount",
             "sgst_amount",
             "igst_amount",
+            "gstRateAmount",   # ✅ NEW
             "line_total",
         ]
+
+    def get_gstRateAmount(self, obj) -> str:
+        """
+        Sum of GST tax amounts for the line.
+        - For intra-state: CGST + SGST
+        - For inter-state: IGST
+        Returns as string to match DRF Decimal JSON behavior.
+        """
+        ZERO = Decimal("0.00")
+        cgst = getattr(obj, "cgst_amount", None) or ZERO
+        sgst = getattr(obj, "sgst_amount", None) or ZERO
+        igst = getattr(obj, "igst_amount", None) or ZERO
+
+        if igst > ZERO:
+            return str(igst)
+
+        return str(cgst + sgst)
 
 
 class SalesTaxSummarySerializer(serializers.ModelSerializer):
@@ -148,6 +172,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "seller_gstin",
             "seller_state_code",
             "place_of_supply_state_code",
+            "place_of_supply_pincode",
 
             "supply_category",
             "supply_category_name",
