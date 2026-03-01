@@ -124,6 +124,7 @@ class SalesInvoiceHeader(EntityScopedModel):
 
     # Place of supply
     place_of_supply_state_code = models.CharField(max_length=2, blank=True, default="")
+    place_of_supply_pincode = models.CharField(max_length=2, blank=True, default="")
 
     # -------------------------
     # GST classification / regime
@@ -236,6 +237,7 @@ class SalesInvoiceLine(EntityScopedModel):
     line_no = models.PositiveIntegerField(default=1)
 
     product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT, related_name="sales_lines")
+    productDesc = models.CharField(max_length=200, blank=True, default="")
     uom = models.ForeignKey("catalog.UnitOfMeasure", on_delete=models.PROTECT, related_name="sales_lines")
 
     hsn_sac_code = models.CharField(max_length=20, blank=True, default="")

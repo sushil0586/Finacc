@@ -134,6 +134,11 @@ class SalesEInvoiceCancel(models.Model):
         return f"SalesEInvoiceCancel(einvoice_id={self.einvoice_id}, at={self.cancelled_at})"
 
 
+class SalesEWaySource(models.TextChoices):
+    DIRECT = "DIRECT", "Direct (no IRN)"
+    IRN = "IRN", "From IRN (IRP)"
+
+
 class SalesEWayBill(models.Model):
     """
     E-Way Bill compliance artifact.
@@ -165,6 +170,13 @@ class SalesEWayBill(models.Model):
     transport_mode = models.PositiveSmallIntegerField(null=True, blank=True)  # 1-Road,2-Rail,3-Air,4-Ship
     distance_km = models.PositiveIntegerField(null=True, blank=True)
     doc_type = models.CharField(max_length=8, null=True, blank=True)  # e.g., INV / LR / GR etc.
+
+    eway_source = models.CharField(
+        max_length=10,
+        choices=SalesEWaySource.choices,
+        default=SalesEWaySource.DIRECT,
+        db_index=True,
+    )
 
     vehicle_no = models.CharField(max_length=32, null=True, blank=True)
     disp_dtls_json = models.JSONField(null=True, blank=True)

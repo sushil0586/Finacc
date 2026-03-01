@@ -1,5 +1,5 @@
 from django.urls import path
-from sales.views.eway_views import SalesInvoiceEWayPrefillAPIView, SalesInvoiceGenerateEWayAPIView
+from sales.views.eway_views import SalesInvoiceEWayPrefillAPIView, SalesInvoiceGenerateEWayAPIView,SalesInvoiceEWayB2CPrefillAPIView,SalesInvoiceEWayB2CGenerateAPIView
 
 
 from sales.views.sales_invoice_views import (
@@ -31,5 +31,7 @@ urlpatterns = [
     path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/eway/prefill/", SalesInvoiceEWayPrefillAPIView.as_view()),
-    path("sales-invoices/<int:id>/  ", SalesInvoiceGenerateEWayAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/generate-eway/", SalesInvoiceGenerateEWayAPIView.as_view()),
+     path("sales/sales-invoices/<int:id>/compliance/eway-b2c-prefill/", SalesInvoiceEWayB2CPrefillAPIView.as_view()),
+    path("sales/sales-invoices/<int:id>/compliance/generate-eway-b2c/", SalesInvoiceEWayB2CGenerateAPIView.as_view()),
 ]
