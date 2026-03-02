@@ -222,6 +222,17 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "withholding_enabled",
             "tds_section",
             "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
+            "gst_tds_enabled",
+            "gst_tds_contract_ref",
+            "gst_tds_reason",
+
+            "gst_tds_rate",
+            "gst_tds_base_amount",
+            "gst_tds_cgst_amount",
+            "gst_tds_sgst_amount",
+            "gst_tds_igst_amount",
+            "gst_tds_amount",
+            "gst_tds_status",
 
             "lines",
         ]

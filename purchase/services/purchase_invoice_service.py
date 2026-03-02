@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from gst_tds.services.gst_tds_service import GstTdsService
+
 
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,6 +46,10 @@ def q4(x) -> Decimal:
 def near(a, b, tol=TOL) -> bool:
     return abs(q2(a) - q2(b)) <= tol
 
+ZERO2 = Decimal("0.00")
+RATE_TOTAL = Decimal("2.0000")   # 2%
+RATE_HALF = Decimal("1.0000")    # 1% + 1%
+
 
 @dataclass(frozen=True)
 class DerivedRegime:
@@ -67,6 +73,57 @@ class PurchaseInvoiceService:
         locked, reason = PurchaseSettingsService.is_locked(entity_id, subentity_id, bill_date)
         if locked:
             raise ValueError(f"Purchase period locked. {reason}")
+        
+    @staticmethod
+    def _apply_gst_tds(*, header: PurchaseInvoiceHeader) -> None:
+        """
+        GST-TDS u/s 51 (separate from income tax TDS).
+        Base = total_taxable (excl GST/cess).
+        Split based on tax_regime/is_igst.
+        Threshold/contract tracking can be added later; for now compute directly if enabled.
+        """
+        # reset defaults always (safe)
+        header.gst_tds_rate = q4(Decimal("0.0000"))
+        header.gst_tds_base_amount = q2(ZERO2)
+        header.gst_tds_cgst_amount = q2(ZERO2)
+        header.gst_tds_sgst_amount = q2(ZERO2)
+        header.gst_tds_igst_amount = q2(ZERO2)
+        header.gst_tds_amount = q2(ZERO2)
+        header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)  # NA
+
+        if not getattr(header, "gst_tds_enabled", False):
+            return
+
+        # contract ref required (because threshold is contract-wise)
+        contract_ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip()
+        if not contract_ref:
+            # keep NA but you may choose to raise in serializer validation
+            return
+
+        # base must be taxable value (excluding GST)
+        base = q2(getattr(header, "total_taxable", None) or ZERO2)
+        if base <= ZERO2:
+            return
+
+        header.gst_tds_rate = q4(RATE_TOTAL)
+        header.gst_tds_base_amount = base
+
+        is_inter = (int(getattr(header, "tax_regime", 1)) == int(header.TaxRegime.INTER)) or bool(getattr(header, "is_igst", False))
+
+        total = q2(base * q4(RATE_TOTAL) / Decimal("100.00"))
+        if total <= ZERO2:
+            return
+
+        if is_inter:
+            header.gst_tds_igst_amount = total
+            header.gst_tds_amount = total
+        else:
+            half = q2(base * q4(RATE_HALF) / Decimal("100.00"))
+            header.gst_tds_cgst_amount = half
+            header.gst_tds_sgst_amount = half
+            header.gst_tds_amount = q2(half + half)
+
+        header.gst_tds_status = getattr(header.GstTdsStatus, "ELIGIBLE", 1)  # ELIGIBLE
 
     # ---------------------------
     # Vendor snapshot
@@ -626,11 +683,20 @@ class PurchaseInvoiceService:
         # ✅ apply tds AFTER totals
         PurchaseInvoiceService._apply_tds(header=header)
 
+        PurchaseInvoiceService._apply_gst_tds(header=header)
+
         # ✅ single save for totals + tds (+ vendor_payable if exists)
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
             "total_cess", "total_gst", "round_off", "grand_total",
+
+            # income tax tds
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
+
+            # gst tds
+            "gst_tds_rate", "gst_tds_base_amount",
+            "gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount",
+            "gst_tds_amount", "gst_tds_status",
         ]
         if hasattr(header, "vendor_payable"):
             update_fields.append("vendor_payable")
@@ -687,10 +753,19 @@ class PurchaseInvoiceService:
         # ✅ apply tds AFTER totals
         PurchaseInvoiceService._apply_tds(header=instance)
 
+        PurchaseInvoiceService._apply_gst_tds(header=instance)
+
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
             "total_cess", "total_gst", "round_off", "grand_total",
+
+            # income tax tds
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
+
+            # gst tds
+            "gst_tds_rate", "gst_tds_base_amount",
+            "gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount",
+            "gst_tds_amount", "gst_tds_status",
         ]
         if hasattr(instance, "vendor_payable"):
             update_fields.append("vendor_payable")

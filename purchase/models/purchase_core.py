@@ -59,6 +59,13 @@ class PurchaseInvoiceHeader(models.Model):
         REVERSED = 3, "Reversed"
         BLOCKED = 4, "Blocked (17(5)/etc)"
 
+    class GstTdsStatus(models.IntegerChoices):
+        NA = 0, "Not Applicable"
+        ELIGIBLE = 1, "Eligible"
+        DEDUCTED = 2, "Deducted"
+        DEPOSITED = 3, "Deposited"
+        REPORTED = 4, "Reported (GSTR-7)"
+
     # ---- identity ----
     doc_type = models.IntegerField(choices=DocType.choices, default=DocType.TAX_INVOICE)
     bill_date = models.DateField(default=timezone.now)
@@ -143,6 +150,29 @@ class PurchaseInvoiceHeader(models.Model):
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT)
+
+     # ==========================================================
+    # GST-TDS u/s 51 (NEW) - completely independent from IT TDS
+    # ==========================================================
+    gst_tds_enabled = models.BooleanField(default=False, db_index=True)
+
+    # Contract reference (needed because threshold is contract-wise)
+    gst_tds_contract_ref = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # Computed by backend (UI must NOT send)
+    gst_tds_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    gst_tds_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    gst_tds_cgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    gst_tds_sgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    gst_tds_igst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    gst_tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+
+    gst_tds_reason = models.CharField(max_length=255, null=True, blank=True)
+
+    
+
+    gst_tds_status = models.IntegerField(choices=GstTdsStatus.choices, default=GstTdsStatus.NA, db_index=True)
 
     # SaaS scope
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
