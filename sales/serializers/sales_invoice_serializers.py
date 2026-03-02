@@ -23,6 +23,10 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
     uom_code = serializers.CharField(source="uom.code", read_only=True)
 
     gstRateAmount = serializers.SerializerMethodField()
+    discount_type_name = serializers.CharField(
+        source="get_discount_type_display",
+        read_only=True
+    )
 
     class Meta:
         model = SalesInvoiceLine
@@ -41,6 +45,7 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "rate",
             "is_rate_inclusive_of_tax",
             "discount_type",
+            "discount_type_name",
             "discount_percent",
             "discount_amount",
             "gst_rate",

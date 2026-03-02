@@ -32,6 +32,6 @@ urlpatterns = [
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/eway/prefill/", SalesInvoiceEWayPrefillAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/generate-eway/", SalesInvoiceGenerateEWayAPIView.as_view()),
-     path("sales/sales-invoices/<int:id>/compliance/eway-b2c-prefill/", SalesInvoiceEWayB2CPrefillAPIView.as_view()),
-    path("sales/sales-invoices/<int:id>/compliance/generate-eway-b2c/", SalesInvoiceEWayB2CGenerateAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/eway-b2c-prefill/", SalesInvoiceEWayB2CPrefillAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/generate-eway-b2c/", SalesInvoiceEWayB2CGenerateAPIView.as_view()),
 ]

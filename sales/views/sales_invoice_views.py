@@ -69,20 +69,22 @@ class SalesInvoiceRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
     serializer_class = SalesInvoiceHeaderSerializer
 
     def get_queryset(self):
+        lines_qs = SalesInvoiceLine.objects.all().order_by("line_no")  # ✅ no only(), no select_related()
+
         return (
             SalesInvoiceHeader.objects.all()
             .select_related(
                 "customer",
-                "shipping_detail",         # ✅ new
-                "shipping_detail__state",  # ✅ optional
-                "shipping_detail__city",   # ✅ optional
-                "shipto_snapshot",         # ✅ new (OneToOne)
+                "shipping_detail",
+                "shipping_detail__state",
+                "shipping_detail__city",
+                "shipto_snapshot",
             )
             .prefetch_related(
-                Prefetch(
-                    "lines",
-                    queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no"),
-                ),
+                Prefetch("lines", queryset=lines_qs),
+                # ✅ load related product/uom via prefetch (separate queries, no select_related)
+                "lines__product",
+                "lines__uom",
                 Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
             )
         )

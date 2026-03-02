@@ -4,6 +4,9 @@ from django.contrib import admin, messages
 from django.db import transaction
 from django.utils.html import format_html
 from django.utils import timezone
+from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken
+from sales.services.providers.mastergst_client import MasterGSTClient
+
 
 from sales.models.sales_settings import SalesSettings, SalesLockPeriod, SalesChoiceOverride
 from sales.models.sales_core import (
@@ -599,3 +602,184 @@ class SalesChoiceOverrideAdmin(admin.ModelAdmin):
     list_display = ("entity", "subentity", "choice_group", "choice_key", "is_enabled", "override_label")
     list_filter = ("choice_group", "is_enabled", "entity")
     search_fields = ("choice_group", "choice_key", "override_label")
+
+
+@admin.register(SalesMasterGSTCredential)
+class SalesMasterGSTCredentialAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "entity",
+        "environment",
+        "service_scope",
+        "gstin",
+        "email",
+        "gst_username",
+        "ip_mode",
+        "is_active",
+        "updated_at",
+    )
+    list_filter = ("environment", "service_scope", "is_active", "allow_all_ips")
+    search_fields = ("gstin", "email", "gst_username", "entity__name")
+    autocomplete_fields = ("entity",)
+    ordering = ("-updated_at",)
+
+    readonly_fields = ("created_at", "updated_at")
+
+    fieldsets = (
+        ("Identity", {
+            "fields": ("entity", "environment", "service_scope", "is_active"),
+        }),
+        ("GST / Login", {
+            "fields": ("gstin", "email", "gst_username", "gst_password"),
+        }),
+        ("Client (MasterGST)", {
+            "fields": ("client_id", "client_secret"),
+        }),
+        ("IP Policy", {
+            "fields": ("allow_all_ips", "ip_address"),
+        }),
+        ("Timestamps", {
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
+
+    actions = ("action_authenticate_refresh_token", "action_clear_token", "action_deactivate")
+
+    def ip_mode(self, obj: SalesMasterGSTCredential) -> str:
+        if obj.allow_all_ips:
+            return "ALL"
+        return obj.ip_address or "MISSING"
+    ip_mode.short_description = "IP"
+
+    @admin.action(description="Authenticate (E-Invoice) and refresh token")
+    def action_authenticate_refresh_token(self, request, queryset):
+        ok = 0
+        fail = 0
+
+        for cred in queryset:
+            try:
+                client = MasterGSTClient(cred)
+                client.get_token(force=True)
+                ok += 1
+            except Exception as e:
+                fail += 1
+                self.message_user(
+                    request,
+                    f"[{cred.id}] Auth failed: {e}",
+                    level=messages.ERROR,
+                )
+
+        if ok:
+            self.message_user(request, f"Token refreshed for {ok} credential(s).", level=messages.SUCCESS)
+        if not ok and not fail:
+            self.message_user(request, "No credentials selected.", level=messages.WARNING)
+
+    @admin.action(description="Clear stored token (if any)")
+    def action_clear_token(self, request, queryset):
+        count = 0
+        for cred in queryset:
+            tok = SalesMasterGSTToken.objects.filter(credential=cred).first()
+            if tok:
+                tok.auth_token = None
+                tok.token_expiry = None
+                tok.last_error_message = "CLEARED_BY_ADMIN"
+                tok.save(update_fields=["auth_token", "token_expiry", "last_error_message"])
+                count += 1
+        self.message_user(request, f"Cleared token for {count} credential(s).", level=messages.SUCCESS)
+
+    @admin.action(description="Deactivate selected credentials")
+    def action_deactivate(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Deactivated {updated} credential(s).", level=messages.SUCCESS)
+
+
+@admin.register(SalesMasterGSTToken)
+class SalesMasterGSTTokenAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "credential_link",
+        "credential_entity",
+        "credential_environment",
+        "credential_scope",
+        "token_status",
+        "token_expiry",
+        "last_auth_at",
+        "last_error_message",
+        "updated_at",
+    )
+    list_filter = ("credential__environment", "credential__service_scope")
+    search_fields = ("credential__gstin", "credential__email", "credential__gst_username", "credential__entity__name")
+    autocomplete_fields = ("credential",)
+    ordering = ("-updated_at",)
+
+    readonly_fields = (
+        
+        "updated_at",
+        "last_auth_at",
+        "last_response_json",
+    )
+
+    fieldsets = (
+        ("Credential", {"fields": ("credential",)}),
+        ("Token", {"fields": ("auth_token", "token_expiry")}),
+        ("Status", {"fields": ("last_auth_at", "last_error_message")}),
+        ("Last Response Snapshot", {"fields": ("last_response_json",)}),
+        ("Timestamps", {"fields": ("created_at", "updated_at")}),
+    )
+
+    actions = ("action_reauth_force", "action_clear_token")
+
+    def credential_link(self, obj: SalesMasterGSTToken):
+        c = obj.credential
+        return format_html("<b>#{} </b> {} / {}", c.id, c.gstin, c.email)
+    credential_link.short_description = "Credential"
+
+    def credential_entity(self, obj: SalesMasterGSTToken):
+        return obj.credential.entity
+    credential_entity.short_description = "Entity"
+
+    def credential_environment(self, obj: SalesMasterGSTToken):
+        return obj.credential.environment
+    credential_environment.short_description = "Env"
+
+    def credential_scope(self, obj: SalesMasterGSTToken):
+        return obj.credential.service_scope
+    credential_scope.short_description = "Scope"
+
+    def token_status(self, obj: SalesMasterGSTToken):
+        try:
+            valid = obj.is_valid()
+        except Exception:
+            valid = False
+        if valid:
+            return format_html('<span style="color: green; font-weight: 600;">VALID</span>')
+        return format_html('<span style="color: #b00020; font-weight: 600;">EXPIRED</span>')
+    token_status.short_description = "Token"
+
+    @admin.action(description="Force re-auth (refresh token) for selected tokens")
+    def action_reauth_force(self, request, queryset):
+        ok = 0
+        fail = 0
+        for tok in queryset.select_related("credential"):
+            try:
+                client = MasterGSTClient(tok.credential)
+                client.get_token(force=True)
+                ok += 1
+            except Exception as e:
+                fail += 1
+                self.message_user(request, f"[token:{tok.id}] re-auth failed: {e}", level=messages.ERROR)
+        if ok:
+            self.message_user(request, f"Re-auth succeeded for {ok} token(s).", level=messages.SUCCESS)
+        if not ok and not fail:
+            self.message_user(request, "No tokens selected.", level=messages.WARNING)
+
+    @admin.action(description="Clear selected tokens")
+    def action_clear_token(self, request, queryset):
+        updated = 0
+        for tok in queryset:
+            tok.auth_token = None
+            tok.token_expiry = None
+            tok.last_error_message = "CLEARED_BY_ADMIN"
+            tok.save(update_fields=["auth_token", "token_expiry", "last_error_message"])
+            updated += 1
+        self.message_user(request, f"Cleared {updated} token(s).", level=messages.SUCCESS)

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from django.db.models import Max   # ✅ ADD THIS
 
+
+from typing import Any
+
+from datetime import date
+from rest_framework.exceptions import ValidationError
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from decimal import Decimal, ROUND_HALF_UP
 CUTOFF_DISABLE_206C_1H = date(2025, 4, 1)
 from typing import Dict, List, Optional, Tuple
@@ -497,63 +506,117 @@ class SalesInvoiceService:
     # -------------------------
     # Lines upsert + compute
     # -------------------------
-    @classmethod
-    def upsert_lines(
-        cls,
-        *,
-        header: SalesInvoiceHeader,
-        incoming_lines: list,
-        user,
-        allow_delete: bool,
-    ):
-        """
-        Same behavior as your Purchase nested update:
-          - if id is 0 / missing => create
-          - if id exists => update
-          - if existing not present => delete (if allow_delete)
-        """
-        existing = {l.id: l for l in header.lines.all()}
+    @staticmethod
+    def upsert_lines(*, header, incoming_lines, user, allow_delete: bool) -> None:
+        incoming_lines = incoming_lines or []
+
+        # ✅ Always compute max from DB (ignores any deferred manager weirdness)
+        max_ln = int(header.lines.aggregate(m=Max("line_no")).get("m") or 0)
+
+        # ✅ Build existing maps from DB (no .only(), no defers)
+        existing_rows = list(header.lines.all().values("id", "line_no"))
+        existing_by_id = {int(r["id"]): int(r["line_no"] or 0) for r in existing_rows}
+        existing_by_lineno = {int(r["line_no"]): int(r["id"]) for r in existing_rows if r["line_no"]}
+
+        # ---- validate duplicate line_no in payload itself ----
+        payload_linenos = []
+        for r in incoming_lines:
+            ln = r.get("line_no", None)
+            if ln is not None:
+                try:
+                    payload_linenos.append(int(ln))
+                except Exception:
+                    pass
+        dupes = {x for x in payload_linenos if x > 0 and payload_linenos.count(x) > 1}
+        if dupes:
+            raise ValidationError({"lines": [f"Duplicate line_no in payload: {sorted(dupes)}"]})
+
         seen_ids = set()
 
-        # Determine next line_no if not provided
-        max_line_no = 0
-        for l in existing.values():
-            max_line_no = max(max_line_no, l.line_no or 0)
-
-        for row in incoming_lines or []:
+        for row in incoming_lines:
             row_id = int(row.get("id") or 0)
-            if row_id and row_id in existing:
-                line = existing[row_id]
-                seen_ids.add(row_id)
-                cls.apply_line_inputs(line, row)
-                line.updated_by = user
-                cls.compute_line_amounts(header, line)
-                line.full_clean(exclude=None)
-                line.save()
-            else:
-                max_line_no += 1
-                line = SalesInvoiceLine(
-                    header=header,
-                    entity_id=header.entity_id,
-                    entityfinid_id=header.entityfinid_id,
-                    subentity_id=header.subentity_id,
-                    line_no=int(row.get("line_no") or max_line_no),
-                    created_by=user,
-                    updated_by=user,
-                )
-                cls.apply_line_inputs(line, row)
-                cls.compute_line_amounts(header, line)
-                line.full_clean(exclude=None)
-                line.save()
+            row_ln = int(row.get("line_no") or 0)
 
+            # ✅ If UI forgot id but line_no matches existing, treat as UPDATE
+            if row_id == 0 and row_ln > 0 and row_ln in existing_by_lineno:
+                row_id = existing_by_lineno[row_ln]
+
+            # --------------------------
+            # UPDATE
+            # --------------------------
+            if row_id and row_id in existing_by_id:
+                line = SalesInvoiceLine.objects.get(id=row_id, header=header)
+                seen_ids.add(row_id)
+
+                SalesInvoiceService.apply_line_inputs(line, row)
+
+                # allow changing line_no safely
+                if row_ln > 0 and row_ln != int(line.line_no):
+                    if row_ln in existing_by_lineno and existing_by_lineno[row_ln] != row_id:
+                        raise ValidationError({"lines": [f"line_no {row_ln} already exists for this invoice."]})
+                    line.line_no = row_ln
+
+                line.updated_by = user
+                SalesInvoiceService.compute_line_amounts(header, line)
+
+                try:
+                    line.full_clean()
+                except DjangoValidationError as e:
+                    raise ValidationError(e.message_dict)
+
+                line.save()
+                continue
+
+            # If id provided but not found under this header -> reject
+            if row_id and row_id not in existing_by_id:
+                raise ValidationError({"lines": [f"Line id={row_id} not found for this invoice."]})
+
+            # --------------------------
+            # CREATE
+            # --------------------------
+            desired_ln = row_ln
+            if desired_ln <= 0:
+                max_ln += 1
+                desired_ln = max_ln
+
+            # If line_no exists, it's an update case; but we already resolved above.
+            if desired_ln in existing_by_lineno:
+                raise ValidationError({"lines": [f"line_no {desired_ln} already exists; send its id to update it."]})
+
+            line = SalesInvoiceLine(
+                header=header,
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                line_no=desired_ln,
+                created_by=user,
+                updated_by=user,
+            )
+
+            SalesInvoiceService.apply_line_inputs(line, row)
+            SalesInvoiceService.compute_line_amounts(header, line)
+
+            try:
+                line.full_clean()
+            except DjangoValidationError as e:
+                raise ValidationError(e.message_dict)
+
+            line.save()
+
+        # --------------------------
+        # DELETE missing rows
+        # --------------------------
         if allow_delete:
-            to_delete = [lid for lid in existing.keys() if lid not in seen_ids]
+            to_delete = [lid for lid in existing_by_id.keys() if lid not in seen_ids]
             if to_delete:
-                SalesInvoiceLine.objects.filter(id__in=to_delete).delete()
+                SalesInvoiceLine.objects.filter(header=header, id__in=to_delete).delete()
 
     @staticmethod
-    def apply_line_inputs(line: SalesInvoiceLine, row: dict):
-        # required
+    def apply_line_inputs(line: SalesInvoiceLine, row: dict) -> None:
+        """
+        IMPORTANT: line_no is intentionally NOT set here.
+        That prevents accidental overwrite during create and avoids unique collisions.
+        """
         for fld in [
             "product",
             "uom",
@@ -570,7 +633,6 @@ class SalesInvoiceService:
             "cess_percent",
             "cess_amount",
             "sales_account",
-            "line_no",
         ]:
             if fld in row:
                 setattr(line, fld, row.get(fld))
