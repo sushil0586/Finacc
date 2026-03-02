@@ -4,9 +4,10 @@ import json
 from typing import Any, Dict, Optional, Tuple
 from django.db import transaction
 from django.utils import timezone
+from sales.services.providers.mastergst_client import MasterGSTClient
 
 from sales.models import SalesEWayBill, SalesEWayStatus, SalesEWaySource
-from sales.integrations.mastergst_eway_client import MasterGSTEWayClient
+
 from sales.services.eway.sales_eway_payload_b2c import build_b2c_direct_eway_payload
 
 def _parse_mastergst_status_desc(status_desc: str) -> Tuple[Optional[str], Optional[str]]:
@@ -47,7 +48,7 @@ class SalesEWayService:
 
     @staticmethod
     @transaction.atomic
-    def generate_b2c_direct(*, inv: Any, entity: Any, client: MasterGSTEWayClient, user: Any | None = None) -> Dict[str, Any]:
+    def generate_b2c_direct(*, inv: Any, entity: Any, client: MasterGSTClient, user: Any | None = None) -> Dict[str, Any]:
         art = SalesEWayService._get_artifact(inv)
 
         # already generated

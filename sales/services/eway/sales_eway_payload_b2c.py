@@ -132,7 +132,7 @@ def build_b2c_direct_eway_payload(*, inv: Any, ewb_artifact: Any, entity_gstin: 
 
     payload: Dict[str, Any] = {
         "supplyType": "O",
-        "subSupplyType": 1,
+        "subSupplyType": "1",
 
         "docType": (ewb_artifact.doc_type or "INV"),
         "docNo": (ewb_artifact.doc_no or str(doc_no)),

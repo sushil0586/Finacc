@@ -124,7 +124,7 @@ class SalesInvoiceHeader(EntityScopedModel):
 
     # Place of supply
     place_of_supply_state_code = models.CharField(max_length=2, blank=True, default="")
-    place_of_supply_pincode = models.CharField(max_length=2, blank=True, default="")
+    place_of_supply_pincode = models.CharField(max_length=8, blank=True, default="")
 
     # -------------------------
     # GST classification / regime

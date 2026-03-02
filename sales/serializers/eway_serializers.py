@@ -74,3 +74,29 @@ class EWayPrefillResponseSerializer(serializers.Serializer):
     # If artifact exists, return last-entered transport details (draft)
     last_transport = serializers.DictField(required=False)
     last_status = serializers.DictField(required=False)
+
+
+class SalesEWayB2CGenerateSerializer(serializers.Serializer):
+    """
+    Accept transport info for B2C Direct EWB.
+    These are persisted into SalesEWayBill, then payload is built from DB.
+    """
+    distance_km = serializers.IntegerField(min_value=1)
+    trans_mode = serializers.ChoiceField(choices=[("1", "Road"), ("2", "Rail"), ("3", "Air"), ("4", "Ship")])
+
+    transporter_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)
+    transporter_name = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=128)
+
+    # Using your SalesEWayBill.doc_no/doc_date as transport doc fields too
+    doc_type = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=8)  # INV/LR/GR etc.
+    doc_no = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)
+    doc_date = serializers.DateField(required=False, allow_null=True)  # accepts YYYY-MM-DD
+
+    vehicle_no = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)
+    vehicle_type = serializers.ChoiceField(required=False, allow_null=True, choices=[("R", "Regular"), ("O", "ODC")])
+
+    def validate(self, attrs):
+        if attrs.get("trans_mode") == "1":
+            if not (attrs.get("vehicle_no") or "").strip():
+                raise serializers.ValidationError({"vehicle_no": "vehicle_no required for Road transport (trans_mode=1)."})
+        return attrs
