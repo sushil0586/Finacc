@@ -71,6 +71,7 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
     stateName = serializers.CharField(source="state.statename", read_only=True, allow_null=True)
     districtName = serializers.CharField(source="district.districtname", read_only=True, allow_null=True)
     cityName = serializers.CharField(source="city.cityname", read_only=True, allow_null=True)
+    statecode = serializers.CharField(source="state.statecode", read_only=True)
 
     class Meta:
         model = ShippingDetails
@@ -94,6 +95,7 @@ class ShippingDetailsListSerializer(serializers.ModelSerializer):
             "districtName",
             "city",
             "cityName",
+            "statecode",
         )
     
 
