@@ -99,7 +99,7 @@ class PaymentVoucherHeaderAdmin(admin.ModelAdmin):
         "cancelled_by",
         "ap_settlement",
     )
-    actions = ["action_confirm", "action_post", "action_cancel"]
+    actions = ["action_confirm", "action_post", "action_unpost", "action_cancel"]
     readonly_fields = (
         "doc_no",
         "voucher_code",
@@ -151,6 +151,18 @@ class PaymentVoucherHeaderAdmin(admin.ModelAdmin):
                 self.message_user(request, f"[{obj.pk}] cancel failed: {e}", level=messages.ERROR)
         if ok:
             self.message_user(request, f"Cancelled {ok} payment voucher(s).", level=messages.SUCCESS)
+
+    @admin.action(description="Unpost (Posted -> Confirmed, with reversal)")
+    def action_unpost(self, request, queryset):
+        ok = 0
+        for obj in queryset:
+            try:
+                PaymentVoucherService.unpost_voucher(obj.pk, unposted_by_id=request.user.id)
+                ok += 1
+            except Exception as e:
+                self.message_user(request, f"[{obj.pk}] unpost failed: {e}", level=messages.ERROR)
+        if ok:
+            self.message_user(request, f"Unposted {ok} payment voucher(s).", level=messages.SUCCESS)
 
     def get_readonly_fields(self, request, obj=None):
         ro = list(super().get_readonly_fields(request, obj))

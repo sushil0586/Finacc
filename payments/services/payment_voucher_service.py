@@ -11,6 +11,7 @@ from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.models.purchase_ap import VendorBillOpenItem
+from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter, PaymentVoucherPostingConfig
 
 from payments.models.payment_core import (
     PaymentVoucherHeader,
@@ -330,6 +331,13 @@ class PaymentVoucherService:
                     )
                     h.ap_settlement_id = posted.settlement.id
 
+        PaymentVoucherPostingAdapter.post_payment_voucher(
+            header=h,
+            adjustments=h.adjustments.all(),
+            user_id=posted_by_id or h.created_by_id,
+            config=PaymentVoucherPostingConfig(),
+        )
+
         h.status = PaymentVoucherHeader.Status.POSTED
         h.approved_at = h.approved_at or timezone.now()
         if posted_by_id and not h.approved_by_id:
@@ -338,6 +346,35 @@ class PaymentVoucherService:
         else:
             h.save(update_fields=["status", "approved_at", "ap_settlement", "updated_at"])
         return PaymentVoucherResult(h, "Posted.")
+
+    @staticmethod
+    @transaction.atomic
+    def unpost_voucher(voucher_id: int, unposted_by_id: Optional[int] = None) -> PaymentVoucherResult:
+        h = (
+            PaymentVoucherHeader.objects
+            .select_related("entity", "entityfinid", "subentity")
+            .prefetch_related("allocations", "adjustments")
+            .get(pk=voucher_id)
+        )
+        if int(h.status) != int(PaymentVoucherHeader.Status.POSTED):
+            raise ValueError("Only POSTED vouchers can be unposted.")
+
+        if h.ap_settlement_id:
+            PurchaseApService.cancel_settlement(
+                settlement_id=int(h.ap_settlement_id),
+                cancelled_by_id=unposted_by_id or h.created_by_id,
+            )
+            h.ap_settlement_id = None
+
+        PaymentVoucherPostingAdapter.unpost_payment_voucher(
+            header=h,
+            adjustments=h.adjustments.all(),
+            user_id=unposted_by_id or h.created_by_id,
+        )
+
+        h.status = PaymentVoucherHeader.Status.CONFIRMED
+        h.save(update_fields=["status", "ap_settlement", "updated_at"])
+        return PaymentVoucherResult(h, "Unposted with reversal entry.")
 
     @staticmethod
     @transaction.atomic

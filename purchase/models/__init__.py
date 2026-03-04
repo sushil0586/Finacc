@@ -31,6 +31,12 @@ from .gstr2b_models import (
 from .itc_models import (
     PurchaseItcAction,
 )
+from .purchase_statutory import (
+    PurchaseStatutoryChallan,
+    PurchaseStatutoryChallanLine,
+    PurchaseStatutoryReturn,
+    PurchaseStatutoryReturnLine,
+)
 
 __all__ = [
     "TrackingModel",
@@ -49,4 +55,8 @@ __all__ = [
     "Gstr2bImportBatch",
     "Gstr2bImportRow",
     "PurchaseItcAction",
+    "PurchaseStatutoryChallan",
+    "PurchaseStatutoryChallanLine",
+    "PurchaseStatutoryReturn",
+    "PurchaseStatutoryReturnLine",
 ]
