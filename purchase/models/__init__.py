@@ -8,7 +8,13 @@ from .purchase_core import (
 
 from .purchase_addons import (
     PurchaseChargeLine,
+    PurchaseChargeType,
     PurchaseAttachment,
+)
+from .purchase_ap import (
+    VendorBillOpenItem,
+    VendorSettlement,
+    VendorSettlementLine,
 )
 
 from .purchase_config import (
@@ -32,7 +38,11 @@ __all__ = [
     "PurchaseInvoiceLine",
     "PurchaseTaxSummary",
     "PurchaseChargeLine",
+    "PurchaseChargeType",
     "PurchaseAttachment",
+    "VendorBillOpenItem",
+    "VendorSettlement",
+    "VendorSettlementLine",
     "PurchaseSettings",
     "PurchaseLockPeriod",
     "PurchaseChoiceOverride",

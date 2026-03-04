@@ -14,6 +14,16 @@ from purchase.models.purchase_core import (
     DocType,
     Status,
 )
+from purchase.models.purchase_addons import (
+    PurchaseChargeType,
+    PurchaseChargeLine,
+    PurchaseAttachment,
+)
+from purchase.models.purchase_ap import (
+    VendorBillOpenItem,
+    VendorSettlement,
+    VendorSettlementLine,
+)
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
@@ -74,13 +84,44 @@ class PurchaseTaxSummaryInline(admin.TabularInline):
         return False
 
 
+class PurchaseChargeLineInline(admin.TabularInline):
+    model = PurchaseChargeLine
+    extra = 0
+    show_change_link = True
+    fields = (
+        "line_no",
+        "charge_type",
+        "description",
+        "taxability",
+        "is_service",
+        "hsn_sac_code",
+        "is_rate_inclusive_of_tax",
+        "taxable_value",
+        "gst_rate",
+        "cgst_amount",
+        "sgst_amount",
+        "igst_amount",
+        "total_value",
+        "itc_eligible",
+        "itc_block_reason",
+    )
+    ordering = ("line_no", "id")
+
+
+class PurchaseAttachmentInline(admin.TabularInline):
+    model = PurchaseAttachment
+    extra = 0
+    fields = ("file", "original_name", "content_type", "uploaded_by")
+    readonly_fields = ("uploaded_by",)
+
+
 # ----------------------------
 # Header Admin
 # ----------------------------
 
 @admin.register(PurchaseInvoiceHeader)
 class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
-    inlines = [PurchaseInvoiceLineInline, PurchaseTaxSummaryInline]
+    inlines = [PurchaseInvoiceLineInline, PurchaseChargeLineInline, PurchaseTaxSummaryInline, PurchaseAttachmentInline]
 
     list_display = (
         "id",
@@ -488,4 +529,111 @@ class PurchaseChoiceOverrideAdmin(admin.ModelAdmin):
     list_display = ("entity", "subentity", "choice_group", "choice_key", "is_enabled", "override_label")
     list_filter = ("choice_group", "is_enabled", "entity")
     search_fields = ("choice_group", "choice_key", "override_label")
+
+
+@admin.register(PurchaseChargeType)
+class PurchaseChargeTypeAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "entity",
+        "code",
+        "name",
+        "base_category",
+        "gst_rate_default",
+        "itc_eligible_default",
+        "is_active",
+    )
+    list_filter = ("base_category", "is_active", "entity")
+    search_fields = ("code", "name", "description", "hsn_sac_code_default")
+    ordering = ("entity_id", "code")
+
+
+@admin.register(PurchaseChargeLine)
+class PurchaseChargeLineAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "header",
+        "line_no",
+        "charge_type",
+        "taxability",
+        "taxable_value",
+        "gst_rate",
+        "cgst_amount",
+        "sgst_amount",
+        "igst_amount",
+        "total_value",
+        "itc_eligible",
+    )
+    list_filter = ("charge_type", "taxability", "is_service", "itc_eligible")
+    search_fields = ("header__purchase_number", "header__supplier_invoice_number", "description", "hsn_sac_code")
+    ordering = ("-id",)
+
+
+@admin.register(PurchaseAttachment)
+class PurchaseAttachmentAdmin(admin.ModelAdmin):
+    list_display = ("id", "header", "original_name", "content_type", "uploaded_by", "created_at")
+    list_filter = ("content_type", "created_at")
+    search_fields = ("header__purchase_number", "header__supplier_invoice_number", "original_name")
+    readonly_fields = ("created_at", "updated_at")
+
+
+class VendorSettlementLineInline(admin.TabularInline):
+    model = VendorSettlementLine
+    extra = 0
+    fields = ("open_item", "amount", "applied_amount_signed", "note")
+    readonly_fields = ("applied_amount_signed",)
+
+
+@admin.register(VendorBillOpenItem)
+class VendorBillOpenItemAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "header",
+        "vendor",
+        "doc_type",
+        "bill_date",
+        "due_date",
+        "original_amount",
+        "settled_amount",
+        "outstanding_amount",
+        "is_open",
+    )
+    list_filter = ("doc_type", "is_open", "entity", "entityfinid", "subentity")
+    search_fields = ("purchase_number", "supplier_invoice_number", "vendor__accountname")
+    ordering = ("-bill_date", "-id")
+    list_select_related = ("header", "vendor", "entity", "entityfinid", "subentity")
+
+
+@admin.register(VendorSettlement)
+class VendorSettlementAdmin(admin.ModelAdmin):
+    inlines = [VendorSettlementLineInline]
+    list_display = (
+        "id",
+        "settlement_type",
+        "settlement_date",
+        "vendor",
+        "total_amount",
+        "status",
+        "reference_no",
+        "external_voucher_no",
+        "entity",
+        "entityfinid",
+    )
+    list_filter = ("settlement_type", "status", "entity", "entityfinid", "subentity")
+    search_fields = ("reference_no", "external_voucher_no", "remarks", "vendor__accountname")
+    date_hierarchy = "settlement_date"
+    list_select_related = ("vendor", "entity", "entityfinid", "subentity", "posted_by")
+    readonly_fields = ("total_amount", "posted_at", "posted_by")
+
+
+@admin.register(VendorSettlementLine)
+class VendorSettlementLineAdmin(admin.ModelAdmin):
+    list_display = ("id", "settlement", "open_item", "amount", "applied_amount_signed", "note")
+    list_filter = ("settlement__status", "settlement__settlement_type")
+    search_fields = (
+        "settlement__reference_no",
+        "settlement__external_voucher_no",
+        "open_item__purchase_number",
+        "open_item__supplier_invoice_number",
+    )
 

@@ -61,6 +61,9 @@ class PurchaseInvoicePostingConfig:
     # RCM: whether supplier invoice includes GST (usually False for RCM supplies)
     rcm_supplier_includes_tax: bool = False
 
+    # If True, post GST-TDS deduction at invoice posting stage (Dr Vendor / Cr GST-TDS Payable).
+    post_gst_tds_on_invoice: bool = False
+
 
 # =========================
 # Purchase Document Adapter (Invoice / CN / DN)
@@ -147,7 +150,11 @@ class PurchaseInvoicePostingAdapter:
 
         # ---- header totals ----
         header_grand_total = q2(getattr(header, "grand_total", None) or ZERO2)
-        header_roundoff = q2(getattr(header, "roundoff", None) or ZERO2)
+        header_roundoff = q2(
+            getattr(header, "round_off", None)
+            or getattr(header, "roundoff", None)
+            or ZERO2
+        )
         header_expenses = q2(
             getattr(header, "total_expenses", None)
             or getattr(header, "expenses_total", None)
@@ -262,6 +269,42 @@ class PurchaseInvoicePostingAdapter:
                     blocked_tax["igst"] = q2(blocked_tax["igst"] + t_igst)
                     blocked_tax["cess"] = q2(blocked_tax["cess"] + t_cess)
 
+        # 1A2) Header charge lines (base + tax)
+        # Charge base is posted to misc purchase expense account.
+        charges_list = list(getattr(header, "charges", []).all() if hasattr(getattr(header, "charges", None), "all") else [])
+        for ch in charges_list:
+            c_base = q2(getattr(ch, "taxable_value", None) or ZERO2)
+            if c_base > ZERO2:
+                jl.append(JLInput(
+                    account_id=misc_exp_ac,
+                    drcr=(sign > 0),  # invoice/DN Dr, CN Cr
+                    amount=q2(c_base.copy_abs()),
+                    description=f"{narration} (charge {getattr(ch, 'line_no', '-')})",
+                    detail_id=int(getattr(ch, "id", 0) or 0) or None,
+                ))
+
+            c_cgst = q2(getattr(ch, "cgst_amount", None) or ZERO2)
+            c_sgst = q2(getattr(ch, "sgst_amount", None) or ZERO2)
+            c_igst = q2(getattr(ch, "igst_amount", None) or ZERO2)
+            c_cess = ZERO2  # charges currently do not carry cess in model
+
+            if is_rcm:
+                rcm_tax["cgst"] = q2(rcm_tax["cgst"] + c_cgst)
+                rcm_tax["sgst"] = q2(rcm_tax["sgst"] + c_sgst)
+                rcm_tax["igst"] = q2(rcm_tax["igst"] + c_igst)
+                rcm_tax["cess"] = q2(rcm_tax["cess"] + c_cess)
+            else:
+                if bool(getattr(ch, "itc_eligible", False)):
+                    eligible_tax["cgst"] = q2(eligible_tax["cgst"] + c_cgst)
+                    eligible_tax["sgst"] = q2(eligible_tax["sgst"] + c_sgst)
+                    eligible_tax["igst"] = q2(eligible_tax["igst"] + c_igst)
+                    eligible_tax["cess"] = q2(eligible_tax["cess"] + c_cess)
+                else:
+                    blocked_tax["cgst"] = q2(blocked_tax["cgst"] + c_cgst)
+                    blocked_tax["sgst"] = q2(blocked_tax["sgst"] + c_sgst)
+                    blocked_tax["igst"] = q2(blocked_tax["igst"] + c_igst)
+                    blocked_tax["cess"] = q2(blocked_tax["cess"] + c_cess)
+
         # 1B) Header expenses (expense GL unless capitalized)
         if header_expenses > ZERO2 and not cfg.capitalize_header_expenses_to_inventory:
             jl.append(JLInput(
@@ -340,8 +383,6 @@ class PurchaseInvoicePostingAdapter:
                     description=f"{narration} (Round-off income)",
                 ))
 
-        ZERO2 = Decimal("0.00")
-
         tds = q2(getattr(header, "tds_amount", None) or ZERO2)
         if tds > ZERO2:
             tds_payable_ac = resolver.get_account_id(StaticAccountCodes.TDS_PAYABLE, required=True)
@@ -360,6 +401,26 @@ class PurchaseInvoicePostingAdapter:
                 drcr=False,  # CR
                 amount=tds,
                 description=f"{narration} (TDS payable)",
+            ))
+
+        gst_tds = q2(getattr(header, "gst_tds_amount", None) or ZERO2)
+        if cfg.post_gst_tds_on_invoice and gst_tds > ZERO2:
+            gst_tds_payable_ac = resolver.get_account_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
+
+            # Dr Vendor Payable (reduce vendor liability)
+            jl.append(JLInput(
+                account_id=int(header.vendor_id),
+                drcr=True,  # DR
+                amount=gst_tds,
+                description=f"{narration} (GST-TDS deducted)",
+            ))
+
+            # Cr GST-TDS Payable
+            jl.append(JLInput(
+                account_id=int(gst_tds_payable_ac),
+                drcr=False,  # CR
+                amount=gst_tds,
+                description=f"{narration} (GST-TDS payable)",
             ))
 
         # 1E) Vendor balancing line (works for Invoice/CN/DN)

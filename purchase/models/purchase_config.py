@@ -8,6 +8,25 @@ from decimal import Decimal
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 
+DEFAULT_POLICY_CONTROLS = {
+    "delete_policy": "draft_only",
+    "confirm_lock_check": "hard",
+    "require_lines_on_confirm": "hard",
+    "itc_action_status_gate": "hard",
+    "two_b_action_status_gate": "hard",
+    "line_amount_mismatch": "hard",
+    "invoice_match_mode": "off",          # off | two_way | three_way
+    "invoice_match_enforcement": "off",   # off | warn | hard
+    "settlement_mode": "off",             # off | basic
+    "allocation_policy": "manual",        # manual | fifo
+    "over_settlement_rule": "block",      # block | warn
+    "auto_adjust_credit_notes": "off",    # off | on
+}
+
+
+def default_policy_controls():
+    return dict(DEFAULT_POLICY_CONTROLS)
+
 
 class PurchaseSettings(TrackingModel):
     """
@@ -53,6 +72,11 @@ class PurchaseSettings(TrackingModel):
     # rounding configuration
     round_grand_total_to = models.PositiveSmallIntegerField(default=2)  # decimals
     enable_round_off = models.BooleanField(default=True)
+
+    # posting policy
+    post_gst_tds_on_invoice = models.BooleanField(default=False)
+    # dynamic enterprise controls (off/warn/hard + enum values)
+    policy_controls = models.JSONField(default=default_policy_controls, blank=True)
 
     class Meta:
         constraints = [

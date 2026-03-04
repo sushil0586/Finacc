@@ -1,6 +1,6 @@
-# purchase/api/filters.py
 import django_filters
 from django.db.models import Q
+
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 
 
@@ -58,7 +58,7 @@ class PurchaseInvoiceSearchFilter(django_filters.FilterSet):
     total_taxable_min = django_filters.NumberFilter(field_name="total_taxable", lookup_expr="gte")
     total_taxable_max = django_filters.NumberFilter(field_name="total_taxable", lookup_expr="lte")
 
-    # free text "q" across the most useful columns
+    # free text search
     q = django_filters.CharFilter(method="filter_q")
 
     def filter_q(self, queryset, name, value):
@@ -71,7 +71,7 @@ class PurchaseInvoiceSearchFilter(django_filters.FilterSet):
             | Q(vendor_name__icontains=v)
             | Q(vendor_gstin__icontains=v)
             | Q(doc_code__iexact=v)
-            | Q(doc_no__icontains=v)  # works if v numeric-ish; harmless otherwise
+            | Q(doc_no__icontains=v)
         )
 
     class Meta:

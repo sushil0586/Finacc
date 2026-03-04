@@ -6,6 +6,12 @@ from purchase.views.purchase_invoice import (
     PurchaseInvoiceSearchAPIView,
 )
 
+from purchase.views.purchase_charge_type import (
+    PurchaseChargeTypeListCreateAPIView,
+    PurchaseChargeTypeRetrieveUpdateAPIView,
+)
+from purchase.views.purchase_withholding import PurchaseTdsSectionListAPIView
+
 from purchase.views.purchase_choices import PurchaseCompiledChoicesAPIView
 
 from purchase.views.purchase_settings import PurchaseSettingsAPIView
@@ -27,6 +33,12 @@ from purchase.views.purchase_readonly import (
     PurchaseInvoiceLinesListAPIView,
     PurchaseTaxSummaryListAPIView,
 )
+from purchase.views.purchase_ap import (
+    VendorBillOpenItemListAPIView,
+    VendorSettlementListCreateAPIView,
+    VendorSettlementPostAPIView,
+    VendorStatementAPIView,
+)
 
 urlpatterns = [
     # CRUD
@@ -38,7 +50,10 @@ urlpatterns = [
     path("purchase-invoices/<int:pk>/post/", PurchaseInvoicePostAPIView.as_view(), name="purchase-invoice-post"),
     path("purchase-invoices/<int:pk>/cancel/", PurchaseInvoiceCancelAPIView.as_view(), name="purchase-invoice-cancel"),
     path("purchase-invoices/<int:pk>/rebuild-tax-summary/", PurchaseInvoiceRebuildTaxSummaryAPIView.as_view(), name="purchase-invoice-rebuild-tax-summary"),
-
+    path("charge-types/", PurchaseChargeTypeListCreateAPIView.as_view(), name="purchase-charge-type-list"),
+    path("charge-types/<int:pk>/", PurchaseChargeTypeRetrieveUpdateAPIView.as_view(), name="purchase-charge-type-detail"),
+    path("tds-sections/", PurchaseTdsSectionListAPIView.as_view(), name="purchase-tds-sections-list"),
+    path("entities/<int:entity_id>/tds-sections/", PurchaseTdsSectionListAPIView.as_view(), name="purchase-entity-tds-sections-list"),
     # CN/DN from Invoice
     path("purchase-invoices/<int:pk>/create-credit-note/", PurchaseInvoiceCreateCreditNoteAPIView.as_view(), name="purchase-invoice-create-credit-note"),
     path("purchase-invoices/<int:pk>/create-debit-note/", PurchaseInvoiceCreateDebitNoteAPIView.as_view(), name="purchase-invoice-create-debit-note"),
@@ -55,6 +70,10 @@ urlpatterns = [
     # Read-only lists
     path("purchase-lines/", PurchaseInvoiceLinesListAPIView.as_view(), name="purchase-lines-list"),
     path("purchase-tax-summaries/", PurchaseTaxSummaryListAPIView.as_view(), name="purchase-tax-summaries-list"),
+    path("ap/open-items/", VendorBillOpenItemListAPIView.as_view(), name="purchase-ap-open-items-list"),
+    path("ap/settlements/", VendorSettlementListCreateAPIView.as_view(), name="purchase-ap-settlement-list-create"),
+    path("ap/settlements/<int:pk>/post/", VendorSettlementPostAPIView.as_view(), name="purchase-ap-settlement-post"),
+    path("ap/vendor-statement/", VendorStatementAPIView.as_view(), name="purchase-ap-vendor-statement"),
     path("settings/", PurchaseSettingsAPIView.as_view(), name="purchase-settings"),
     path("choices/", PurchaseCompiledChoicesAPIView.as_view(), name="purchase-compiled-choices"),
     path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),

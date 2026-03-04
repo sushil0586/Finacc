@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from gst_tds.services.gst_tds_service import GstTdsService
+from purchase.models.purchase_addons import PurchaseChargeLine
 
 
 from decimal import Decimal, ROUND_HALF_UP
@@ -30,6 +31,7 @@ ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 DEC2 = Decimal("0.01")
 DEC4 = Decimal("0.0001")
+GST_TDS_TOLERANCE = Decimal("0.02")
 
 # paisa tolerance: allows tiny rounding differences from UI (e.g. 0.01–0.02)
 TOL = Decimal("0.02")
@@ -49,12 +51,26 @@ def near(a, b, tol=TOL) -> bool:
 ZERO2 = Decimal("0.00")
 RATE_TOTAL = Decimal("2.0000")   # 2%
 RATE_HALF = Decimal("1.0000")    # 1% + 1%
+TWOPLACES = Decimal("0.01")
+TDS_TOLERANCE = Decimal("0.02")  # 2 paisa tolerance
+
+
+def q2r(x: Decimal) -> Decimal:
+    return (x or ZERO2).quantize(TWOPLACES, rounding=ROUND_HALF_UP)
 
 
 @dataclass(frozen=True)
 class DerivedRegime:
     tax_regime: int
     is_igst: bool
+
+@dataclass(frozen=True)
+class ChargeComputed:
+    taxable_value: Decimal
+    cgst_amount: Decimal
+    sgst_amount: Decimal
+    igst_amount: Decimal
+    total_value: Decimal
 
 
 class PurchaseInvoiceService:
@@ -77,12 +93,14 @@ class PurchaseInvoiceService:
     @staticmethod
     def _apply_gst_tds(*, header: PurchaseInvoiceHeader) -> None:
         """
-        GST-TDS u/s 51 (separate from income tax TDS).
-        Base = total_taxable (excl GST/cess).
-        Split based on tax_regime/is_igst.
-        Threshold/contract tracking can be added later; for now compute directly if enabled.
+        GST-TDS u/s 51.
+        - If gst_tds_enabled = False -> clear all.
+        - If gst_tds_enabled = True:
+            - contract_ref required
+            - If gst_tds_is_manual = True -> accept user values (validated)
+            - Else -> compute from totals + tax_regime/is_igst (existing logic)
         """
-        # reset defaults always (safe)
+        # always reset safe defaults
         header.gst_tds_rate = q4(Decimal("0.0000"))
         header.gst_tds_base_amount = q2(ZERO2)
         header.gst_tds_cgst_amount = q2(ZERO2)
@@ -92,38 +110,72 @@ class PurchaseInvoiceService:
         header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)  # NA
 
         if not getattr(header, "gst_tds_enabled", False):
+            header.gst_tds_is_manual = False
+            header.gst_tds_contract_ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip() or ""
+            header.gst_tds_reason = (getattr(header, "gst_tds_reason", None) or None)
             return
 
-        # contract ref required (because threshold is contract-wise)
+        # contract ref required
         contract_ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip()
         if not contract_ref:
-            # keep NA but you may choose to raise in serializer validation
-            return
+            return  # keep NA (or raise in serializer)
 
         # base must be taxable value (excluding GST)
-        base = q2(getattr(header, "total_taxable", None) or ZERO2)
-        if base <= ZERO2:
+        taxable = q2(getattr(header, "total_taxable", None) or ZERO2)
+        if taxable <= ZERO2:
             return
-
-        header.gst_tds_rate = q4(RATE_TOTAL)
-        header.gst_tds_base_amount = base
 
         is_inter = (int(getattr(header, "tax_regime", 1)) == int(header.TaxRegime.INTER)) or bool(getattr(header, "is_igst", False))
 
-        total = q2(base * q4(RATE_TOTAL) / Decimal("100.00"))
-        if total <= ZERO2:
+        # ----------------------------
+        # ✅ MANUAL MODE
+        # ----------------------------
+        if bool(getattr(header, "gst_tds_is_manual", False)):
+            rate = q4(getattr(header, "gst_tds_rate", None) or Decimal("0.0000"))
+            base = q2(getattr(header, "gst_tds_base_amount", None) or ZERO2)
+
+            cgst = q2(getattr(header, "gst_tds_cgst_amount", None) or ZERO2)
+            sgst = q2(getattr(header, "gst_tds_sgst_amount", None) or ZERO2)
+            igst = q2(getattr(header, "gst_tds_igst_amount", None) or ZERO2)
+            total = q2(getattr(header, "gst_tds_amount", None) or ZERO2)
+
+            if min(rate, base, cgst, sgst, igst, total) < ZERO2:
+                raise ValueError("Manual GST-TDS values cannot be negative.")
+
+            # base cannot exceed taxable (tolerance)
+            if (base - taxable) > GST_TDS_TOLERANCE:
+                raise ValueError("Manual GST-TDS base cannot exceed invoice taxable total.")
+
+            # Validate split rules
+            split_sum = q2(cgst + sgst + igst)
+            if (total - split_sum).copy_abs() > GST_TDS_TOLERANCE:
+                raise ValueError(f"GST-TDS total must equal CGST+SGST+IGST. Got {total} vs {split_sum}.")
+
+            if is_inter:
+                # Inter: IGST only
+                if (cgst > GST_TDS_TOLERANCE) or (sgst > GST_TDS_TOLERANCE):
+                    raise ValueError("For INTER/IGST GST-TDS, CGST/SGST must be 0.")
+                if (igst - total).copy_abs() > GST_TDS_TOLERANCE:
+                    raise ValueError("For INTER/IGST GST-TDS, IGST must equal total.")
+            else:
+                # Intra: CGST & SGST only, equal split (within tolerance)
+                if igst > GST_TDS_TOLERANCE:
+                    raise ValueError("For INTRA GST-TDS, IGST must be 0.")
+                if (cgst - sgst).copy_abs() > GST_TDS_TOLERANCE:
+                    raise ValueError("For INTRA GST-TDS, CGST and SGST must be equal.")
+
+            # Optional formula check: total ~= base * rate / 100
+            expected = q2(base * rate / Decimal("100.00"))
+            if (total - expected).copy_abs() > GST_TDS_TOLERANCE:
+                raise ValueError(f"GST-TDS amount mismatch. Expected {expected} for base {base} at rate {rate}.")
+
+            header.gst_tds_status = getattr(header.GstTdsStatus, "ELIGIBLE", 1)
             return
 
-        if is_inter:
-            header.gst_tds_igst_amount = total
-            header.gst_tds_amount = total
-        else:
-            half = q2(base * q4(RATE_HALF) / Decimal("100.00"))
-            header.gst_tds_cgst_amount = half
-            header.gst_tds_sgst_amount = half
-            header.gst_tds_amount = q2(half + half)
-
-        header.gst_tds_status = getattr(header.GstTdsStatus, "ELIGIBLE", 1)  # ELIGIBLE
+        # ----------------------------
+        # ✅ AUTO MODE (source of truth from gst_tds app)
+        # ----------------------------
+        GstTdsService.apply_to_header(header)
 
     # ---------------------------
     # Vendor snapshot
@@ -428,7 +480,12 @@ class PurchaseInvoiceService:
         return ln
 
     @staticmethod
-    def verify_client_vs_authoritative(client_line: Dict[str, Any], auth_line: Dict[str, Any], idx: int) -> None:
+    def verify_client_vs_authoritative(
+        client_line: Dict[str, Any],
+        auth_line: Dict[str, Any],
+        idx: int,
+        mismatch_level: str = "hard",
+    ) -> None:
         """
         If client sent monetary fields, verify they match computed (within tolerance).
         """
@@ -445,7 +502,7 @@ class PurchaseInvoiceService:
             if f in client_line and client_line[f] is not None:
                 if not near(client_line[f], auth_line[f]):
                     errors[f] = f"Line {idx}: sent {q2(client_line[f])} but expected {q2(auth_line[f])}"
-        if errors:
+        if errors and mismatch_level == "hard":
             raise ValueError(errors)
 
     # ---------------------------
@@ -501,6 +558,7 @@ class PurchaseInvoiceService:
 
         buckets: Dict[Tuple[int, Optional[str], bool, Decimal, bool], Dict[str, Decimal]] = {}
 
+        # --- LINES ---
         for ln in header.lines.all():
             key = (
                 int(ln.taxability),
@@ -534,6 +592,40 @@ class PurchaseInvoiceService:
                 buckets[key]["itc_eligible_tax"] += line_tax
             else:
                 buckets[key]["itc_ineligible_tax"] += line_tax
+
+        # --- CHARGES (NEW) ---
+        for ch in header.charges.all():
+            key = (
+                int(ch.taxability),
+                (ch.hsn_sac_code or "").strip() or None,
+                bool(ch.is_service),
+                q2(ch.gst_rate),
+                bool(header.is_reverse_charge),
+            )
+
+            if key not in buckets:
+                buckets[key] = {
+                    "taxable_value": ZERO2,
+                    "cgst_amount": ZERO2,
+                    "sgst_amount": ZERO2,
+                    "igst_amount": ZERO2,
+                    "cess_amount": ZERO2,   # charges: always 0
+                    "total_value": ZERO2,
+                    "itc_eligible_tax": ZERO2,
+                    "itc_ineligible_tax": ZERO2,
+                }
+
+            buckets[key]["taxable_value"] += q2(ch.taxable_value)
+            buckets[key]["cgst_amount"] += q2(ch.cgst_amount)
+            buckets[key]["sgst_amount"] += q2(ch.sgst_amount)
+            buckets[key]["igst_amount"] += q2(ch.igst_amount)
+            buckets[key]["total_value"] += q2(ch.total_value)
+
+            ch_tax = q2(ch.cgst_amount + ch.sgst_amount + ch.igst_amount)
+            if getattr(ch, "itc_eligible", True):
+                buckets[key]["itc_eligible_tax"] += ch_tax
+            else:
+                buckets[key]["itc_ineligible_tax"] += ch_tax
 
         objs = []
         for (taxability, hsn_sac, is_service, gst_rate, is_rcm), agg in buckets.items():
@@ -596,13 +688,21 @@ class PurchaseInvoiceService:
     # High-level orchestrators
     # ---------------------------
 
+   
+
+
     @classmethod
     def _apply_tds(cls, *, header: PurchaseInvoiceHeader) -> None:
         """
-        Enforce: only ONE TDS section at a time (tds_section FK).
-        Compute TDS AFTER totals are available.
+        Income-tax Vendor TDS (194C/194J/194Q etc).
+        - If withholding_enabled = False -> clear all.
+        - If withholding_enabled = True:
+            - If tds_is_manual = True -> accept user provided values (validated).
+            - Else -> compute from PurchaseWithholdingService.
+        Note: TDS does NOT reduce GST and should NOT reduce vendor payable at invoice stage.
         """
         if not getattr(header, "withholding_enabled", False):
+            header.tds_is_manual = False
             header.tds_section = None
             header.tds_rate = Decimal("0.0000")
             header.tds_base_amount = ZERO2
@@ -610,9 +710,36 @@ class PurchaseInvoiceService:
             header.tds_reason = None
             return
 
-        if not header.tds_section_id:
-            raise ValueError("TDS section is required when withholding_enabled is true (only one allowed).")
+        # ✅ MANUAL MODE
+        if bool(getattr(header, "tds_is_manual", False)):
+            # In manual mode, explicit section is mandatory.
+            if not header.tds_section_id:
+                raise ValueError("TDS section is required when withholding_enabled is true.")
 
+            rate = q4(getattr(header, "tds_rate", None) or Decimal("0.0000"))
+            base = q2(getattr(header, "tds_base_amount", None) or ZERO2)
+            amt  = q2(getattr(header, "tds_amount", None) or ZERO2)
+
+            if base < ZERO2 or amt < ZERO2 or rate < Decimal("0.0000"):
+                raise ValueError("Manual TDS values cannot be negative.")
+
+            # base should not exceed taxable (you can relax if needed)
+            taxable = q2(getattr(header, "total_taxable", ZERO2) or ZERO2)
+            if base - taxable > TDS_TOLERANCE:
+                raise ValueError("Manual TDS base cannot exceed invoice taxable total.")
+
+            expected = q2(base * rate / Decimal("100.00"))
+            if (amt - expected).copy_abs() > TDS_TOLERANCE:
+                raise ValueError(f"Manual TDS amount mismatch. Expected {expected} for base {base} at rate {rate}.")
+
+            # keep section as selected + keep reason (manual/audit)
+            header.tds_rate = rate
+            header.tds_base_amount = base
+            header.tds_amount = amt
+            header.tds_reason = (getattr(header, "tds_reason", "") or "").strip() or "MANUAL"
+            return
+
+        # ✅ AUTO MODE (source of truth)
         res = PurchaseWithholdingService.compute_tds(
             header=header,
             vendor_account_id=header.vendor_id,
@@ -626,15 +753,229 @@ class PurchaseInvoiceService:
         header.tds_base_amount = res.base_amount
         header.tds_amount = res.amount
         header.tds_reason = res.reason
+        if not res.section:
+            raise ValueError("Provide tds_section or configure default TDS section for this entity.")
+    @staticmethod
+    def compute_charge_amounts(*, header: PurchaseInvoiceHeader, row: Dict[str, Any]) -> ChargeComputed:
+        """
+        Server-side computation for a single charge row.
+        Respects header.tax_regime (INTRA => CGST+SGST, INTER => IGST).
+        Respects is_rate_inclusive_of_tax.
+        """
+        taxability = str(row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE)
+        gst_rate = q2(row.get("gst_rate") or ZERO2)
+        taxable = q2(row.get("taxable_value") or ZERO2)
+        inclusive = bool(row.get("is_rate_inclusive_of_tax") or False)
 
-        if hasattr(header, "vendor_payable"):
-            header.vendor_payable = q2((header.grand_total or ZERO2) - (header.tds_amount or ZERO2))
+        # Non-taxable => force GST = 0, total = taxable
+        if taxability != str(PurchaseChargeLine.Taxability.TAXABLE) or gst_rate <= ZERO2 or taxable <= ZERO2:
+            taxable2 = q2r(taxable)
+            return ChargeComputed(
+                taxable_value=taxable2,
+                cgst_amount=ZERO2,
+                sgst_amount=ZERO2,
+                igst_amount=ZERO2,
+                total_value=taxable2,
+            )
+
+        rate = q2(gst_rate)
+
+        # Inclusive: taxable passed might actually be "total"; if you want UI to send total when inclusive,
+        # then interpret taxable_value as gross. If you prefer separate gross field, tell me.
+        if inclusive:
+            gross = q2(taxable)
+            taxable_calc = gross / (Decimal("1.00") + (rate / Decimal("100.00")))
+            taxable = q2(taxable_calc)
+
+        taxable2 = q2r(taxable)
+
+        gst_amt = q2r(taxable2 * rate / Decimal("100.00"))
+        cgst = sgst = igst = ZERO2
+
+        if int(getattr(header, "tax_regime", int(TaxRegime.INTRA))) == int(TaxRegime.INTRA):
+            cgst = q2r(gst_amt / Decimal("2.00"))
+            sgst = q2r(gst_amt - cgst)  # handle odd paise
+        else:
+            igst = gst_amt
+
+        total = q2r(taxable2 + cgst + sgst + igst)
+
+        return ChargeComputed(
+            taxable_value=taxable2,
+            cgst_amount=cgst,
+            sgst_amount=sgst,
+            igst_amount=igst,
+            total_value=total,
+        )
+    
+
+
+    @staticmethod
+    def validate_charges(*, header: PurchaseInvoiceHeader, charges: List[Dict[str, Any]]) -> None:
+        seen_line_no: set[int] = set()
+        for i, row in enumerate(charges or [], start=1):
+            line_no_raw = row.get("line_no")
+            if line_no_raw not in (None, ""):
+                try:
+                    line_no = int(line_no_raw)
+                except (TypeError, ValueError):
+                    raise ValueError(f"Charge row {i}: line_no must be an integer.")
+                if line_no <= 0:
+                    raise ValueError(f"Charge row {i}: line_no must be > 0.")
+                if line_no in seen_line_no:
+                    raise ValueError(f"Charge row {i}: duplicate line_no {line_no}.")
+                seen_line_no.add(line_no)
+
+            taxable = q2(row.get("taxable_value") or ZERO2)
+            gst_rate = q2(row.get("gst_rate") or ZERO2)
+            taxability = str(row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE)
+            hsn = (row.get("hsn_sac_code") or "").strip()
+
+            if taxable < ZERO2:
+                raise ValueError(f"Charge row {i}: taxable_value must be >= 0.")
+            if gst_rate < ZERO2 or gst_rate > Decimal("100.00"):
+                raise ValueError(f"Charge row {i}: gst_rate must be 0..100.")
+
+            if taxability != str(PurchaseChargeLine.Taxability.TAXABLE) and gst_rate > ZERO2:
+                raise ValueError(f"Charge row {i}: gst_rate must be 0 for non-taxable charges.")
+
+            if gst_rate > ZERO2 and taxable > ZERO2 and not hsn:
+                raise ValueError(f"Charge row {i}: HSN/SAC is required when GST is applied.")
+
+            itc_eligible = bool(row.get("itc_eligible", True))
+            reason = (row.get("itc_block_reason") or "").strip()
+            if not itc_eligible and not reason:
+                row["itc_block_reason"] = "Blocked ITC"
+
+    
+    @staticmethod
+    def upsert_charges(
+        *,
+        header: PurchaseInvoiceHeader,
+        charges_client: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Nested upsert:
+        - id missing or 0 => insert
+        - id matches existing => update
+        - existing not present in payload => delete
+        """
+        charges_client = charges_client or []
+
+        existing_qs = header.charges.all()
+        existing_by_id = {c.id: c for c in existing_qs}
+        seen_ids: set[int] = set()
+
+        # recompute & upsert
+        for idx, row in enumerate(charges_client, start=1):
+            cid = int(row.get("id") or 0)
+            row["header"] = header
+
+            # compute amounts server-side
+            comp = PurchaseInvoiceService.compute_charge_amounts(header=header, row=row)
+            row["taxable_value"] = comp.taxable_value
+            row["cgst_amount"] = comp.cgst_amount
+            row["sgst_amount"] = comp.sgst_amount
+            row["igst_amount"] = comp.igst_amount
+            row["total_value"] = comp.total_value
+
+            if cid and cid in existing_by_id:
+                obj = existing_by_id[cid]
+                seen_ids.add(cid)
+
+                # update fields
+                for f in [
+                    "line_no",
+                    "charge_type",
+                    "description",
+                    "taxability",
+                    "is_service",
+                    "hsn_sac_code",
+                    "is_rate_inclusive_of_tax",
+                    "taxable_value",
+                    "gst_rate",
+                    "cgst_amount",
+                    "sgst_amount",
+                    "igst_amount",
+                    "total_value",
+                    "itc_eligible",
+                    "itc_block_reason",
+                ]:
+                    if f in row:
+                        setattr(obj, f, row[f])
+                obj.save(update_fields=[
+                    "line_no", "charge_type", "description", "taxability",
+                    "is_service", "hsn_sac_code", "is_rate_inclusive_of_tax",
+                    "taxable_value", "gst_rate",
+                    "cgst_amount", "sgst_amount", "igst_amount",
+                    "total_value", "itc_eligible", "itc_block_reason",
+                    "updated_at",
+                ])
+            else:
+                # insert
+                PurchaseChargeLine.objects.create(
+                    header=header,
+                    line_no=int(row.get("line_no") or idx),
+                    charge_type=row.get("charge_type") or PurchaseChargeLine.ChargeType.OTHER,
+                    description=row.get("description") or "",
+                    taxability=row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE,
+                    is_service=bool(row.get("is_service", True)),
+                    hsn_sac_code=(row.get("hsn_sac_code") or "").strip(),
+                    is_rate_inclusive_of_tax=bool(row.get("is_rate_inclusive_of_tax", False)),
+                    taxable_value=row["taxable_value"],
+                    gst_rate=q2(row.get("gst_rate") or ZERO2),
+                    cgst_amount=row["cgst_amount"],
+                    sgst_amount=row["sgst_amount"],
+                    igst_amount=row["igst_amount"],
+                    total_value=row["total_value"],
+                    itc_eligible=bool(row.get("itc_eligible", True)),
+                    itc_block_reason=(row.get("itc_block_reason") or "").strip(),
+                )
+
+        # delete missing
+        for obj in existing_qs:
+            if obj.id not in seen_ids:
+                obj.delete()
+
+
+    @staticmethod
+    def compute_totals_with_charges(lines_rows: List[Dict[str, Any]], charge_rows: List[Dict[str, Any]]) -> Dict[str, Decimal]:
+        taxable = cgst = sgst = igst = cess = ZERO2
+
+        for ln in lines_rows:
+            taxable += q2(ln.get("taxable_value"))
+            cgst += q2(ln.get("cgst_amount"))
+            sgst += q2(ln.get("sgst_amount"))
+            igst += q2(ln.get("igst_amount"))
+            cess += q2(ln.get("cess_amount"))
+
+        for ch in charge_rows:
+            taxable += q2(ch.get("taxable_value"))
+            cgst += q2(ch.get("cgst_amount"))
+            sgst += q2(ch.get("sgst_amount"))
+            igst += q2(ch.get("igst_amount"))
+            # charges have no cess in your model, so skip
+
+        total_gst = q2(cgst + sgst + igst + cess)
+        grand = q2(taxable + total_gst)
+
+        return {
+            "total_taxable": q2(taxable),
+            "total_cgst": q2(cgst),
+            "total_sgst": q2(sgst),
+            "total_igst": q2(igst),
+            "total_cess": q2(cess),
+            "total_gst": q2(total_gst),
+            "grand_total_base": q2(grand),
+        }
+    
 
 
     @staticmethod
     @transaction.atomic
     def create_with_lines(validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         lines_client = validated_data.pop("lines", []) or []
+        charges_client = validated_data.pop("charges", []) or []
 
         PurchaseInvoiceService.assert_not_locked(
             entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
@@ -652,15 +993,22 @@ class PurchaseInvoiceService:
         PurchaseInvoiceService.validate_header(validated_data)
         PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived)
 
+        policy = PurchaseSettingsService.get_policy(
+            entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
+            subentity_id=(validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity")),
+        )
+        mismatch_level = policy.level("line_amount_mismatch", "hard")
+
+        # authoritative lines
         lines_auth: List[Dict[str, Any]] = []
         for i, ln in enumerate(lines_client, start=1):
             auth = PurchaseInvoiceService.compute_line_authoritative(validated_data, ln, derived)
-            PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i)
+            PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i, mismatch_level=mismatch_level)
             lines_auth.append(auth)
 
         header = PurchaseInvoiceHeader.objects.create(**validated_data)
 
-        # lines
+        # save lines
         max_ln = 0
         objs = []
         for ln in lines_auth:
@@ -675,25 +1023,26 @@ class PurchaseInvoiceService:
         if objs:
             PurchaseInvoiceLine.objects.bulk_create(objs)
 
-        # totals
+        # ✅ charges (NEW) - insert/update/delete
+        PurchaseInvoiceService.validate_charges(header=header, charges=charges_client)
+        PurchaseInvoiceService.upsert_charges(header=header, charges_client=charges_client)
+
+        # ✅ totals MUST include charges
         db_lines = list(header.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
-        totals = PurchaseInvoiceService.compute_totals(db_lines)
+        db_charges = list(header.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
+        totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
         PurchaseInvoiceService.apply_totals_to_header(header, totals)
 
-        # ✅ apply tds AFTER totals
+        # ✅ TDS AFTER totals (now includes charges)
         PurchaseInvoiceService._apply_tds(header=header)
-
         PurchaseInvoiceService._apply_gst_tds(header=header)
 
-        # ✅ single save for totals + tds (+ vendor_payable if exists)
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
             "total_cess", "total_gst", "round_off", "grand_total",
 
-            # income tax tds
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 
-            # gst tds
             "gst_tds_rate", "gst_tds_base_amount",
             "gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount",
             "gst_tds_amount", "gst_tds_status",
@@ -703,13 +1052,20 @@ class PurchaseInvoiceService:
 
         header.save(update_fields=update_fields)
 
+        # ✅ tax summary now includes charges
         PurchaseInvoiceService.rebuild_tax_summary(header)
         return header
 
     @staticmethod
     @transaction.atomic
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
-        lines_client = validated_data.pop("lines", []) or []
+        lines_provided = "lines" in validated_data
+        lines_client = validated_data.pop("lines", None)
+        if lines_provided:
+            lines_client = lines_client or []
+
+        # IMPORTANT: None means "not provided" so DO NOT delete existing charges
+        charges_client = validated_data.pop("charges", None)
 
         PurchaseInvoiceService.assert_not_locked(
             entity_id=instance.entity_id,
@@ -725,7 +1081,8 @@ class PurchaseInvoiceService:
         validated_data["is_igst"] = derived.is_igst
 
         PurchaseInvoiceService.validate_header(validated_data, instance=instance)
-        PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived, instance=instance)
+        if lines_provided:
+            PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived, instance=instance)
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
@@ -737,32 +1094,40 @@ class PurchaseInvoiceService:
             "is_rate_inclusive_of_tax_default": getattr(instance, "is_rate_inclusive_of_tax_default", False),
         }
 
-        lines_auth: List[Dict[str, Any]] = []
-        for i, ln in enumerate(lines_client, start=1):
-            auth = PurchaseInvoiceService.compute_line_authoritative(header_ctx, ln, derived)
-            PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i)
-            lines_auth.append(auth)
+        policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
+        mismatch_level = policy.level("line_amount_mismatch", "hard")
 
-        PurchaseInvoiceService.upsert_lines(instance, lines_auth)
+        if lines_provided:
+            # authoritative lines
+            lines_auth: List[Dict[str, Any]] = []
+            for i, ln in enumerate(lines_client, start=1):
+                auth = PurchaseInvoiceService.compute_line_authoritative(header_ctx, ln, derived)
+                PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i, mismatch_level=mismatch_level)
+                lines_auth.append(auth)
 
-        # totals
+            PurchaseInvoiceService.upsert_lines(instance, lines_auth)
+
+        # charges only if provided
+        if charges_client is not None:
+            PurchaseInvoiceService.validate_charges(header=instance, charges=charges_client)
+            PurchaseInvoiceService.upsert_charges(header=instance, charges_client=charges_client)
+
+        # totals include charges (existing or updated)
         db_lines = list(instance.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
-        totals = PurchaseInvoiceService.compute_totals(db_lines)
+        db_charges = list(instance.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
+        totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
         PurchaseInvoiceService.apply_totals_to_header(instance, totals)
 
-        # ✅ apply tds AFTER totals
+        # TDS AFTER totals
         PurchaseInvoiceService._apply_tds(header=instance)
-
         PurchaseInvoiceService._apply_gst_tds(header=instance)
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
             "total_cess", "total_gst", "round_off", "grand_total",
 
-            # income tax tds
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 
-            # gst tds
             "gst_tds_rate", "gst_tds_base_amount",
             "gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount",
             "gst_tds_amount", "gst_tds_status",

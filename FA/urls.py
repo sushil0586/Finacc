@@ -45,6 +45,7 @@ urlpatterns = [
     path("api/catalog/", include("catalog.urls")),
     path("api/localization/", include("localization.urls")),
     path("api/purchase/", include("purchase.urls")),
+    path("api/payments/", include("payments.urls")),
     path("api/sales/", include("sales.urls.api")),
 
     re_path(r'^swagger(?P<format>\.json|\.yaml)$',  # use re_path + raw string
