@@ -22,7 +22,7 @@ class AuthApiView(ListAPIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get_queryset(self):
-        return User.objects.filter(email = self.request.user)
+        return User.objects.filter(pk=self.request.user.pk)
     
   
 
@@ -76,7 +76,10 @@ class LoginApiView(GenericAPIView):
             )
 
         try:
-            user = authenticate(username=email, password=password)
+            user = authenticate(request, email=email, password=password)
+            if not user:
+                # Compatibility fallback for backends expecting username kwarg.
+                user = authenticate(request, username=email, password=password)
         except Exception as e:
             logger.exception("Error during authentication for email: %s", email)
             return response.Response(
@@ -124,14 +127,14 @@ class ChangePasswordView(UpdateAPIView):
 
         if serializer.is_valid():
             # Check if the old password is correct
-            old_password = serializer.data.get("old_password")
+            old_password = serializer.validated_data.get("old_password")
             if not self.object.check_password(old_password):
                 return Response(
                     {"old_password": ["Wrong password."]}, status=status.HTTP_400_BAD_REQUEST
                 )
-            
+             
             # Check if the new password is different from the old password
-            new_password = serializer.data.get("new_password")
+            new_password = serializer.validated_data.get("new_password")
             if old_password == new_password:
                 return Response(
                     {"new_password": ["New password cannot be the same as the old password."]},

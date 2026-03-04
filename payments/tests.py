@@ -66,6 +66,8 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             voucher_code="PPV-11",
             reference_number=None,
             narration=None,
+            cash_paid_amount=Decimal("0.00"),
+            total_adjustment_amount=Decimal("0.00"),
             created_by_id=5,
             ap_settlement_id=None,
             approved_at=None,
@@ -111,3 +113,59 @@ class PaymentVoucherServiceTests(SimpleTestCase):
         self.assertIsNone(header.ap_settlement_id)
         mock_cancel_settlement.assert_called_once_with(settlement_id=99, cancelled_by_id=9)
         mock_unpost_adapter.assert_called_once()
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherAllocation.objects")
+    def test_validate_adjustment_allocation_links_rejects_foreign_allocation(self, mock_alloc_objects):
+        mock_alloc_objects.filter.return_value.exists.return_value = False
+        with self.assertRaisesMessage(ValueError, "allocation must belong to this payment voucher"):
+            PaymentVoucherService._validate_adjustment_allocation_links(
+                voucher_id=1,
+                adjustments=[{"allocation": 99, "amount": Decimal("10.00")}],
+            )
+
+    def test_validate_allocation_effective_match_hard_raises(self):
+        with self.assertRaisesMessage(ValueError, "does not match settlement effective amount"):
+            PaymentVoucherService._validate_allocation_effective_match(
+                effective_amount=Decimal("100.00"),
+                allocation_total=Decimal("90.00"),
+                level="hard",
+            )
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_warn_mode_returns_warning_message(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+        row = SimpleNamespace(open_item_id=501, settled_amount=Decimal("120.00"))
+        header = SimpleNamespace(
+            id=21,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date=None,
+            voucher_code="PPV-21",
+            reference_number=None,
+            narration=None,
+            created_by_id=5,
+            ap_settlement_id=None,
+            approved_at=None,
+            approved_by_id=None,
+            cash_paid_amount=Decimal("120.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            adjustments=SimpleNamespace(all=lambda: []),
+            allocations=SimpleNamespace(all=lambda: [row]),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "sync_ap_settlement_on_post": "off",
+            "over_settlement_rule": "warn",
+            "allocation_amount_match_rule": "warn",
+        })
+        with patch.object(PaymentVoucherService, "_validate_allocations", return_value=["over settlement"]) as mock_val:
+            res = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=21, posted_by_id=9)
+        self.assertIn("Posted with warnings", res.message)
+        mock_val.assert_called_once()
+        mock_post_adapter.assert_called_once()

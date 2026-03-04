@@ -83,6 +83,11 @@ class PaymentSettingsService:
                     raise ValueError("policy_controls.allocation_policy must be one of: manual, fifo.")
                 normalized[key] = v
                 continue
+            if key == "allocation_amount_match_rule":
+                if v not in ENFORCEMENT_LEVELS:
+                    raise ValueError("policy_controls.allocation_amount_match_rule must be one of: off, warn, hard.")
+                normalized[key] = v
+                continue
         return normalized
 
     @staticmethod

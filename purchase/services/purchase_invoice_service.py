@@ -177,6 +177,79 @@ class PurchaseInvoiceService:
         # ----------------------------
         GstTdsService.apply_to_header(header)
 
+    @staticmethod
+    def _apply_vendor_withholding_variance_policy(*, header: PurchaseInvoiceHeader) -> None:
+        """
+        Compare vendor-declared withholding values against system-computed values.
+        Policy keys:
+          - vendor_tds_variance_rule: off|warn|hard
+          - vendor_gst_tds_variance_rule: off|warn|hard
+        """
+        policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
+        warnings: list[str] = []
+
+        def _check(rule_key: str, msg: str) -> None:
+            level = policy.level(rule_key, "warn")
+            if level == "off":
+                return
+            if level == "hard":
+                raise ValueError(msg)
+            warnings.append(msg)
+
+        if bool(getattr(header, "vendor_tds_declared", False)) and bool(getattr(header, "withholding_enabled", False)):
+            vb = q2(getattr(header, "vendor_tds_base_amount", ZERO2) or ZERO2)
+            vr = q4(getattr(header, "vendor_tds_rate", Decimal("0.0000")) or Decimal("0.0000"))
+            va = q2(getattr(header, "vendor_tds_amount", ZERO2) or ZERO2)
+            sb = q2(getattr(header, "tds_base_amount", ZERO2) or ZERO2)
+            sr = q4(getattr(header, "tds_rate", Decimal("0.0000")) or Decimal("0.0000"))
+            sa = q2(getattr(header, "tds_amount", ZERO2) or ZERO2)
+            if (vb - sb).copy_abs() > TDS_TOLERANCE or (vr - sr).copy_abs() > Decimal("0.0001") or (va - sa).copy_abs() > TDS_TOLERANCE:
+                _check(
+                    "vendor_tds_variance_rule",
+                    f"Vendor IT-TDS differs from system values (vendor: base={vb}, rate={vr}, amount={va}; system: base={sb}, rate={sr}, amount={sa}).",
+                )
+
+        if bool(getattr(header, "vendor_gst_tds_declared", False)) and bool(getattr(header, "gst_tds_enabled", False)):
+            vb = q2(getattr(header, "vendor_gst_tds_base_amount", ZERO2) or ZERO2)
+            vr = q4(getattr(header, "vendor_gst_tds_rate", Decimal("0.0000")) or Decimal("0.0000"))
+            vc = q2(getattr(header, "vendor_gst_tds_cgst_amount", ZERO2) or ZERO2)
+            vs = q2(getattr(header, "vendor_gst_tds_sgst_amount", ZERO2) or ZERO2)
+            vi = q2(getattr(header, "vendor_gst_tds_igst_amount", ZERO2) or ZERO2)
+            vt = q2(getattr(header, "vendor_gst_tds_amount", ZERO2) or ZERO2)
+
+            sb = q2(getattr(header, "gst_tds_base_amount", ZERO2) or ZERO2)
+            sr = q4(getattr(header, "gst_tds_rate", Decimal("0.0000")) or Decimal("0.0000"))
+            sc = q2(getattr(header, "gst_tds_cgst_amount", ZERO2) or ZERO2)
+            ss = q2(getattr(header, "gst_tds_sgst_amount", ZERO2) or ZERO2)
+            si = q2(getattr(header, "gst_tds_igst_amount", ZERO2) or ZERO2)
+            st = q2(getattr(header, "gst_tds_amount", ZERO2) or ZERO2)
+
+            if (
+                (vb - sb).copy_abs() > GST_TDS_TOLERANCE
+                or (vr - sr).copy_abs() > Decimal("0.0001")
+                or (vc - sc).copy_abs() > GST_TDS_TOLERANCE
+                or (vs - ss).copy_abs() > GST_TDS_TOLERANCE
+                or (vi - si).copy_abs() > GST_TDS_TOLERANCE
+                or (vt - st).copy_abs() > GST_TDS_TOLERANCE
+            ):
+                _check(
+                    "vendor_gst_tds_variance_rule",
+                    (
+                        "Vendor GST-TDS differs from system values "
+                        f"(vendor: base={vb}, rate={vr}, c={vc}, s={vs}, i={vi}, total={vt}; "
+                        f"system: base={sb}, rate={sr}, c={sc}, s={ss}, i={si}, total={st})."
+                    ),
+                )
+
+        notes = dict(getattr(header, "match_notes", {}) or {})
+        if warnings:
+            notes["withholding_warnings"] = warnings
+            if str(getattr(header, "match_status", "na")).lower() == "na":
+                header.match_status = getattr(header.MatchStatus, "WARN", "warn")
+        else:
+            notes.pop("withholding_warnings", None)
+        header.match_notes = notes
+
     # ---------------------------
     # Vendor snapshot
     # ---------------------------
@@ -1036,6 +1109,7 @@ class PurchaseInvoiceService:
         # ✅ TDS AFTER totals (now includes charges)
         PurchaseInvoiceService._apply_tds(header=header)
         PurchaseInvoiceService._apply_gst_tds(header=header)
+        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=header)
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
@@ -1043,9 +1117,11 @@ class PurchaseInvoiceService:
 
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 
+            "gst_tds_enabled", "gst_tds_is_manual", "gst_tds_contract_ref", "gst_tds_reason",
             "gst_tds_rate", "gst_tds_base_amount",
             "gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount",
             "gst_tds_amount", "gst_tds_status",
+            "match_status", "match_notes",
         ]
         if hasattr(header, "vendor_payable"):
             update_fields.append("vendor_payable")
@@ -1121,6 +1197,7 @@ class PurchaseInvoiceService:
         # TDS AFTER totals
         PurchaseInvoiceService._apply_tds(header=instance)
         PurchaseInvoiceService._apply_gst_tds(header=instance)
+        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=instance)
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
@@ -1128,9 +1205,11 @@ class PurchaseInvoiceService:
 
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 
+            "gst_tds_enabled", "gst_tds_is_manual", "gst_tds_contract_ref", "gst_tds_reason",
             "gst_tds_rate", "gst_tds_base_amount",
             "gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount",
             "gst_tds_amount", "gst_tds_status",
+            "match_status", "match_notes",
         ]
         if hasattr(instance, "vendor_payable"):
             update_fields.append("vendor_payable")

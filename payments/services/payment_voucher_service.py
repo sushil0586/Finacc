@@ -36,6 +36,13 @@ class PaymentVoucherResult:
 
 class PaymentVoucherService:
     @staticmethod
+    def _sum_allocations(allocations: Iterable[Dict[str, Any]]) -> Decimal:
+        total = ZERO2
+        for row in allocations or []:
+            total = q2(total + q2(row.get("settled_amount") or ZERO2))
+        return total
+
+    @staticmethod
     def _doc_type_id_for_payment(doc_code: str) -> int:
         dt = DocumentType.objects.filter(module="payments", default_code=doc_code, is_active=True).first()
         if not dt:
@@ -59,7 +66,10 @@ class PaymentVoucherService:
         return q2(q2(cash_paid_amount) + q2(adjustment_total))
 
     @staticmethod
-    def _validate_allocations(voucher: PaymentVoucherHeader, allocations: List[Dict[str, Any]], over_settlement_rule: str = "block") -> None:
+    def _validate_allocations(
+        voucher: PaymentVoucherHeader, allocations: List[Dict[str, Any]], over_settlement_rule: str = "block"
+    ) -> list[str]:
+        warnings: list[str] = []
         for i, row in enumerate(allocations or [], start=1):
             open_item_id = row.get("open_item")
             amt = q2(row.get("settled_amount") or ZERO2)
@@ -84,6 +94,89 @@ class PaymentVoucherService:
                     raise ValueError(
                         f"Allocation row {i}: settled_amount {amt} exceeds outstanding {outstanding} for open_item {open_item_id}."
                     )
+            elif over_settlement_rule == "warn":
+                outstanding = q2(open_item.outstanding_amount)
+                if amt > outstanding:
+                    warnings.append(
+                        f"Allocation row {i}: settled_amount {amt} exceeds outstanding {outstanding} for open_item {open_item_id}."
+                    )
+        return warnings
+
+    @staticmethod
+    def _validate_adjustment_allocation_links(*, voucher_id: int, adjustments: List[Dict[str, Any]]) -> None:
+        for i, row in enumerate(adjustments or [], start=1):
+            alloc_id = row.get("allocation")
+            if alloc_id in (None, ""):
+                continue
+            ok = PaymentVoucherAllocation.objects.filter(id=int(alloc_id), payment_voucher_id=int(voucher_id)).exists()
+            if not ok:
+                raise ValueError(f"Adjustment row {i}: allocation must belong to this payment voucher.")
+
+    @staticmethod
+    def _validate_allocation_effective_match(
+        *,
+        effective_amount: Decimal,
+        allocation_total: Decimal,
+        level: str = "hard",
+        tolerance: Decimal = Decimal("0.01"),
+    ) -> list[str]:
+        warnings: list[str] = []
+        lv = str(level or "hard").lower().strip()
+        if lv not in {"off", "warn", "hard"}:
+            lv = "hard"
+        if lv == "off":
+            return warnings
+        diff = q2(abs(q2(effective_amount) - q2(allocation_total)))
+        if diff <= q2(tolerance):
+            return warnings
+        msg = (
+            f"Allocation total {q2(allocation_total)} does not match settlement effective amount {q2(effective_amount)}."
+        )
+        if lv == "hard":
+            raise ValueError(msg)
+        warnings.append(msg)
+        return warnings
+
+    @staticmethod
+    def _auto_fifo_allocations(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        vendor_id: int,
+        target_amount: Decimal,
+    ) -> List[Dict[str, Any]]:
+        remaining = q2(target_amount)
+        if remaining <= ZERO2:
+            return []
+        rows: List[Dict[str, Any]] = []
+        qs = (
+            PurchaseApService.list_open_items(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                vendor_id=vendor_id,
+                is_open=True,
+            )
+            .filter(outstanding_amount__gt=ZERO2)
+            .order_by("due_date", "bill_date", "id")
+        )
+        for item in qs:
+            if remaining <= ZERO2:
+                break
+            can = min(q2(item.outstanding_amount), remaining)
+            if can <= ZERO2:
+                continue
+            rows.append(
+                {
+                    "open_item": item.id,
+                    "settled_amount": can,
+                    "is_full_settlement": can >= q2(item.outstanding_amount),
+                    "is_advance_adjustment": False,
+                }
+            )
+            remaining = q2(remaining - can)
+        return rows
 
     @staticmethod
     @transaction.atomic
@@ -106,6 +199,28 @@ class PaymentVoucherService:
         )
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
+
+        allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
+        if (
+            not allocations
+            and allocation_policy == "fifo"
+            and validated_data.get("payment_type") == PaymentVoucherHeader.PaymentType.AGAINST_BILL
+        ):
+            allocations = PaymentVoucherService._auto_fifo_allocations(
+                entity_id=validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data["entity"],
+                entityfinid_id=validated_data["entityfinid"].id if hasattr(validated_data.get("entityfinid"), "id") else validated_data["entityfinid"],
+                subentity_id=validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
+                vendor_id=validated_data["paid_to"].id if hasattr(validated_data.get("paid_to"), "id") else validated_data["paid_to"],
+                target_amount=effective,
+            )
+
+        amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
+        if allocations:
+            PaymentVoucherService._validate_allocation_effective_match(
+                effective_amount=effective,
+                allocation_total=PaymentVoucherService._sum_allocations(allocations),
+                level=amount_match_level,
+            )
 
         header = PaymentVoucherHeader.objects.create(**validated_data)
 
@@ -133,6 +248,8 @@ class PaymentVoucherService:
                 remarks=(row.get("remarks") or "").strip() or None,
             )
 
+        PaymentVoucherService._validate_adjustment_allocation_links(voucher_id=header.id, adjustments=adjustments)
+
         if policy.default_action == "confirm":
             PaymentVoucherService.confirm_voucher(header.id)
         elif policy.default_action == "post":
@@ -152,6 +269,7 @@ class PaymentVoucherService:
         adjustments = validated_data.pop("adjustments", None)
         policy = PaymentSettingsService.get_policy(instance.entity_id, instance.subentity_id)
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
+        amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
@@ -159,6 +277,18 @@ class PaymentVoucherService:
 
         if allocations is not None:
             PaymentVoucherService._validate_allocations(instance, allocations, over_settlement_rule=over_settlement_rule)
+            PaymentVoucherService._validate_allocation_effective_match(
+                effective_amount=PaymentVoucherService._effective_settlement_amount(
+                    q2(validated_data.get("cash_paid_amount", instance.cash_paid_amount)),
+                    PaymentVoucherService._compute_adjustment_total(
+                        adjustments
+                        if adjustments is not None
+                        else instance.adjustments.values("amount", "settlement_effect")
+                    ),
+                ),
+                allocation_total=PaymentVoucherService._sum_allocations(allocations),
+                level=amount_match_level,
+            )
             existing = {x.id: x for x in instance.allocations.all()}
             seen = set()
             for row in allocations:
@@ -213,6 +343,7 @@ class PaymentVoucherService:
             for rid, obj in existing.items():
                 if rid not in seen:
                     obj.delete()
+            PaymentVoucherService._validate_adjustment_allocation_links(voucher_id=instance.id, adjustments=adjustments)
 
         adjustment_total = PaymentVoucherService._compute_adjustment_total(
             instance.adjustments.values("amount", "settlement_effect")
@@ -285,6 +416,7 @@ class PaymentVoucherService:
             raise ValueError("Only CONFIRMED vouchers can be posted.")
 
         policy = PaymentSettingsService.get_policy(h.entity_id, h.subentity_id)
+        warnings: list[str] = []
 
         allocation_rows = list(h.allocations.all())
         if str(policy.controls.get("require_allocation_on_post", "hard")).lower().strip() == "hard":
@@ -298,11 +430,45 @@ class PaymentVoucherService:
                 raise ValueError("Allocations are required for ADVANCE posting by policy.")
 
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
+        amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
+        allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
+        effective_amount = PaymentVoucherService._effective_settlement_amount(
+            q2(h.cash_paid_amount),
+            q2(h.total_adjustment_amount),
+        )
+        if not allocation_rows and allocation_policy == "fifo" and h.payment_type == PaymentVoucherHeader.PaymentType.AGAINST_BILL:
+            fifo_rows = PaymentVoucherService._auto_fifo_allocations(
+                entity_id=h.entity_id,
+                entityfinid_id=h.entityfinid_id,
+                subentity_id=h.subentity_id,
+                vendor_id=h.paid_to_id,
+                target_amount=effective_amount,
+            )
+            for row in fifo_rows:
+                PaymentVoucherAllocation.objects.create(
+                    payment_voucher=h,
+                    open_item_id=row["open_item"],
+                    settled_amount=row["settled_amount"],
+                    is_full_settlement=bool(row.get("is_full_settlement", False)),
+                    is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
+                )
+            if fifo_rows:
+                allocation_rows = list(h.allocations.all())
+
         if allocation_rows:
-            PaymentVoucherService._validate_allocations(h, [
+            warnings.extend(PaymentVoucherService._validate_allocations(h, [
                 {"open_item": r.open_item_id, "settled_amount": r.settled_amount}
                 for r in allocation_rows
-            ], over_settlement_rule=over_settlement_rule)
+            ], over_settlement_rule=over_settlement_rule))
+            warnings.extend(
+                PaymentVoucherService._validate_allocation_effective_match(
+                    effective_amount=effective_amount,
+                    allocation_total=PaymentVoucherService._sum_allocations(
+                        [{"settled_amount": r.settled_amount} for r in allocation_rows]
+                    ),
+                    level=amount_match_level,
+                )
+            )
 
         if str(policy.controls.get("sync_ap_settlement_on_post", "on")).lower().strip() == "on":
             if allocation_rows:
@@ -345,7 +511,10 @@ class PaymentVoucherService:
             h.save(update_fields=["status", "approved_at", "approved_by", "ap_settlement", "updated_at"])
         else:
             h.save(update_fields=["status", "approved_at", "ap_settlement", "updated_at"])
-        return PaymentVoucherResult(h, "Posted.")
+        msg = "Posted."
+        if warnings:
+            msg = f"Posted with warnings: {' | '.join(warnings)}"
+        return PaymentVoucherResult(h, msg)
 
     @staticmethod
     @transaction.atomic

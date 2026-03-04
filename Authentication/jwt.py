@@ -1,5 +1,4 @@
-from jwt.exceptions import DecodeError
-from rest_framework.authentication import get_authorization_header,BaseAuthentication
+from rest_framework.authentication import get_authorization_header, BaseAuthentication
 
 from rest_framework import exceptions
 import jwt
@@ -9,38 +8,47 @@ from Authentication.models import User
 class JwtAuthentication(BaseAuthentication):
 
     def authenticate(self, request):
-
         auth_header = get_authorization_header(request)
-        auth_data = auth_header.decode('utf-8')
-        auth_token = auth_data.split(" ")
+        if not auth_header:
+            return None
+        try:
+            auth_data = auth_header.decode("utf-8").strip()
+        except Exception:
+            raise exceptions.AuthenticationFailed("Invalid authorization header.")
 
-        if len(auth_token)!= 2:
-            raise exceptions.AuthenticationFailed('Token not valid')
-        
-        token = auth_token[1]
+        auth_token = auth_data.split(" ")
+        if len(auth_token) != 2:
+            raise exceptions.AuthenticationFailed("Token not valid")
+
+        token = auth_token[1].strip()
+        if not token:
+            raise exceptions.AuthenticationFailed("Token not valid")
 
         try:
-            payload = jwt.decode(token,settings.SECRET_KEY,algorithms='HS256')
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
 
-            username = payload['username']
-            user = User.objects.get(username = username)
+            user_id = payload.get("user_id")
+            username = payload.get("username")
+            email = payload.get("email")
 
-            return (user,token)
+            if user_id:
+                user = User.objects.get(pk=user_id)
+            elif username:
+                user = User.objects.get(username=username)
+            elif email:
+                user = User.objects.get(email=email)
+            else:
+                raise exceptions.AuthenticationFailed("Token missing user identity.")
 
-        except jwt.ExpiredSignatureError as ex:
-            raise exceptions.AuthenticationFailed('Token has expired')
+            return (user, token)
 
-        except jwt.DecodeError as ex:
-            raise exceptions.AuthenticationFailed('Token has expired')
-        except User.DoesNotExist as no_user:
-            raise exceptions.AuthenticationFailed('User does not exist')
+        except jwt.ExpiredSignatureError:
+            raise exceptions.AuthenticationFailed("Token has expired")
 
-
-
-
-        
-
-        return super().authenticate(request)()
+        except jwt.DecodeError:
+            raise exceptions.AuthenticationFailed("Token not valid")
+        except User.DoesNotExist:
+            raise exceptions.AuthenticationFailed("User does not exist")
 
 
 

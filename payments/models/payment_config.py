@@ -11,6 +11,7 @@ DEFAULT_PAYMENT_POLICY_CONTROLS = {
     "sync_ap_settlement_on_post": "on",        # on|off
     "allocation_policy": "manual",             # manual|fifo
     "over_settlement_rule": "block",           # block|warn
+    "allocation_amount_match_rule": "hard",    # off|warn|hard
 }
 
 

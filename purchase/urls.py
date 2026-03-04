@@ -37,6 +37,7 @@ from purchase.views.purchase_ap import (
     VendorBillOpenItemListAPIView,
     VendorSettlementListCreateAPIView,
     VendorSettlementPostAPIView,
+    VendorSettlementCancelAPIView,
     VendorStatementAPIView,
 )
 from purchase.views.purchase_statutory import (
@@ -44,6 +45,7 @@ from purchase.views.purchase_statutory import (
     PurchaseStatutoryChallanDepositAPIView,
     PurchaseStatutoryReturnListCreateAPIView,
     PurchaseStatutoryReturnFileAPIView,
+    PurchaseStatutorySummaryAPIView,
 )
 
 urlpatterns = [
@@ -79,11 +81,13 @@ urlpatterns = [
     path("ap/open-items/", VendorBillOpenItemListAPIView.as_view(), name="purchase-ap-open-items-list"),
     path("ap/settlements/", VendorSettlementListCreateAPIView.as_view(), name="purchase-ap-settlement-list-create"),
     path("ap/settlements/<int:pk>/post/", VendorSettlementPostAPIView.as_view(), name="purchase-ap-settlement-post"),
+    path("ap/settlements/<int:pk>/cancel/", VendorSettlementCancelAPIView.as_view(), name="purchase-ap-settlement-cancel"),
     path("ap/vendor-statement/", VendorStatementAPIView.as_view(), name="purchase-ap-vendor-statement"),
     path("statutory/challans/", PurchaseStatutoryChallanListCreateAPIView.as_view(), name="purchase-statutory-challan-list-create"),
     path("statutory/challans/<int:pk>/deposit/", PurchaseStatutoryChallanDepositAPIView.as_view(), name="purchase-statutory-challan-deposit"),
     path("statutory/returns/", PurchaseStatutoryReturnListCreateAPIView.as_view(), name="purchase-statutory-return-list-create"),
     path("statutory/returns/<int:pk>/file/", PurchaseStatutoryReturnFileAPIView.as_view(), name="purchase-statutory-return-file"),
+    path("statutory/summary/", PurchaseStatutorySummaryAPIView.as_view(), name="purchase-statutory-summary"),
     path("settings/", PurchaseSettingsAPIView.as_view(), name="purchase-settings"),
     path("choices/", PurchaseCompiledChoicesAPIView.as_view(), name="purchase-compiled-choices"),
     path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),

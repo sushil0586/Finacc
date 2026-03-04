@@ -257,6 +257,11 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "tds_base_amount",
             "tds_amount",
             "tds_reason",
+            "vendor_tds_declared",
+            "vendor_tds_rate",
+            "vendor_tds_base_amount",
+            "vendor_tds_amount",
+            "vendor_tds_notes",
 
             # GST-TDS u/s 51
             "gst_tds_enabled",
@@ -271,6 +276,14 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "gst_tds_igst_amount",
             "gst_tds_amount",
             "gst_tds_status",
+            "vendor_gst_tds_declared",
+            "vendor_gst_tds_rate",
+            "vendor_gst_tds_base_amount",
+            "vendor_gst_tds_cgst_amount",
+            "vendor_gst_tds_sgst_amount",
+            "vendor_gst_tds_igst_amount",
+            "vendor_gst_tds_amount",
+            "vendor_gst_tds_notes",
             "match_status",
             "match_notes",
 
@@ -456,9 +469,15 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             attrs["tds_base_amount"] = ZERO2
             attrs["tds_amount"] = ZERO2
             attrs["tds_reason"] = None
+            attrs["vendor_tds_declared"] = False
+            attrs["vendor_tds_rate"] = Decimal("0.0000")
+            attrs["vendor_tds_base_amount"] = ZERO2
+            attrs["vendor_tds_amount"] = ZERO2
+            attrs["vendor_tds_notes"] = None
         else:
             tds_section = attrs.get("tds_section", getattr(inst, "tds_section", None))
             tds_is_manual = attrs.get("tds_is_manual", getattr(inst, "tds_is_manual", False))
+            vendor_tds_declared = attrs.get("vendor_tds_declared", getattr(inst, "vendor_tds_declared", False))
 
             # In auto mode, section can be resolved from entity withholding config.
             if tds_is_manual and not tds_section:
@@ -481,6 +500,20 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 expected = q2(base * rate / Decimal("100.00"))
                 if (amt - expected).copy_abs() > TDS_TOLERANCE:
                     raise serializers.ValidationError({"tds_amount": f"Amount mismatch. Expected ~{expected}."})
+            if vendor_tds_declared:
+                for f in ("vendor_tds_rate", "vendor_tds_base_amount", "vendor_tds_amount"):
+                    if f not in attrs and not inst:
+                        raise serializers.ValidationError({f: "Required when vendor_tds_declared is true."})
+                v_rate = q4(Decimal(str(attrs.get("vendor_tds_rate", getattr(inst, "vendor_tds_rate", "0.0000")) or "0.0000")))
+                v_base = q2(Decimal(str(attrs.get("vendor_tds_base_amount", getattr(inst, "vendor_tds_base_amount", "0.00")) or "0.00")))
+                v_amt = q2(Decimal(str(attrs.get("vendor_tds_amount", getattr(inst, "vendor_tds_amount", "0.00")) or "0.00")))
+                if min(v_rate, v_base, v_amt) < ZERO2:
+                    raise serializers.ValidationError({"vendor_tds_amount": "Vendor TDS values cannot be negative."})
+            else:
+                attrs["vendor_tds_rate"] = Decimal("0.0000")
+                attrs["vendor_tds_base_amount"] = ZERO2
+                attrs["vendor_tds_amount"] = ZERO2
+                attrs["vendor_tds_notes"] = None
 
         # --------------------------
         # GST-TDS u/s 51 (manual/auto)
@@ -496,12 +529,34 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             attrs.pop("gst_tds_igst_amount", None)
             attrs.pop("gst_tds_amount", None)
             attrs.pop("gst_tds_status", None)
+            attrs["vendor_gst_tds_declared"] = False
+            attrs["vendor_gst_tds_rate"] = Decimal("0.0000")
+            attrs["vendor_gst_tds_base_amount"] = ZERO2
+            attrs["vendor_gst_tds_cgst_amount"] = ZERO2
+            attrs["vendor_gst_tds_sgst_amount"] = ZERO2
+            attrs["vendor_gst_tds_igst_amount"] = ZERO2
+            attrs["vendor_gst_tds_amount"] = ZERO2
+            attrs["vendor_gst_tds_notes"] = None
         else:
             contract_ref = (attrs.get("gst_tds_contract_ref") if "gst_tds_contract_ref" in attrs else getattr(inst, "gst_tds_contract_ref", "")) or ""
             if not str(contract_ref).strip():
                 raise serializers.ValidationError({"gst_tds_contract_ref": "Contract reference is required when gst_tds_enabled is true."})
 
+            manual_keys = (
+                "gst_tds_rate",
+                "gst_tds_base_amount",
+                "gst_tds_cgst_amount",
+                "gst_tds_sgst_amount",
+                "gst_tds_igst_amount",
+                "gst_tds_amount",
+            )
+            manual_payload_present = any(k in attrs for k in manual_keys)
+            if manual_payload_present and "gst_tds_is_manual" not in attrs:
+                # UX-safe behavior: if UI sends manual fields but forgets toggle, treat as manual.
+                attrs["gst_tds_is_manual"] = True
+
             gst_manual = attrs.get("gst_tds_is_manual", getattr(inst, "gst_tds_is_manual", False))
+            vendor_gst_declared = attrs.get("vendor_gst_tds_declared", getattr(inst, "vendor_gst_tds_declared", False))
 
             if not gst_manual:
                 attrs.pop("gst_tds_rate", None)
@@ -526,6 +581,28 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
                 # never allow client to set status
                 attrs.pop("gst_tds_status", None)
+            if vendor_gst_declared:
+                for f in ("vendor_gst_tds_rate", "vendor_gst_tds_base_amount", "vendor_gst_tds_amount"):
+                    if f not in attrs and not inst:
+                        raise serializers.ValidationError({f: "Required when vendor_gst_tds_declared is true."})
+                v_rate = q4(Decimal(str(attrs.get("vendor_gst_tds_rate", getattr(inst, "vendor_gst_tds_rate", "0.0000")) or "0.0000")))
+                v_base = q2(Decimal(str(attrs.get("vendor_gst_tds_base_amount", getattr(inst, "vendor_gst_tds_base_amount", "0.00")) or "0.00")))
+                v_total = q2(Decimal(str(attrs.get("vendor_gst_tds_amount", getattr(inst, "vendor_gst_tds_amount", "0.00")) or "0.00")))
+                v_cgst = q2(Decimal(str(attrs.get("vendor_gst_tds_cgst_amount", getattr(inst, "vendor_gst_tds_cgst_amount", "0.00")) or "0.00")))
+                v_sgst = q2(Decimal(str(attrs.get("vendor_gst_tds_sgst_amount", getattr(inst, "vendor_gst_tds_sgst_amount", "0.00")) or "0.00")))
+                v_igst = q2(Decimal(str(attrs.get("vendor_gst_tds_igst_amount", getattr(inst, "vendor_gst_tds_igst_amount", "0.00")) or "0.00")))
+                if min(v_rate, v_base, v_total, v_cgst, v_sgst, v_igst) < ZERO2:
+                    raise serializers.ValidationError({"vendor_gst_tds_amount": "Vendor GST-TDS values cannot be negative."})
+                if (v_total - q2(v_cgst + v_sgst + v_igst)).copy_abs() > GST_TDS_TOLERANCE:
+                    raise serializers.ValidationError({"vendor_gst_tds_amount": "Vendor GST-TDS total must equal CGST+SGST+IGST."})
+            else:
+                attrs["vendor_gst_tds_rate"] = Decimal("0.0000")
+                attrs["vendor_gst_tds_base_amount"] = ZERO2
+                attrs["vendor_gst_tds_cgst_amount"] = ZERO2
+                attrs["vendor_gst_tds_sgst_amount"] = ZERO2
+                attrs["vendor_gst_tds_igst_amount"] = ZERO2
+                attrs["vendor_gst_tds_amount"] = ZERO2
+                attrs["vendor_gst_tds_notes"] = None
 
         return attrs
 

@@ -30,6 +30,13 @@ from purchase.models.purchase_statutory import (
     PurchaseStatutoryReturn,
     PurchaseStatutoryReturnLine,
 )
+from purchase.models.gstr2b_models import (
+    Gstr2bImportBatch,
+    Gstr2bImportRow,
+)
+from purchase.models.itc_models import (
+    PurchaseItcAction,
+)
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
@@ -140,6 +147,8 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
         "regime_display",
         "rcm_display",
         "itc_display",
+        "tds_display",
+        "gst_tds_display",
         "grand_total",
         "entity",
         "entityfinid",
@@ -159,6 +168,9 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
         "is_itc_eligible",
         "gstr2b_match_status",
         "itc_claim_status",
+        "withholding_enabled",
+        "gst_tds_enabled",
+        "gst_tds_status",
         "entity",
         "entityfinid",
         "subentity",
@@ -228,6 +240,31 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
                 ("gstr2b_match_status",),
             )
         }),
+        ("Withholding (IT-TDS)", {
+            "fields": (
+                ("withholding_enabled", "tds_is_manual"),
+                ("tds_section", "tds_rate"),
+                ("tds_base_amount", "tds_amount"),
+                ("tds_reason",),
+                ("vendor_tds_declared",),
+                ("vendor_tds_rate", "vendor_tds_base_amount", "vendor_tds_amount"),
+                ("vendor_tds_notes",),
+            )
+        }),
+        ("GST-TDS u/s 51", {
+            "fields": (
+                ("gst_tds_enabled", "gst_tds_is_manual"),
+                ("gst_tds_contract_ref", "gst_tds_status"),
+                ("gst_tds_rate", "gst_tds_base_amount"),
+                ("gst_tds_cgst_amount", "gst_tds_sgst_amount", "gst_tds_igst_amount"),
+                ("gst_tds_amount",),
+                ("gst_tds_reason",),
+                ("vendor_gst_tds_declared",),
+                ("vendor_gst_tds_rate", "vendor_gst_tds_base_amount", "vendor_gst_tds_amount"),
+                ("vendor_gst_tds_cgst_amount", "vendor_gst_tds_sgst_amount", "vendor_gst_tds_igst_amount"),
+                ("vendor_gst_tds_notes",),
+            )
+        }),
         ("Totals", {
             "fields": (
                 ("total_taxable", "total_gst"),
@@ -254,6 +291,15 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
         "total_gst",
         "grand_total",
         "created_by",
+        "tds_rate",
+        "tds_base_amount",
+        "tds_amount",
+        "gst_tds_rate",
+        "gst_tds_base_amount",
+        "gst_tds_cgst_amount",
+        "gst_tds_sgst_amount",
+        "gst_tds_igst_amount",
+        "gst_tds_amount",
     )
 
     # ----------------------------
@@ -305,6 +351,20 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
         claim = obj.get_itc_claim_status_display() if hasattr(obj, "get_itc_claim_status_display") else str(obj.itc_claim_status)
         return f"{elig} | {claim}"
 
+    @admin.display(description="IT-TDS")
+    def tds_display(self, obj: PurchaseInvoiceHeader):
+        if not bool(obj.withholding_enabled):
+            return "Off"
+        section = getattr(getattr(obj, "tds_section", None), "section_code", "-")
+        return f"{section} | {obj.tds_amount}"
+
+    @admin.display(description="GST-TDS")
+    def gst_tds_display(self, obj: PurchaseInvoiceHeader):
+        if not bool(obj.gst_tds_enabled):
+            return "Off"
+        st = obj.get_gst_tds_status_display() if hasattr(obj, "get_gst_tds_status_display") else str(obj.gst_tds_status)
+        return f"{st} | {obj.gst_tds_amount}"
+
     # ----------------------------
     # Admin protections / auto logic
     # ----------------------------
@@ -323,6 +383,10 @@ class PurchaseInvoiceHeaderAdmin(admin.ModelAdmin):
                 "is_reverse_charge",
                 "is_itc_eligible", "itc_claim_status", "itc_claim_period", "itc_claimed_at", "itc_block_reason",
                 "gstr2b_match_status",
+                "withholding_enabled", "tds_is_manual", "tds_section", "tds_reason",
+                "vendor_tds_declared", "vendor_tds_notes",
+                "gst_tds_enabled", "gst_tds_is_manual", "gst_tds_contract_ref", "gst_tds_status", "gst_tds_reason",
+                "vendor_gst_tds_declared", "vendor_gst_tds_notes",
                 "round_off",
                 "entity", "entityfinid", "subentity",
             ])
@@ -659,6 +723,9 @@ class PurchaseStatutoryChallanAdmin(admin.ModelAdmin):
         "challan_no",
         "challan_date",
         "amount",
+        "interest_amount",
+        "late_fee_amount",
+        "penalty_amount",
         "status",
         "deposited_on",
         "entity",
@@ -666,7 +733,7 @@ class PurchaseStatutoryChallanAdmin(admin.ModelAdmin):
         "subentity",
     )
     list_filter = ("tax_type", "status", "entity", "entityfinid", "subentity")
-    search_fields = ("challan_no", "bank_ref_no", "bsr_code", "remarks")
+    search_fields = ("challan_no", "bank_ref_no", "bsr_code", "cin_no", "minor_head_code", "remarks")
     date_hierarchy = "challan_date"
     readonly_fields = ("amount", "deposited_at", "deposited_by", "created_by", "created_at", "updated_at")
 
@@ -681,7 +748,15 @@ class PurchaseStatutoryChallanLineAdmin(admin.ModelAdmin):
 class PurchaseStatutoryReturnLineInline(admin.TabularInline):
     model = PurchaseStatutoryReturnLine
     extra = 0
-    fields = ("header", "challan", "amount")
+    fields = (
+        "header",
+        "challan",
+        "amount",
+        "section_snapshot_code",
+        "deductee_pan_snapshot",
+        "deductee_gstin_snapshot",
+        "cin_snapshot",
+    )
 
 
 @admin.register(PurchaseStatutoryReturn)
@@ -694,21 +769,86 @@ class PurchaseStatutoryReturnAdmin(admin.ModelAdmin):
         "period_from",
         "period_to",
         "amount",
+        "interest_amount",
+        "late_fee_amount",
+        "penalty_amount",
         "status",
         "filed_on",
         "ack_no",
+        "arn_no",
+        "revision_no",
         "entity",
         "entityfinid",
         "subentity",
     )
     list_filter = ("tax_type", "status", "entity", "entityfinid", "subentity")
-    search_fields = ("return_code", "ack_no", "remarks")
+    search_fields = ("return_code", "ack_no", "arn_no", "remarks")
     readonly_fields = ("amount", "filed_at", "filed_by", "created_by", "created_at", "updated_at")
 
 
 @admin.register(PurchaseStatutoryReturnLine)
 class PurchaseStatutoryReturnLineAdmin(admin.ModelAdmin):
-    list_display = ("id", "filing", "header", "challan", "amount")
+    list_display = (
+        "id",
+        "filing",
+        "header",
+        "challan",
+        "amount",
+        "section_snapshot_code",
+        "deductee_pan_snapshot",
+        "deductee_gstin_snapshot",
+        "cin_snapshot",
+    )
     list_filter = ("filing__tax_type", "filing__status")
     search_fields = ("filing__return_code", "header__purchase_number", "header__supplier_invoice_number")
+
+
+@admin.register(Gstr2bImportBatch)
+class Gstr2bImportBatchAdmin(admin.ModelAdmin):
+    list_display = ("id", "period", "source", "reference", "entity", "entityfinid", "subentity", "imported_by", "created_at")
+    list_filter = ("source", "entity", "entityfinid", "subentity", "period")
+    search_fields = ("period", "reference")
+    date_hierarchy = "created_at"
+
+
+@admin.register(Gstr2bImportRow)
+class Gstr2bImportRowAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "batch",
+        "supplier_gstin",
+        "supplier_invoice_number",
+        "supplier_invoice_date",
+        "taxable_value",
+        "igst",
+        "cgst",
+        "sgst",
+        "cess",
+        "match_status",
+        "matched_purchase",
+    )
+    list_filter = ("match_status", "is_igst", "doc_type")
+    search_fields = ("supplier_gstin", "supplier_invoice_number", "supplier_name")
+    raw_id_fields = ("batch", "matched_purchase", "pos_state")
+
+
+@admin.register(PurchaseItcAction)
+class PurchaseItcActionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "header",
+        "action_type",
+        "period",
+        "from_status",
+        "to_status",
+        "igst",
+        "cgst",
+        "sgst",
+        "cess",
+        "acted_at",
+        "acted_by",
+    )
+    list_filter = ("action_type", "period", "to_status")
+    search_fields = ("header__purchase_number", "header__supplier_invoice_number", "reason", "notes")
+    raw_id_fields = ("header", "gstr2b_batch", "attachment", "acted_by")
 
