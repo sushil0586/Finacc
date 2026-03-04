@@ -1,16 +1,13 @@
 from __future__ import annotations
-from typing import Optional, Dict, Any
-
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional, Dict, Tuple
-from numbering.models import DocumentType, DocumentNumberSeries
+from typing import Optional, Dict, Tuple, Any
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader, DocType
 
 from django.db.models import Q
 from numbering.models import DocumentType
-from numbering.services.document_number_service import DocumentNumberService  # adjust import
+from numbering.services.document_number_service import DocumentNumberService
 
 from purchase.models.purchase_config import (
     PurchaseSettings,
@@ -18,10 +15,47 @@ from purchase.models.purchase_config import (
     PurchaseChoiceOverride,
 )
 
+ENFORCEMENT_LEVELS = {"off", "warn", "hard"}
+DELETE_POLICIES = {"draft_only", "non_posted", "never"}
+MATCH_MODES = {"off", "two_way", "three_way"}
+SETTLEMENT_MODES = {"off", "basic"}
+ALLOCATION_POLICIES = {"manual", "fifo"}
+OVER_SETTLEMENT_RULES = {"block", "warn"}
+ON_OFF = {"off", "on"}
+
+DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
+    # Mutation safety
+    "delete_policy": "draft_only",      # draft_only | non_posted | never
+    # Confirm rules
+    "confirm_lock_check": "hard",       # off | warn | hard
+    "require_lines_on_confirm": "hard", # off | warn | hard
+    # Action gating
+    "itc_action_status_gate": "hard",   # off | warn | hard
+    "two_b_action_status_gate": "hard", # off | warn | hard
+    # Validation strictness
+    "line_amount_mismatch": "hard",     # off | warn | hard
+    # Match hooks
+    "invoice_match_mode": "off",        # off | two_way | three_way
+    "invoice_match_enforcement": "off", # off | warn | hard
+    "settlement_mode": "off",           # off | basic
+    "allocation_policy": "manual",      # manual | fifo
+    "over_settlement_rule": "block",    # block | warn
+    "auto_adjust_credit_notes": "off",  # off | on
+}
+
 
 @dataclass(frozen=True)
 class PurchasePolicy:
     settings: PurchaseSettings
+
+    @property
+    def controls(self) -> Dict[str, Any]:
+        raw = getattr(self.settings, "policy_controls", None) or {}
+        if not isinstance(raw, dict):
+            return dict(DEFAULT_POLICY_CONTROLS)
+        merged = dict(DEFAULT_POLICY_CONTROLS)
+        merged.update(raw)
+        return merged
 
     @property
     def default_action(self) -> str:
@@ -47,8 +81,111 @@ class PurchasePolicy:
     def auto_derive_tax_regime(self) -> bool:
         return bool(self.settings.auto_derive_tax_regime)
 
+    @property
+    def post_gst_tds_on_invoice(self) -> bool:
+        return bool(getattr(self.settings, "post_gst_tds_on_invoice", False))
+
+    def level(self, key: str, default: str = "hard") -> str:
+        val = str(self.controls.get(key, default)).lower().strip()
+        return val if val in ENFORCEMENT_LEVELS else default
+
+    @property
+    def delete_policy(self) -> str:
+        val = str(self.controls.get("delete_policy", "draft_only")).lower().strip()
+        return val if val in DELETE_POLICIES else "draft_only"
+
 
 class PurchaseSettingsService:
+    @staticmethod
+    def normalize_policy_controls(raw: Any) -> Dict[str, Any]:
+        if raw in (None, ""):
+            return {}
+        if not isinstance(raw, dict):
+            raise ValueError("policy_controls must be a JSON object.")
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw.items():
+            if key not in DEFAULT_POLICY_CONTROLS:
+                continue
+            if key == "delete_policy":
+                v = str(value).lower().strip()
+                if v not in DELETE_POLICIES:
+                    raise ValueError("policy_controls.delete_policy must be one of: draft_only, non_posted, never.")
+                normalized[key] = v
+                continue
+            if key == "invoice_match_mode":
+                v = str(value).lower().strip()
+                if v not in MATCH_MODES:
+                    raise ValueError("policy_controls.invoice_match_mode must be one of: off, two_way, three_way.")
+                normalized[key] = v
+                continue
+            if key == "settlement_mode":
+                v = str(value).lower().strip()
+                if v not in SETTLEMENT_MODES:
+                    raise ValueError("policy_controls.settlement_mode must be one of: off, basic.")
+                normalized[key] = v
+                continue
+            if key == "allocation_policy":
+                v = str(value).lower().strip()
+                if v not in ALLOCATION_POLICIES:
+                    raise ValueError("policy_controls.allocation_policy must be one of: manual, fifo.")
+                normalized[key] = v
+                continue
+            if key == "over_settlement_rule":
+                v = str(value).lower().strip()
+                if v not in OVER_SETTLEMENT_RULES:
+                    raise ValueError("policy_controls.over_settlement_rule must be one of: block, warn.")
+                normalized[key] = v
+                continue
+            if key == "auto_adjust_credit_notes":
+                v = str(value).lower().strip()
+                if v not in ON_OFF:
+                    raise ValueError("policy_controls.auto_adjust_credit_notes must be one of: off, on.")
+                normalized[key] = v
+                continue
+
+            v = str(value).lower().strip()
+            if v not in ENFORCEMENT_LEVELS:
+                raise ValueError(f"policy_controls.{key} must be one of: off, warn, hard.")
+            normalized[key] = v
+
+        return normalized
+
+    @staticmethod
+    def upsert_settings(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        updates: Dict[str, Any],
+    ) -> PurchaseSettings:
+        settings, _ = PurchaseSettings.objects.get_or_create(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+        )
+
+        editable_fields = {
+            "default_doc_code_invoice",
+            "default_doc_code_cn",
+            "default_doc_code_dn",
+            "default_workflow_action",
+            "auto_derive_tax_regime",
+            "enforce_2b_before_itc_claim",
+            "allow_mixed_taxability_in_one_bill",
+            "round_grand_total_to",
+            "enable_round_off",
+            "post_gst_tds_on_invoice",
+            "policy_controls",
+        }
+
+        for key, val in updates.items():
+            if key not in editable_fields:
+                continue
+            if key == "policy_controls":
+                val = PurchaseSettingsService.normalize_policy_controls(val)
+            setattr(settings, key, val)
+
+        settings.save()
+        return settings
 
     @staticmethod
     def _purchase_doc_type_from_doc_key(doc_key: str) -> int:
@@ -174,8 +311,8 @@ class PurchaseSettingsService:
         if s:
             return s
 
-        # Create default row (optional) OR raise. I suggest auto-create default.
-        return PurchaseSettings.objects.create(entity_id=entity_id, subentity_id=subentity_id)
+        # Return in-memory defaults without side effects on GET/read flows.
+        return PurchaseSettings(entity_id=entity_id, subentity_id=subentity_id)
 
     @staticmethod
     def get_policy(entity_id: int, subentity_id: Optional[int]) -> PurchasePolicy:

@@ -55,6 +55,7 @@ STATIC_MASTER: List[StaticDef] = [
     # TDS/TCS (future)
     StaticDef("TDS_RECEIVABLE", "TDS Receivable", "TDS_TCS", "TDS receivable"),
     StaticDef("TDS_PAYABLE", "TDS Payable", "TDS_TCS", "TDS payable"),
+    StaticDef("GST_TDS_PAYABLE", "GST TDS Payable", "TDS_TCS", "GST-TDS payable"),
     StaticDef("TCS_PAYABLE", "TCS Payable", "TDS_TCS", "TCS payable"),
 
     # Bank charges
@@ -88,6 +89,7 @@ AUTO_KEYWORDS: Dict[str, List[str]] = {
 
     "TDS_RECEIVABLE": ["tds receivable", "tds recoverable", "tds rcv"],
     "TDS_PAYABLE": ["tds payable", "tds pay", "tds liability"],
+    "GST_TDS_PAYABLE": ["gst tds payable", "gst-tds payable", "gst tds liability"],
     "TCS_PAYABLE": ["tcs payable", "tcs liability"],
 
     "BANK_CHARGES": ["bank charges", "bank charge", "charges bank", "neft charges", "rtgs charges"],

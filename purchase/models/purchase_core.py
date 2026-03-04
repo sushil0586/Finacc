@@ -66,6 +66,12 @@ class PurchaseInvoiceHeader(models.Model):
         DEPOSITED = 3, "Deposited"
         REPORTED = 4, "Reported (GSTR-7)"
 
+    class MatchStatus(models.TextChoices):
+        NA = "na", "Not Applicable"
+        PASSED = "passed", "Passed"
+        WARN = "warn", "Warning"
+        FAILED = "failed", "Failed"
+
     # ---- identity ----
     doc_type = models.IntegerField(choices=DocType.choices, default=DocType.TAX_INVOICE)
     bill_date = models.DateField(default=timezone.now)
@@ -82,6 +88,8 @@ class PurchaseInvoiceHeader(models.Model):
 
     supplier_invoice_number = models.CharField(max_length=50, null=True, blank=True)
     supplier_invoice_date = models.DateField(null=True, blank=True)
+    po_reference_no = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+    grn_reference_no = models.CharField(max_length=50, null=True, blank=True, db_index=True)
 
     ref_document = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="purchase_notes"
@@ -126,6 +134,7 @@ class PurchaseInvoiceHeader(models.Model):
     # ✅ default pricing behavior for UI (line can still override)
     is_rate_inclusive_of_tax_default = models.BooleanField(default=False)
     withholding_enabled = models.BooleanField(default=False, db_index=True)
+    tds_is_manual = models.BooleanField(default=False)
 
     tds_section = models.ForeignKey(
         "withholding.WithholdingSection",
@@ -155,6 +164,7 @@ class PurchaseInvoiceHeader(models.Model):
     # GST-TDS u/s 51 (NEW) - completely independent from IT TDS
     # ==========================================================
     gst_tds_enabled = models.BooleanField(default=False, db_index=True)
+    gst_tds_is_manual = models.BooleanField(default=False)
 
     # Contract reference (needed because threshold is contract-wise)
     gst_tds_contract_ref = models.CharField(max_length=64, null=True, blank=True, db_index=True)
@@ -173,6 +183,8 @@ class PurchaseInvoiceHeader(models.Model):
     
 
     gst_tds_status = models.IntegerField(choices=GstTdsStatus.choices, default=GstTdsStatus.NA, db_index=True)
+    match_status = models.CharField(max_length=10, choices=MatchStatus.choices, default=MatchStatus.NA, db_index=True)
+    match_notes = models.JSONField(default=dict, blank=True)
 
     # SaaS scope
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)

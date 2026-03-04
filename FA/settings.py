@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'catalog',
     "localization",
     "purchase",
+    "payments",
     "posting",
     "sales.apps.SalesConfig",
     "withholding",

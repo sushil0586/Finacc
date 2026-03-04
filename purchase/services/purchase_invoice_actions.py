@@ -18,6 +18,7 @@ from posting.adapters.purchase_invoice import PurchaseInvoicePostingAdapter, Pur
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
+from purchase.services.purchase_ap_service import PurchaseApService
 
 # ✅ Numbering imports (your requirement)
 from numbering.services.document_number_service import DocumentNumberService
@@ -32,6 +33,16 @@ class ActionResult:
 
 class PurchaseInvoiceActions:
     @staticmethod
+    def _assert_action_allowed_by_level(*, h: PurchaseInvoiceHeader, level_key: str, message: str) -> None:
+        policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
+        level = policy.level(level_key, "hard")
+        if level == "off":
+            return
+        if int(h.status) in (int(Status.CANCELLED), int(Status.DRAFT)):
+            if level == "hard":
+                raise ValueError(message)
+
+    @staticmethod
     def _get(pk: int) -> PurchaseInvoiceHeader:
         return (
             PurchaseInvoiceHeader.objects
@@ -41,7 +52,7 @@ class PurchaseInvoiceActions:
                 "entity", "entityfinid", "subentity",
                 "ref_document",
             )
-            .prefetch_related("lines", "tax_summaries")
+            .prefetch_related("lines", "tax_summaries", "charges")
             .get(pk=pk)
         )
 
@@ -99,13 +110,23 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def confirm(pk: int) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
 
         if int(h.status) == int(Status.CANCELLED):
             raise ValueError("Cannot confirm: document is cancelled.")
         if int(h.status) == int(Status.POSTED):
             return ActionResult(h, "Already posted.")
 
-        if not h.lines.exists():
+        confirm_lock_level = policy.level("confirm_lock_check", "hard")
+        if confirm_lock_level != "off":
+            try:
+                PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date)
+            except ValueError:
+                if confirm_lock_level == "hard":
+                    raise
+
+        require_lines_level = policy.level("require_lines_on_confirm", "hard")
+        if require_lines_level != "off" and not h.lines.exists():
             raise ValueError("Cannot confirm: no lines exist.")
 
         # ✅ CRITICAL: allocate number even if status already CONFIRMED
@@ -135,20 +156,6 @@ class PurchaseInvoiceActions:
           - later: integrate GL/Stock posting engine here
         """
         h = PurchaseInvoiceActions._get(pk)
-        lines = list(h.lines.all())  # change to your related_name
-
-        PurchaseInvoicePostingAdapter.post_purchase_invoice(
-            header=h,
-            lines=lines,
-            user_id=getattr(getattr(h, "updated_by", None), "id", None) or getattr(getattr(h, "created_by", None), "id", None),
-            config=PurchaseInvoicePostingConfig(
-                capitalize_header_expenses_to_inventory=False,
-                rcm_supplier_includes_tax=False,
-            ),
-        )
-
-        PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date)
-
 
         if int(h.status) == int(Status.CANCELLED):
             raise ValueError("Cannot post: document is cancelled.")
@@ -157,16 +164,32 @@ class PurchaseInvoiceActions:
         if int(h.status) != int(Status.CONFIRMED):
             raise ValueError("Only CONFIRMED documents can be posted.")
 
+        PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date)
+
         # Safety: if someone bypassed confirm, allocate here too
         PurchaseInvoiceActions._allocate_final_number_if_missing(h)
 
         PurchaseInvoiceService.rebuild_tax_summary(h)
 
-        # TODO: integrate your posting engine here (JournalLine/StockTransactions)
-        # purchase_posting.post_purchase_invoice(h)
+        policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
+        lines = list(h.lines.all())
+        PurchaseInvoicePostingAdapter.post_purchase_invoice(
+            header=h,
+            lines=lines,
+            user_id=getattr(getattr(h, "updated_by", None), "id", None) or getattr(getattr(h, "created_by", None), "id", None),
+            config=PurchaseInvoicePostingConfig(
+                capitalize_header_expenses_to_inventory=False,
+                rcm_supplier_includes_tax=False,
+                post_gst_tds_on_invoice=policy.post_gst_tds_on_invoice,
+            ),
+        )
 
         h.status = Status.POSTED
         h.save(update_fields=["status"])
+
+        # AP open-item sync for payable tracking (invoice/CN/DN).
+        PurchaseApService.sync_open_item_for_header(h)
+
         return ActionResult(h, "Posted successfully.")
 
     @staticmethod
@@ -198,6 +221,11 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def mark_itc_blocked(pk: int, reason: str) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        PurchaseInvoiceActions._assert_action_allowed_by_level(
+            h=h,
+            level_key="itc_action_status_gate",
+            message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
+        )
 
         h.itc_claim_status = ItcClaimStatus.BLOCKED
         h.is_itc_eligible = False
@@ -213,6 +241,11 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def mark_itc_pending(pk: int) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        PurchaseInvoiceActions._assert_action_allowed_by_level(
+            h=h,
+            level_key="itc_action_status_gate",
+            message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
+        )
 
         h.itc_claim_status = ItcClaimStatus.PENDING
         h.itc_claim_period = None
@@ -225,6 +258,11 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def mark_itc_claimed(pk: int, period: str) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        PurchaseInvoiceActions._assert_action_allowed_by_level(
+            h=h,
+            level_key="itc_action_status_gate",
+            message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
+        )
 
         if not h.is_itc_eligible:
             raise ValueError("Cannot claim ITC: document is not ITC-eligible.")
@@ -240,6 +278,11 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def mark_itc_reversed(pk: int, reason: Optional[str] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        PurchaseInvoiceActions._assert_action_allowed_by_level(
+            h=h,
+            level_key="itc_action_status_gate",
+            message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
+        )
 
         h.itc_claim_status = ItcClaimStatus.REVERSED
         if reason:
@@ -259,6 +302,11 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def update_2b_match_status(pk: int, match_status: int) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        PurchaseInvoiceActions._assert_action_allowed_by_level(
+            h=h,
+            level_key="two_b_action_status_gate",
+            message="2B action allowed only for confirmed/posted document and not allowed for cancelled document.",
+        )
         h.gstr2b_match_status = match_status
         h.save(update_fields=["gstr2b_match_status"])
         return ActionResult(h, "GSTR-2B match status updated.")

@@ -1,6 +1,7 @@
 from rest_framework import generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
 
 from purchase.models.purchase_core import PurchaseInvoiceLine, PurchaseTaxSummary
 
@@ -25,8 +26,29 @@ class PurchaseInvoiceLinesListAPIView(generics.ListAPIView):
     ordering_fields = ["header", "line_no", "id"]
     ordering = ["header", "line_no"]
 
+    def _scope_ids(self):
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        if not entity or not entityfinid:
+            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+        return entity_id, entityfinid_id, subentity_id
+
     def get_queryset(self):
-        return PurchaseInvoiceLine.objects.select_related("header", "product", "uom")
+        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        qs = PurchaseInvoiceLine.objects.select_related("header", "product", "uom").filter(
+            header__entity_id=entity_id,
+            header__entityfinid_id=entityfinid_id,
+        )
+        if subentity_id is None:
+            return qs.filter(header__subentity__isnull=True)
+        return qs.filter(header__subentity_id=subentity_id)
 
 
 class PurchaseTaxSummaryListAPIView(generics.ListAPIView):
@@ -37,5 +59,26 @@ class PurchaseTaxSummaryListAPIView(generics.ListAPIView):
     ordering_fields = ["header", "gst_rate", "taxability"]
     ordering = ["header", "gst_rate"]
 
+    def _scope_ids(self):
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        if not entity or not entityfinid:
+            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+        return entity_id, entityfinid_id, subentity_id
+
     def get_queryset(self):
-        return PurchaseTaxSummary.objects.select_related("header")
+        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        qs = PurchaseTaxSummary.objects.select_related("header").filter(
+            header__entity_id=entity_id,
+            header__entityfinid_id=entityfinid_id,
+        )
+        if subentity_id is None:
+            return qs.filter(header__subentity__isnull=True)
+        return qs.filter(header__subentity_id=subentity_id)
