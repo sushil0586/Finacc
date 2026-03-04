@@ -39,6 +39,12 @@ class SettlementPostResult:
     message: str
 
 
+@dataclass(frozen=True)
+class SettlementCancelResult:
+    settlement: VendorSettlement
+    message: str
+
+
 class PurchaseApService:
     @staticmethod
     def _auto_adjust_credit_note_if_enabled(*, header: PurchaseInvoiceHeader, cn_item: VendorBillOpenItem) -> None:
@@ -360,6 +366,45 @@ class PurchaseApService:
         settlement.save(update_fields=["total_amount", "status", "posted_at", "posted_by", "updated_at"])
 
         return SettlementPostResult(settlement=settlement, applied_total=applied_total, message="Settlement posted.")
+
+    @staticmethod
+    @transaction.atomic
+    def cancel_settlement(*, settlement_id: int, cancelled_by_id: Optional[int] = None) -> SettlementCancelResult:
+        settlement = VendorSettlement.objects.select_for_update().get(pk=settlement_id)
+        if int(settlement.status) == int(VendorSettlement.Status.CANCELLED):
+            return SettlementCancelResult(settlement=settlement, message="Settlement already cancelled.")
+        if int(settlement.status) == int(VendorSettlement.Status.DRAFT):
+            settlement.status = VendorSettlement.Status.CANCELLED
+            settlement.save(update_fields=["status", "updated_at"])
+            return SettlementCancelResult(settlement=settlement, message="Draft settlement cancelled.")
+
+        lines = list(
+            settlement.lines.select_related("open_item")
+            .select_for_update()
+            .order_by("id")
+        )
+        for ln in lines:
+            item = ln.open_item
+            applied_signed = q2(ln.applied_amount_signed)
+            if applied_signed == ZERO2:
+                continue
+            # Reverse posted settlement effect.
+            item.settled_amount = q2(item.settled_amount - applied_signed)
+            item.outstanding_amount = q2(item.original_amount - item.settled_amount)
+            if abs(item.outstanding_amount) <= TOL:
+                item.outstanding_amount = ZERO2
+                item.is_open = False
+            else:
+                item.is_open = True
+            item.last_settled_at = timezone.now()
+            item.save(update_fields=["settled_amount", "outstanding_amount", "is_open", "last_settled_at", "updated_at"])
+
+            ln.applied_amount_signed = ZERO2
+            ln.save(update_fields=["applied_amount_signed", "updated_at"])
+
+        settlement.status = VendorSettlement.Status.CANCELLED
+        settlement.save(update_fields=["status", "updated_at"])
+        return SettlementCancelResult(settlement=settlement, message="Settlement cancelled with reversal.")
 
     @staticmethod
     def vendor_statement(

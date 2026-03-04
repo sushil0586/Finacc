@@ -163,3 +163,17 @@ class PaymentVoucherCancelAPIView(APIView):
             "message": result.message,
             "data": PaymentVoucherHeaderSerializer(result.header).data,
         }, status=status.HTTP_200_OK)
+
+
+class PaymentVoucherUnpostAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk: int):
+        try:
+            result = PaymentVoucherService.unpost_voucher(pk, unposted_by_id=request.user.id)
+        except ValueError as e:
+            _raise_validation_error(e)
+        return Response({
+            "message": result.message,
+            "data": PaymentVoucherHeaderSerializer(result.header).data,
+        }, status=status.HTTP_200_OK)

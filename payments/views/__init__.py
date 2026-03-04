@@ -4,6 +4,7 @@ from .payment_voucher import (
     PaymentVoucherConfirmAPIView,
     PaymentVoucherPostAPIView,
     PaymentVoucherCancelAPIView,
+    PaymentVoucherUnpostAPIView,
 )
 from .payment_settings import PaymentSettingsAPIView
 from .payment_choices import PaymentCompiledChoicesAPIView
@@ -15,6 +16,7 @@ __all__ = [
     "PaymentVoucherConfirmAPIView",
     "PaymentVoucherPostAPIView",
     "PaymentVoucherCancelAPIView",
+    "PaymentVoucherUnpostAPIView",
     "PaymentSettingsAPIView",
     "PaymentCompiledChoicesAPIView",
     "PaymentVendorBillOpenItemListAPIView",

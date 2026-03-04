@@ -24,6 +24,12 @@ from purchase.models.purchase_ap import (
     VendorSettlement,
     VendorSettlementLine,
 )
+from purchase.models.purchase_statutory import (
+    PurchaseStatutoryChallan,
+    PurchaseStatutoryChallanLine,
+    PurchaseStatutoryReturn,
+    PurchaseStatutoryReturnLine,
+)
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
@@ -636,4 +642,73 @@ class VendorSettlementLineAdmin(admin.ModelAdmin):
         "open_item__purchase_number",
         "open_item__supplier_invoice_number",
     )
+
+
+class PurchaseStatutoryChallanLineInline(admin.TabularInline):
+    model = PurchaseStatutoryChallanLine
+    extra = 0
+    fields = ("header", "section", "amount")
+
+
+@admin.register(PurchaseStatutoryChallan)
+class PurchaseStatutoryChallanAdmin(admin.ModelAdmin):
+    inlines = [PurchaseStatutoryChallanLineInline]
+    list_display = (
+        "id",
+        "tax_type",
+        "challan_no",
+        "challan_date",
+        "amount",
+        "status",
+        "deposited_on",
+        "entity",
+        "entityfinid",
+        "subentity",
+    )
+    list_filter = ("tax_type", "status", "entity", "entityfinid", "subentity")
+    search_fields = ("challan_no", "bank_ref_no", "bsr_code", "remarks")
+    date_hierarchy = "challan_date"
+    readonly_fields = ("amount", "deposited_at", "deposited_by", "created_by", "created_at", "updated_at")
+
+
+@admin.register(PurchaseStatutoryChallanLine)
+class PurchaseStatutoryChallanLineAdmin(admin.ModelAdmin):
+    list_display = ("id", "challan", "header", "section", "amount")
+    list_filter = ("challan__tax_type", "challan__status")
+    search_fields = ("challan__challan_no", "header__purchase_number", "header__supplier_invoice_number")
+
+
+class PurchaseStatutoryReturnLineInline(admin.TabularInline):
+    model = PurchaseStatutoryReturnLine
+    extra = 0
+    fields = ("header", "challan", "amount")
+
+
+@admin.register(PurchaseStatutoryReturn)
+class PurchaseStatutoryReturnAdmin(admin.ModelAdmin):
+    inlines = [PurchaseStatutoryReturnLineInline]
+    list_display = (
+        "id",
+        "tax_type",
+        "return_code",
+        "period_from",
+        "period_to",
+        "amount",
+        "status",
+        "filed_on",
+        "ack_no",
+        "entity",
+        "entityfinid",
+        "subentity",
+    )
+    list_filter = ("tax_type", "status", "entity", "entityfinid", "subentity")
+    search_fields = ("return_code", "ack_no", "remarks")
+    readonly_fields = ("amount", "filed_at", "filed_by", "created_by", "created_at", "updated_at")
+
+
+@admin.register(PurchaseStatutoryReturnLine)
+class PurchaseStatutoryReturnLineAdmin(admin.ModelAdmin):
+    list_display = ("id", "filing", "header", "challan", "amount")
+    list_filter = ("filing__tax_type", "filing__status")
+    search_fields = ("filing__return_code", "header__purchase_number", "header__supplier_invoice_number")
 
