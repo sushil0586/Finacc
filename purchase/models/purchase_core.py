@@ -147,6 +147,11 @@ class PurchaseInvoiceHeader(models.Model):
     tds_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     tds_reason = models.CharField(max_length=255, null=True, blank=True)
+    vendor_tds_declared = models.BooleanField(default=False)
+    vendor_tds_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    vendor_tds_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    vendor_tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    vendor_tds_notes = models.CharField(max_length=255, null=True, blank=True)
 
     # totals (computed, persisted)
     total_taxable = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
@@ -179,6 +184,14 @@ class PurchaseInvoiceHeader(models.Model):
     gst_tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
     gst_tds_reason = models.CharField(max_length=255, null=True, blank=True)
+    vendor_gst_tds_declared = models.BooleanField(default=False)
+    vendor_gst_tds_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    vendor_gst_tds_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    vendor_gst_tds_cgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    vendor_gst_tds_sgst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    vendor_gst_tds_igst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    vendor_gst_tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    vendor_gst_tds_notes = models.CharField(max_length=255, null=True, blank=True)
 
     
 

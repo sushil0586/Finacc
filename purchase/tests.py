@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
@@ -10,12 +10,14 @@ from rest_framework.test import APITestCase, APIClient
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
+from purchase.services.purchase_statutory_service import PurchaseStatutoryService
 from posting.adapters.purchase_invoice import (
     PurchaseInvoicePostingAdapter,
     PurchaseInvoicePostingConfig,
 )
 from posting.common.static_accounts import StaticAccountCodes
 from withholding.services import WithholdingResult
+from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
 
 
 class PurchaseTdsApplyTests(SimpleTestCase):
@@ -153,6 +155,53 @@ class PurchaseGstTdsTests(SimpleTestCase):
         self.assertEqual(ser.get_gst_tds_cgst_rate(inter), "0.0000")
         self.assertEqual(ser.get_gst_tds_sgst_rate(inter), "0.0000")
         self.assertEqual(ser.get_gst_tds_igst_rate(inter), "2.0000")
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_vendor_tds_variance_hard_blocks(self, mock_get_policy):
+        mock_get_policy.return_value = SimpleNamespace(level=lambda key, default="warn": "hard")
+        header = SimpleNamespace(
+            entity_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            vendor_tds_declared=True,
+            vendor_tds_base_amount=Decimal("900.00"),
+            vendor_tds_rate=Decimal("1.0000"),
+            vendor_tds_amount=Decimal("9.00"),
+            tds_base_amount=Decimal("1000.00"),
+            tds_rate=Decimal("1.0000"),
+            tds_amount=Decimal("10.00"),
+            gst_tds_enabled=False,
+            vendor_gst_tds_declared=False,
+            match_notes={},
+            match_status="na",
+            MatchStatus=SimpleNamespace(WARN="warn"),
+        )
+        with self.assertRaisesMessage(ValueError, "Vendor IT-TDS differs"):
+            PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=header)
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_vendor_tds_variance_warn_sets_match_notes(self, mock_get_policy):
+        mock_get_policy.return_value = SimpleNamespace(level=lambda key, default="warn": "warn")
+        header = SimpleNamespace(
+            entity_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            vendor_tds_declared=True,
+            vendor_tds_base_amount=Decimal("900.00"),
+            vendor_tds_rate=Decimal("1.0000"),
+            vendor_tds_amount=Decimal("9.00"),
+            tds_base_amount=Decimal("1000.00"),
+            tds_rate=Decimal("1.0000"),
+            tds_amount=Decimal("10.00"),
+            gst_tds_enabled=False,
+            vendor_gst_tds_declared=False,
+            match_notes={},
+            match_status="na",
+            MatchStatus=SimpleNamespace(WARN="warn"),
+        )
+        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=header)
+        self.assertIn("withholding_warnings", header.match_notes)
+        self.assertEqual(header.match_status, "warn")
 
 
 class PurchaseApiSmokeTests(APITestCase):
@@ -368,3 +417,133 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         self.assertTrue(vendor_dr, "Expected DR Vendor entry for GST-TDS deduction.")
         self.assertTrue(gst_tds_cr, "Expected CR GST-TDS Payable entry.")
+
+
+class PurchaseStatutoryServiceTests(SimpleTestCase):
+    def test_validate_it_tds_amount_raises_on_excess(self):
+        header = SimpleNamespace(id=1, tds_amount=Decimal("10.00"), gst_tds_amount=Decimal("0.00"))
+        with self.assertRaisesMessage(ValueError, "exceeds IT-TDS"):
+            PurchaseStatutoryService._validate_header_amount_for_tax_type(
+                header=header,
+                tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS,
+                amount=Decimal("11.00"),
+            )
+
+    def test_validate_gst_tds_amount_raises_on_excess(self):
+        header = SimpleNamespace(id=2, tds_amount=Decimal("0.00"), gst_tds_amount=Decimal("5.00"))
+        with self.assertRaisesMessage(ValueError, "exceeds GST-TDS"):
+            PurchaseStatutoryService._validate_header_amount_for_tax_type(
+                header=header,
+                tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS,
+                amount=Decimal("6.00"),
+            )
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseInvoiceHeader.objects")
+    def test_reconciliation_summary_returns_expected_keys(
+        self,
+        mock_header_objects,
+        mock_challan_objects,
+        mock_return_objects,
+    ):
+        header_qs = MagicMock()
+        header_qs.filter.return_value = header_qs
+        header_qs.aggregate.side_effect = [
+            {"t": Decimal("10.00")},  # deducted_it
+            {"t": Decimal("5.00")},   # deducted_gst
+        ]
+        mock_header_objects.filter.return_value = header_qs
+
+        challan_qs = MagicMock()
+        challan_qs.filter.return_value = challan_qs
+        challan_qs.filter.return_value.aggregate.side_effect = [
+            {"t": Decimal("8.00")},  # deposited
+            {"t": Decimal("0.50")},  # deposited_interest
+            {"t": Decimal("0.25")},  # deposited_late_fee
+            {"t": Decimal("0.10")},  # deposited_penalty
+            {"t": Decimal("2.00")},  # draft challan
+        ]
+        mock_challan_objects.filter.return_value = challan_qs
+
+        return_qs = MagicMock()
+        return_qs.filter.return_value = return_qs
+        return_qs.filter.return_value.aggregate.side_effect = [
+            {"t": Decimal("6.00")},  # filed
+            {"t": Decimal("0.40")},  # filed_interest
+            {"t": Decimal("0.20")},  # filed_late_fee
+            {"t": Decimal("0.05")},  # filed_penalty
+            {"t": Decimal("1.00")},  # draft return
+        ]
+        mock_return_objects.filter.return_value = return_qs
+
+        data = PurchaseStatutoryService.reconciliation_summary(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tax_type=None,
+            date_from=None,
+            date_to=None,
+        )
+        self.assertEqual(data["deducted"], "15.00")
+        self.assertEqual(data["deposited"], "8.00")
+        self.assertEqual(data["deposited_interest"], "0.50")
+        self.assertEqual(data["filed"], "6.00")
+        self.assertEqual(data["filed_penalty"], "0.05")
+        self.assertEqual(data["pending_deposit"], "7.00")
+        self.assertEqual(data["pending_filing"], "2.00")
+
+
+class PurchaseApiExtendedSmokeTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="purchase_api_ext_tester", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("purchase.views.purchase_ap.PurchaseApService.cancel_settlement")
+    def test_ap_settlement_cancel_endpoint_returns_200(self, mock_cancel):
+        mock_cancel.return_value = SimpleNamespace(
+            message="Settlement cancelled with reversal.",
+            settlement=SimpleNamespace(
+                id=1,
+                entity_id=1,
+                entityfinid_id=1,
+                subentity_id=None,
+                vendor_id=1,
+                settlement_type="payment",
+                settlement_date=None,
+                reference_no=None,
+                external_voucher_no=None,
+                remarks=None,
+                total_amount=Decimal("0.00"),
+                status=9,
+                posted_at=None,
+                posted_by_id=None,
+                lines=[],
+                created_at=None,
+                updated_at=None,
+                get_status_display=lambda: "Cancelled",
+                get_settlement_type_display=lambda: "Payment",
+            ),
+        )
+        with patch("purchase.views.purchase_ap.VendorSettlementSerializer") as mock_ser:
+            mock_ser.return_value.data = {"id": 1, "status": 9}
+            resp = self.client.post("/api/purchase/ap/settlements/1/cancel/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["message"], "Settlement cancelled with reversal.")
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_summary")
+    def test_statutory_summary_endpoint_returns_200(self, mock_summary):
+        mock_summary.return_value = {
+            "deducted": "10.00",
+            "deposited": "8.00",
+            "filed": "6.00",
+            "pending_deposit": "2.00",
+            "pending_filing": "2.00",
+            "draft_challan": "1.00",
+            "draft_return": "1.00",
+        }
+        resp = self.client.get("/api/purchase/statutory/summary/?entity=1&entityfinid=1")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("summary", resp.data)

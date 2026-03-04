@@ -114,6 +114,20 @@ class VendorSettlementPostAPIView(APIView):
         })
 
 
+class VendorSettlementCancelAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk: int):
+        try:
+            res = PurchaseApService.cancel_settlement(settlement_id=pk, cancelled_by_id=request.user.id)
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({
+            "message": res.message,
+            "data": VendorSettlementSerializer(res.settlement).data,
+        })
+
+
 class VendorStatementAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -141,4 +155,3 @@ class VendorStatementAPIView(APIView):
             "open_items": VendorBillOpenItemSerializer(data["open_items"], many=True).data,
             "settlements": VendorSettlementSerializer(data["settlements"], many=True).data,
         })
-

@@ -57,7 +57,6 @@ class RegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         # Create a new user instance and hash the password
         user = User.objects.create_user(**validated_data)
-        print(user)  # Consider logging instead of printing in production
         return user
 
 class UserSerializer(serializers.ModelSerializer):

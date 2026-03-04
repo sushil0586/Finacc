@@ -41,6 +41,8 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "allocation_policy": "manual",      # manual | fifo
     "over_settlement_rule": "block",    # block | warn
     "auto_adjust_credit_notes": "off",  # off | on
+    "vendor_tds_variance_rule": "warn",     # off | warn | hard
+    "vendor_gst_tds_variance_rule": "warn", # off | warn | hard
 }
 
 

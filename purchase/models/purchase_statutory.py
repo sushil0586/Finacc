@@ -35,8 +35,15 @@ class PurchaseStatutoryChallan(TrackingModel):
     period_to = models.DateField(null=True, blank=True, db_index=True)
 
     amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    interest_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    late_fee_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    penalty_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     bank_ref_no = models.CharField(max_length=100, null=True, blank=True, db_index=True)
     bsr_code = models.CharField(max_length=20, null=True, blank=True, db_index=True)
+    cin_no = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    minor_head_code = models.CharField(max_length=20, null=True, blank=True, db_index=True)
+    payment_payload_json = models.JSONField(default=dict, blank=True)
+    ack_document = models.FileField(upload_to="purchase/statutory/challan/", null=True, blank=True)
 
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT, db_index=True)
     deposited_on = models.DateField(null=True, blank=True, db_index=True)
@@ -65,6 +72,9 @@ class PurchaseStatutoryChallan(TrackingModel):
                 name="uq_pur_stat_challan_scope_type_no",
             ),
             models.CheckConstraint(check=Q(amount__gte=0), name="ck_pur_stat_challan_amount_nonneg"),
+            models.CheckConstraint(check=Q(interest_amount__gte=0), name="ck_pur_stat_challan_interest_nonneg"),
+            models.CheckConstraint(check=Q(late_fee_amount__gte=0), name="ck_pur_stat_challan_latefee_nonneg"),
+            models.CheckConstraint(check=Q(penalty_amount__gte=0), name="ck_pur_stat_challan_penalty_nonneg"),
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "tax_type", "status"], name="ix_pur_stat_challan_scope"),
@@ -73,6 +83,12 @@ class PurchaseStatutoryChallan(TrackingModel):
 
     def __str__(self) -> str:
         return f"{self.tax_type}:{self.challan_no}"
+
+    @property
+    def total_deposit_amount(self) -> Decimal:
+        return ZERO2 + (self.amount or ZERO2) + (self.interest_amount or ZERO2) + (self.late_fee_amount or ZERO2) + (
+            self.penalty_amount or ZERO2
+        )
 
 
 class PurchaseStatutoryChallanLine(TrackingModel):
@@ -122,6 +138,9 @@ class PurchaseStatutoryReturn(TrackingModel):
     period_to = models.DateField(db_index=True)
 
     amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    interest_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    late_fee_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    penalty_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT, db_index=True)
     filed_on = models.DateField(null=True, blank=True, db_index=True)
     filed_at = models.DateTimeField(null=True, blank=True)
@@ -133,6 +152,17 @@ class PurchaseStatutoryReturn(TrackingModel):
         related_name="purchase_statutory_returns_filed",
     )
     ack_no = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    arn_no = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    filed_payload_json = models.JSONField(default=dict, blank=True)
+    ack_document = models.FileField(upload_to="purchase/statutory/return/", null=True, blank=True)
+    original_return = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="revisions",
+    )
+    revision_no = models.PositiveIntegerField(default=0)
     remarks = models.CharField(max_length=255, null=True, blank=True)
     created_by = models.ForeignKey(
         User,
@@ -145,6 +175,9 @@ class PurchaseStatutoryReturn(TrackingModel):
     class Meta:
         constraints = [
             models.CheckConstraint(check=Q(amount__gte=0), name="ck_pur_stat_return_amount_nonneg"),
+            models.CheckConstraint(check=Q(interest_amount__gte=0), name="ck_pur_stat_return_interest_nonneg"),
+            models.CheckConstraint(check=Q(late_fee_amount__gte=0), name="ck_pur_stat_return_latefee_nonneg"),
+            models.CheckConstraint(check=Q(penalty_amount__gte=0), name="ck_pur_stat_return_penalty_nonneg"),
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "tax_type", "status"], name="ix_pur_stat_return_scope"),
@@ -153,6 +186,12 @@ class PurchaseStatutoryReturn(TrackingModel):
 
     def __str__(self) -> str:
         return f"{self.tax_type}:{self.return_code}:{self.period_from}-{self.period_to}"
+
+    @property
+    def total_liability_amount(self) -> Decimal:
+        return ZERO2 + (self.amount or ZERO2) + (self.interest_amount or ZERO2) + (self.late_fee_amount or ZERO2) + (
+            self.penalty_amount or ZERO2
+        )
 
 
 class PurchaseStatutoryReturnLine(TrackingModel):
@@ -166,6 +205,12 @@ class PurchaseStatutoryReturnLine(TrackingModel):
         related_name="return_lines",
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    section_snapshot_code = models.CharField(max_length=16, null=True, blank=True, db_index=True)
+    section_snapshot_desc = models.CharField(max_length=255, null=True, blank=True)
+    deductee_pan_snapshot = models.CharField(max_length=16, null=True, blank=True, db_index=True)
+    deductee_gstin_snapshot = models.CharField(max_length=15, null=True, blank=True, db_index=True)
+    cin_snapshot = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    metadata_json = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [

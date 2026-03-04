@@ -6,8 +6,8 @@ from django.apps import apps
 from django.utils import timezone
 from django.utils.translation import gettext as _
 from django.contrib.auth.hashers import make_password
-import jwt;
-from django.conf import Settings, settings
+import jwt
+from django.conf import settings
 from datetime import datetime, timedelta
 #from entity.models import entity
 
@@ -73,7 +73,7 @@ class MyUserManager(UserManager):
 
 
 
-class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
+class User(AbstractBaseUser,PermissionsMixin,TrackingModel):
     username_validator = UnicodeUsernameValidator()
 
     username = models.CharField(
@@ -129,6 +129,7 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
             return token
         token = jwt.encode(
             {
+                'user_id': self.pk,
                 'username': self.username,
                 'email': self.email,
                 'exp': datetime.utcnow() + timedelta(hours=360)
@@ -136,6 +137,9 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel,UserManager):
             settings.SECRET_KEY,
             algorithm='HS256'
         )
+        # pyjwt may return bytes in some environments; normalize to str for serializers.
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
         # Cache the token for 60 seconds to reduce computation overhead.
         cache.set(cache_key, token, timeout=60)
         return token

@@ -66,8 +66,15 @@ class PurchaseStatutoryChallanListCreateAPIView(generics.ListCreateAPIView):
                 challan_date=data["challan_date"],
                 period_from=data.get("period_from"),
                 period_to=data.get("period_to"),
+                interest_amount=data.get("interest_amount"),
+                late_fee_amount=data.get("late_fee_amount"),
+                penalty_amount=data.get("penalty_amount"),
                 bank_ref_no=data.get("bank_ref_no"),
                 bsr_code=data.get("bsr_code"),
+                cin_no=data.get("cin_no"),
+                minor_head_code=data.get("minor_head_code"),
+                payment_payload_json=data.get("payment_payload_json"),
+                ack_document=data.get("ack_document"),
                 remarks=data.get("remarks"),
                 lines=data["lines"],
                 created_by_id=request.user.id,
@@ -83,11 +90,23 @@ class PurchaseStatutoryChallanDepositAPIView(APIView):
 
     def post(self, request, pk: int):
         deposited_on = request.data.get("deposited_on")
+        bank_ref_no = request.data.get("bank_ref_no")
+        bsr_code = request.data.get("bsr_code")
+        cin_no = request.data.get("cin_no")
+        minor_head_code = request.data.get("minor_head_code")
+        payment_payload_json = request.data.get("payment_payload_json")
+        ack_document = request.data.get("ack_document")
         try:
             res = PurchaseStatutoryService.deposit_challan(
                 challan_id=pk,
                 deposited_by_id=request.user.id,
                 deposited_on=deposited_on,
+                bank_ref_no=bank_ref_no,
+                bsr_code=bsr_code,
+                cin_no=cin_no,
+                minor_head_code=minor_head_code,
+                payment_payload_json=payment_payload_json,
+                ack_document=ack_document,
             )
         except ValueError as e:
             raise ValidationError({"detail": str(e)})
@@ -130,6 +149,14 @@ class PurchaseStatutoryReturnListCreateAPIView(generics.ListCreateAPIView):
                 period_from=data["period_from"],
                 period_to=data["period_to"],
                 ack_no=data.get("ack_no"),
+                arn_no=data.get("arn_no"),
+                interest_amount=data.get("interest_amount"),
+                late_fee_amount=data.get("late_fee_amount"),
+                penalty_amount=data.get("penalty_amount"),
+                filed_payload_json=data.get("filed_payload_json"),
+                ack_document=data.get("ack_document"),
+                original_return_id=data.get("original_return_id"),
+                revision_no=data.get("revision_no") or 0,
                 remarks=data.get("remarks"),
                 lines=data["lines"],
                 created_by_id=request.user.id,
@@ -146,13 +173,41 @@ class PurchaseStatutoryReturnFileAPIView(APIView):
     def post(self, request, pk: int):
         filed_on = request.data.get("filed_on")
         ack_no = request.data.get("ack_no")
+        arn_no = request.data.get("arn_no")
+        filed_payload_json = request.data.get("filed_payload_json")
+        ack_document = request.data.get("ack_document")
         try:
             res = PurchaseStatutoryService.file_return(
                 filing_id=pk,
                 filed_by_id=request.user.id,
                 filed_on=filed_on,
                 ack_no=ack_no,
+                arn_no=arn_no,
+                filed_payload_json=filed_payload_json,
+                ack_document=ack_document,
             )
         except ValueError as e:
             raise ValidationError({"detail": str(e)})
         return Response({"message": res.message, "data": PurchaseStatutoryReturnSerializer(res.obj).data})
+
+
+class PurchaseStatutorySummaryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        tax_type = request.query_params.get("tax_type")
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        try:
+            summary = PurchaseStatutoryService.reconciliation_summary(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type or None,
+                date_from=date_from or None,
+                date_to=date_to or None,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({"summary": summary})
