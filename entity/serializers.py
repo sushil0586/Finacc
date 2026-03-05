@@ -820,6 +820,8 @@ class EntityNewSerializer(serializers.ModelSerializer):
         - id missing/0 -> create
         - delete existing rows not included in incoming ids
         """
+        if items is None:
+            return
         items = items or []
         existing_qs = getattr(parent_instance, related_name).all()
         existing_map = {obj.id: obj for obj in existing_qs}
@@ -896,6 +898,10 @@ class EntityNewSerializer(serializers.ModelSerializer):
         # -------------------------
         # Create Financial Years (createdby required in model)
         # -------------------------
+        active_fy_count = sum(1 for f in fy_data if bool((f or {}).get("isactive")))
+        if active_fy_count > 1:
+            raise serializers.ValidationError({"fy": "Only one financial year can be active."})
+
         for f in fy_data:
             f = dict(f)
             f.pop("id", None)
@@ -906,6 +912,16 @@ class EntityNewSerializer(serializers.ModelSerializer):
 
         # optional: used by your downstream seeding/account creation
         accountdate = fy_data[0]["finstartyear"] if fy_data else None
+
+        if fy_data:
+            active_fy = (
+                EntityFinancialYear.objects.filter(entity=entity, isactive=True).order_by("-id").first()
+            )
+            if not active_fy:
+                first_fy = EntityFinancialYear.objects.filter(entity=entity).order_by("id").first()
+                if first_fy:
+                    first_fy.isactive = True
+                    first_fy.save(update_fields=["isactive"])
 
         # -------------------------
         # Seed masters from account.json
@@ -1038,26 +1054,46 @@ class EntityNewSerializer(serializers.ModelSerializer):
     # -------------------------
     @transaction.atomic
     def update(self, instance, validated_data):
-        bank_data = validated_data.pop("bank_accounts", [])
-        subentity_data = validated_data.pop("subentity", [])
-        fy_data = validated_data.pop("fy", [])
-        constitution_data = validated_data.pop("constitution", [])
+        has_bank_data = "bank_accounts" in validated_data
+        has_subentity_data = "subentity" in validated_data
+        has_fy_data = "fy" in validated_data
+        has_constitution_data = "constitution" in validated_data
+
+        bank_data = validated_data.pop("bank_accounts", None)
+        subentity_data = validated_data.pop("subentity", None)
+        fy_data = validated_data.pop("fy", None)
+        constitution_data = validated_data.pop("constitution", None)
 
         user = validated_data.get("updatedby") or validated_data.get("createdby")
 
         # base entity update
         validated_data.pop("id", None)
         validated_data.pop("pk", None)
+        validated_data.pop("createdby", None)
+        validated_data.pop("updatedby", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
         # nested upsert
-        self._upsert_nested(BankAccount, "bank_accounts", instance, "entity", bank_data, user=None)
-        self._upsert_nested(SubEntity, "subentity", instance, "entity", subentity_data, user=None)
-        self._upsert_nested(EntityFinancialYear, "fy", instance, "entity", fy_data, user=user)
-        self._upsert_nested(EntityConstitution, "constitution", instance, "entity", constitution_data, user=user)
+        if has_bank_data:
+            self._upsert_nested(BankAccount, "bank_accounts", instance, "entity", bank_data, user=None)
+        if has_subentity_data:
+            self._upsert_nested(SubEntity, "subentity", instance, "entity", subentity_data, user=None)
+        if has_fy_data:
+            active_fy_count = sum(1 for f in (fy_data or []) if bool((f or {}).get("isactive")))
+            if active_fy_count > 1:
+                raise serializers.ValidationError({"fy": "Only one financial year can be active."})
+            self._upsert_nested(EntityFinancialYear, "fy", instance, "entity", fy_data, user=user)
+            active_fy = EntityFinancialYear.objects.filter(entity=instance, isactive=True).order_by("-id").first()
+            if not active_fy:
+                first_fy = EntityFinancialYear.objects.filter(entity=instance).order_by("id").first()
+                if first_fy:
+                    first_fy.isactive = True
+                    first_fy.save(update_fields=["isactive"])
+        if has_constitution_data:
+            self._upsert_nested(EntityConstitution, "constitution", instance, "entity", constitution_data, user=user)
 
         return instance
 

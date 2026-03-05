@@ -295,6 +295,11 @@ class UserRole(TrackingModel):
     user =     models.ForeignKey(User,null= True,on_delete= models.CASCADE)
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "user"], name="uq_entity_user_role_once"),
+        ]
+
     def __str__(self):
         return f'{self.role}'
     

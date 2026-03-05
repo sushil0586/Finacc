@@ -23,6 +23,15 @@ DEFAULT_POLICY_CONTROLS = {
     "auto_adjust_credit_notes": "off",    # off | on
     "vendor_tds_variance_rule": "warn",   # off | warn | hard
     "vendor_gst_tds_variance_rule": "warn",  # off | warn | hard
+    "statutory_maker_checker": "off",     # off | warn | hard
+    "allow_revised_challan_remap": "off", # off | on
+    "statutory_auto_compute_interest_late_fee": "off",  # off | on
+    "it_tds_interest_rate_monthly": "1.50",
+    "it_tds_late_fee_per_day": "200.00",
+    "it_tds_late_fee_cap_factor": "1.00",
+    "gst_tds_interest_rate_monthly": "1.50",
+    "gst_tds_late_fee_per_day": "100.00",
+    "gst_tds_late_fee_cap_factor": "1.00",
 }
 
 

@@ -43,6 +43,15 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "auto_adjust_credit_notes": "off",  # off | on
     "vendor_tds_variance_rule": "warn",     # off | warn | hard
     "vendor_gst_tds_variance_rule": "warn", # off | warn | hard
+    "statutory_maker_checker": "off",       # off | warn | hard
+    "allow_revised_challan_remap": "off",   # off | on
+    "statutory_auto_compute_interest_late_fee": "off",  # off | on
+    "it_tds_interest_rate_monthly": "1.50",
+    "it_tds_late_fee_per_day": "200.00",
+    "it_tds_late_fee_cap_factor": "1.00",
+    "gst_tds_interest_rate_monthly": "1.50",
+    "gst_tds_late_fee_per_day": "100.00",
+    "gst_tds_late_fee_cap_factor": "1.00",
 }
 
 
@@ -106,6 +115,14 @@ class PurchaseSettingsService:
             raise ValueError("policy_controls must be a JSON object.")
 
         normalized: Dict[str, Any] = {}
+        numeric_keys = {
+            "it_tds_interest_rate_monthly",
+            "it_tds_late_fee_per_day",
+            "it_tds_late_fee_cap_factor",
+            "gst_tds_interest_rate_monthly",
+            "gst_tds_late_fee_per_day",
+            "gst_tds_late_fee_cap_factor",
+        }
         for key, value in raw.items():
             if key not in DEFAULT_POLICY_CONTROLS:
                 continue
@@ -144,6 +161,21 @@ class PurchaseSettingsService:
                 if v not in ON_OFF:
                     raise ValueError("policy_controls.auto_adjust_credit_notes must be one of: off, on.")
                 normalized[key] = v
+                continue
+            if key in {"allow_revised_challan_remap", "statutory_auto_compute_interest_late_fee"}:
+                v = str(value).lower().strip()
+                if v not in ON_OFF:
+                    raise ValueError(f"policy_controls.{key} must be one of: off, on.")
+                normalized[key] = v
+                continue
+            if key in numeric_keys:
+                try:
+                    n = float(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"policy_controls.{key} must be numeric.")
+                if n < 0:
+                    raise ValueError(f"policy_controls.{key} cannot be negative.")
+                normalized[key] = str(value)
                 continue
 
             v = str(value).lower().strip()

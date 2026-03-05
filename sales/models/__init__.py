@@ -12,6 +12,10 @@ from .sales_settings import (
     SalesLockPeriod,
     SalesChoiceOverride,
 )
+from .sales_addons import (
+    SalesChargeType,
+    SalesChargeLine,
+)
 
 from .sales_compliance import (
     SalesEInvoice,

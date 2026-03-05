@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from rest_framework import status
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from sales.models import SalesSettings
@@ -13,11 +15,20 @@ from sales.services.sales_settings_service import SalesSettingsService
 
 
 class SalesSettingsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        entity_id = int(request.query_params.get("entity_id"))
+        entity_id = request.query_params.get("entity_id")
+        if not entity_id:
+            return Response({"entity_id": "This query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
         subentity_id = request.query_params.get("subentity_id")
         subentity_id = int(subentity_id) if subentity_id else None
-        entityfinid_id = int(request.query_params.get("entityfinid"))
+        entityfinid_raw = request.query_params.get("entityfinid")
+        if not entityfinid_raw:
+            return Response({"entityfinid": "This query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        entity_id = int(entity_id)
+        entityfinid_id = int(entityfinid_raw)
 
         settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
 

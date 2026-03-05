@@ -23,7 +23,7 @@ class PurchaseInvoiceConfirmAPIView(APIView):
 
     def post(self, request, pk: int):
         try:
-            result = PurchaseInvoiceActions.confirm(pk)
+            result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({
@@ -37,7 +37,7 @@ class PurchaseInvoicePostAPIView(APIView):
 
     def post(self, request, pk: int):
         try:
-            result = PurchaseInvoiceActions.post(pk)
+            result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({
@@ -50,8 +50,9 @@ class PurchaseInvoiceCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        reason = (request.data.get("reason") or "").strip() or None
         try:
-            result = PurchaseInvoiceActions.cancel(pk)
+            result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({

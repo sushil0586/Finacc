@@ -18,6 +18,7 @@ from sales.models.sales_core import (
     SalesEWayEvent,
     SalesInvoiceShipToSnapshot,
 )
+from sales.models.sales_addons import SalesChargeLine, SalesChargeType
 from sales.services.sales_invoice_service import SalesInvoiceService
 
 # If you created separate actions module later, you can swap to that
@@ -85,6 +86,29 @@ class SalesTaxSummaryInline(admin.TabularInline):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+
+class SalesChargeLineInline(admin.TabularInline):
+    model = SalesChargeLine
+    extra = 0
+    show_change_link = True
+    fields = (
+        "line_no",
+        "charge_type",
+        "description",
+        "taxability",
+        "is_service",
+        "hsn_sac_code",
+        "is_rate_inclusive_of_tax",
+        "taxable_value",
+        "gst_rate",
+        "cgst_amount",
+        "sgst_amount",
+        "igst_amount",
+        "total_value",
+        "revenue_account",
+    )
+    ordering = ("line_no", "id")
     
 class SalesInvoiceShipToSnapshotInline(admin.StackedInline):
     model = SalesInvoiceShipToSnapshot
@@ -159,7 +183,14 @@ class SalesEWayBillDetailsInline(admin.StackedInline):
 
 @admin.register(SalesInvoiceHeader)
 class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
-    inlines = [SalesInvoiceShipToSnapshotInline,SalesEInvoiceDetailsInline,SalesEWayBillDetailsInline, SalesInvoiceLineInline, SalesTaxSummaryInline]
+    inlines = [
+        SalesInvoiceShipToSnapshotInline,
+        SalesEInvoiceDetailsInline,
+        SalesEWayBillDetailsInline,
+        SalesInvoiceLineInline,
+        SalesChargeLineInline,
+        SalesTaxSummaryInline,
+    ]
 
     list_display = (
         "id",
@@ -173,6 +204,11 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "pos_display",
         "einvoice_display",
         "eway_display",
+        "withholding_enabled",
+        "tcs_amount",
+        "settlement_status",
+        "outstanding_amount",
+        "is_posting_reversed",
         "grand_total",
         "entity",
         "entityfinid",
@@ -195,6 +231,8 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "gst_compliance_mode",
         "is_einvoice_applicable",
         "is_eway_applicable",
+        "settlement_status",
+        "is_posting_reversed",
         "entity",
         "entityfinid",
         "subentity",
@@ -222,6 +260,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "action_rebuild_tax_summary",
         "action_confirm",
         "action_post",
+        "action_reverse_posting",
         "action_cancel",
     ]
 
@@ -231,6 +270,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
                 ("doc_type", "status"),
                 ("bill_date", "posting_date"),
                 ("doc_code", "doc_no", "invoice_number"),
+                ("original_invoice",),
                 ("credit_days", "due_date"),
                 ("reference",),
             )
@@ -258,12 +298,31 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
                 ("is_einvoice_applicable", "is_eway_applicable"),
             )
         }),
+        ("TCS", {
+            "fields": (
+                ("withholding_enabled", "tcs_section"),
+                ("tcs_rate", "tcs_base_amount", "tcs_amount"),
+                ("tcs_reason",),
+            )
+        }),
         ("Totals", {
             "fields": (
                 ("total_taxable_value",),
                 ("total_cgst", "total_sgst", "total_igst", "total_cess"),
                 ("total_discount", "total_other_charges"),
                 ("round_off", "grand_total"),
+            )
+        }),
+        ("Settlement", {
+            "fields": (
+                ("settled_amount", "outstanding_amount", "settlement_status"),
+            )
+        }),
+        ("Posting Reversal", {
+            "fields": (
+                ("is_posting_reversed",),
+                ("reversed_at", "reversed_by"),
+                ("reverse_reason",),
             )
         }),
         ("SaaS Scope", {
@@ -292,6 +351,17 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "total_discount",
         "round_off",
         "grand_total",
+        "tcs_rate",
+        "tcs_base_amount",
+        "tcs_amount",
+        "tcs_reason",
+        "settled_amount",
+        "outstanding_amount",
+        "settlement_status",
+        "is_posting_reversed",
+        "reversed_at",
+        "reversed_by",
+        "reverse_reason",
         "created_by",
     )
 
@@ -447,7 +517,24 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         if ok:
             self.message_user(request, f"Posted {ok} document(s).", level=messages.SUCCESS)
 
-    @admin.action(description="Cancel (Draft/Confirmed → Cancelled)")
+    @admin.action(description="Reverse Posting (Posted to Confirmed)")
+    def action_reverse_posting(self, request, queryset):
+        ok, fail = 0, 0
+        for obj in queryset:
+            try:
+                SalesInvoiceService.reverse_posting(
+                    header=obj,
+                    user=request.user,
+                    reason="Reversed from admin action",
+                )
+                ok += 1
+            except Exception as e:
+                fail += 1
+                self.message_user(request, f"[{obj.pk}] reverse failed: {e}", level=messages.ERROR)
+        if ok:
+            self.message_user(request, f"Reversed {ok} document(s).", level=messages.SUCCESS)
+
+    @admin.action(description="Cancel (Draft/Confirmed to Cancelled)")
     def action_cancel(self, request, queryset):
         ok, fail = 0, 0
         for obj in queryset:
@@ -484,6 +571,41 @@ class SalesInvoiceLineAdmin(admin.ModelAdmin):
     list_filter = ("is_service",)
     search_fields = ("hsn_sac_code", "header__invoice_number")
     ordering = ("-id",)
+
+
+@admin.register(SalesChargeLine)
+class SalesChargeLineAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "header",
+        "line_no",
+        "charge_type",
+        "taxable_value",
+        "gst_rate",
+        "cgst_amount",
+        "sgst_amount",
+        "igst_amount",
+        "total_value",
+    )
+    list_filter = ("charge_type", "taxability", "is_service")
+    search_fields = ("header__invoice_number", "description", "hsn_sac_code")
+    ordering = ("-id",)
+
+
+@admin.register(SalesChargeType)
+class SalesChargeTypeAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "entity",
+        "code",
+        "name",
+        "base_category",
+        "is_active",
+        "gst_rate_default",
+    )
+    list_filter = ("base_category", "is_active", "entity")
+    search_fields = ("code", "name", "description", "hsn_sac_code_default")
+    ordering = ("code",)
 
 
 
@@ -783,3 +905,4 @@ class SalesMasterGSTTokenAdmin(admin.ModelAdmin):
             tok.save(update_fields=["auth_token", "token_expiry", "last_error_message"])
             updated += 1
         self.message_user(request, f"Cleared {updated} token(s).", level=messages.SUCCESS)
+

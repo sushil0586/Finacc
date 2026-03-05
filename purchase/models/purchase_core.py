@@ -119,6 +119,11 @@ class PurchaseInvoiceHeader(models.Model):
         State, null=True, blank=True, on_delete=models.PROTECT, related_name="purchase_pos_state_docs"
     )
 
+    # Currency / FX
+    currency_code = models.CharField(max_length=3, default="INR", db_index=True)
+    base_currency_code = models.CharField(max_length=3, default="INR")
+    exchange_rate = models.DecimalField(max_digits=18, decimal_places=6, default=Decimal("1.000000"))
+
     # ITC + 2B
     is_reverse_charge = models.BooleanField(default=False)
     is_itc_eligible = models.BooleanField(default=True)
@@ -162,8 +167,34 @@ class PurchaseInvoiceHeader(models.Model):
     total_gst = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     round_off = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    grand_total_base_currency = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT)
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_purchase_documents",
+    )
+    posted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    posted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="posted_purchase_documents",
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    cancelled_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cancelled_purchase_documents",
+    )
+    cancel_reason = models.CharField(max_length=255, null=True, blank=True)
 
      # ==========================================================
     # GST-TDS u/s 51 (NEW) - completely independent from IT TDS

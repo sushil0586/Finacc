@@ -120,7 +120,10 @@ class PurchaseApService:
         Idempotent and safe to call multiple times.
         """
         sign = PurchaseApService._doc_sign(int(header.doc_type))
-        original = q2(sign * q2(getattr(header, "grand_total", ZERO2)))
+        gross_amount = q2(sign * q2(getattr(header, "grand_total", ZERO2)))
+        tds_deducted = q2(sign * q2(getattr(header, "tds_amount", ZERO2)))
+        gst_tds_deducted = q2(sign * q2(getattr(header, "gst_tds_amount", ZERO2)))
+        net_payable = q2(gross_amount - tds_deducted - gst_tds_deducted)
 
         item, _ = VendorBillOpenItem.objects.select_for_update().get_or_create(
             header=header,
@@ -134,10 +137,14 @@ class PurchaseApService:
                 "due_date": header.due_date,
                 "purchase_number": header.purchase_number,
                 "supplier_invoice_number": header.supplier_invoice_number,
-                "original_amount": original,
+                "original_amount": net_payable,
+                "gross_amount": gross_amount,
+                "tds_deducted": tds_deducted,
+                "gst_tds_deducted": gst_tds_deducted,
+                "net_payable_amount": net_payable,
                 "settled_amount": ZERO2,
-                "outstanding_amount": original,
-                "is_open": abs(original) > TOL,
+                "outstanding_amount": net_payable,
+                "is_open": abs(net_payable) > TOL,
             },
         )
 
@@ -151,7 +158,11 @@ class PurchaseApService:
         item.due_date = header.due_date
         item.purchase_number = header.purchase_number
         item.supplier_invoice_number = header.supplier_invoice_number
-        item.original_amount = original
+        item.original_amount = net_payable
+        item.gross_amount = gross_amount
+        item.tds_deducted = tds_deducted
+        item.gst_tds_deducted = gst_tds_deducted
+        item.net_payable_amount = net_payable
         item.outstanding_amount = q2(item.original_amount - q2(item.settled_amount))
         if abs(item.outstanding_amount) <= TOL:
             item.outstanding_amount = ZERO2

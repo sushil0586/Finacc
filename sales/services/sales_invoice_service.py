@@ -8,9 +8,6 @@ from typing import Any
 
 from datetime import date
 from rest_framework.exceptions import ValidationError
-
-from django.core.exceptions import ValidationError as DjangoValidationError
-
 from django.core.exceptions import ValidationError as DjangoValidationError
 from decimal import Decimal, ROUND_HALF_UP
 CUTOFF_DISABLE_206C_1H = date(2025, 4, 1)
@@ -21,6 +18,8 @@ from sales.services.sales_withholding_service import SalesWithholdingService
 from financial.models import ShippingDetails
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
+from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
+from posting.services.posting_service import PostingService, JLInput, IMInput
 
 
 
@@ -32,6 +31,7 @@ from django.utils import timezone
 from sales.models import (
     SalesInvoiceHeader,
     SalesInvoiceLine,
+    SalesChargeLine,
     SalesTaxSummary,
     SalesSettings,
     SalesLockPeriod,
@@ -55,6 +55,15 @@ def q4(x) -> Decimal:
         return Decimal(x or 0).quantize(Q4, rounding=ROUND_HALF_UP)
     except Exception:
         return ZERO4
+
+
+@dataclass
+class ChargeComputed:
+    taxable_value: Decimal = ZERO2
+    cgst_amount: Decimal = ZERO2
+    sgst_amount: Decimal = ZERO2
+    igst_amount: Decimal = ZERO2
+    total_value: Decimal = ZERO2
 
 
 @dataclass
@@ -85,6 +94,74 @@ class SalesInvoiceService:
     # -------------------------
     # Settings / Lock validation
     # -------------------------
+
+    @classmethod
+    def _run_auto_compliance(cls, *, header: SalesInvoiceHeader, user, stage: str) -> None:
+        """
+        Auto compliance hook controlled by SalesSettings.
+        stage: "confirm" | "post"
+        """
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        from sales.services.sales_compliance_service import SalesComplianceService
+
+        svc = SalesComplianceService(invoice=header, user=user)
+        if hasattr(svc, "ensure_rows"):
+            svc.ensure_rows()
+
+        auto_irn = (
+            bool(getattr(settings_obj, "auto_generate_einvoice_on_confirm", False))
+            if stage == "confirm"
+            else bool(getattr(settings_obj, "auto_generate_einvoice_on_post", False))
+        )
+        auto_eway = (
+            bool(getattr(settings_obj, "auto_generate_eway_on_confirm", False))
+            if stage == "confirm"
+            else bool(getattr(settings_obj, "auto_generate_eway_on_post", False))
+        )
+
+        if bool(getattr(settings_obj, "enable_einvoice", True)) and auto_irn and bool(header.is_einvoice_applicable):
+            svc.generate_irn()
+
+        if not (bool(getattr(settings_obj, "enable_eway", True)) and auto_eway and bool(header.is_eway_applicable)):
+            return
+
+        # B2C direct E-Way
+        if int(getattr(header, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C):
+            out = svc.eway_generate_b2c(header, user=user)
+            if out.get("status") != "SUCCESS":
+                raise ValueError(out.get("error_message") or "Auto E-Way(B2C) generation failed.")
+            return
+
+        # B2B/IRN-based E-Way needs transport info.
+        art = getattr(header, "eway_artifact", None)
+        if not art:
+            raise ValueError("Auto E-Way requires eway artifact row and transport details.")
+
+        if not getattr(art, "distance_km", None):
+            raise ValueError("Auto E-Way requires eway.distance_km.")
+        if not getattr(art, "transport_mode", None):
+            raise ValueError("Auto E-Way requires eway.transport_mode.")
+
+        req = {
+            "distance_km": int(art.distance_km),
+            "trans_mode": str(art.transport_mode),
+            "transporter_id": art.transporter_id or "",
+            "transporter_name": art.transporter_name or "",
+            "trans_doc_no": art.doc_no or "",
+            "trans_doc_date": art.doc_date,
+            "vehicle_no": art.vehicle_no,
+            "vehicle_type": art.vehicle_type,
+            "disp_dtls": art.disp_dtls_json or None,
+            "exp_ship_dtls": art.exp_ship_dtls_json or None,
+        }
+        out = SalesComplianceService.generate_eway(
+            inv=header,
+            entity=header.entity,
+            req=req,
+            created_by=user,
+        )
+        if out.get("status") != "SUCCESS":
+            raise ValueError(out.get("error_message") or "Auto E-Way generation failed.")
 
     @classmethod
     def _apply_tcs(cls, *, header: SalesInvoiceHeader, user) -> None:
@@ -321,6 +398,50 @@ class SalesInvoiceService:
         if lock:
             raise ValueError(f"Period is locked up to {lock.lock_date}. {lock.reason or ''}".strip())
 
+    @staticmethod
+    def _validate_doc_linkage(*, doc_type: int, original_invoice, entity_id: int, entityfinid_id: int, subentity_id: Optional[int], customer_id: Optional[int]) -> None:
+        if int(doc_type) in (
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            if not original_invoice:
+                raise ValueError("original_invoice is required for Credit Note / Debit Note.")
+            if int(original_invoice.entity_id) != int(entity_id) or int(original_invoice.entityfinid_id) != int(entityfinid_id):
+                raise ValueError("original_invoice must belong to same entity and financial year.")
+            if (original_invoice.subentity_id or None) != (subentity_id or None):
+                raise ValueError("original_invoice must belong to same subentity scope.")
+            if customer_id and int(original_invoice.customer_id or 0) != int(customer_id):
+                raise ValueError("original_invoice customer must match current invoice customer.")
+        else:
+            if original_invoice is not None:
+                raise ValueError("original_invoice is allowed only for Credit Note / Debit Note.")
+
+    @staticmethod
+    def _gross_receivable(header: SalesInvoiceHeader) -> Decimal:
+        return q2((header.grand_total or ZERO2) + (header.tcs_amount or ZERO2))
+
+    @staticmethod
+    def recompute_settlement_fields(*, header: SalesInvoiceHeader) -> None:
+        gross = SalesInvoiceService._gross_receivable(header)
+        settled = q2(getattr(header, "settled_amount", ZERO2) or ZERO2)
+        if settled < ZERO2:
+            settled = ZERO2
+        if settled > gross:
+            settled = gross
+
+        outstanding = q2(gross - settled)
+        if outstanding <= ZERO2:
+            status = SalesInvoiceHeader.SettlementStatus.SETTLED
+            outstanding = ZERO2
+        elif settled > ZERO2:
+            status = SalesInvoiceHeader.SettlementStatus.PARTIAL
+        else:
+            status = SalesInvoiceHeader.SettlementStatus.OPEN
+
+        header.settled_amount = settled
+        header.outstanding_amount = outstanding
+        header.settlement_status = int(status)
+
     # -------------------------
     # Public API: Create/Update
     # -------------------------
@@ -334,6 +455,7 @@ class SalesInvoiceService:
         subentity_id: Optional[int],
         header_data: dict,
         lines_data: list,
+        charges_data: Optional[list],
         user,
     ) -> SalesInvoiceHeader:
         bill_date = header_data.get("bill_date") or timezone.localdate()
@@ -364,6 +486,17 @@ class SalesInvoiceService:
             shipping_detail_id=shipping_detail_id,
         )
 
+        original_invoice = header_data.get("original_invoice")
+        doc_type = int(header_data.get("doc_type") or SalesInvoiceHeader.DocType.TAX_INVOICE)
+        cls._validate_doc_linkage(
+            doc_type=doc_type,
+            original_invoice=original_invoice,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            customer_id=customer_id,
+        )
+
         # ---- remove model instances from header_data ----
         header_data = dict(header_data)
         header_data.pop("customer", None)
@@ -391,9 +524,13 @@ class SalesInvoiceService:
         header.save()
 
         cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
+        cls.validate_charges(header=header, charges=charges_data or [])
+        cls.upsert_charges(header=header, incoming_charges=charges_data or [], user=user, allow_delete=True)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
         cls._apply_tcs(header=header, user=user)
+        cls.recompute_settlement_fields(header=header)
+        header.save(update_fields=["settled_amount", "outstanding_amount", "settlement_status", "updated_at"])
 
 
         return header
@@ -405,7 +542,8 @@ class SalesInvoiceService:
         *,
         header: SalesInvoiceHeader,
         header_data: dict,
-        lines_data: list,
+        lines_data: Optional[list],
+        charges_data: Optional[list],
         user,
     ) -> SalesInvoiceHeader:
         if header.status in (SalesInvoiceHeader.Status.POSTED, SalesInvoiceHeader.Status.CANCELLED):
@@ -445,6 +583,17 @@ class SalesInvoiceService:
                 shipping_detail_id=shipping_detail_id,
             )
 
+        original_invoice = header_data.get("original_invoice", header.original_invoice)
+        doc_type = int(header_data.get("doc_type", header.doc_type))
+        cls._validate_doc_linkage(
+            doc_type=doc_type,
+            original_invoice=original_invoice,
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            customer_id=customer_id,
+        )
+
         # ---- strip instances + assign ids ----
         header_data.pop("customer", None)
         header_data.pop("shipping_detail", None)
@@ -463,10 +612,16 @@ class SalesInvoiceService:
         header.full_clean(exclude=None)
         header.save()
 
-        cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
+        if lines_data is not None:
+            cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
+        if charges_data is not None:
+            cls.validate_charges(header=header, charges=charges_data)
+            cls.upsert_charges(header=header, incoming_charges=charges_data, user=user, allow_delete=True)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
         cls._apply_tcs(header=header, user=user)
+        cls.recompute_settlement_fields(header=header)
+        header.save(update_fields=["settled_amount", "outstanding_amount", "settlement_status", "updated_at"])
 
 
         return header
@@ -704,6 +859,165 @@ class SalesInvoiceService:
 
         line.line_total = q2(taxable + cgst + sgst + igst + cess_amt)
 
+    @staticmethod
+    def compute_charge_amounts(*, header: SalesInvoiceHeader, row: dict) -> ChargeComputed:
+        taxability = int(row.get("taxability") or SalesInvoiceHeader.Taxability.TAXABLE)
+        gst_rate = q4(row.get("gst_rate") or ZERO2)
+        taxable = q2(row.get("taxable_value") or ZERO2)
+        inclusive = bool(row.get("is_rate_inclusive_of_tax") or False)
+
+        if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE) or gst_rate <= ZERO2 or taxable <= ZERO2:
+            taxable2 = q2(taxable)
+            return ChargeComputed(
+                taxable_value=taxable2,
+                cgst_amount=ZERO2,
+                sgst_amount=ZERO2,
+                igst_amount=ZERO2,
+                total_value=taxable2,
+            )
+
+        if inclusive:
+            gross = q2(taxable)
+            taxable = q2(gross / (Decimal("1.00") + (gst_rate / Decimal("100.00"))))
+
+        taxable2 = q2(taxable)
+        gst_amt = q2(taxable2 * gst_rate / Decimal("100.00"))
+        cgst = sgst = igst = ZERO2
+        if int(getattr(header, "tax_regime", int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))) == int(SalesInvoiceHeader.TaxRegime.INTRA_STATE):
+            cgst = q2(gst_amt / Decimal("2.00"))
+            sgst = q2(gst_amt - cgst)
+        else:
+            igst = gst_amt
+        total = q2(taxable2 + cgst + sgst + igst)
+        return ChargeComputed(
+            taxable_value=taxable2,
+            cgst_amount=cgst,
+            sgst_amount=sgst,
+            igst_amount=igst,
+            total_value=total,
+        )
+
+    @staticmethod
+    def validate_charges(*, header: SalesInvoiceHeader, charges: list[dict]) -> None:
+        seen_line_no: set[int] = set()
+        for i, row in enumerate(charges or [], start=1):
+            line_no_raw = row.get("line_no")
+            if line_no_raw not in (None, ""):
+                try:
+                    line_no = int(line_no_raw)
+                except (TypeError, ValueError):
+                    raise ValidationError({"charges": [f"Charge row {i}: line_no must be integer."]})
+                if line_no <= 0:
+                    raise ValidationError({"charges": [f"Charge row {i}: line_no must be > 0."]})
+                if line_no in seen_line_no:
+                    raise ValidationError({"charges": [f"Charge row {i}: duplicate line_no {line_no}."]})
+                seen_line_no.add(line_no)
+
+            taxable = q2(row.get("taxable_value") or ZERO2)
+            gst_rate = q2(row.get("gst_rate") or ZERO2)
+            taxability = int(row.get("taxability") or SalesInvoiceHeader.Taxability.TAXABLE)
+            hsn = (row.get("hsn_sac_code") or "").strip()
+
+            if taxable < ZERO2:
+                raise ValidationError({"charges": [f"Charge row {i}: taxable_value must be >= 0."]})
+            if gst_rate < ZERO2 or gst_rate > Decimal("100.00"):
+                raise ValidationError({"charges": [f"Charge row {i}: gst_rate must be 0..100."]})
+            if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE) and gst_rate > ZERO2:
+                raise ValidationError({"charges": [f"Charge row {i}: gst_rate must be 0 for non-taxable charge."]})
+            if gst_rate > ZERO2 and taxable > ZERO2 and not hsn:
+                raise ValidationError({"charges": [f"Charge row {i}: HSN/SAC required when GST applied."]})
+
+    @staticmethod
+    def upsert_charges(*, header: SalesInvoiceHeader, incoming_charges: list[dict], user, allow_delete: bool) -> None:
+        incoming_charges = incoming_charges or []
+        max_ln = int(header.charges.aggregate(m=Max("line_no")).get("m") or 0)
+        existing_rows = list(header.charges.all().values("id", "line_no"))
+        existing_by_id = {int(r["id"]): int(r["line_no"] or 0) for r in existing_rows}
+        existing_by_lineno = {int(r["line_no"]): int(r["id"]) for r in existing_rows if r["line_no"]}
+
+        seen_ids = set()
+        for row in incoming_charges:
+            row_id = int(row.get("id") or 0)
+            row_ln = int(row.get("line_no") or 0)
+            if row_id == 0 and row_ln > 0 and row_ln in existing_by_lineno:
+                row_id = existing_by_lineno[row_ln]
+
+            comp = SalesInvoiceService.compute_charge_amounts(header=header, row=row)
+            row["taxable_value"] = comp.taxable_value
+            row["cgst_amount"] = comp.cgst_amount
+            row["sgst_amount"] = comp.sgst_amount
+            row["igst_amount"] = comp.igst_amount
+            row["total_value"] = comp.total_value
+
+            if row_id and row_id in existing_by_id:
+                obj = SalesChargeLine.objects.get(id=row_id, header=header)
+                seen_ids.add(row_id)
+
+                if row_ln > 0 and row_ln != int(obj.line_no):
+                    if row_ln in existing_by_lineno and existing_by_lineno[row_ln] != row_id:
+                        raise ValidationError({"charges": [f"line_no {row_ln} already exists."]})
+                    obj.line_no = row_ln
+
+                for f in [
+                    "charge_type",
+                    "description",
+                    "taxability",
+                    "is_service",
+                    "hsn_sac_code",
+                    "is_rate_inclusive_of_tax",
+                    "taxable_value",
+                    "gst_rate",
+                    "cgst_amount",
+                    "sgst_amount",
+                    "igst_amount",
+                    "total_value",
+                    "revenue_account",
+                ]:
+                    if f in row:
+                        setattr(obj, f, row.get(f))
+                obj.updated_by = user
+                obj.save()
+                continue
+
+            if row_id and row_id not in existing_by_id:
+                raise ValidationError({"charges": [f"Charge id={row_id} not found for this invoice."]})
+
+            if row_ln <= 0:
+                max_ln += 1
+                row_ln = max_ln
+            if row_ln in existing_by_lineno:
+                raise ValidationError({"charges": [f"line_no {row_ln} already exists; pass id to update."]})
+
+            obj = SalesChargeLine(
+                header=header,
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                line_no=row_ln,
+                charge_type=row.get("charge_type") or SalesChargeLine.ChargeType.OTHER,
+                description=(row.get("description") or "").strip(),
+                taxability=int(row.get("taxability") or SalesInvoiceHeader.Taxability.TAXABLE),
+                is_service=bool(row.get("is_service", True)),
+                hsn_sac_code=(row.get("hsn_sac_code") or "").strip(),
+                is_rate_inclusive_of_tax=bool(row.get("is_rate_inclusive_of_tax", False)),
+                taxable_value=row["taxable_value"],
+                gst_rate=q4(row.get("gst_rate") or ZERO2),
+                cgst_amount=row["cgst_amount"],
+                sgst_amount=row["sgst_amount"],
+                igst_amount=row["igst_amount"],
+                total_value=row["total_value"],
+                revenue_account=row.get("revenue_account"),
+                created_by=user,
+                updated_by=user,
+            )
+            obj.full_clean()
+            obj.save()
+
+        if allow_delete:
+            to_delete = [lid for lid in existing_by_id.keys() if lid not in seen_ids]
+            if to_delete:
+                SalesChargeLine.objects.filter(header=header, id__in=to_delete).delete()
+
     # -------------------------
     # Tax summary rebuild
     # -------------------------
@@ -747,6 +1061,39 @@ class SalesInvoiceService:
             b.igst_amount = q2(b.igst_amount + q2(line.igst_amount))
             b.cess_amount = q2(b.cess_amount + q2(line.cess_amount))
 
+        for charge in header.charges.all():
+            key = (
+                int(charge.taxability or SalesInvoiceHeader.Taxability.TAXABLE),
+                (charge.hsn_sac_code or "").strip(),
+                bool(charge.is_service),
+                str(q4(charge.gst_rate)),
+                bool(header.is_reverse_charge),
+            )
+            b = buckets.get(key)
+            if not b:
+                b = SalesTaxSummary(
+                    header=header,
+                    entity_id=header.entity_id,
+                    entityfinid_id=header.entityfinid_id,
+                    subentity_id=header.subentity_id,
+                    taxability=key[0],
+                    hsn_sac_code=key[1],
+                    is_service=key[2],
+                    gst_rate=q4(charge.gst_rate),
+                    is_reverse_charge=key[4],
+                    taxable_value=ZERO2,
+                    cgst_amount=ZERO2,
+                    sgst_amount=ZERO2,
+                    igst_amount=ZERO2,
+                    cess_amount=ZERO2,
+                )
+                buckets[key] = b
+
+            b.taxable_value = q2(b.taxable_value + q2(charge.taxable_value))
+            b.cgst_amount = q2(b.cgst_amount + q2(charge.cgst_amount))
+            b.sgst_amount = q2(b.sgst_amount + q2(charge.sgst_amount))
+            b.igst_amount = q2(b.igst_amount + q2(charge.igst_amount))
+
         if buckets:
             SalesTaxSummary.objects.bulk_create(list(buckets.values()))
 
@@ -766,7 +1113,16 @@ class SalesInvoiceService:
             totals.total_cess = q2(totals.total_cess + q2(line.cess_amount))
             totals.total_discount = q2(totals.total_discount + q2(line.discount_amount))
 
-        totals.total_other_charges = q2(header.total_other_charges)
+        charge_taxable = ZERO2
+        for charge in header.charges.all():
+            charge_taxable = q2(charge_taxable + q2(charge.taxable_value))
+            totals.total_taxable = q2(totals.total_taxable + q2(charge.taxable_value))
+            totals.total_cgst = q2(totals.total_cgst + q2(charge.cgst_amount))
+            totals.total_sgst = q2(totals.total_sgst + q2(charge.sgst_amount))
+            totals.total_igst = q2(totals.total_igst + q2(charge.igst_amount))
+
+        # Keep this as informational (base amount of charge lines) for UI/reporting compatibility.
+        totals.total_other_charges = q2(charge_taxable)
 
         # raw grand total (before rounding)
         raw = q2(
@@ -775,7 +1131,6 @@ class SalesInvoiceService:
             + totals.total_sgst
             + totals.total_igst
             + totals.total_cess
-            + totals.total_other_charges
         )
 
         round_off = ZERO2
@@ -796,6 +1151,7 @@ class SalesInvoiceService:
         header.total_igst = totals.total_igst
         header.total_cess = totals.total_cess
         header.total_discount = totals.total_discount
+        header.total_other_charges = totals.total_other_charges
         header.round_off = totals.round_off
         header.grand_total = totals.grand_total
         header.updated_by = user
@@ -806,14 +1162,14 @@ class SalesInvoiceService:
                 "total_sgst",
                 "total_igst",
                 "total_cess",
-                "total_discount",
-                "total_other_charges",
-                "round_off",
-                "grand_total",
-                "updated_by",
-                "updated_at",
-            ]
-        )
+            "total_discount",
+            "total_other_charges",
+            "round_off",
+            "grand_total",
+            "updated_by",
+            "updated_at",
+        ]
+    )
 
     # -------------------------
     # Status transitions
@@ -836,6 +1192,8 @@ class SalesInvoiceService:
         cls.derive_tax_regime(header)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._apply_tcs(header=header, user=user)
+        cls.recompute_settlement_fields(header=header)
         
 
         # ✅ issue doc_no ONLY NOW
@@ -852,7 +1210,10 @@ class SalesInvoiceService:
             "posting_date", "due_date", "tax_regime", "is_igst",
             "total_taxable_value", "total_cgst", "total_sgst", "total_igst", "total_cess",
             "total_discount", "round_off", "grand_total",
+            "settled_amount", "outstanding_amount", "settlement_status",
         ])
+
+        cls._run_auto_compliance(header=header, user=user, stage="confirm")
         return header
 
 
@@ -896,6 +1257,8 @@ class SalesInvoiceService:
         cls.derive_tax_regime(header)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._apply_tcs(header=header, user=user)
+        cls.recompute_settlement_fields(header=header)
 
         # reload lines list from DB (avoid stale in-memory objects)
         header.refresh_from_db()
@@ -924,7 +1287,169 @@ class SalesInvoiceService:
             "posted_by",
             "updated_by",
             "updated_at",
+            "settled_amount",
+            "outstanding_amount",
+            "settlement_status",
         ])
+
+        cls._run_auto_compliance(header=header, user=user, stage="post")
+        return header
+
+    @staticmethod
+    def _txn_type_for_header(header: SalesInvoiceHeader) -> str:
+        doc_type = int(getattr(header, "doc_type", SalesInvoiceHeader.DocType.TAX_INVOICE))
+        if doc_type == int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
+            return TxnType.SALES_CREDIT_NOTE
+        if doc_type == int(SalesInvoiceHeader.DocType.DEBIT_NOTE):
+            return TxnType.SALES_DEBIT_NOTE
+        return TxnType.SALES
+
+    @staticmethod
+    def _reverse_move_type(move_type: str) -> str:
+        mv = (move_type or "").upper()
+        if mv == "IN":
+            return "OUT"
+        if mv == "OUT":
+            return "IN"
+        return "REV"
+
+    @classmethod
+    @transaction.atomic
+    def reverse_posting(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
+        if int(header.status) != int(SalesInvoiceHeader.Status.POSTED):
+            raise ValueError("Only posted invoices can be reversed.")
+        if bool(getattr(header, "is_posting_reversed", False)):
+            return header
+
+        txn_type = cls._txn_type_for_header(header)
+        entry = (
+            Entry.objects.select_for_update()
+            .filter(
+                entity_id=header.entity_id,
+                entityfin_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                txn_type=txn_type,
+                txn_id=header.id,
+            )
+            .first()
+        )
+        if not entry:
+            raise ValueError("Posted ledger entry not found for this invoice.")
+
+        old_jls = list(
+            JournalLine.objects.filter(
+                entity_id=header.entity_id,
+                entityfin_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                txn_type=txn_type,
+                txn_id=header.id,
+            )
+        )
+        old_ims = list(
+            InventoryMove.objects.filter(
+                entity_id=header.entity_id,
+                entityfin_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                txn_type=txn_type,
+                txn_id=header.id,
+            )
+        )
+
+        jl_inputs: list[JLInput] = []
+        for jl in old_jls:
+            jl_inputs.append(
+                JLInput(
+                    account_id=jl.account_id,
+                    accounthead_id=jl.accounthead_id,
+                    drcr=(not bool(jl.drcr)),
+                    amount=q2(jl.amount),
+                    description=f"Reversal: {jl.description or ''}".strip(),
+                    detail_id=jl.detail_id,
+                )
+            )
+
+        im_inputs: list[IMInput] = []
+        for im in old_ims:
+            im_inputs.append(
+                IMInput(
+                    product_id=im.product_id,
+                    qty=q4(im.qty),
+                    base_qty=q4(im.base_qty),
+                    uom_id=im.uom_id,
+                    base_uom_id=im.base_uom_id,
+                    uom_factor=im.uom_factor,
+                    unit_cost=q4(im.unit_cost),
+                    move_type=cls._reverse_move_type(im.move_type),
+                    cost_source=im.cost_source,
+                    cost_meta={"reversal_of_txn": f"{txn_type}#{header.id}"},
+                    detail_id=im.detail_id,
+                    location_id=im.location_id,
+                )
+            )
+
+        PostingService(
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            user_id=getattr(user, "id", None),
+        ).post(
+            txn_type=txn_type,
+            txn_id=header.id,
+            voucher_no=str(header.invoice_number or header.doc_no or header.id),
+            voucher_date=header.bill_date,
+            posting_date=header.posting_date or header.bill_date,
+            narration=f"Reversal for {header.invoice_number or header.id}",
+            jl_inputs=jl_inputs,
+            im_inputs=im_inputs,
+            use_advisory_lock=True,
+            mark_posted=True,
+        )
+
+        Entry.objects.filter(
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            txn_type=txn_type,
+            txn_id=header.id,
+        ).update(
+            status=EntryStatus.REVERSED,
+            narration=f"Reversed: {reason}".strip(),
+        )
+
+        header.status = SalesInvoiceHeader.Status.CONFIRMED
+        header.is_posting_reversed = True
+        header.reversed_at = timezone.now()
+        header.reversed_by = user
+        header.reverse_reason = (reason or "").strip()
+        header.posted_at = None
+        header.posted_by = None
+        header.updated_by = user
+        header.save(
+            update_fields=[
+                "status",
+                "is_posting_reversed",
+                "reversed_at",
+                "reversed_by",
+                "reverse_reason",
+                "posted_at",
+                "posted_by",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        return header
+
+    @classmethod
+    @transaction.atomic
+    def apply_settlement(cls, *, header: SalesInvoiceHeader, user, settled_amount: Decimal, note: str = "") -> SalesInvoiceHeader:
+        if settled_amount < ZERO2:
+            raise ValueError("settled_amount must be >= 0.")
+        header.settled_amount = q2(settled_amount)
+        cls.recompute_settlement_fields(header=header)
+        if note:
+            header.remarks = ((header.remarks or "").strip() + f"\nSettlement: {note.strip()}").strip()
+        header.updated_by = user
+        header.save(update_fields=["settled_amount", "outstanding_amount", "settlement_status", "remarks", "updated_by", "updated_at"])
         return header
 
 
@@ -934,7 +1459,7 @@ class SalesInvoiceService:
         if header.status == SalesInvoiceHeader.Status.CANCELLED:
             return header
         if header.status == SalesInvoiceHeader.Status.POSTED:
-            raise ValueError("Posted invoices cannot be cancelled directly (implement reversal).")
+            cls.reverse_posting(header=header, user=user, reason=reason or "Cancelled")
 
         header.status = SalesInvoiceHeader.Status.CANCELLED
         header.cancelled_at = timezone.now()

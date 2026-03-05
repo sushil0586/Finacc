@@ -24,6 +24,34 @@ class PurchaseStatutoryChallanSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     tax_type_name = serializers.CharField(source="get_tax_type_display", read_only=True)
     total_deposit_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    approval_state = serializers.SerializerMethodField()
+    approval_status = serializers.SerializerMethodField()
+    approval_status_name = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _approval_state_from_payload(payload):
+        data = payload if isinstance(payload, dict) else {}
+        state = data.get("_approval_state")
+        if not isinstance(state, dict):
+            state = {"status": "DRAFT"}
+        return state
+
+    def get_approval_state(self, obj):
+        return self._approval_state_from_payload(getattr(obj, "payment_payload_json", None))
+
+    def get_approval_status(self, obj):
+        st = self._approval_state_from_payload(getattr(obj, "payment_payload_json", None))
+        return (st.get("status") or "DRAFT")
+
+    def get_approval_status_name(self, obj):
+        s = str(self.get_approval_status(obj)).upper()
+        mapping = {
+            "DRAFT": "Draft",
+            "SUBMITTED": "Submitted",
+            "APPROVED": "Approved",
+            "REJECTED": "Rejected",
+        }
+        return mapping.get(s, s.title())
 
     class Meta:
         model = PurchaseStatutoryChallan
@@ -51,6 +79,9 @@ class PurchaseStatutoryChallanSerializer(serializers.ModelSerializer):
             "ack_document",
             "status",
             "status_name",
+            "approval_state",
+            "approval_status",
+            "approval_status_name",
             "deposited_on",
             "deposited_at",
             "deposited_by",
@@ -109,6 +140,11 @@ class PurchaseStatutoryReturnLineSerializer(serializers.ModelSerializer):
             "amount",
             "section_snapshot_code",
             "section_snapshot_desc",
+            "deductee_residency_snapshot",
+            "deductee_country_snapshot",
+            "deductee_country_code_snapshot",
+            "deductee_country_name_snapshot",
+            "deductee_tax_id_snapshot",
             "deductee_pan_snapshot",
             "deductee_gstin_snapshot",
             "cin_snapshot",
@@ -124,6 +160,34 @@ class PurchaseStatutoryReturnSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     tax_type_name = serializers.CharField(source="get_tax_type_display", read_only=True)
     total_liability_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    approval_state = serializers.SerializerMethodField()
+    approval_status = serializers.SerializerMethodField()
+    approval_status_name = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _approval_state_from_payload(payload):
+        data = payload if isinstance(payload, dict) else {}
+        state = data.get("_approval_state")
+        if not isinstance(state, dict):
+            state = {"status": "DRAFT"}
+        return state
+
+    def get_approval_state(self, obj):
+        return self._approval_state_from_payload(getattr(obj, "filed_payload_json", None))
+
+    def get_approval_status(self, obj):
+        st = self._approval_state_from_payload(getattr(obj, "filed_payload_json", None))
+        return (st.get("status") or "DRAFT")
+
+    def get_approval_status_name(self, obj):
+        s = str(self.get_approval_status(obj)).upper()
+        mapping = {
+            "DRAFT": "Draft",
+            "SUBMITTED": "Submitted",
+            "APPROVED": "Approved",
+            "REJECTED": "Rejected",
+        }
+        return mapping.get(s, s.title())
 
     class Meta:
         model = PurchaseStatutoryReturn
@@ -144,6 +208,9 @@ class PurchaseStatutoryReturnSerializer(serializers.ModelSerializer):
             "total_liability_amount",
             "status",
             "status_name",
+            "approval_state",
+            "approval_status",
+            "approval_status_name",
             "filed_on",
             "filed_at",
             "filed_by",
@@ -176,6 +243,15 @@ class PurchaseStatutoryReturnCreateLineInputSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
     section_snapshot_code = serializers.CharField(max_length=16, required=False, allow_blank=True, allow_null=True)
     section_snapshot_desc = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    deductee_residency_snapshot = serializers.ChoiceField(
+        choices=PurchaseStatutoryReturnLine.DeducteeResidency.choices,
+        required=False,
+        allow_null=True,
+    )
+    deductee_country_snapshot = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    deductee_country_code_snapshot = serializers.CharField(max_length=10, required=False, allow_blank=True, allow_null=True)
+    deductee_country_name_snapshot = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    deductee_tax_id_snapshot = serializers.CharField(max_length=64, required=False, allow_blank=True, allow_null=True)
     deductee_pan_snapshot = serializers.CharField(max_length=16, required=False, allow_blank=True, allow_null=True)
     deductee_gstin_snapshot = serializers.CharField(max_length=15, required=False, allow_blank=True, allow_null=True)
     cin_snapshot = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)

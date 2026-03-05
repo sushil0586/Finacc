@@ -184,6 +184,19 @@ class PaymentVoucherService:
         allocations = validated_data.pop("allocations", []) or []
         adjustments = validated_data.pop("adjustments", []) or []
 
+        currency_code = (validated_data.get("currency_code") or "INR").strip().upper()
+        base_currency_code = (validated_data.get("base_currency_code") or "INR").strip().upper()
+        exchange_rate = Decimal(validated_data.get("exchange_rate") or Decimal("1.000000"))
+        if len(currency_code) != 3:
+            raise ValueError({"currency_code": "currency_code must be 3 letters (ISO)."})
+        if len(base_currency_code) != 3:
+            raise ValueError({"base_currency_code": "base_currency_code must be 3 letters (ISO)."})
+        if exchange_rate <= 0:
+            raise ValueError({"exchange_rate": "exchange_rate must be > 0."})
+        validated_data["currency_code"] = currency_code
+        validated_data["base_currency_code"] = base_currency_code
+        validated_data["exchange_rate"] = exchange_rate
+
         policy = PaymentSettingsService.get_policy(
             validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity"),
             validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
@@ -199,6 +212,7 @@ class PaymentVoucherService:
         )
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
+        validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
 
         allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
         if (
@@ -270,6 +284,20 @@ class PaymentVoucherService:
         policy = PaymentSettingsService.get_policy(instance.entity_id, instance.subentity_id)
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
+
+        if "currency_code" in validated_data:
+            validated_data["currency_code"] = (validated_data.get("currency_code") or "INR").strip().upper()
+            if len(validated_data["currency_code"]) != 3:
+                raise ValueError({"currency_code": "currency_code must be 3 letters (ISO)."})
+        if "base_currency_code" in validated_data:
+            validated_data["base_currency_code"] = (validated_data.get("base_currency_code") or "INR").strip().upper()
+            if len(validated_data["base_currency_code"]) != 3:
+                raise ValueError({"base_currency_code": "base_currency_code must be 3 letters (ISO)."})
+        if "exchange_rate" in validated_data:
+            ex = Decimal(validated_data.get("exchange_rate") or Decimal("1.000000"))
+            if ex <= 0:
+                raise ValueError({"exchange_rate": "exchange_rate must be > 0."})
+            validated_data["exchange_rate"] = ex
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
@@ -353,7 +381,18 @@ class PaymentVoucherService:
             q2(instance.cash_paid_amount),
             adjustment_total,
         )
-        instance.save(update_fields=["total_adjustment_amount", "settlement_effective_amount", "updated_at"])
+        ex_rate = Decimal(getattr(instance, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
+        if ex_rate <= 0:
+            ex_rate = Decimal("1.000000")
+        instance.settlement_effective_amount_base_currency = q2(instance.settlement_effective_amount * ex_rate)
+        instance.save(
+            update_fields=[
+                "total_adjustment_amount",
+                "settlement_effective_amount",
+                "settlement_effective_amount_base_currency",
+                "updated_at",
+            ]
+        )
         return instance
 
     @staticmethod

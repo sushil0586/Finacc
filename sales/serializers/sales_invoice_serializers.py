@@ -11,6 +11,7 @@ from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer
 from sales.serializers.sales_compliance_serializers import (
     SalesEInvoiceArtifactReadSerializer,
     SalesEWayArtifactReadSerializer,
@@ -111,6 +112,7 @@ class SalesTaxSummarySerializer(serializers.ModelSerializer):
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     # nested
     lines = SalesInvoiceLineSerializer(many=True, required=False)
+    charges = SalesChargeLineSerializer(many=True, required=False)
     tax_summaries = SalesTaxSummarySerializer(many=True, read_only=True)
     einvoice_artifact = SalesEInvoiceArtifactReadSerializer(read_only=True)
     eway_artifact = SalesEWayArtifactReadSerializer(read_only=True)
@@ -148,6 +150,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "doc_type_name",
             "doc_no",
             "invoice_number",
+            "original_invoice",
 
             "status",
             "status_name",
@@ -215,6 +218,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             # nested
             "lines",
+            "charges",
             "tax_summaries",
             "navigation",
             "einvoice_artifact",
@@ -236,8 +240,16 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_igst",
             "total_cess",
             "total_discount",
+            "total_other_charges",
             "round_off",
             "grand_total",
+            "settled_amount",
+            "outstanding_amount",
+            "settlement_status",
+            "reversed_at",
+            "reversed_by",
+            "reverse_reason",
+            "is_posting_reversed",
 
             # nav + summaries
             "tax_summaries",
@@ -266,8 +278,16 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_igst",
             "total_cess",
             "total_discount",
+            "total_other_charges",
             "round_off",
             "grand_total",
+            "settled_amount",
+            "outstanding_amount",
+            "settlement_status",
+            "reversed_at",
+            "reversed_by",
+            "reverse_reason",
+            "is_posting_reversed",
         }
 
         incoming = set(getattr(self, "initial_data", {}).keys())
@@ -280,6 +300,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context["request"]
         lines = validated_data.pop("lines", [])
+        charges = validated_data.pop("charges", [])
 
         if not lines:
             raise serializers.ValidationError({"lines": "At least one line is required."})
@@ -299,6 +320,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             subentity_id=subentity_id,
             header_data=validated_data,
             lines_data=lines,
+            charges_data=charges,
             user=request.user,
         )
         return header
@@ -306,6 +328,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         request = self.context["request"]
         lines = validated_data.pop("lines", None)
+        charges = validated_data.pop("charges", None)
 
         # do not allow moving scope
         validated_data.pop("entity", None)
@@ -315,7 +338,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         header = SalesInvoiceService.update_with_lines(
             header=instance,
             header_data=validated_data,
-            lines_data=lines or [],
+            lines_data=lines,
+            charges_data=charges,
             user=request.user,
         )
         return header

@@ -108,7 +108,7 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def confirm(pk: int) -> ActionResult:
+    def confirm(pk: int, confirmed_by_id: Optional[int] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
 
@@ -137,17 +137,26 @@ class PurchaseInvoiceActions:
 
         # If it was already confirmed, keep it confirmed and just return
         if int(h.status) == int(Status.CONFIRMED):
+            if confirmed_by_id and not h.confirmed_by_id:
+                h.confirmed_by_id = confirmed_by_id
+                h.confirmed_at = timezone.now()
+                h.save(update_fields=["confirmed_by", "confirmed_at"])
             return ActionResult(h, "Already confirmed (number ensured).")
 
         # Otherwise confirm now
         h.status = Status.CONFIRMED
-        h.save(update_fields=["status"])
+        h.confirmed_at = timezone.now()
+        if confirmed_by_id:
+            h.confirmed_by_id = confirmed_by_id
+            h.save(update_fields=["status", "confirmed_at", "confirmed_by"])
+        else:
+            h.save(update_fields=["status", "confirmed_at"])
         return ActionResult(h, "Confirmed.")
 
 
     @staticmethod
     @transaction.atomic
-    def post(pk: int) -> ActionResult:
+    def post(pk: int, posted_by_id: Optional[int] = None) -> ActionResult:
         """
         Posting hook:
           - requires CONFIRMED
@@ -185,7 +194,12 @@ class PurchaseInvoiceActions:
         )
 
         h.status = Status.POSTED
-        h.save(update_fields=["status"])
+        h.posted_at = timezone.now()
+        if posted_by_id:
+            h.posted_by_id = posted_by_id
+            h.save(update_fields=["status", "posted_at", "posted_by"])
+        else:
+            h.save(update_fields=["status", "posted_at"])
 
         # AP open-item sync for payable tracking (invoice/CN/DN).
         PurchaseApService.sync_open_item_for_header(h)
@@ -194,7 +208,7 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def cancel(pk: int) -> ActionResult:
+    def cancel(pk: int, cancelled_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
 
         if int(h.status) == int(Status.POSTED):
@@ -203,7 +217,13 @@ class PurchaseInvoiceActions:
             return ActionResult(h, "Already cancelled.")
 
         h.status = Status.CANCELLED
-        h.save(update_fields=["status"])
+        h.cancelled_at = timezone.now()
+        h.cancel_reason = (reason or "").strip()[:255] or None
+        if cancelled_by_id:
+            h.cancelled_by_id = cancelled_by_id
+            h.save(update_fields=["status", "cancelled_at", "cancelled_by", "cancel_reason"])
+        else:
+            h.save(update_fields=["status", "cancelled_at", "cancel_reason"])
         return ActionResult(h, "Cancelled.")
 
     @staticmethod

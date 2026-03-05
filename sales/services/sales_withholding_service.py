@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from withholding.models import WithholdingTaxType
@@ -15,6 +15,14 @@ from withholding.services import (
 )
 
 CUTOFF_DISABLE_206C_1H = date(2025, 4, 1)
+Q4 = Decimal("0.0001")
+
+
+def q4(x) -> Decimal:
+    try:
+        return Decimal(x or 0).quantize(Q4, rounding=ROUND_HALF_UP)
+    except Exception:
+        return Decimal("0.0000")
 
 class SalesWithholdingService:
     @staticmethod
@@ -30,7 +38,7 @@ class SalesWithholdingService:
 
         # base rule (most cases excl GST)
         base = q2(taxable_total or ZERO2)
-        rate = q2(getattr(section, "rate_default", Decimal("0.0000")))
+        rate = q4(getattr(section, "rate_default", Decimal("0.0000")))
 
         if base <= ZERO2 or rate <= Decimal("0.0000"):
             return WithholdingResult(True, section, rate, base, ZERO2, None)

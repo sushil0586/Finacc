@@ -42,6 +42,9 @@ class PaymentVoucherHeader(TrackingModel):
     doc_code = models.CharField(max_length=10, default="PPV")
     doc_no = models.PositiveIntegerField(null=True, blank=True)
     voucher_code = models.CharField(max_length=50, null=True, blank=True)
+    currency_code = models.CharField(max_length=3, default="INR", db_index=True)
+    base_currency_code = models.CharField(max_length=3, default="INR")
+    exchange_rate = models.DecimalField(max_digits=18, decimal_places=6, default=Decimal("1.000000"))
 
     payment_type = models.CharField(max_length=20, choices=PaymentType.choices, default=PaymentType.AGAINST_BILL)
     supply_type = models.CharField(max_length=10, choices=SupplyType.choices, default=SupplyType.SERVICES)
@@ -53,6 +56,7 @@ class PaymentVoucherHeader(TrackingModel):
     cash_paid_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     total_adjustment_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     settlement_effective_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    settlement_effective_amount_base_currency = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
     reference_number = models.CharField(max_length=100, null=True, blank=True)
     narration = models.TextField(null=True, blank=True)

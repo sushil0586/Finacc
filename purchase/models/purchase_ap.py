@@ -39,6 +39,10 @@ class VendorBillOpenItem(TrackingModel):
     supplier_invoice_number = models.CharField(max_length=50, null=True, blank=True)
 
     original_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    gross_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    tds_deducted = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    gst_tds_deducted = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    net_payable_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     settled_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     outstanding_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, db_index=True)
 
@@ -115,4 +119,3 @@ class VendorSettlementLine(TrackingModel):
 
     def __str__(self) -> str:
         return f"VendorSettlementLine({self.settlement_id}, {self.open_item_id}, {self.amount})"
-
