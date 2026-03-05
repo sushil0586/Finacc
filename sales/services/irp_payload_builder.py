@@ -58,6 +58,39 @@ class IRPPayloadBuilder:
     def __init__(self, invoice):
         self.invoice = invoice
 
+    @staticmethod
+    def _map_doc_type(inv) -> str:
+        doc_type = int(getattr(inv, "doc_type", 1) or 1)
+        if doc_type == 2:
+            return "CRN"
+        if doc_type == 3:
+            return "DBN"
+        return "INV"
+
+    @staticmethod
+    def _map_supply_type(inv) -> str:
+        # SalesInvoiceHeader.SupplyCategory
+        # 1 DOMESTIC_B2B, 2 DOMESTIC_B2C, 3 EXPORT_WITH_IGST, 4 EXPORT_WITHOUT_IGST,
+        # 5 SEZ_WITH_IGST, 6 SEZ_WITHOUT_IGST, 7 DEEMED_EXPORT
+        sc = int(getattr(inv, "supply_category", 1) or 1)
+        if sc == 2:
+            return "B2C"
+        if sc == 3:
+            return "EXPWP"
+        if sc == 4:
+            return "EXPWOP"
+        if sc == 5:
+            return "SEZWP"
+        if sc == 6:
+            return "SEZWOP"
+        if sc == 7:
+            return "DEXP"
+        return "B2B"
+
+    @staticmethod
+    def _reverse_charge_flag(inv) -> str:
+        return "Y" if bool(getattr(inv, "is_reverse_charge", False)) else "N"
+
     def build(self) -> Dict[str, Any]:
         inv = self.invoice
 
@@ -77,10 +110,11 @@ class IRPPayloadBuilder:
             "Version": "1.1",
             "TranDtls": {
                 "TaxSch": "GST",
-                "SupTyp": "B2B",  # map later from supply_category
+                "SupTyp": self._map_supply_type(inv),
+                "RegRev": self._reverse_charge_flag(inv),
             },
             "DocDtls": {
-                "Typ": "INV",  # map later from doc_type
+                "Typ": self._map_doc_type(inv),
                 "No": str(doc_no),
                 "Dt": inv_date.strftime("%d/%m/%Y"),
             },

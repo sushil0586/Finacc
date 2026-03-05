@@ -195,6 +195,10 @@ class PurchaseStatutoryReturn(TrackingModel):
 
 
 class PurchaseStatutoryReturnLine(TrackingModel):
+    class DeducteeResidency(models.TextChoices):
+        RESIDENT = "RESIDENT", "Resident"
+        NON_RESIDENT = "NON_RESIDENT", "Non-Resident"
+
     filing = models.ForeignKey(PurchaseStatutoryReturn, on_delete=models.CASCADE, related_name="lines")
     header = models.ForeignKey(PurchaseInvoiceHeader, on_delete=models.PROTECT, related_name="statutory_return_lines")
     challan = models.ForeignKey(
@@ -207,6 +211,23 @@ class PurchaseStatutoryReturnLine(TrackingModel):
     amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     section_snapshot_code = models.CharField(max_length=16, null=True, blank=True, db_index=True)
     section_snapshot_desc = models.CharField(max_length=255, null=True, blank=True)
+    deductee_residency_snapshot = models.CharField(
+        max_length=20,
+        choices=DeducteeResidency.choices,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    deductee_country_snapshot = models.ForeignKey(
+        "geography.Country",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_statutory_return_lines",
+    )
+    deductee_country_code_snapshot = models.CharField(max_length=10, null=True, blank=True, db_index=True)
+    deductee_country_name_snapshot = models.CharField(max_length=255, null=True, blank=True)
+    deductee_tax_id_snapshot = models.CharField(max_length=64, null=True, blank=True, db_index=True)
     deductee_pan_snapshot = models.CharField(max_length=16, null=True, blank=True, db_index=True)
     deductee_gstin_snapshot = models.CharField(max_length=15, null=True, blank=True, db_index=True)
     cin_snapshot = models.CharField(max_length=100, null=True, blank=True, db_index=True)

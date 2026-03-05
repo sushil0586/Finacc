@@ -161,6 +161,7 @@ class entityAddApiView(ListCreateAPIView):
     
 
 class userAddApiView(CreateAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
 
     def post(self,request):
         email = request.data.get('email',None)
@@ -173,13 +174,48 @@ class userAddApiView(CreateAPIView):
 
 
         with transaction.atomic():
-            userid = User.objects.create(first_name = first_name,last_name=last_name,username= username,password = password,email = email)
-            roleid = Role.objects.get(entity = entityid,id = roleid)
-            entity = Entity.objects.get(id = entityid)
-            UserRole.objects.create(entity =entity,role =roleid,user=userid)
-            stk = UserRole.objects.filter(entity = entity).values('user__first_name','user__last_name','user__email','user__username','user__password','role__rolename','role__id')
+            if not all([email, password, username, entityid, roleid]):
+                return Response({"detail": "email, password, username, entityid, roleid are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            entity = Entity.objects.filter(id=entityid).first()
+            if not entity:
+                return Response({"detail": "Invalid entityid."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not (entity.createdby_id == request.user.id or UserRole.objects.filter(entity=entity, user=request.user).exists()):
+                return Response({"detail": "You are not allowed to add users for this entity."}, status=status.HTTP_403_FORBIDDEN)
+
+            roleid = Role.objects.filter(entity=entity, id=roleid).first()
+            if not roleid:
+                return Response({"detail": "Invalid roleid for this entity."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if User.objects.filter(email=email).exists():
+                return Response({"detail": "Email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+            if User.objects.filter(username=username).exists():
+                return Response({"detail": "Username already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+            userid = User.objects.create_user(
+                first_name=first_name,
+                last_name=last_name,
+                username=username,
+                password=password,
+                email=email,
+            )
+            UserRole.objects.get_or_create(entity=entity, role=roleid, user=userid)
+            stk = UserRole.objects.filter(entity=entity).values(
+                'user__first_name', 'user__last_name', 'user__email', 'user__username', 'role__rolename', 'role__id'
+            )
             df = read_frame(stk)
-            df.rename(columns = {'user__first_name':'first_name','user__last_name':'last_name','user__email':'email','user__username':'username','user__password':'password','role__rolename':'rolename','role__id':'roleid'}, inplace = True)
+            df.rename(
+                columns={
+                    'user__first_name': 'first_name',
+                    'user__last_name': 'last_name',
+                    'user__email': 'email',
+                    'user__username': 'username',
+                    'role__rolename': 'rolename',
+                    'role__id': 'roleid',
+                },
+                inplace=True,
+            )
             return Response(df.T.to_dict().values())
 
 
@@ -759,6 +795,16 @@ class BankAccountListByEntityView(APIView):
     
 
 class EntityCreateUpdateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _can_manage_entity(user, entity) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if entity.createdby_id == user.id:
+            return True
+        return UserRole.objects.filter(entity=entity, user=user).exists()
+
     def post(self, request, *args, **kwargs):
         serializer = EntityNewSerializer(data=request.data)
         if serializer.is_valid():
@@ -772,9 +818,12 @@ class EntityCreateUpdateAPIView(APIView):
         except Entity.DoesNotExist:
             return Response({"error": "Entity not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        if not self._can_manage_entity(request.user, entity):
+            return Response({"detail": "You are not allowed to update this entity."}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = EntityNewSerializer(entity, data=request.data)
         if serializer.is_valid():
-            entity = serializer.save()
+            entity = serializer.save(updatedby=request.user)
             return Response(EntityNewSerializer(entity).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

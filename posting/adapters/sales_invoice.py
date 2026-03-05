@@ -184,6 +184,7 @@ class SalesInvoicePostingAdapter:
         lines_list = list(lines or [])
         if not lines_list:
             raise ValueError("Cannot post Sales document: no lines found.")
+        charges_list = list(getattr(header, "charges", []).all() if hasattr(getattr(header, "charges", None), "all") else [])
 
         # per-product account resolver (no N+1)
         product_ids = [int(ln.product_id) for ln in lines_list if getattr(ln, "product_id", None)]
@@ -236,6 +237,28 @@ class SalesInvoicePostingAdapter:
             output_tax["igst"] = q2(output_tax["igst"] + q2(getattr(ln, "igst_amount", None) or ZERO2))
             output_tax["cess"] = q2(output_tax["cess"] + q2(getattr(ln, "cess_amount", None) or ZERO2))
 
+        # 1A2) Header charge lines (other income + output GST)
+        other_income_code = getattr(StaticAccountCodes, "SALES_OTHER_CHARGES_INCOME", None)
+        default_charge_income_ac = None
+        if other_income_code:
+            default_charge_income_ac = resolver.get_account_id(other_income_code, required=False)
+
+        for ch in charges_list:
+            c_base = q2(getattr(ch, "taxable_value", None) or ZERO2)
+            if c_base > ZERO2:
+                charge_ac = getattr(ch, "revenue_account_id", None) or default_charge_income_ac or default_sales_ac
+                jl.append(JLInput(
+                    account_id=int(charge_ac),
+                    drcr=(sign < 0),  # invoice/DN => credit, CN => debit
+                    amount=q2(c_base.copy_abs()),
+                    description=f"{narration} (charge {getattr(ch, 'line_no', '-')})",
+                    detail_id=int(getattr(ch, "id", 0) or 0) or None,
+                ))
+
+            output_tax["cgst"] = q2(output_tax["cgst"] + q2(getattr(ch, "cgst_amount", None) or ZERO2))
+            output_tax["sgst"] = q2(output_tax["sgst"] + q2(getattr(ch, "sgst_amount", None) or ZERO2))
+            output_tax["igst"] = q2(output_tax["igst"] + q2(getattr(ch, "igst_amount", None) or ZERO2))
+
         # 1B) Output GST payable (credit on invoice/DN; debit on CN)
         def _add_out(acct_id: Optional[int], amt: Decimal, label: str):
             if amt <= ZERO2:
@@ -277,17 +300,12 @@ class SalesInvoicePostingAdapter:
                     description=f"{narration} (Round-off income)",
                 ))
 
+        # Legacy fallback for old payloads that still use header.total_other_charges without charge lines.
         other_charges = q2(getattr(header, "total_other_charges", None) or ZERO2)
-
-        if other_charges > ZERO2:
-            other_income_code = getattr(StaticAccountCodes, "SALES_OTHER_CHARGES_INCOME", None)
+        if other_charges > ZERO2 and not charges_list:
             if not other_income_code:
                 raise ValueError("StaticAccountCodes.SALES_OTHER_CHARGES_INCOME missing.")
-
             other_income_ac = resolver.get_account_id(other_income_code, required=True)
-
-            # Invoice/DN => CREDIT
-            # Credit Note => DEBIT (reversal)
             jl.append(JLInput(
                 account_id=int(other_income_ac),
                 drcr=is_credit_note,  # True for CN (debit), False for invoice (credit)

@@ -100,19 +100,17 @@ class PurchaseInvoiceService:
             - If gst_tds_is_manual = True -> accept user values (validated)
             - Else -> compute from totals + tax_regime/is_igst (existing logic)
         """
-        # always reset safe defaults
-        header.gst_tds_rate = q4(Decimal("0.0000"))
-        header.gst_tds_base_amount = q2(ZERO2)
-        header.gst_tds_cgst_amount = q2(ZERO2)
-        header.gst_tds_sgst_amount = q2(ZERO2)
-        header.gst_tds_igst_amount = q2(ZERO2)
-        header.gst_tds_amount = q2(ZERO2)
-        header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)  # NA
-
         if not getattr(header, "gst_tds_enabled", False):
             header.gst_tds_is_manual = False
             header.gst_tds_contract_ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip() or ""
             header.gst_tds_reason = (getattr(header, "gst_tds_reason", None) or None)
+            header.gst_tds_rate = q4(Decimal("0.0000"))
+            header.gst_tds_base_amount = q2(ZERO2)
+            header.gst_tds_cgst_amount = q2(ZERO2)
+            header.gst_tds_sgst_amount = q2(ZERO2)
+            header.gst_tds_igst_amount = q2(ZERO2)
+            header.gst_tds_amount = q2(ZERO2)
+            header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)  # NA
             return
 
         # contract ref required
@@ -175,6 +173,14 @@ class PurchaseInvoiceService:
         # ----------------------------
         # ✅ AUTO MODE (source of truth from gst_tds app)
         # ----------------------------
+        # Clear stale manual values before auto compute.
+        header.gst_tds_rate = q4(Decimal("0.0000"))
+        header.gst_tds_base_amount = q2(ZERO2)
+        header.gst_tds_cgst_amount = q2(ZERO2)
+        header.gst_tds_sgst_amount = q2(ZERO2)
+        header.gst_tds_igst_amount = q2(ZERO2)
+        header.gst_tds_amount = q2(ZERO2)
+        header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)
         GstTdsService.apply_to_header(header)
 
     @staticmethod
@@ -340,6 +346,21 @@ class PurchaseInvoiceService:
             new_status = int(attrs.get("status", instance.status))
             if int(instance.status) == int(Status.POSTED) and new_status != int(Status.POSTED):
                 raise ValueError("Posted document cannot be moved back to Draft/Confirmed.")
+
+        currency_code = (attrs.get("currency_code") or (instance.currency_code if instance else "INR") or "INR").strip().upper()
+        base_currency_code = (
+            attrs.get("base_currency_code") or (instance.base_currency_code if instance else "INR") or "INR"
+        ).strip().upper()
+        exchange_rate = Decimal(attrs.get("exchange_rate", (instance.exchange_rate if instance else Decimal("1.000000"))) or Decimal("1.000000"))
+        if len(currency_code) != 3:
+            raise ValueError("currency_code must be 3 letters (ISO).")
+        if len(base_currency_code) != 3:
+            raise ValueError("base_currency_code must be 3 letters (ISO).")
+        if exchange_rate <= 0:
+            raise ValueError("exchange_rate must be > 0.")
+        attrs["currency_code"] = currency_code
+        attrs["base_currency_code"] = base_currency_code
+        attrs["exchange_rate"] = exchange_rate
 
     @staticmethod
     def validate_lines_structural(
@@ -621,6 +642,10 @@ class PurchaseInvoiceService:
         ro = q2(getattr(header, "round_off", ZERO2))
         header.round_off = ro
         header.grand_total = q2(totals["grand_total_base"] + ro)
+        fx = Decimal(getattr(header, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
+        if fx <= 0:
+            fx = Decimal("1.000000")
+        header.grand_total_base_currency = q2(header.grand_total * fx)
 
     # ---------------------------
     # Tax summary rebuild
@@ -1113,7 +1138,7 @@ class PurchaseInvoiceService:
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
-            "total_cess", "total_gst", "round_off", "grand_total",
+            "total_cess", "total_gst", "round_off", "grand_total", "grand_total_base_currency",
 
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 
@@ -1201,7 +1226,7 @@ class PurchaseInvoiceService:
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
-            "total_cess", "total_gst", "round_off", "grand_total",
+            "total_cess", "total_gst", "round_off", "grand_total", "grand_total_base_currency",
 
             "tds_section", "tds_rate", "tds_base_amount", "tds_amount", "tds_reason",
 

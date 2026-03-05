@@ -68,6 +68,11 @@ class SalesInvoiceHeader(EntityScopedModel):
         EWAY_ONLY = 2, "E-Way only"
         EINVOICE_AND_EWAY = 3, "E-Invoice + E-Way"
 
+    class SettlementStatus(models.IntegerChoices):
+        OPEN = 1, "Open"
+        PARTIAL = 2, "Partial"
+        SETTLED = 3, "Settled"
+
     # -------------------------
     # Identity / numbering
     # -------------------------
@@ -80,6 +85,13 @@ class SalesInvoiceHeader(EntityScopedModel):
     doc_code = models.CharField(max_length=20, blank=True, default="")
     doc_no = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     invoice_number = models.CharField(max_length=50, null=True, blank=True,db_index=True)
+    original_invoice = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="adjustment_documents",
+    )
 
 
     # -------------------------
@@ -180,6 +192,12 @@ class SalesInvoiceHeader(EntityScopedModel):
     total_other_charges = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
     round_off = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
     grand_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    settled_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    outstanding_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    settlement_status = models.PositiveSmallIntegerField(
+        choices=SettlementStatus.choices,
+        default=SettlementStatus.OPEN,
+    )
 
     # -------------------------
     # Commercial fields
@@ -193,10 +211,14 @@ class SalesInvoiceHeader(EntityScopedModel):
     confirmed_at = models.DateTimeField(null=True, blank=True, editable=False)
     posted_at = models.DateTimeField(null=True, blank=True, editable=False)
     cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
+    reversed_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     confirmed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_confirmed")
     posted_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_posted")
     cancelled_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_cancelled")
+    reversed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_reversed")
+    reverse_reason = models.CharField(max_length=255, blank=True, default="")
+    is_posting_reversed = models.BooleanField(default=False)
 
     class Meta:
         db_table = "sales_invoice_header"
@@ -218,6 +240,8 @@ class SalesInvoiceHeader(EntityScopedModel):
             models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_sales_hdr_status"),
             models.Index(fields=["entity", "entityfinid", "subentity", "customer"], name="ix_sales_hdr_customer"),
             models.Index(fields=["entity", "entityfinid", "subentity", "gst_compliance_mode"], name="ix_sales_hdr_gstmode"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "original_invoice"], name="ix_sales_hdr_original"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "settlement_status"], name="ix_sales_hdr_settle"),
         ]
 
     def __str__(self) -> str:

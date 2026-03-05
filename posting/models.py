@@ -18,6 +18,8 @@ ZERO4 = Decimal("0.0000")
 
 class TxnType(models.TextChoices):
     SALES = "S", "Sales"
+    SALES_CREDIT_NOTE = "SCN", "Sales Credit Note"
+    SALES_DEBIT_NOTE = "SDN", "Sales Debit Note"
     PURCHASE = "P", "Purchase"
     JOURNAL = "J", "Journal"
     SALES_RETURN = "SR", "Sales Return"

@@ -18,6 +18,7 @@ from posting.adapters.purchase_invoice import (
 from posting.common.static_accounts import StaticAccountCodes
 from withholding.services import WithholdingResult
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
+from purchase.models.purchase_statutory import PurchaseStatutoryReturnLine
 
 
 class PurchaseTdsApplyTests(SimpleTestCase):
@@ -547,3 +548,94 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         resp = self.client.get("/api/purchase/statutory/summary/?entity=1&entityfinid=1")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("summary", resp.data)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_exceptions")
+    def test_statutory_reconciliation_exceptions_endpoint_returns_200(self, mock_fn):
+        mock_fn.return_value = {"exceptions": {}}
+        resp = self.client.get(
+            "/api/purchase/statutory/reconciliation-exceptions/?entity=1&entityfinid=1&tax_type=IT_TDS&period_from=2026-04-01&period_to=2026-04-30"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("exceptions", resp.data)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.generate_nsdl_payload")
+    def test_statutory_nsdl_export_endpoint_returns_200(self, mock_fn):
+        mock_fn.return_value = {"filing_id": 1, "nsdl_txt": "HDR|..."}
+        resp = self.client.get("/api/purchase/statutory/returns/1/nsdl-export/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("nsdl_txt", resp.data)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.issue_form16a")
+    def test_statutory_form16a_issue_endpoint_returns_201(self, mock_fn):
+        mock_fn.return_value = {"filing_id": 1, "issue": {"issue_no": 1}}
+        resp = self.client.post("/api/purchase/statutory/returns/1/form16a/", {"remarks": "issue"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["message"], "Form16A issued.")
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.form16a_download_payload")
+    def test_statutory_form16a_download_endpoint_returns_200(self, mock_fn):
+        mock_fn.return_value = {"filename": "f16a.txt", "content": "hello"}
+        resp = self.client.get("/api/purchase/statutory/returns/1/form16a/1/download/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "text/plain")
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.submit_challan_for_approval")
+    def test_statutory_challan_approval_submit_returns_200(self, mock_fn):
+        mock_fn.return_value = SimpleNamespace(
+            message="ok",
+            obj=SimpleNamespace(id=1),
+        )
+        with patch("purchase.views.purchase_statutory.PurchaseStatutoryChallanSerializer") as mock_ser:
+            mock_ser.return_value.data = {"id": 1, "approval_status": "SUBMITTED", "approval_status_name": "Submitted"}
+            resp = self.client.post("/api/purchase/statutory/challans/1/approval/", {"action": "submit"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["approval_status"], "SUBMITTED")
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.submit_return_for_approval")
+    def test_statutory_return_approval_submit_returns_200(self, mock_fn):
+        mock_fn.return_value = SimpleNamespace(
+            message="ok",
+            obj=SimpleNamespace(id=1),
+        )
+        with patch("purchase.views.purchase_statutory.PurchaseStatutoryReturnSerializer") as mock_ser:
+            mock_ser.return_value.data = {"id": 1, "approval_status": "SUBMITTED", "approval_status_name": "Submitted"}
+            resp = self.client.post("/api/purchase/statutory/returns/1/approval/", {"action": "submit"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["approval_status"], "SUBMITTED")
+
+
+class PurchaseStatutoryComplianceTests(SimpleTestCase):
+    def test_coerce_date_accepts_iso_and_date(self):
+        self.assertEqual(
+            PurchaseStatutoryService._coerce_date("2026-04-30", field_name="x"),
+            date(2026, 4, 30),
+        )
+        self.assertEqual(
+            PurchaseStatutoryService._coerce_date(date(2026, 4, 30), field_name="x"),
+            date(2026, 4, 30),
+        )
+
+    def test_validate_it_tds_return_code_26q_requires_resident_pan(self):
+        line_ok = SimpleNamespace(
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT,
+            deductee_pan_snapshot="ABCDE1234F",
+            deductee_tax_id_snapshot=None,
+        )
+        PurchaseStatutoryService._validate_it_tds_return_code(return_code="26Q", lines=[line_ok])
+
+        line_bad = SimpleNamespace(
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT,
+            deductee_pan_snapshot="ABCDE1234F",
+            deductee_tax_id_snapshot=None,
+        )
+        with self.assertRaisesMessage(ValueError, "26Q allows only RESIDENT"):
+            PurchaseStatutoryService._validate_it_tds_return_code(return_code="26Q", lines=[line_bad])
+
+    def test_validate_it_tds_return_code_27q_requires_non_resident_tax_id(self):
+        line_bad = SimpleNamespace(
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT,
+            deductee_pan_snapshot=None,
+            deductee_tax_id_snapshot=None,
+        )
+        with self.assertRaisesMessage(ValueError, "27Q requires deductee_tax_id_snapshot"):
+            PurchaseStatutoryService._validate_it_tds_return_code(return_code="27Q", lines=[line_bad])
