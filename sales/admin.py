@@ -4,7 +4,7 @@ from django.contrib import admin, messages
 from django.db import transaction
 from django.utils.html import format_html
 from django.utils import timezone
-from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken
+from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken, MasterGSTToken
 from sales.services.providers.mastergst_client import MasterGSTClient
 
 
@@ -13,10 +13,17 @@ from sales.models.sales_core import (
     SalesInvoiceHeader,
     SalesInvoiceLine,
     SalesTaxSummary,
-    SalesEInvoiceDetails,
-    SalesEWayBillDetails,
-    SalesEWayEvent,
     SalesInvoiceShipToSnapshot,
+)
+from sales.models.sales_compliance import (
+    SalesEInvoice,
+    SalesEInvoiceCancel,
+    SalesEWayBill,
+    SalesEWayBillCancel,
+    SalesNICCredential,
+    SalesComplianceActionLog,
+    SalesComplianceExceptionQueue,
+    SalesComplianceErrorCode,
 )
 from sales.models.sales_addons import SalesChargeLine, SalesChargeType
 from sales.services.sales_invoice_service import SalesInvoiceService
@@ -128,8 +135,8 @@ class SalesInvoiceShipToSnapshotInline(admin.StackedInline):
     def has_change_permission(self, request, obj=None):
         return False
     
-class SalesEInvoiceDetailsInline(admin.StackedInline):
-    model = SalesEInvoiceDetails
+class SalesEInvoiceArtifactInline(admin.StackedInline):
+    model = SalesEInvoice
     extra = 0
     can_delete = False
     show_change_link = True
@@ -137,39 +144,37 @@ class SalesEInvoiceDetailsInline(admin.StackedInline):
     readonly_fields = (
         "status",
         "irn", "ack_no", "ack_date",
-        "generated_at",
-        "cancelled_at", "cancel_reason_code", "cancel_remarks",
-        "request_payload", "response_payload", "last_error",
+        "ewb_no", "ewb_date", "ewb_valid_upto",
+        "attempt_count", "last_attempt_at", "last_success_at",
+        "last_error_code", "last_error_message",
+        "last_request_json", "last_response_json",
         "signed_invoice", "signed_qr_code",
+        "created_at", "updated_at",
     )
     fields = readonly_fields
 
     def has_add_permission(self, request, obj=None):
         return False
     
-class SalesEWayBillDetailsInline(admin.StackedInline):
-    model = SalesEWayBillDetails
+class SalesEWayArtifactInline(admin.StackedInline):
+    model = SalesEWayBill
     extra = 0
     can_delete = False
     show_change_link = True
 
     readonly_fields = (
         "status",
-        "generated_via_irp",
-        "eway_bill_no", "eway_bill_date", "valid_upto",
+        "eway_source",
+        "ewb_no", "ewb_date", "valid_upto",
         "transporter_id", "transporter_name",
         "transport_mode", "distance_km",
-        "transport_doc_no", "transport_doc_date",
-        "from_place", "from_pincode",
+        "doc_type", "doc_no", "doc_date",
+        "disp_dtls_json", "exp_ship_dtls_json",
         "vehicle_no", "vehicle_type",
-        "cancelled_at", "cancel_reason_code", "cancel_remarks",
-        "last_vehicle_update_at",
-        "original_valid_upto", "current_valid_upto",
-        "extension_count", "last_extension_at",
-        "last_extension_reason_code", "last_extension_remarks",
-        "last_extension_from_place", "last_extension_from_pincode",
-        "last_transporter_update_at",
-        "request_payload", "response_payload", "last_error",
+        "attempt_count", "last_attempt_at", "last_success_at",
+        "last_error_code", "last_error_message",
+        "last_request_json", "last_response_json",
+        "created_at", "updated_at",
     )
     fields = readonly_fields
 
@@ -185,8 +190,8 @@ class SalesEWayBillDetailsInline(admin.StackedInline):
 class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
     inlines = [
         SalesInvoiceShipToSnapshotInline,
-        SalesEInvoiceDetailsInline,
-        SalesEWayBillDetailsInline,
+        SalesEInvoiceArtifactInline,
+        SalesEWayArtifactInline,
         SalesInvoiceLineInline,
         SalesChargeLineInline,
         SalesTaxSummaryInline,
@@ -296,12 +301,16 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
             "fields": (
                 ("gst_compliance_mode",),
                 ("is_einvoice_applicable", "is_eway_applicable"),
+                ("einvoice_applicable_manual", "eway_applicable_manual"),
+                ("compliance_override_reason",),
+                ("compliance_override_at", "compliance_override_by"),
             )
         }),
         ("TCS", {
             "fields": (
                 ("withholding_enabled", "tcs_section"),
                 ("tcs_rate", "tcs_base_amount", "tcs_amount"),
+                ("tcs_is_reversal",),
                 ("tcs_reason",),
             )
         }),
@@ -355,6 +364,9 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "tcs_base_amount",
         "tcs_amount",
         "tcs_reason",
+        "tcs_is_reversal",
+        "compliance_override_at",
+        "compliance_override_by",
         "settled_amount",
         "outstanding_amount",
         "settlement_status",
@@ -609,43 +621,61 @@ class SalesChargeTypeAdmin(admin.ModelAdmin):
 
 
 
-@admin.register(SalesEInvoiceDetails)
-class SalesEInvoiceDetailsAdmin(admin.ModelAdmin):
-    list_display = ("id", "header", "status", "irn", "ack_no", "ack_date", "entity", "entityfinid", "subentity")
-    list_select_related = ("header", "entity", "entityfinid", "subentity")
-    list_filter = ("status", "entity", "entityfinid", "subentity")
-    search_fields = ("header__invoice_number", "irn", "ack_no")
+@admin.register(SalesEInvoice)
+class SalesEInvoiceAdmin(admin.ModelAdmin):
+    list_display = ("id", "invoice", "status", "irn", "ack_no", "ack_date", "created_at", "updated_at")
+    list_select_related = ("invoice",)
+    list_filter = ("status", "created_at")
+    search_fields = ("invoice__invoice_number", "irn", "ack_no")
     ordering = ("-id",)
 
     def has_add_permission(self, request):
         return False
     
-@admin.register(SalesEWayBillDetails)
-class SalesEWayBillDetailsAdmin(admin.ModelAdmin):
-    list_display = ("id", "header", "status", "eway_bill_no", "eway_bill_date", "valid_upto", "entity", "entityfinid", "subentity")
-    list_select_related = ("header", "entity", "entityfinid", "subentity")
-    list_filter = ("status", "entity", "entityfinid", "subentity", "generated_via_irp")
-    search_fields = ("header__invoice_number", "eway_bill_no", "transporter_id", "vehicle_no")
+@admin.register(SalesEWayBill)
+class SalesEWayBillAdmin(admin.ModelAdmin):
+    list_display = ("id", "invoice", "status", "ewb_no", "ewb_date", "valid_upto", "eway_source", "updated_at")
+    list_select_related = ("invoice",)
+    list_filter = ("status", "eway_source", "created_at")
+    search_fields = ("invoice__invoice_number", "ewb_no", "transporter_id", "vehicle_no")
     ordering = ("-id",)
 
     def has_add_permission(self, request):
         return False
-    
 
-@admin.register(SalesEWayEvent)
-class SalesEWayEventAdmin(admin.ModelAdmin):
-    list_display = ("id", "eway", "event_type", "event_at", "eway_bill_no", "is_success", "error_code")
-    list_select_related = ("eway",)
-    list_filter = ("event_type", "is_success")
-    search_fields = ("eway_bill_no", "reference_no", "error_code", "error_message")
-    ordering = ("-event_at", "-id")
+
+@admin.register(SalesEInvoiceCancel)
+class SalesEInvoiceCancelAdmin(admin.ModelAdmin):
+    list_display = ("id", "einvoice", "cancel_reason_code", "cancelled_at", "irp_cancel_date", "error_code")
+    list_select_related = ("einvoice", "einvoice__invoice")
+    list_filter = ("cancel_reason_code", "cancelled_at")
+    search_fields = ("einvoice__invoice__invoice_number", "error_code", "error_message")
+    ordering = ("-id",)
 
     def has_add_permission(self, request):
         return False
 
-    def has_delete_permission(self, request, obj=None):
+
+@admin.register(SalesEWayBillCancel)
+class SalesEWayBillCancelAdmin(admin.ModelAdmin):
+    list_display = ("id", "eway", "cancel_reason_code", "cancelled_at", "portal_cancel_date", "error_code")
+    list_select_related = ("eway", "eway__invoice")
+    list_filter = ("cancel_reason_code", "cancelled_at")
+    search_fields = ("eway__invoice__invoice_number", "error_code", "error_message")
+    ordering = ("-id",)
+
+    def has_add_permission(self, request):
         return False
-    
+
+
+@admin.register(SalesNICCredential)
+class SalesNICCredentialAdmin(admin.ModelAdmin):
+    list_display = ("id", "entity", "subentity", "environment", "gstin", "username", "is_active", "updated_at")
+    list_filter = ("environment", "is_active", "entity")
+    search_fields = ("entity__entityname", "subentity__subentityname", "gstin", "username")
+    ordering = ("entity_id", "subentity_id", "environment")
+
+
 @admin.register(SalesInvoiceShipToSnapshot)
 class SalesInvoiceShipToSnapshotAdmin(admin.ModelAdmin):
     list_display = ("header", "city", "state_code", "pincode", "full_name", "phone")
@@ -705,11 +735,26 @@ class SalesSettingsAdmin(admin.ModelAdmin):
         "default_doc_code_invoice",
         "enable_round_off",
         "enable_einvoice",
+        "einvoice_entity_applicable",
         "enable_eway",
+        "eway_value_threshold",
+        "compliance_applicability_mode",
+        "enforce_statutory_cancel_before_business_cancel",
+        "tcs_credit_note_policy",
         "prefer_irp_generate_einvoice_and_eway_together",
     )
-    list_filter = ("default_workflow_action", "enable_round_off", "auto_derive_tax_regime", "enable_einvoice", "enable_eway")
-    search_fields = ("entity__name", "subentity__name", "default_doc_code_invoice")
+    list_filter = (
+        "default_workflow_action",
+        "enable_round_off",
+        "auto_derive_tax_regime",
+        "enable_einvoice",
+        "einvoice_entity_applicable",
+        "enable_eway",
+        "compliance_applicability_mode",
+        "enforce_statutory_cancel_before_business_cancel",
+        "tcs_credit_note_policy",
+    )
+    search_fields = ("entity__entityname", "subentity__subentityname", "default_doc_code_invoice")
 
 
 @admin.register(SalesLockPeriod)
@@ -724,6 +769,40 @@ class SalesChoiceOverrideAdmin(admin.ModelAdmin):
     list_display = ("entity", "subentity", "choice_group", "choice_key", "is_enabled", "override_label")
     list_filter = ("choice_group", "is_enabled", "entity")
     search_fields = ("choice_group", "choice_key", "override_label")
+
+
+@admin.register(SalesComplianceActionLog)
+class SalesComplianceActionLogAdmin(admin.ModelAdmin):
+    list_display = ("id", "invoice", "action_type", "outcome", "error_code", "created_at", "created_by")
+    list_filter = ("action_type", "outcome", "created_at")
+    search_fields = ("invoice__invoice_number", "error_code", "error_message")
+    readonly_fields = (
+        "invoice", "action_type", "outcome",
+        "error_code", "error_message",
+        "request_json", "response_json",
+        "created_at", "created_by",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SalesComplianceExceptionQueue)
+class SalesComplianceExceptionQueueAdmin(admin.ModelAdmin):
+    list_display = ("id", "invoice", "exception_type", "status", "severity", "retry_count", "last_seen_at")
+    list_filter = ("exception_type", "status", "severity")
+    search_fields = ("invoice__invoice_number", "error_code", "error_message")
+
+
+@admin.register(SalesComplianceErrorCode)
+class SalesComplianceErrorCodeAdmin(admin.ModelAdmin):
+    list_display = ("code", "message", "source", "is_active", "sort_order", "updated_at")
+    list_filter = ("source", "is_active")
+    search_fields = ("code", "message", "reason", "resolution")
+    ordering = ("sort_order", "code")
 
 
 @admin.register(SalesMasterGSTCredential)
@@ -741,7 +820,7 @@ class SalesMasterGSTCredentialAdmin(admin.ModelAdmin):
         "updated_at",
     )
     list_filter = ("environment", "service_scope", "is_active", "allow_all_ips")
-    search_fields = ("gstin", "email", "gst_username", "entity__name")
+    search_fields = ("gstin", "email", "gst_username", "entity__entityname")
     autocomplete_fields = ("entity",)
     ordering = ("-updated_at",)
 
@@ -830,7 +909,7 @@ class SalesMasterGSTTokenAdmin(admin.ModelAdmin):
         "updated_at",
     )
     list_filter = ("credential__environment", "credential__service_scope")
-    search_fields = ("credential__gstin", "credential__email", "credential__gst_username", "credential__entity__name")
+    search_fields = ("credential__gstin", "credential__email", "credential__gst_username", "credential__entity__entityname")
     autocomplete_fields = ("credential",)
     ordering = ("-updated_at",)
 
@@ -846,7 +925,7 @@ class SalesMasterGSTTokenAdmin(admin.ModelAdmin):
         ("Token", {"fields": ("auth_token", "token_expiry")}),
         ("Status", {"fields": ("last_auth_at", "last_error_message")}),
         ("Last Response Snapshot", {"fields": ("last_response_json",)}),
-        ("Timestamps", {"fields": ("created_at", "updated_at")}),
+        ("Timestamps", {"fields": ("updated_at",)}),
     )
 
     actions = ("action_reauth_force", "action_clear_token")
@@ -905,4 +984,12 @@ class SalesMasterGSTTokenAdmin(admin.ModelAdmin):
             tok.save(update_fields=["auth_token", "token_expiry", "last_error_message"])
             updated += 1
         self.message_user(request, f"Cleared {updated} token(s).", level=messages.SUCCESS)
+
+
+@admin.register(MasterGSTToken)
+class MasterGSTTokenAdmin(admin.ModelAdmin):
+    list_display = ("id", "entity", "gstin", "module", "token_created_at", "updated_at")
+    list_filter = ("module", "entity")
+    search_fields = ("entity__entityname", "gstin")
+    ordering = ("-updated_at",)
 

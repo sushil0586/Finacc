@@ -23,6 +23,8 @@ class IRNResult:
 
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    error_reason: Optional[str] = None
+    error_resolution: Optional[str] = None
     raw: Optional[Dict[str, Any]] = None
 
 
@@ -35,6 +37,8 @@ class EWayResult:
 
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    error_reason: Optional[str] = None
+    error_resolution: Optional[str] = None
     raw: Optional[Dict[str, Any]] = None
 
 
@@ -45,6 +49,8 @@ class EInvoiceProvider(Protocol):
     name: str
     def generate_irn(self, *, invoice, payload: Dict[str, Any]) -> IRNResult: ...
     def cancel_irn(self, *, invoice, irn: str, reason_code: str, remarks: str | None = None) -> IRNResult: ...
+    def get_irn_details(self, *, invoice, irn: str, supplier_gstin: str | None = None) -> IRNResult: ...
+    def get_eway_details_by_irn(self, *, invoice, irn: str, supplier_gstin: str | None = None) -> EWayResult: ...
 
 
 class EWayProvider(Protocol):

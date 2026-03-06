@@ -174,6 +174,16 @@ class PurchaseStatutoryReturn(TrackingModel):
 
     class Meta:
         constraints = [
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "tax_type", "return_code", "period_from", "period_to"),
+                condition=Q(original_return__isnull=True, subentity__isnull=False) & ~Q(status=9),
+                name="uq_pur_stret_orig_sub_scope",
+            ),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "tax_type", "return_code", "period_from", "period_to"),
+                condition=Q(original_return__isnull=True, subentity__isnull=True) & ~Q(status=9),
+                name="uq_pur_stret_orig_nsub_scope",
+            ),
             models.CheckConstraint(check=Q(amount__gte=0), name="ck_pur_stat_return_amount_nonneg"),
             models.CheckConstraint(check=Q(interest_amount__gte=0), name="ck_pur_stat_return_interest_nonneg"),
             models.CheckConstraint(check=Q(late_fee_amount__gte=0), name="ck_pur_stat_return_latefee_nonneg"),

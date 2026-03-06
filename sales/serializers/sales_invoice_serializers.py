@@ -4,6 +4,7 @@ from rest_framework import serializers
 from financial.models import ShippingDetails
 from withholding.models import WithholdingSection, WithholdingTaxType
 from decimal import Decimal
+import re
 
 
 
@@ -110,6 +111,7 @@ class SalesTaxSummarySerializer(serializers.ModelSerializer):
 
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
+    GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
     # nested
     lines = SalesInvoiceLineSerializer(many=True, required=False)
     charges = SalesChargeLineSerializer(many=True, required=False)
@@ -197,6 +199,11 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "gst_compliance_mode",
             "is_einvoice_applicable",
             "is_eway_applicable",
+            "einvoice_applicable_manual",
+            "eway_applicable_manual",
+            "compliance_override_reason",
+            "compliance_override_at",
+            "compliance_override_by",
 
             # totals (computed)
             "total_taxable_value",
@@ -214,7 +221,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             "withholding_enabled",
             "tcs_section",
-            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal",
 
             # nested
             "lines",
@@ -232,6 +239,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "due_date",
             "tax_regime",
             "is_igst",
+            "gst_compliance_mode",
+            "is_einvoice_applicable",
+            "is_eway_applicable",
 
             # totals
             "total_taxable_value",
@@ -250,13 +260,15 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "reversed_by",
             "reverse_reason",
             "is_posting_reversed",
+            "compliance_override_at",
+            "compliance_override_by",
 
             # nav + summaries
             "tax_summaries",
             "navigation",
             "einvoice_artifact",
             "eway_artifact",
-            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal",
         ]
 
     def get_navigation(self, obj):
@@ -272,6 +284,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "due_date",
             "tax_regime",
             "is_igst",
+            "gst_compliance_mode",
+            "is_einvoice_applicable",
+            "is_eway_applicable",
             "total_taxable_value",
             "total_cgst",
             "total_sgst",
@@ -294,6 +309,16 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         bad = sorted(incoming.intersection(blocked))
         if bad:
             raise serializers.ValidationError({k: "Field is controlled by backend." for k in bad})
+
+        for field in ("customer_gstin", "seller_gstin"):
+            if field in attrs and attrs.get(field):
+                val = str(attrs[field]).strip().upper()
+                if not self.GSTIN_RE.fullmatch(val):
+                    raise serializers.ValidationError({field: "GSTIN must be 15 uppercase alphanumeric characters."})
+                attrs[field] = val
+
+        if ("einvoice_applicable_manual" in attrs or "eway_applicable_manual" in attrs) and not (attrs.get("compliance_override_reason") or "").strip():
+            raise serializers.ValidationError({"compliance_override_reason": "Required when manual compliance override is provided."})
 
         return attrs
 

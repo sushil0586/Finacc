@@ -12,6 +12,12 @@ from rest_framework.response import Response
 from sales.models import SalesInvoiceHeader
 from sales.models.sales_compliance import SalesEWayBill
 from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
+from sales.serializers.sales_compliance_serializers import (
+    CancelEWayActionSerializer,
+    UpdateEWayVehicleActionSerializer,
+    UpdateEWayTransporterActionSerializer,
+    ExtendEWayValidityActionSerializer,
+)
 from sales.services.sales_compliance_service import SalesComplianceService
 
 
@@ -54,6 +60,67 @@ class _ScopedInvoiceMixin:
             pk=id,
         )
 
+    @staticmethod
+    def _error_payload(e):
+        detail = getattr(e, "detail", None)
+        if detail is not None:
+            return detail
+        message_dict = getattr(e, "message_dict", None)
+        if message_dict is not None:
+            return message_dict
+        return {"detail": str(e)}
+
+    @classmethod
+    def _error_list_payload(cls, e):
+        payload = cls._error_payload(e)
+        errors = []
+
+        def add(message, *, code=None, field=None, reason=None, resolution=None):
+            row = {"message": str(message)}
+            if code not in (None, "", "None", "null"):
+                row["code"] = str(code)
+            if field not in (None, "", "None", "null"):
+                row["field"] = str(field)
+            if reason not in (None, "", "None", "null"):
+                row["reason"] = str(reason)
+            if resolution not in (None, "", "None", "null"):
+                row["resolution"] = str(resolution)
+            errors.append(row)
+
+        if isinstance(payload, dict):
+            if "message" in payload or "code" in payload:
+                add(
+                    payload.get("message") or payload.get("detail") or "Request failed.",
+                    code=payload.get("code"),
+                    reason=payload.get("reason"),
+                    resolution=payload.get("resolution"),
+                )
+            else:
+                for k, v in payload.items():
+                    if k == "raw":
+                        continue
+                    if isinstance(v, list):
+                        for item in v:
+                            add(item, field=k)
+                    elif isinstance(v, dict):
+                        for kk, vv in v.items():
+                            if isinstance(vv, list):
+                                for item in vv:
+                                    add(item, field=f"{k}.{kk}")
+                            else:
+                                add(vv, field=f"{k}.{kk}")
+                    else:
+                        add(v, field=k)
+        elif isinstance(payload, list):
+            for item in payload:
+                add(item)
+        else:
+            add(payload)
+
+        if not errors:
+            add("Request failed.")
+        return {"errors": errors}
+
 
 class SalesInvoiceEWayPrefillAPIView(_ScopedInvoiceMixin, GenericAPIView):
     """
@@ -66,7 +133,7 @@ class SalesInvoiceEWayPrefillAPIView(_ScopedInvoiceMixin, GenericAPIView):
         try:
             payload = SalesComplianceService(invoice=inv, user=request.user).eway_prefill(inv)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(payload, status=status.HTTP_200_OK)
 
 
@@ -91,7 +158,7 @@ class SalesInvoiceGenerateEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
                 created_by=request.user,
             )
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
         http_status = status.HTTP_200_OK if result.get("status") == "SUCCESS" else status.HTTP_400_BAD_REQUEST
         return Response(result, status=http_status)
@@ -159,9 +226,67 @@ class SalesInvoiceEWayB2CGenerateAPIView(_ScopedInvoiceMixin, GenericAPIView):
         try:
             out = svc.eway_generate_b2c(inv, user=request.user)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            return Response({"status": "FAILED", "error_message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"status": "FAILED", **self._error_list_payload(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
             out,
             status=(status.HTTP_200_OK if out.get("status") == "SUCCESS" else status.HTTP_400_BAD_REQUEST),
         )
+
+
+class SalesInvoiceCancelEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = CancelEWayActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).cancel_eway(**ser.validated_data)
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(out, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceEWayUpdateVehicleAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = UpdateEWayVehicleActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).update_eway_vehicle(req=ser.validated_data)
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(out, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceEWayUpdateTransporterAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = UpdateEWayTransporterActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).update_eway_transporter(
+                transporter_id=ser.validated_data["transporter_id"]
+            )
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(out, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceEWayExtendValidityAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = ExtendEWayValidityActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).extend_eway_validity(req=ser.validated_data)
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(out, status=status.HTTP_200_OK)

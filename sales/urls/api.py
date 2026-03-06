@@ -1,5 +1,14 @@
 from django.urls import path
-from sales.views.eway_views import SalesInvoiceEWayPrefillAPIView, SalesInvoiceGenerateEWayAPIView,SalesInvoiceEWayB2CPrefillAPIView,SalesInvoiceEWayB2CGenerateAPIView
+from sales.views.eway_views import (
+    SalesInvoiceEWayPrefillAPIView,
+    SalesInvoiceGenerateEWayAPIView,
+    SalesInvoiceEWayB2CPrefillAPIView,
+    SalesInvoiceEWayB2CGenerateAPIView,
+    SalesInvoiceCancelEWayAPIView,
+    SalesInvoiceEWayUpdateVehicleAPIView,
+    SalesInvoiceEWayUpdateTransporterAPIView,
+    SalesInvoiceEWayExtendValidityAPIView,
+)
 
 
 from sales.views.sales_invoice_views import (
@@ -15,6 +24,9 @@ from sales.views.sales_invoice_views import (
 from sales.views.sales_invoice_compliance_api import (
     SalesInvoiceEnsureComplianceAPIView,
     SalesInvoiceGenerateIRNAPIView,
+    SalesInvoiceCancelIRNAPIView,
+    SalesInvoiceGetIRNDetailsAPIView,
+    SalesInvoiceGetEWayByIRNAPIView,
    # SalesInvoiceGenerateEWayAPIView,
 )
 from sales.views.sales_choices_views import SalesChoicesAPIView
@@ -40,8 +52,15 @@ urlpatterns = [
     path("charge-types/<int:pk>/", SalesChargeTypeRetrieveUpdateAPIView.as_view(), name="sales-charge-type-detail"),
     path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/cancel-irn/", SalesInvoiceCancelIRNAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/get-irn-details/", SalesInvoiceGetIRNDetailsAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/get-eway-by-irn/", SalesInvoiceGetEWayByIRNAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/eway/prefill/", SalesInvoiceEWayPrefillAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/generate-eway/", SalesInvoiceGenerateEWayAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/eway-b2c-prefill/", SalesInvoiceEWayB2CPrefillAPIView.as_view()),
     path("sales-invoices/<int:id>/compliance/generate-eway-b2c/", SalesInvoiceEWayB2CGenerateAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/cancel-eway/", SalesInvoiceCancelEWayAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/eway/update-vehicle/", SalesInvoiceEWayUpdateVehicleAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/eway/update-transporter/", SalesInvoiceEWayUpdateTransporterAPIView.as_view()),
+    path("sales-invoices/<int:id>/compliance/eway/extend-validity/", SalesInvoiceEWayExtendValidityAPIView.as_view()),
 ]

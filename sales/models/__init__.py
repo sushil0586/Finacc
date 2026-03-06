@@ -2,9 +2,7 @@ from .sales_core import (
     SalesInvoiceHeader,
     SalesInvoiceLine,
     SalesTaxSummary,
-    SalesEInvoiceDetails,
-    SalesEWayBillDetails,
-    SalesEWayEvent,   # if you added extendability
+    SalesInvoiceShipToSnapshot,
 )
 
 from .sales_settings import (
@@ -23,6 +21,14 @@ from .sales_compliance import (
     SalesEWayBill,
     SalesEWayBillCancel,
     SalesNICCredential,
+    SalesComplianceActionLog,
+    SalesComplianceExceptionQueue,
+    SalesComplianceErrorCode,
 )
 
-from .mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken, MasterGSTEnvironment
+from .mastergst_models import (
+    SalesMasterGSTCredential,
+    SalesMasterGSTToken,
+    MasterGSTToken,
+    MasterGSTEnvironment,
+)

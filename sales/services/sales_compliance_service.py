@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 from sales.services.providers.registry import ProviderRegistry
+from datetime import datetime
 
 from django.conf import settings
 from django.db import transaction
@@ -13,16 +14,20 @@ from rest_framework.exceptions import ValidationError
 from sales.models.sales_core import SalesInvoiceHeader
 from sales.models.sales_compliance import (
     SalesEInvoice,
+    SalesEInvoiceCancel,
     SalesEWayBill,
+    SalesEWayBillCancel,
     SalesEInvoiceStatus,
     SalesEWayStatus,
 )
-from sales.models.mastergst_models import SalesMasterGSTCredential, MasterGSTEnvironment
+from sales.models.mastergst_models import SalesMasterGSTCredential, MasterGSTEnvironment, MasterGSTServiceScope
 from sales.services.providers.mastergst_client import MasterGSTClient
 
 from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.party_resolvers import seller_from_entity, buyer_from_account
 from financial.models import account as AccountModel
+from sales.services.compliance_audit_service import ComplianceAuditService
+from sales.services.compliance_error_catalog_service import ComplianceErrorCatalogService
 
 from sales.services.eway_payload_builder import (
     EWayInput,
@@ -139,6 +144,103 @@ class SalesComplianceService:
         )
         return obj
 
+    @transaction.atomic
+    def ensure_rows(self, *, eway_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Ensure compliance artifact rows exist and keep NOT_APPLICABLE status aligned
+        with current invoice applicability flags.
+        """
+        inv = self.invoice
+        einv = self._ensure_einvoice_row()
+        ewb = self._ensure_eway_row()
+
+        if not bool(getattr(inv, "is_einvoice_applicable", False)):
+            if einv.status in (SalesEInvoiceStatus.PENDING, SalesEInvoiceStatus.FAILED):
+                einv.status = SalesEInvoiceStatus.NOT_APPLICABLE
+                einv.updated_by = self.user
+                einv.save(update_fields=["status", "updated_by", "updated_at"])
+        elif einv.status == SalesEInvoiceStatus.NOT_APPLICABLE:
+            einv.status = SalesEInvoiceStatus.PENDING
+            einv.updated_by = self.user
+            einv.save(update_fields=["status", "updated_by", "updated_at"])
+
+        if not bool(getattr(inv, "is_eway_applicable", False)):
+            if ewb.status in (SalesEWayStatus.PENDING, SalesEWayStatus.FAILED):
+                ewb.status = SalesEWayStatus.NOT_APPLICABLE
+                ewb.updated_by = self.user
+                ewb.save(update_fields=["status", "updated_by", "updated_at"])
+        elif ewb.status == SalesEWayStatus.NOT_APPLICABLE:
+            ewb.status = SalesEWayStatus.PENDING
+            ewb.updated_by = self.user
+            ewb.save(update_fields=["status", "updated_by", "updated_at"])
+
+        # Optional upsert of transport details from ensure payload.
+        if eway_data:
+            trans_mode = eway_data.get("trans_mode")
+            transport_mode = eway_data.get("transport_mode")
+            if trans_mode is None and transport_mode is not None:
+                trans_mode = str(transport_mode)
+
+            changed_fields = []
+            if "distance_km" in eway_data:
+                ewb.distance_km = int(eway_data.get("distance_km")) if eway_data.get("distance_km") is not None else None
+                changed_fields.append("distance_km")
+            if trans_mode is not None:
+                ewb.transport_mode = int(trans_mode) if str(trans_mode).isdigit() else None
+                changed_fields.append("transport_mode")
+            if "transporter_id" in eway_data:
+                ewb.transporter_id = (eway_data.get("transporter_id") or "").strip() or None
+                changed_fields.append("transporter_id")
+            if "transporter_name" in eway_data:
+                ewb.transporter_name = (eway_data.get("transporter_name") or "").strip() or None
+                changed_fields.append("transporter_name")
+            if "trans_doc_no" in eway_data:
+                ewb.doc_no = (eway_data.get("trans_doc_no") or "").strip() or None
+                changed_fields.append("doc_no")
+            if "trans_doc_date" in eway_data:
+                ewb.doc_date = eway_data.get("trans_doc_date")
+                changed_fields.append("doc_date")
+            if "doc_type" in eway_data:
+                ewb.doc_type = (eway_data.get("doc_type") or "").strip() or None
+                changed_fields.append("doc_type")
+            if "vehicle_no" in eway_data:
+                ewb.vehicle_no = (eway_data.get("vehicle_no") or "").strip() or None
+                changed_fields.append("vehicle_no")
+            if "vehicle_type" in eway_data:
+                ewb.vehicle_type = eway_data.get("vehicle_type") or None
+                changed_fields.append("vehicle_type")
+            if "disp_dtls" in eway_data:
+                ewb.disp_dtls_json = eway_data.get("disp_dtls")
+                changed_fields.append("disp_dtls_json")
+            if "exp_ship_dtls" in eway_data:
+                ewb.exp_ship_dtls_json = eway_data.get("exp_ship_dtls")
+                changed_fields.append("exp_ship_dtls_json")
+
+            if changed_fields:
+                ewb.updated_by = self.user
+                changed_fields.extend(["updated_by", "updated_at"])
+                ewb.save(update_fields=list(dict.fromkeys(changed_fields)))
+
+        return {
+            "einvoice_artifact_id": einv.id,
+            "einvoice_status": einv.status,
+            "eway_artifact_id": ewb.id,
+            "eway_status": ewb.status,
+            "eway_transport": {
+                "distance_km": ewb.distance_km,
+                "transport_mode": ewb.transport_mode,
+                "transporter_id": ewb.transporter_id,
+                "transporter_name": ewb.transporter_name,
+                "doc_type": ewb.doc_type,
+                "doc_no": ewb.doc_no,
+                "doc_date": ewb.doc_date,
+                "vehicle_no": ewb.vehicle_no,
+                "vehicle_type": ewb.vehicle_type,
+                "disp_dtls": ewb.disp_dtls_json,
+                "exp_ship_dtls": ewb.exp_ship_dtls_json,
+            },
+        }
+
     @staticmethod
     def _parse_dt(x: Any):
         """
@@ -149,10 +251,20 @@ class SalesComplianceService:
             return None
         s = str(x).strip()
 
-        # If it's in dd/mm/yyyy format, parse_datetime won't parse.
-        # We'll keep it as string if parse fails; optionally implement strict parser later.
         dt = parse_datetime(s.replace(" ", "T")) or parse_datetime(s)
-        return dt or None
+        if dt:
+            return dt
+
+        for fmt in (
+            "%d/%m/%Y %I:%M:%S %p",  # 05/03/2026 10:22:00 PM
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y",
+        ):
+            try:
+                return timezone.make_aware(datetime.strptime(s, fmt))
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _first_error_from_status_desc(status_desc: str) -> tuple[Optional[str], Optional[str]]:
@@ -184,14 +296,67 @@ class SalesComplianceService:
             s = "0" + s
         return s
 
+    @staticmethod
+    def _extract_status_error(resp: Dict[str, Any], default_code: str, default_msg: str) -> tuple[str, str, Optional[str], Optional[str]]:
+        status_desc = str(resp.get("status_desc") or "")
+        code, msg = SalesComplianceService._first_error_from_status_desc(status_desc)
+
+        # Fallbacks for non-standard provider error shapes
+        if not code:
+            code = (
+                (str(resp.get("error_cd")).strip() if resp.get("error_cd") not in (None, "") else None)
+                or (str(resp.get("ErrorCode")).strip() if resp.get("ErrorCode") not in (None, "") else None)
+            )
+        if not msg:
+            msg = (
+                (str(resp.get("message")).strip() if resp.get("message") not in (None, "") else None)
+                or (str(resp.get("Message")).strip() if resp.get("Message") not in (None, "") else None)
+                or (str(resp.get("error_message")).strip() if resp.get("error_message") not in (None, "") else None)
+                or (str(resp.get("ErrorMessage")).strip() if resp.get("ErrorMessage") not in (None, "") else None)
+            )
+        err_block = resp.get("error") or resp.get("Error")
+        if isinstance(err_block, dict):
+            code = code or (
+                str(err_block.get("error_cd") or err_block.get("ErrorCode") or "").strip() or None
+            )
+            msg = msg or (
+                str(err_block.get("message") or err_block.get("ErrorMessage") or "").strip() or None
+            )
+
+        # Some non-json responses are wrapped into _raw_text string JSON by _safe_json.
+        raw_text = resp.get("_raw_text")
+        if (not code or not msg) and isinstance(raw_text, str) and raw_text.strip().startswith("{"):
+            try:
+                raw_obj = json.loads(raw_text)
+                raw_status_desc = str(raw_obj.get("status_desc") or "")
+                rc, rm = SalesComplianceService._first_error_from_status_desc(raw_status_desc)
+                code = code or rc
+                msg = msg or rm
+                code = code or (
+                    str(raw_obj.get("error_cd") or raw_obj.get("ErrorCode") or "").strip() or None
+                )
+                msg = msg or (
+                    str(raw_obj.get("message") or raw_obj.get("ErrorMessage") or "").strip() or None
+                )
+            except Exception:
+                pass
+        info = ComplianceErrorCatalogService.resolve(code=(code or default_code), message=(msg or default_msg))
+        return (info.code or default_code, info.message or default_msg, info.reason, info.resolution)
+
     # -------------------------
     # Credential resolver (ONE ONLY)
     # -------------------------
 
     @staticmethod
     def _mastergst_env_from_settings() -> int:
-        # Optional global switch. If missing, default SANDBOX.
-        return int(getattr(settings, "SALES_MASTERGST_ENV", MasterGSTEnvironment.SANDBOX))
+        # Accept int enum or string names from either setting key.
+        raw = getattr(settings, "SALES_MASTERGST_ENV", None)
+        if raw is None:
+            raw = getattr(settings, "MASTERGST_ENV", MasterGSTEnvironment.SANDBOX)
+        if isinstance(raw, str):
+            s = raw.strip().upper()
+            return int(MasterGSTEnvironment.SANDBOX if s == "SANDBOX" else MasterGSTEnvironment.PRODUCTION)
+        return int(raw)
 
     @staticmethod
     def _get_mastergst_cred_for_entity(entity) -> SalesMasterGSTCredential:
@@ -199,12 +364,18 @@ class SalesComplianceService:
 
         cred = (
             SalesMasterGSTCredential.objects
-            .filter(entity=entity, environment=env, is_active=True)
-            .order_by("-id")
+            .filter(
+                entity=entity,
+                environment=env,
+                service_scope=MasterGSTServiceScope.EINVOICE,
+                is_active=True,
+            )
             .first()
         )
         if not cred:
-            raise ValidationError(f"MasterGST credential not configured for this entity (env={env}).")
+            raise ValidationError(
+                f"MasterGST EINVOICE credential not configured for this entity (env={env}, scope={MasterGSTServiceScope.EINVOICE})."
+            )
 
         missing = []
         if not cred.gstin: missing.append("gstin")
@@ -226,6 +397,8 @@ class SalesComplianceService:
     @transaction.atomic
     def generate_irn(self) -> SalesEInvoice:
         self._assert_confirmed_for_irn()
+        if int(getattr(self.invoice, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C):
+            raise ValidationError("IRN generation is not allowed for B2C invoices.")
 
         einv = self._ensure_einvoice_row()
         if einv.status == SalesEInvoiceStatus.GENERATED and einv.irn:
@@ -235,7 +408,10 @@ class SalesComplianceService:
         payload["SellerDtls"] = seller_from_entity(self.invoice.entity)
 
         buyer = self._buyer_account()
-        payload["BuyerDtls"] = buyer_from_account(buyer, pos_state=getattr(self.invoice, "pos_state", None))
+        payload["BuyerDtls"] = buyer_from_account(
+            buyer,
+            pos_state=getattr(self.invoice, "place_of_supply_state_code", None),
+        )
 
         einv.last_request_json = payload
         einv.attempt_count = int(einv.attempt_count or 0) + 1
@@ -256,15 +432,49 @@ class SalesComplianceService:
             einv.last_error_message = str(ex)
             einv.updated_by = self.user
             einv.save()
+            ComplianceAuditService.log_action(
+                invoice=self.invoice,
+                action_type="IRN_GENERATE",
+                outcome="FAILED",
+                user=self.user,
+                error_code="PROVIDER_EXCEPTION",
+                error_message=str(ex),
+                request_json=payload,
+            )
+            ComplianceAuditService.open_exception(
+                invoice=self.invoice,
+                exception_type="IRN_GENERATION_FAILED",
+                error_code="PROVIDER_EXCEPTION",
+                error_message=str(ex),
+                payload_json=result.raw if "result" in locals() else None,
+            )
             raise
 
         einv.last_response_json = result.raw
         if not result.ok or not result.irn:
+            err_info = ComplianceErrorCatalogService.resolve(code=result.error_code, message=result.error_message or "IRN generation failed.")
             einv.status = SalesEInvoiceStatus.FAILED
-            einv.last_error_code = result.error_code or "IRN_FAILED"
-            einv.last_error_message = result.error_message or "IRN generation failed."
+            einv.last_error_code = err_info.code or "IRN_FAILED"
+            einv.last_error_message = err_info.as_text()
             einv.updated_by = self.user
             einv.save()
+            ComplianceAuditService.log_action(
+                invoice=self.invoice,
+                action_type="IRN_GENERATE",
+                outcome="FAILED",
+                user=self.user,
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                request_json=payload,
+                response_json=result.raw,
+            )
+            ComplianceAuditService.open_exception(
+                invoice=self.invoice,
+                exception_type="IRN_GENERATION_FAILED",
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                payload_json=result.raw,
+            )
             raise ValidationError({"message": einv.last_error_message, "code": einv.last_error_code, "raw": einv.last_response_json})
 
         einv.irn = result.irn
@@ -284,8 +494,266 @@ class SalesComplianceService:
         einv.last_error_message = None
         einv.updated_by = self.user
         einv.save()
+        ComplianceAuditService.log_action(
+            invoice=self.invoice,
+            action_type="IRN_GENERATE",
+            outcome="SUCCESS",
+            user=self.user,
+            request_json=payload,
+            response_json=result.raw,
+        )
+        ComplianceAuditService.resolve_exception(invoice=self.invoice, exception_type="IRN_GENERATION_FAILED", user=self.user)
 
         return einv
+
+    @transaction.atomic
+    def cancel_irn(self, *, reason_code: str, remarks: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        einv = self._ensure_einvoice_row()
+        if not einv.irn or einv.status != SalesEInvoiceStatus.GENERATED:
+            raise ValidationError("IRN cancel is allowed only for generated IRN.")
+        ewb = getattr(inv, "eway_artifact", None)
+        if ewb and int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.GENERATED) and getattr(ewb, "ewb_no", None):
+            raise ValidationError("IRN cannot be cancelled while EWB is active. Cancel E-Way Bill first.")
+
+        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.cancel_irn(invoice=inv, irn=einv.irn, reason_code=reason_code, remarks=remarks)
+
+        SalesEInvoiceCancel.objects.create(
+            einvoice=einv,
+            cancel_reason_code=str(reason_code),
+            cancel_remarks=(remarks or "")[:255],
+            irp_cancel_date=timezone.now() if result.ok else None,
+            last_request_json={"irn": einv.irn, "reason_code": reason_code, "remarks": remarks},
+            last_response_json=result.raw,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            created_by=self.user,
+        )
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "IRN_CANCEL_FAILED",
+                message=result.error_message or "IRN cancellation failed.",
+            )
+            einv.last_error_code = err_info.code or "IRN_CANCEL_FAILED"
+            einv.last_error_message = err_info.as_text()
+            einv.updated_by = self.user
+            einv.save(update_fields=["last_error_code", "last_error_message", "updated_by", "updated_at"])
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="IRN_CANCEL",
+                outcome="FAILED",
+                user=self.user,
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                response_json=result.raw,
+            )
+            ComplianceAuditService.open_exception(
+                invoice=inv,
+                exception_type="STATUTORY_CANCEL_REQUIRED",
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                payload_json=result.raw or {},
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        einv.status = SalesEInvoiceStatus.CANCELLED
+        einv.updated_by = self.user
+        einv.last_error_code = None
+        einv.last_error_message = None
+        einv.save(update_fields=["status", "updated_by", "last_error_code", "last_error_message", "updated_at"])
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="IRN_CANCEL",
+            outcome="SUCCESS",
+            user=self.user,
+            request_json={"irn": einv.irn, "reason_code": reason_code, "remarks": remarks},
+            response_json=result.raw,
+        )
+        ComplianceAuditService.resolve_exception(invoice=inv, exception_type="STATUTORY_CANCEL_REQUIRED", user=self.user)
+        return {"status": "SUCCESS", "irn": einv.irn, "raw": result.raw}
+
+    @transaction.atomic
+    def get_irn_details(self, *, irn: Optional[str] = None, supplier_gstin: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        einv = self._ensure_einvoice_row()
+        irn_to_fetch = (irn or einv.irn or "").strip()
+        if not irn_to_fetch:
+            raise ValidationError("IRN is required. Generate IRN first or pass irn in request.")
+
+        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.get_irn_details(invoice=inv, irn=irn_to_fetch, supplier_gstin=supplier_gstin)
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "IRN_GET_FAILED",
+                message=result.error_message or "IRN details fetch failed.",
+            )
+            einv.last_error_code = err_info.code or "IRN_GET_FAILED"
+            einv.last_error_message = err_info.as_text()
+            einv.last_response_json = result.raw
+            einv.updated_by = self.user
+            einv.save(update_fields=["last_error_code", "last_error_message", "last_response_json", "updated_by", "updated_at"])
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="IRN_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                request_json={"irn": irn_to_fetch, "supplier_gstin": supplier_gstin},
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        einv.irn = result.irn or einv.irn
+        einv.ack_no = result.ack_no or einv.ack_no
+        einv.ack_date = self._parse_dt(result.ack_date) or einv.ack_date
+        einv.signed_invoice = result.signed_invoice or einv.signed_invoice
+        einv.signed_qr_code = result.signed_qr_code or einv.signed_qr_code
+        einv.ewb_no = result.ewb_no or einv.ewb_no
+        einv.ewb_date = self._parse_dt(result.ewb_date) or einv.ewb_date
+        einv.ewb_valid_upto = self._parse_dt(result.ewb_valid_upto) or einv.ewb_valid_upto
+        einv.last_response_json = result.raw
+        einv.last_error_code = None
+        einv.last_error_message = None
+        if einv.irn:
+            einv.status = SalesEInvoiceStatus.GENERATED
+            einv.last_success_at = timezone.now()
+        einv.updated_by = self.user
+        einv.save()
+
+        # Sync EWB summary in artifact when present
+        if einv.ewb_no:
+            ewb = self._ensure_eway_row()
+            ewb.ewb_no = ewb.ewb_no or einv.ewb_no
+            ewb.ewb_date = ewb.ewb_date or einv.ewb_date
+            ewb.valid_upto = ewb.valid_upto or einv.ewb_valid_upto
+            if not int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.CANCELLED):
+                ewb.status = SalesEWayStatus.GENERATED
+            ewb.last_response_json = result.raw
+            ewb.last_error_code = None
+            ewb.last_error_message = None
+            ewb.updated_by = self.user
+            ewb.save()
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="IRN_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json={"irn": irn_to_fetch, "supplier_gstin": supplier_gstin},
+            response_json=result.raw,
+        )
+        return {
+            "status": "SUCCESS",
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date,
+            "ewb_no": einv.ewb_no,
+            "ewb_date": einv.ewb_date,
+            "ewb_valid_upto": einv.ewb_valid_upto,
+            "raw": result.raw,
+        }
+
+    @transaction.atomic
+    def get_eway_details_by_irn(self, *, irn: Optional[str] = None, supplier_gstin: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        einv = self._ensure_einvoice_row()
+        irn_to_fetch = (irn or einv.irn or "").strip()
+        if not irn_to_fetch:
+            raise ValidationError("IRN is required. Generate IRN first or pass irn in request.")
+
+        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.get_eway_details_by_irn(invoice=inv, irn=irn_to_fetch, supplier_gstin=supplier_gstin)
+
+        ewb = self._ensure_eway_row()
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "EWB_GET_FAILED",
+                message=result.error_message or "EWB details fetch by IRN failed.",
+            )
+            ewb.last_error_code = err_info.code or "EWB_GET_FAILED"
+            ewb.last_error_message = err_info.as_text()
+            ewb.last_response_json = result.raw
+            ewb.updated_by = self.user
+            ewb.save(update_fields=["last_error_code", "last_error_message", "last_response_json", "updated_by", "updated_at"])
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=ewb.last_error_code,
+                error_message=ewb.last_error_message,
+                request_json={"irn": irn_to_fetch, "supplier_gstin": supplier_gstin},
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        ewb.ewb_no = result.ewb_no or ewb.ewb_no
+        ewb.ewb_date = self._parse_dt(result.ewb_date) or ewb.ewb_date
+        ewb.valid_upto = self._parse_dt(result.valid_upto) or ewb.valid_upto
+        if ewb.ewb_no:
+            ewb.status = SalesEWayStatus.GENERATED
+            ewb.last_success_at = timezone.now()
+        ewb.last_response_json = result.raw
+        ewb.last_error_code = None
+        ewb.last_error_message = None
+        ewb.updated_by = self.user
+        ewb.save()
+
+        # keep e-invoice summary synced too
+        if ewb.ewb_no:
+            einv.ewb_no = einv.ewb_no or ewb.ewb_no
+            einv.ewb_date = einv.ewb_date or ewb.ewb_date
+            einv.ewb_valid_upto = einv.ewb_valid_upto or ewb.valid_upto
+            einv.updated_by = self.user
+            einv.save(update_fields=["ewb_no", "ewb_date", "ewb_valid_upto", "updated_by", "updated_at"])
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json={"irn": irn_to_fetch, "supplier_gstin": supplier_gstin},
+            response_json=result.raw,
+        )
+        return {
+            "status": "SUCCESS",
+            "irn": irn_to_fetch,
+            "ewb_no": ewb.ewb_no,
+            "ewb_date": ewb.ewb_date,
+            "valid_upto": ewb.valid_upto,
+            "raw": result.raw,
+        }
 
     @staticmethod
     def _get_irn(inv: SalesInvoiceHeader) -> str:
@@ -483,6 +951,15 @@ class SalesComplianceService:
             art.last_error_code = None
             art.last_error_message = None
             art.save()
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_GENERATE",
+                outcome="SUCCESS",
+                user=created_by,
+                request_json=payload,
+                response_json=resp,
+            )
+            ComplianceAuditService.resolve_exception(invoice=inv, exception_type="EWB_GENERATION_FAILED", user=created_by)
 
             return {
                 "status": "SUCCESS",
@@ -494,20 +971,270 @@ class SalesComplianceService:
 
         status_desc = str(resp.get("status_desc") or "")
         code, msg = SalesComplianceService._first_error_from_status_desc(status_desc)
-
+        err_info = ComplianceErrorCatalogService.resolve(code=(code or "EWB_FAILED"), message=(msg or "E-Way generation failed."))
         art.status = SalesEWayStatus.FAILED
-        art.last_error_code = code or "EWB_FAILED"
-        art.last_error_message = msg or "E-Way generation failed."
+        art.last_error_code = err_info.code or "EWB_FAILED"
+        art.last_error_message = err_info.as_text()
         art.save()
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_GENERATE",
+            outcome="FAILED",
+            user=created_by,
+            error_code=art.last_error_code,
+            error_message=art.last_error_message,
+            request_json=payload,
+            response_json=resp,
+        )
+        ComplianceAuditService.open_exception(
+            invoice=inv,
+            exception_type="EWB_GENERATION_FAILED",
+            error_code=art.last_error_code,
+            error_message=art.last_error_message,
+            payload_json=resp,
+        )
 
         return {
             "status": "FAILED",
-            "error_code": art.last_error_code,
-            "error_message": art.last_error_message,
+            "error_code": err_info.code,
+            "error_message": err_info.message,
+            "reason": err_info.reason,
+            "resolution": err_info.resolution,
             "attempt_count": art.attempt_count,
             "idempotent": False,
             "raw": resp,
         }
+
+    @transaction.atomic
+    def cancel_eway(self, *, reason_code: str, remarks: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        art = self._ensure_eway_row()
+        if not art.ewb_no or art.status != SalesEWayStatus.GENERATED:
+            raise ValidationError("E-Way cancel is allowed only for generated EWB.")
+
+        cred = self._get_mastergst_cred_for_entity(inv.entity)
+        client = MasterGSTClient(cred=cred)
+        ewb_no_raw = str(art.ewb_no or "").strip()
+        reason_raw = str(reason_code or "").strip()
+        payload = {
+            "ewbNo": int(ewb_no_raw) if ewb_no_raw.isdigit() else ewb_no_raw,
+            "cancelRsnCode": int(reason_raw) if reason_raw.isdigit() else reason_raw,
+            "cancelRmrk": (remarks or "Cancelled from system")[:100],
+        }
+        resp = client.cancel_eway_direct(payload)
+        status_cd = str(resp.get("status_cd") or "")
+        if status_cd != "1":
+            code, msg, reason, resolution = self._extract_status_error(resp, "EWB_CANCEL_FAILED", "E-Way cancellation failed.")
+            art.last_error_code = code
+            art.last_error_message = ComplianceErrorCatalogService.resolve(code=code, message=msg).as_text()
+            art.save(update_fields=["last_error_code", "last_error_message", "updated_at"])
+            SalesEWayBillCancel.objects.create(
+                eway=art,
+                cancel_reason_code=str(reason_code),
+                cancel_remarks=(remarks or "")[:255],
+                portal_cancel_date=None,
+                last_request_json=payload,
+                last_response_json=resp,
+                error_code=code,
+                error_message=art.last_error_message,
+                created_by=self.user,
+            )
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_CANCEL",
+                outcome="FAILED",
+                user=self.user,
+                error_code=code,
+                error_message=art.last_error_message,
+                request_json=payload,
+                response_json=resp,
+            )
+            ComplianceAuditService.open_exception(
+                invoice=inv,
+                exception_type="STATUTORY_CANCEL_REQUIRED",
+                error_code=code,
+                error_message=msg,
+                payload_json=resp,
+            )
+            raise ValidationError({"code": code, "message": msg, "reason": reason, "resolution": resolution, "raw": resp})
+
+        art.status = SalesEWayStatus.CANCELLED
+        art.last_error_code = None
+        art.last_error_message = None
+        art.save(update_fields=["status", "last_error_code", "last_error_message", "updated_at"])
+        data = resp.get("data") or {}
+        portal_cancel_date = self._parse_dt(data.get("cancelDate") or data.get("CancelDate")) or timezone.now()
+        SalesEWayBillCancel.objects.create(
+            eway=art,
+            cancel_reason_code=str(reason_code),
+            cancel_remarks=(remarks or "")[:255],
+            portal_cancel_date=portal_cancel_date,
+            last_request_json=payload,
+            last_response_json=resp,
+            created_by=self.user,
+        )
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_CANCEL",
+            outcome="SUCCESS",
+            user=self.user,
+            request_json=payload,
+            response_json=resp,
+        )
+        ComplianceAuditService.resolve_exception(invoice=inv, exception_type="STATUTORY_CANCEL_REQUIRED", user=self.user)
+        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "cancel_date": portal_cancel_date, "raw": resp}
+
+    @transaction.atomic
+    def update_eway_vehicle(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        art = self._ensure_eway_row()
+        if not art.ewb_no:
+            raise ValidationError("EWB number not found. Generate EWB first.")
+
+        cred = self._get_mastergst_cred_for_entity(inv.entity)
+        client = MasterGSTClient(cred=cred)
+        payload = {
+            "ewbNo": str(art.ewb_no),
+            "vehicleNo": str(req.get("vehicle_no") or ""),
+            "fromPlace": str(req.get("from_place") or ""),
+            "fromState": int(str(req.get("from_state_code") or "0")) if str(req.get("from_state_code") or "").isdigit() else str(req.get("from_state_code") or ""),
+            "reasonCode": str(req.get("reason_code") or ""),
+            "reasonRem": str(req.get("remarks") or ""),
+            "transDocNo": str(req.get("trans_doc_no") or ""),
+            "transDocDate": req.get("trans_doc_date").strftime("%d/%m/%Y") if req.get("trans_doc_date") else "",
+            "transMode": str(req.get("trans_mode") or ""),
+            "vehicleType": str(req.get("vehicle_type") or ""),
+        }
+        resp = client.update_eway_vehicle(payload)
+        status_cd = str(resp.get("status_cd") or "")
+        if status_cd != "1":
+            code, msg, reason, resolution = self._extract_status_error(resp, "EWB_VEHICLE_UPDATE_FAILED", "E-Way vehicle update failed.")
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_VEHICLE_UPDATE",
+                outcome="FAILED",
+                user=self.user,
+                error_code=code,
+                error_message=ComplianceErrorCatalogService.resolve(code=code, message=msg).as_text(),
+                request_json=payload,
+                response_json=resp,
+            )
+            raise ValidationError({"code": code, "message": msg, "reason": reason, "resolution": resolution, "raw": resp})
+
+        data = resp.get("data") or {}
+        art.vehicle_no = req.get("vehicle_no")
+        art.vehicle_type = req.get("vehicle_type") or art.vehicle_type
+        art.valid_upto = self._parse_dt(data.get("validUpto") or data.get("EwbValidTill")) or art.valid_upto
+        if art.ewb_no:
+            art.status = SalesEWayStatus.GENERATED
+        art.last_response_json = resp
+        art.save(update_fields=["vehicle_no", "vehicle_type", "valid_upto", "status", "last_response_json", "updated_at"])
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_VEHICLE_UPDATE",
+            outcome="SUCCESS",
+            user=self.user,
+            request_json=payload,
+            response_json=resp,
+        )
+        return {
+            "status": "SUCCESS",
+            "ewb_no": art.ewb_no,
+            "veh_update_date": self._parse_dt(data.get("vehUpdDate")),
+            "valid_upto": art.valid_upto,
+            "raw": resp,
+        }
+
+    @transaction.atomic
+    def update_eway_transporter(self, *, transporter_id: str) -> Dict[str, Any]:
+        inv = self.invoice
+        art = self._ensure_eway_row()
+        if not art.ewb_no:
+            raise ValidationError("EWB number not found. Generate EWB first.")
+
+        cred = self._get_mastergst_cred_for_entity(inv.entity)
+        client = MasterGSTClient(cred=cred)
+        payload = {"ewbNo": str(art.ewb_no), "transporterId": str(transporter_id)}
+        resp = client.update_eway_transporter(payload)
+        status_cd = str(resp.get("status_cd") or "")
+        if status_cd != "1":
+            code, msg, reason, resolution = self._extract_status_error(resp, "EWB_TRANSPORTER_UPDATE_FAILED", "E-Way transporter update failed.")
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_TRANSPORTER_UPDATE",
+                outcome="FAILED",
+                user=self.user,
+                error_code=code,
+                error_message=ComplianceErrorCatalogService.resolve(code=code, message=msg).as_text(),
+                request_json=payload,
+                response_json=resp,
+            )
+            raise ValidationError({"code": code, "message": msg, "reason": reason, "resolution": resolution, "raw": resp})
+
+        art.transporter_id = transporter_id
+        art.last_response_json = resp
+        art.save(update_fields=["transporter_id", "last_response_json", "updated_at"])
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_TRANSPORTER_UPDATE",
+            outcome="SUCCESS",
+            user=self.user,
+            request_json=payload,
+            response_json=resp,
+        )
+        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "raw": resp}
+
+    @transaction.atomic
+    def extend_eway_validity(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        art = self._ensure_eway_row()
+        if not art.ewb_no:
+            raise ValidationError("EWB number not found. Generate EWB first.")
+
+        cred = self._get_mastergst_cred_for_entity(inv.entity)
+        client = MasterGSTClient(cred=cred)
+        payload = {
+            "ewbNo": str(art.ewb_no),
+            "reasonCode": str(req.get("reason_code") or ""),
+            "reasonRem": str(req.get("remarks") or ""),
+            "fromPlace": str(req.get("from_place") or ""),
+            "fromState": str(req.get("from_state_code") or ""),
+            "remainingDistance": int(req.get("remaining_distance_km") or 0),
+            "transDocNo": str(req.get("trans_doc_no") or ""),
+            "transDocDate": req.get("trans_doc_date").strftime("%d/%m/%Y") if req.get("trans_doc_date") else "",
+            "transMode": str(req.get("trans_mode") or ""),
+            "vehicleNo": str(req.get("vehicle_no") or ""),
+            "vehicleType": str(req.get("vehicle_type") or ""),
+        }
+        resp = client.extend_eway_validity(payload)
+        status_cd = str(resp.get("status_cd") or "")
+        if status_cd != "1":
+            code, msg, reason, resolution = self._extract_status_error(resp, "EWB_EXTEND_FAILED", "E-Way validity extension failed.")
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_EXTEND",
+                outcome="FAILED",
+                user=self.user,
+                error_code=code,
+                error_message=ComplianceErrorCatalogService.resolve(code=code, message=msg).as_text(),
+                request_json=payload,
+                response_json=resp,
+            )
+            raise ValidationError({"code": code, "message": msg, "reason": reason, "resolution": resolution, "raw": resp})
+
+        data = resp.get("data") or {}
+        art.valid_upto = self._parse_dt(data.get("validUpto") or data.get("EwbValidTill")) or art.valid_upto
+        art.last_response_json = resp
+        art.save(update_fields=["valid_upto", "last_response_json", "updated_at"])
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_EXTEND",
+            outcome="SUCCESS",
+            user=self.user,
+            request_json=payload,
+            response_json=resp,
+        )
+        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "valid_upto": art.valid_upto, "raw": resp}
 
     # -------------------------
     # E-Way Generate (B2C direct, no IRN)
@@ -607,6 +1334,21 @@ class SalesComplianceService:
             if user:
                 ewb.updated_by = user
             ewb.save()
+            ComplianceAuditService.log_action(
+                invoice=invoice,
+                action_type="EWB_B2C_GENERATE",
+                outcome="FAILED",
+                user=user,
+                error_code="EWB_FAILED",
+                error_message=str(e),
+                request_json=payload,
+            )
+            ComplianceAuditService.open_exception(
+                invoice=invoice,
+                exception_type="EWB_B2C_GENERATION_FAILED",
+                error_code="EWB_FAILED",
+                error_message=str(e),
+            )
             return self._eway_fail(data=None, exc=e)
 
         ewb.last_response_json = mgst_resp
@@ -624,6 +1366,15 @@ class SalesComplianceService:
             if user:
                 ewb.updated_by = user
             ewb.save()
+            ComplianceAuditService.log_action(
+                invoice=invoice,
+                action_type="EWB_B2C_GENERATE",
+                outcome="SUCCESS",
+                user=user,
+                request_json=payload,
+                response_json=mgst_resp,
+            )
+            ComplianceAuditService.resolve_exception(invoice=invoice, exception_type="EWB_B2C_GENERATION_FAILED", user=user)
 
             return {"status": "SUCCESS", "ewb_no": ewb.ewb_no, "valid_upto": ewb.valid_upto, "raw": mgst_resp, "idempotent": False}
 
@@ -636,6 +1387,23 @@ class SalesComplianceService:
         if user:
             ewb.updated_by = user
         ewb.save()
+        ComplianceAuditService.log_action(
+            invoice=invoice,
+            action_type="EWB_B2C_GENERATE",
+            outcome="FAILED",
+            user=user,
+            error_code=ewb.last_error_code,
+            error_message=ewb.last_error_message,
+            request_json=payload,
+            response_json=mgst_resp,
+        )
+        ComplianceAuditService.open_exception(
+            invoice=invoice,
+            exception_type="EWB_B2C_GENERATION_FAILED",
+            error_code=ewb.last_error_code,
+            error_message=ewb.last_error_message,
+            payload_json=mgst_resp,
+        )
 
         return {"status": "FAILED", "error_code": ewb.last_error_code, "error_message": ewb.last_error_message, "raw": mgst_resp}
 

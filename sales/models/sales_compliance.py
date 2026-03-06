@@ -295,3 +295,147 @@ class SalesNICCredential(models.Model):
 
     def __str__(self) -> str:
         return f"SalesNICCredential(entity_id={self.entity_id}, subentity_id={self.subentity_id}, env={self.environment})"
+
+
+class SalesComplianceActionLog(models.Model):
+    class ActionType(models.TextChoices):
+        IRN_GENERATE = "IRN_GENERATE", "IRN Generate"
+        IRN_FETCH = "IRN_FETCH", "IRN Fetch"
+        IRN_CANCEL = "IRN_CANCEL", "IRN Cancel"
+        EWB_GENERATE = "EWB_GENERATE", "EWB Generate"
+        EWB_FETCH = "EWB_FETCH", "EWB Fetch"
+        EWB_B2C_GENERATE = "EWB_B2C_GENERATE", "EWB B2C Generate"
+        EWB_CANCEL = "EWB_CANCEL", "EWB Cancel"
+        EWB_VEHICLE_UPDATE = "EWB_VEHICLE_UPDATE", "EWB Vehicle Update"
+        EWB_TRANSPORTER_UPDATE = "EWB_TRANSPORTER_UPDATE", "EWB Transporter Update"
+        EWB_EXTEND = "EWB_EXTEND", "EWB Validity Extend"
+        INVOICE_CANCEL_BLOCKED = "INVOICE_CANCEL_BLOCKED", "Invoice Cancel Blocked"
+
+    class Outcome(models.TextChoices):
+        SUCCESS = "SUCCESS", "Success"
+        FAILED = "FAILED", "Failed"
+        BLOCKED = "BLOCKED", "Blocked"
+        INFO = "INFO", "Info"
+
+    invoice = models.ForeignKey(
+        "sales.SalesInvoiceHeader",
+        on_delete=models.CASCADE,
+        related_name="compliance_actions",
+        db_index=True,
+    )
+    action_type = models.CharField(max_length=32, choices=ActionType.choices, db_index=True)
+    outcome = models.CharField(max_length=16, choices=Outcome.choices, db_index=True)
+
+    error_code = models.CharField(max_length=64, null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    request_json = models.JSONField(null=True, blank=True)
+    response_json = models.JSONField(null=True, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False, db_index=True)
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sales_compliance_actions_created",
+    )
+
+    class Meta:
+        db_table = "sales_compliance_action_log"
+        indexes = [
+            models.Index(fields=["invoice", "created_at"], name="idx_sales_cmp_act_inv_dt"),
+            models.Index(fields=["action_type", "outcome"], name="idx_sales_cmp_act_type_out"),
+        ]
+
+    def save(self, *args, **kwargs):
+        # Immutable log entries: append-only.
+        if self.pk:
+            raise ValueError("SalesComplianceActionLog is immutable; create a new row.")
+        super().save(*args, **kwargs)
+
+
+class SalesComplianceExceptionQueue(models.Model):
+    class ExceptionType(models.TextChoices):
+        IRN_GENERATION_FAILED = "IRN_GENERATION_FAILED", "IRN Generation Failed"
+        EWB_GENERATION_FAILED = "EWB_GENERATION_FAILED", "EWB Generation Failed"
+        EWB_B2C_GENERATION_FAILED = "EWB_B2C_GENERATION_FAILED", "EWB B2C Generation Failed"
+        STATUTORY_CANCEL_REQUIRED = "STATUTORY_CANCEL_REQUIRED", "Statutory Cancel Required"
+
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        RESOLVED = "RESOLVED", "Resolved"
+        IGNORED = "IGNORED", "Ignored"
+
+    class Severity(models.TextChoices):
+        LOW = "LOW", "Low"
+        MEDIUM = "MEDIUM", "Medium"
+        HIGH = "HIGH", "High"
+        CRITICAL = "CRITICAL", "Critical"
+
+    invoice = models.ForeignKey(
+        "sales.SalesInvoiceHeader",
+        on_delete=models.CASCADE,
+        related_name="compliance_exceptions",
+        db_index=True,
+    )
+    exception_type = models.CharField(max_length=40, choices=ExceptionType.choices, db_index=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True)
+    severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.HIGH, db_index=True)
+
+    error_code = models.CharField(max_length=64, null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    payload_json = models.JSONField(null=True, blank=True)
+
+    retry_count = models.PositiveIntegerField(default=0)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    first_seen_at = models.DateTimeField(default=timezone.now, editable=False)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sales_compliance_exceptions_resolved",
+    )
+
+    class Meta:
+        db_table = "sales_compliance_exception_queue"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "exception_type", "status"],
+                condition=models.Q(status__in=["OPEN", "IN_PROGRESS"]),
+                name="uq_sales_cmp_exc_active_per_type",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["status", "severity", "next_retry_at"], name="idx_sales_cmp_exc_work"),
+            models.Index(fields=["invoice", "exception_type"], name="idx_sales_cmp_exc_inv_type"),
+        ]
+
+
+class SalesComplianceErrorCode(models.Model):
+    """
+    Master catalog for statutory/compliance API error codes.
+    Used to convert provider errors into business-friendly guidance.
+    """
+    code = models.CharField(max_length=16, unique=True, db_index=True)
+    message = models.CharField(max_length=255)
+    reason = models.TextField(blank=True, default="")
+    resolution = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=30, default="NIC_MASTERGST", db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=1000)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sales_compliance_error_code"
+        indexes = [
+            models.Index(fields=["source", "is_active"], name="idx_sales_cmp_err_src_active"),
+            models.Index(fields=["sort_order", "code"], name="idx_sales_cmp_err_sort"),
+        ]
+        ordering = ["sort_order", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} - {self.message}"

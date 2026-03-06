@@ -3,15 +3,15 @@ from __future__ import annotations
 from decimal import Decimal
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
-
-try:
-    # Django 3.1+
-    from django.db.models import JSONField
-except ImportError:  # pragma: no cover
-    from django.contrib.postgres.fields import JSONField  # old Django
+from django.core.validators import RegexValidator
 
 User = settings.AUTH_USER_MODEL
+GSTIN_VALIDATOR = RegexValidator(
+    regex=r"^[0-9A-Z]{15}$",
+    message="GSTIN must be 15 uppercase alphanumeric characters.",
+)
 
 # ✅ Adjust import to your base class
 from core.models.base import EntityScopedModel  # change path to your actual base
@@ -105,13 +105,13 @@ class SalesInvoiceHeader(EntityScopedModel):
         blank=True,
     )
     customer_name = models.CharField(max_length=255, blank=True, default="")
-    customer_gstin = models.CharField(max_length=20, blank=True, default="")
+    customer_gstin = models.CharField(max_length=15, blank=True, default="", validators=[GSTIN_VALIDATOR])
     customer_state_code = models.CharField(max_length=2, blank=True, default="")  # GST state code
 
     # -------------------------
     # Seller snapshot (optional but recommended)
     # -------------------------
-    seller_gstin = models.CharField(max_length=20, blank=True, default="")
+    seller_gstin = models.CharField(max_length=15, blank=True, default="", validators=[GSTIN_VALIDATOR])
     seller_state_code = models.CharField(max_length=2, blank=True, default="")
 
     # -------------------------
@@ -163,6 +163,17 @@ class SalesInvoiceHeader(EntityScopedModel):
     )
     is_einvoice_applicable = models.BooleanField(default=False)
     is_eway_applicable = models.BooleanField(default=False)
+    einvoice_applicable_manual = models.BooleanField(null=True, blank=True)
+    eway_applicable_manual = models.BooleanField(null=True, blank=True)
+    compliance_override_reason = models.CharField(max_length=255, blank=True, default="")
+    compliance_override_at = models.DateTimeField(null=True, blank=True)
+    compliance_override_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="sales_compliance_overridden",
+    )
 
 
     withholding_enabled = models.BooleanField(default=False, db_index=True)
@@ -178,6 +189,7 @@ class SalesInvoiceHeader(EntityScopedModel):
     tcs_base_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     tcs_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     tcs_reason = models.CharField(max_length=255, null=True, blank=True)
+    tcs_is_reversal = models.BooleanField(default=False)
 
     # -------------------------
     # Totals (computed in service)
@@ -301,6 +313,31 @@ class SalesInvoiceLine(EntityScopedModel):
         db_table = "sales_invoice_line"
         constraints = [
             models.UniqueConstraint(fields=["header", "line_no"], name="uq_sales_line_hdr_lineno"),
+            models.CheckConstraint(
+                name="ck_sales_line_nonneg_and_rate",
+                check=(
+                    Q(qty__gte=0)
+                    & Q(free_qty__gte=0)
+                    & Q(rate__gte=0)
+                    & Q(discount_percent__gte=0)
+                    & Q(discount_percent__lte=100)
+                    & Q(discount_amount__gte=0)
+                    & Q(gst_rate__gte=0)
+                    & Q(gst_rate__lte=100)
+                    & Q(cess_percent__gte=0)
+                    & Q(cess_percent__lte=100)
+                    & Q(taxable_value__gte=0)
+                    & Q(cgst_amount__gte=0)
+                    & Q(sgst_amount__gte=0)
+                    & Q(igst_amount__gte=0)
+                    & Q(cess_amount__gte=0)
+                    & Q(line_total__gte=0)
+                ),
+            ),
+            models.CheckConstraint(
+                name="ck_sales_line_hsn_required_when_gst",
+                check=(Q(gst_rate=0) | Q(taxable_value=0) | ~Q(hsn_sac_code="")),
+            ),
         ]
         indexes = [
             models.Index(fields=["header"], name="ix_sales_line_hdr"),
@@ -345,173 +382,6 @@ class SalesTaxSummary(EntityScopedModel):
             models.Index(fields=["entity", "entityfinid", "subentity", "hsn_sac_code"], name="ix_sales_taxsum_hsn"),
         ]
 
-
-# -------------------------
-# E-Invoice Details (IRP / IRN)
-# -------------------------
-class SalesEInvoiceDetails(EntityScopedModel):
-    """
-    Stores IRP data + payload snapshots + cancellation/audit info.
-    One row per SalesInvoiceHeader.
-    """
-    class EinvoiceStatus(models.IntegerChoices):
-        NOT_APPLICABLE = 0, "Not Applicable"
-        PENDING = 1, "Pending"
-        GENERATED = 2, "Generated"
-        CANCELLED = 3, "Cancelled"
-        FAILED = 9, "Failed"
-
-    header = models.OneToOneField(SalesInvoiceHeader, on_delete=models.CASCADE, related_name="einvoice")
-
-    status = models.PositiveSmallIntegerField(choices=EinvoiceStatus.choices, default=EinvoiceStatus.NOT_APPLICABLE)
-
-    irn = models.CharField(max_length=100, blank=True, default="")
-    ack_no = models.CharField(max_length=50, blank=True, default="")
-    ack_date = models.DateTimeField(null=True, blank=True)
-
-    # Signed content
-    signed_invoice = models.TextField(blank=True, default="")
-    signed_qr_code = models.TextField(blank=True, default="")
-
-    generated_at = models.DateTimeField(null=True, blank=True)
-
-    # Cancellation (statutory)
-    cancelled_at = models.DateTimeField(null=True, blank=True)
-    cancel_reason_code = models.CharField(max_length=10, blank=True, default="")
-    cancel_remarks = models.CharField(max_length=255, blank=True, default="")
-
-    # Payload snapshots (debugging)
-    request_payload = JSONField(null=True, blank=True)
-    response_payload = JSONField(null=True, blank=True)
-    last_error = JSONField(null=True, blank=True)
-
-    class Meta:
-        db_table = "sales_einvoice_details"
-        indexes = [
-            models.Index(fields=["header"], name="ix_sales_einv_hdr"),
-            models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_sales_einv_status"),
-            models.Index(fields=["entity", "entityfinid", "subentity", "irn"], name="ix_sales_einv_irn"),
-        ]
-
-
-# -------------------------
-# E-Way Bill Details
-# -------------------------
-class SalesEWayBillDetails(EntityScopedModel):
-    """
-    Stores EWB Part-A/Part-B like fields + payload snapshots + cancel/update audit.
-    One row per SalesInvoiceHeader.
-    """
-    class EwayStatus(models.IntegerChoices):
-        NOT_APPLICABLE = 0, "Not Applicable"
-        PENDING = 1, "Pending"
-        GENERATED = 2, "Generated"
-        CANCELLED = 3, "Cancelled"
-        FAILED = 9, "Failed"
-
-    class TransportMode(models.IntegerChoices):
-        ROAD = 1, "Road"
-        RAIL = 2, "Rail"
-        AIR = 3, "Air"
-        SHIP = 4, "Ship"
-
-    class VehicleType(models.IntegerChoices):
-        REGULAR = 1, "Regular"
-        ODC = 2, "ODC"
-
-    header = models.OneToOneField(SalesInvoiceHeader, on_delete=models.CASCADE, related_name="eway")
-
-    status = models.PositiveSmallIntegerField(choices=EwayStatus.choices, default=EwayStatus.NOT_APPLICABLE)
-
-    # If generated via IRP response
-    generated_via_irp = models.BooleanField(default=False)
-
-    eway_bill_no = models.CharField(max_length=50, blank=True, default="")
-    eway_bill_date = models.DateTimeField(null=True, blank=True)
-    valid_upto = models.DateTimeField(null=True, blank=True)
-
-    # Part-A essentials
-    transporter_id = models.CharField(max_length=20, blank=True, default="")   # GSTIN/TRANSIN
-    transporter_name = models.CharField(max_length=255, blank=True, default="")
-    transport_mode = models.PositiveSmallIntegerField(choices=TransportMode.choices, null=True, blank=True)
-    distance_km = models.PositiveIntegerField(null=True, blank=True)
-
-    transport_doc_no = models.CharField(max_length=50, blank=True, default="")
-    transport_doc_date = models.DateField(null=True, blank=True)
-
-    from_place = models.CharField(max_length=100, blank=True, default="")
-    from_pincode = models.CharField(max_length=10, blank=True, default="")
-
-    # Part-B (vehicle)
-    vehicle_no = models.CharField(max_length=20, blank=True, default="")
-    vehicle_type = models.PositiveSmallIntegerField(choices=VehicleType.choices, null=True, blank=True)
-
-    # Cancellation / updates
-    cancelled_at = models.DateTimeField(null=True, blank=True)
-    cancel_reason_code = models.CharField(max_length=10, blank=True, default="")
-    cancel_remarks = models.CharField(max_length=255, blank=True, default="")
-
-    last_vehicle_update_at = models.DateTimeField(null=True, blank=True)
-
-    # validity tracking
-    original_valid_upto = models.DateTimeField(null=True, blank=True)
-    current_valid_upto = models.DateTimeField(null=True, blank=True)
-
-    # extension tracking (latest)
-    extension_count = models.PositiveIntegerField(default=0)
-    last_extension_at = models.DateTimeField(null=True, blank=True)
-    last_extension_reason_code = models.CharField(max_length=10, blank=True, default="")
-    last_extension_remarks = models.CharField(max_length=255, blank=True, default="")
-    last_extension_from_place = models.CharField(max_length=100, blank=True, default="")
-    last_extension_from_pincode = models.CharField(max_length=10, blank=True, default="")
-
-    last_transporter_update_at = models.DateTimeField(null=True, blank=True)
-
-    # Payload snapshots (debugging)
-    request_payload = JSONField(null=True, blank=True)
-    response_payload = JSONField(null=True, blank=True)
-    last_error = JSONField(null=True, blank=True)
-
-    class Meta:
-        db_table = "sales_eway_details"
-        indexes = [
-            models.Index(fields=["header"], name="ix_sales_eway_hdr"),
-            models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_sales_eway_status"),
-            models.Index(fields=["entity", "entityfinid", "subentity", "eway_bill_no"], name="ix_sales_eway_no"),
-        ]
-
-
-class SalesEWayEvent(EntityScopedModel):
-    class EventType(models.IntegerChoices):
-        GENERATE = 1, "Generate"
-        EXTEND = 2, "Extend Validity"
-        VEHICLE_UPDATE = 3, "Vehicle Update"
-        TRANSPORTER_UPDATE = 4, "Transporter Update"
-        CANCEL = 5, "Cancel"
-
-    eway = models.ForeignKey("sales.SalesEWayBillDetails", on_delete=models.CASCADE, related_name="events")
-    event_type = models.PositiveSmallIntegerField(choices=EventType.choices)
-
-    event_at = models.DateTimeField(default=timezone.now)
-
-    # common identifiers for quick search/debug
-    eway_bill_no = models.CharField(max_length=50, blank=True, default="")
-    reference_no = models.CharField(max_length=50, blank=True, default="")  # if provider returns one
-
-    is_success = models.BooleanField(default=False)
-    error_code = models.CharField(max_length=50, blank=True, default="")
-    error_message = models.TextField(blank=True, default="")
-
-    request_payload = JSONField(null=True, blank=True)
-    response_payload = JSONField(null=True, blank=True)
-
-    class Meta:
-        db_table = "sales_eway_event"
-        indexes = [
-            models.Index(fields=["eway", "event_at"], name="ix_sales_eway_ev_eway_dt"),
-            models.Index(fields=["entity", "entityfinid", "subentity", "event_type"], name="ix_sales_eway_ev_type"),
-            models.Index(fields=["entity", "entityfinid", "subentity", "eway_bill_no"], name="ix_sales_eway_ev_no"),
-        ]
 
 class SalesInvoiceShipToSnapshot(models.Model):
     header = models.OneToOneField(

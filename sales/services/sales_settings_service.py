@@ -72,6 +72,26 @@ class SalesPolicy:
     def prefer_irp_generate_einvoice_and_eway_together(self) -> bool:
         return bool(self.settings.prefer_irp_generate_einvoice_and_eway_together)
 
+    @property
+    def einvoice_entity_applicable(self) -> bool:
+        return bool(self.settings.einvoice_entity_applicable)
+
+    @property
+    def eway_value_threshold(self):
+        return self.settings.eway_value_threshold
+
+    @property
+    def compliance_applicability_mode(self) -> str:
+        return self.settings.compliance_applicability_mode
+
+    @property
+    def tcs_credit_note_policy(self) -> str:
+        return self.settings.tcs_credit_note_policy
+
+    @property
+    def enforce_statutory_cancel_before_business_cancel(self) -> bool:
+        return bool(self.settings.enforce_statutory_cancel_before_business_cancel)
+
 
 class SalesSettingsService:
 

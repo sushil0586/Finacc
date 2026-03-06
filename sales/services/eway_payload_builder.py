@@ -79,7 +79,7 @@ class EWayInput:
     transporter_id: str        # GSTIN
     transporter_name: str
     trans_doc_no: str
-    trans_doc_date: date
+    trans_doc_date: Optional[date]
     vehicle_no: Optional[str]
     vehicle_type: Optional[str]  # "R"/"O"
     disp_dtls: Optional[Dict[str, Any]] = None
@@ -87,22 +87,38 @@ class EWayInput:
 
 
 def build_generate_eway_payload(irn: str, x: EWayInput) -> Dict[str, Any]:
+    trans_mode = str(x.trans_mode or "").strip()
+    trans_doc_no = (x.trans_doc_no or "").strip()
+    transporter_id = (x.transporter_id or "").strip()
+    transporter_name = (x.transporter_name or "").strip()
     payload: Dict[str, Any] = {
         "Irn": irn,
         "Distance": int(x.distance_km),
-        "TransMode": str(x.trans_mode),
-        "TransId": x.transporter_id.strip(),
-        "TransName": x.transporter_name.strip()[:100],
-        "TransDocDt": _fmt_dt(x.trans_doc_date),
-        "TransDocNo": x.trans_doc_no.strip()[:32],
+        "TransMode": trans_mode,
     }
+    if transporter_id:
+        payload["TransId"] = transporter_id[:15]
+    if transporter_name:
+        payload["TransName"] = transporter_name[:100]
+    if trans_doc_no:
+        payload["TransDocNo"] = trans_doc_no[:15]
+    if x.trans_doc_date:
+        payload["TransDocDt"] = _fmt_dt(x.trans_doc_date)
 
     # Road: include vehicle details (as in curl)
-    if x.trans_mode == "1":
-        if x.vehicle_no:
-            payload["VehNo"] = x.vehicle_no.strip()[:20]
-        if x.vehicle_type:
-            payload["VehType"] = x.vehicle_type.strip()[:1]  # "R"/"O"
+    if trans_mode == "1":
+        veh_no = (x.vehicle_no or "").strip()
+        veh_type = (x.vehicle_type or "").strip().upper()
+        if not veh_no:
+            raise ValueError("VehNo is required for road transport (TransMode=1).")
+        if veh_type not in {"R", "O"}:
+            raise ValueError("VehType must be R/O for road transport.")
+        payload["VehNo"] = veh_no[:20]
+        payload["VehType"] = veh_type
+    else:
+        # Rail/Air/Ship => transport document is mandatory.
+        if not trans_doc_no or not x.trans_doc_date:
+            raise ValueError("TransDocNo and TransDocDt are required for Rail/Air/Ship transport.")
 
     if x.exp_ship_dtls:
         payload["ExpShipDtls"] = x.exp_ship_dtls
