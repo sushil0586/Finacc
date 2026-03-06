@@ -8,11 +8,11 @@ from rest_framework import serializers
 class AddressBlockSerializer(serializers.Serializer):
     # DispDtls supports Nm; ExpShipDtls doesn't require Nm. We'll keep Nm optional.
     Nm = serializers.CharField(required=False, allow_blank=True, max_length=100)
-    Addr1 = serializers.CharField(required=True, allow_blank=False, max_length=255)
+    Addr1 = serializers.CharField(required=False, allow_blank=False, max_length=255)
     Addr2 = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    Loc = serializers.CharField(required=True, allow_blank=False, max_length=100)
+    Loc = serializers.CharField(required=False, allow_blank=False, max_length=100)
     Pin = serializers.IntegerField(required=False, min_value=100000, max_value=999999)
-    Stcd = serializers.CharField(required=True, allow_blank=False, max_length=2)
+    Stcd = serializers.CharField(required=False, allow_blank=False, max_length=2)
 
     def validate_Loc(self, v: str) -> str:
         v = (v or "").strip()
@@ -28,14 +28,14 @@ class AddressBlockSerializer(serializers.Serializer):
 
 
 class GenerateEWayRequestSerializer(serializers.Serializer):
-    distance_km = serializers.IntegerField(min_value=1, max_value=4000)
+    distance_km = serializers.IntegerField(min_value=0, max_value=4000)
     trans_mode = serializers.ChoiceField(choices=[("1", "Road"), ("2", "Rail"), ("3", "Air"), ("4", "Ship")])
 
-    transporter_id = serializers.CharField(max_length=32)
-    transporter_name = serializers.CharField(max_length=128)
+    transporter_id = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    transporter_name = serializers.CharField(max_length=128, required=False, allow_blank=True)
 
-    trans_doc_no = serializers.CharField(max_length=32)
-    trans_doc_date = serializers.DateField()
+    trans_doc_no = serializers.CharField(max_length=15, required=False, allow_blank=True)
+    trans_doc_date = serializers.DateField(required=False)
 
     vehicle_no = serializers.CharField(max_length=32, required=False, allow_blank=True)
     vehicle_type = serializers.ChoiceField(choices=[("R", "Regular"), ("O", "ODC")], required=False)
@@ -44,8 +44,23 @@ class GenerateEWayRequestSerializer(serializers.Serializer):
     disp_dtls = AddressBlockSerializer(required=False)
     exp_ship_dtls = AddressBlockSerializer(required=False)
 
+    @staticmethod
+    def _normalize_optional_block(block: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not block or not isinstance(block, dict):
+            return None
+        addr1 = (block.get("Addr1") or "").strip()
+        loc = (block.get("Loc") or "").strip()
+        stcd = str(block.get("Stcd") or "").strip()
+        # If incomplete/empty, ignore block entirely.
+        if not (addr1 and loc and stcd):
+            return None
+        out = {k: v for k, v in block.items() if v not in (None, "", [])}
+        return out or None
+
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         mode = attrs.get("trans_mode")
+        trans_doc_no = (attrs.get("trans_doc_no") or "").strip()
+        trans_doc_date = attrs.get("trans_doc_date")
 
         if mode == "1":  # road
             veh_no = (attrs.get("vehicle_no") or "").strip()
@@ -55,6 +70,18 @@ class GenerateEWayRequestSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"vehicle_no": "Vehicle no is required for Road transport."})
             if not veh_type:
                 raise serializers.ValidationError({"vehicle_type": "Vehicle type is required for Road transport."})
+        else:
+            # Rail/Air/Ship require transport document details.
+            if not trans_doc_no:
+                raise serializers.ValidationError({"trans_doc_no": "trans_doc_no is required for Rail/Air/Ship transport."})
+            if not trans_doc_date:
+                raise serializers.ValidationError({"trans_doc_date": "trans_doc_date is required for Rail/Air/Ship transport."})
+
+        if trans_doc_no:
+            attrs["trans_doc_no"] = trans_doc_no
+
+        attrs["disp_dtls"] = self._normalize_optional_block(attrs.get("disp_dtls"))
+        attrs["exp_ship_dtls"] = self._normalize_optional_block(attrs.get("exp_ship_dtls"))
 
         return attrs
 
@@ -81,7 +108,7 @@ class SalesEWayB2CGenerateSerializer(serializers.Serializer):
     Accept transport info for B2C Direct EWB.
     These are persisted into SalesEWayBill, then payload is built from DB.
     """
-    distance_km = serializers.IntegerField(min_value=1)
+    distance_km = serializers.IntegerField(min_value=0)
     trans_mode = serializers.ChoiceField(choices=[("1", "Road"), ("2", "Rail"), ("3", "Air"), ("4", "Ship")])
 
     transporter_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)

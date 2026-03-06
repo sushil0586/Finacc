@@ -367,6 +367,43 @@ class PurchaseStatutoryService:
         raise ValueError("Unsupported tax_type.")
 
     @staticmethod
+    def _assert_unique_original_return(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        return_code: str,
+        period_from,
+        period_to,
+        exclude_filing_id: Optional[int] = None,
+    ) -> None:
+        """
+        Keep exactly one original return per period/scope.
+        Revisions are allowed through original_return_id linkage.
+        """
+        qs = PurchaseStatutoryReturn.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            tax_type=tax_type,
+            return_code=(return_code or "").strip(),
+            period_from=period_from,
+            period_to=period_to,
+            original_return__isnull=True,
+        ).exclude(status=PurchaseStatutoryReturn.Status.CANCELLED)
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        if exclude_filing_id:
+            qs = qs.exclude(pk=exclude_filing_id)
+        if qs.exists():
+            raise ValueError(
+                "An original return already exists for this return_code and period. "
+                "Create a revision against that original return."
+            )
+
+    @staticmethod
     @transaction.atomic
     def create_challan(
         *,
@@ -661,6 +698,16 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        if not original_return_id:
+            PurchaseStatutoryService._assert_unique_original_return(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type,
+                return_code=return_code,
+                period_from=period_from,
+                period_to=period_to,
+            )
         PurchaseStatutoryService._validate_revision_lines(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -797,6 +844,17 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        if not original_return_id:
+            PurchaseStatutoryService._assert_unique_original_return(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type,
+                return_code=return_code,
+                period_from=period_from,
+                period_to=period_to,
+                exclude_filing_id=filing_id,
+            )
         PurchaseStatutoryService._validate_revision_lines(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,

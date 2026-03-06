@@ -5,6 +5,20 @@ from django.db import models
 from django.core.validators import MinValueValidator
 
 
+class TaxLawType(models.TextChoices):
+    INCOME_TAX = "INCOME_TAX", "Income Tax"
+    GST = "GST", "GST"
+
+
+class TcsSubType(models.TextChoices):
+    SEC_206C_1 = "206C_1", "206C(1)"
+    SEC_206C_1C = "206C_1C", "206C(1C)"
+    SEC_206C_1F = "206C_1F", "206C(1F)"
+    SEC_206C_1G = "206C_1G", "206C(1G)"
+    LEGACY_206C_1H = "206C_1H_LEGACY", "206C(1H) Legacy"
+    GST_SEC_52 = "GST_SEC_52", "GST Section 52"
+
+
 class WithholdingTaxType(models.IntegerChoices):
     TDS = 1, "TDS"
     TCS = 2, "TCS"
@@ -25,6 +39,8 @@ class WithholdingSection(models.Model):
       - TCS 206C(1), etc
     """
     tax_type = models.PositiveSmallIntegerField(choices=WithholdingTaxType.choices, db_index=True)
+    law_type = models.CharField(max_length=16, choices=TaxLawType.choices, default=TaxLawType.INCOME_TAX, db_index=True)
+    sub_type = models.CharField(max_length=24, choices=TcsSubType.choices, null=True, blank=True, db_index=True)
     section_code = models.CharField(max_length=16, db_index=True)  # "194C", "194Q", "206C(1)"
     description = models.CharField(max_length=255)
 
@@ -135,3 +151,219 @@ class EntityWithholdingConfig(models.Model):
 
     def __str__(self) -> str:
         return f"WithholdingConfig(entity={self.entity_id}, fy={self.entityfin_id}, sub={self.subentity_id})"
+
+
+class TcsComputation(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+        REVERSED = "REVERSED", "Reversed"
+
+    module_name = models.CharField(max_length=30, db_index=True)  # sales/purchase/...
+    document_type = models.CharField(max_length=30, db_index=True)  # invoice/cn/dn/...
+    document_id = models.BigIntegerField(db_index=True)
+    document_no = models.CharField(max_length=60, blank=True, default="")
+    doc_date = models.DateField(db_index=True)
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
+    party_account = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+
+    section = models.ForeignKey(WithholdingSection, null=True, blank=True, on_delete=models.PROTECT, db_index=True)
+    rule_snapshot_json = models.JSONField(null=True, blank=True)
+    applicability_status = models.CharField(max_length=24, default="APPLICABLE", db_index=True)
+    trigger_basis = models.CharField(max_length=20, blank=True, default="INVOICE")
+
+    taxable_base = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    excluded_base = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    tcs_base_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    tcs_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    no_pan_applied = models.BooleanField(default=False)
+    lower_rate_applied = models.BooleanField(default=False)
+
+    override_reason = models.CharField(max_length=255, blank=True, default="")
+    overridden_by = models.ForeignKey("Authentication.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="tcs_overridden")
+    overridden_at = models.DateTimeField(null=True, blank=True)
+
+    fiscal_year = models.CharField(max_length=9, blank=True, default="")  # 2025-26
+    quarter = models.CharField(max_length=2, blank=True, default="")      # Q1..Q4
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+
+    computation_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_tcs_computation"
+        indexes = [
+            models.Index(fields=["module_name", "document_type", "document_id"], name="ix_tcs_cmp_doc"),
+            models.Index(fields=["entity", "fiscal_year", "quarter"], name="ix_tcs_cmp_fy_qtr"),
+            models.Index(fields=["party_account", "doc_date"], name="ix_tcs_cmp_party_dt"),
+        ]
+
+
+class TcsCollection(models.Model):
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        ALLOCATED = "ALLOCATED", "Allocated"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    computation = models.ForeignKey(TcsComputation, on_delete=models.CASCADE, related_name="collections", db_index=True)
+    collection_date = models.DateField(db_index=True)
+    receipt_voucher_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    amount_received = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    tcs_collected_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    collection_reference = models.CharField(max_length=80, blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_tcs_collection"
+        indexes = [
+            models.Index(fields=["collection_date", "status"], name="ix_tcs_col_dt_st"),
+        ]
+
+
+class TcsDeposit(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+        FILED = "FILED", "Filed"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    financial_year = models.CharField(max_length=9, db_index=True)
+    month = models.PositiveSmallIntegerField(db_index=True)  # 1..12
+    challan_no = models.CharField(max_length=40, db_index=True)
+    challan_date = models.DateField(db_index=True)
+    bsr_code = models.CharField(max_length=20, blank=True, default="")
+    cin = models.CharField(max_length=40, blank=True, default="")
+    bank_name = models.CharField(max_length=100, blank=True, default="")
+    total_deposit_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    deposited_by = models.ForeignKey("Authentication.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="tcs_deposited")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_tcs_deposit"
+        indexes = [
+            models.Index(fields=["entity", "financial_year", "month"], name="ix_tcs_dep_fy_m"),
+        ]
+
+
+class TcsDepositAllocation(models.Model):
+    deposit = models.ForeignKey(TcsDeposit, on_delete=models.CASCADE, related_name="allocations", db_index=True)
+    collection = models.ForeignKey(TcsCollection, on_delete=models.PROTECT, related_name="deposit_allocations", db_index=True)
+    allocated_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "withholding_tcs_deposit_allocation"
+        constraints = [
+            models.UniqueConstraint(fields=["deposit", "collection"], name="uq_tcs_dep_alloc_once"),
+        ]
+
+
+class TcsQuarterlyReturn(models.Model):
+    class ReturnType(models.TextChoices):
+        ORIGINAL = "ORIGINAL", "Original"
+        CORRECTION = "CORRECTION", "Correction"
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        VALIDATED = "VALIDATED", "Validated"
+        FILED = "FILED", "Filed"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    fy = models.CharField(max_length=9, db_index=True)
+    quarter = models.CharField(max_length=2, db_index=True)
+    form_name = models.CharField(max_length=10, default="27EQ")
+    return_type = models.CharField(max_length=12, choices=ReturnType.choices, default=ReturnType.ORIGINAL)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    ack_no = models.CharField(max_length=50, blank=True, default="")
+    filed_on = models.DateField(null=True, blank=True)
+    json_snapshot = models.JSONField(null=True, blank=True)
+    file_path = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_tcs_quarterly_return"
+        indexes = [models.Index(fields=["entity", "fy", "quarter"], name="ix_tcs_ret_fy_q")]
+
+
+class TcsCertificate(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        ISSUED = "ISSUED", "Issued"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    quarterly_return = models.ForeignKey(TcsQuarterlyReturn, on_delete=models.CASCADE, related_name="certificates", db_index=True)
+    party_account = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    certificate_no = models.CharField(max_length=50, db_index=True)
+    form_name = models.CharField(max_length=10, default="27D")
+    issue_date = models.DateField(null=True, blank=True)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    file_path = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_tcs_certificate"
+        constraints = [
+            models.UniqueConstraint(fields=["quarterly_return", "party_account"], name="uq_tcs_cert_party_once"),
+        ]
+
+
+class GstTcsEcoProfile(models.Model):
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    gstin = models.CharField(max_length=15, db_index=True)
+    is_eco = models.BooleanField(default=False, db_index=True)
+    section_code = models.CharField(max_length=16, default="52")
+    default_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("1.0000"))
+    effective_from = models.DateField(db_index=True)
+    effective_to = models.DateField(null=True, blank=True, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_gst_tcs_eco_profile"
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "gstin", "effective_from"], name="uq_gst_tcs_eco_scope"),
+        ]
+
+
+class GstTcsComputation(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        LOCKED = "LOCKED", "Locked"
+        FILED = "FILED", "Filed"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    eco_profile = models.ForeignKey(GstTcsEcoProfile, on_delete=models.PROTECT, db_index=True)
+    supplier_account = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    doc_date = models.DateField(db_index=True)
+    document_type = models.CharField(max_length=20, db_index=True)
+    document_id = models.BigIntegerField(db_index=True)
+    document_no = models.CharField(max_length=60, blank=True, default="")
+    taxable_value = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    gst_tcs_rate = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("1.0000"))
+    gst_tcs_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    fy = models.CharField(max_length=9, db_index=True)
+    month = models.PositiveSmallIntegerField(db_index=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    snapshot_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "withholding_gst_tcs_computation"
+        indexes = [
+            models.Index(fields=["entity", "fy", "month"], name="ix_gst_tcs_fy_m"),
+            models.Index(fields=["document_type", "document_id"], name="ix_gst_tcs_doc"),
+        ]

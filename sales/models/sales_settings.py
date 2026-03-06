@@ -23,6 +23,15 @@ class SalesSettings(EntityScopedModel):
         CONFIRM = "confirm", "Auto Confirm on Save"
         POST = "post", "Auto Post on Save"
 
+    class TCSCreditNotePolicy(models.TextChoices):
+        DISALLOW = "DISALLOW", "Disallow TCS on Credit Note"
+        ALLOW = "ALLOW", "Allow TCS on Credit Note"
+        REVERSE = "REVERSE", "Reverse TCS on Credit Note"
+
+    class ComplianceApplicabilityMode(models.TextChoices):
+        AUTO_ONLY = "AUTO_ONLY", "Auto Derive Only"
+        AUTO_WITH_OVERRIDE = "AUTO_WITH_OVERRIDE", "Auto + Manual Override (Audited)"
+
     entity = models.ForeignKey(
         "entity.Entity",
         on_delete=models.PROTECT,
@@ -70,6 +79,23 @@ class SalesSettings(EntityScopedModel):
 
     # optional: use combined IRP flow when both are needed (generate IRN + EWB together if supported)
     prefer_irp_generate_einvoice_and_eway_together = models.BooleanField(default=True)
+    enforce_statutory_cancel_before_business_cancel = models.BooleanField(default=True)
+
+    # Applicability policy
+    einvoice_entity_applicable = models.BooleanField(default=False)
+    eway_value_threshold = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("50000.00"))
+    compliance_applicability_mode = models.CharField(
+        max_length=24,
+        choices=ComplianceApplicabilityMode.choices,
+        default=ComplianceApplicabilityMode.AUTO_ONLY,
+    )
+
+    # TCS governance
+    tcs_credit_note_policy = models.CharField(
+        max_length=12,
+        choices=TCSCreditNotePolicy.choices,
+        default=TCSCreditNotePolicy.REVERSE,
+    )
 
     # -------------------------
     # Rounding configuration

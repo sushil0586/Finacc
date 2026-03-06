@@ -314,24 +314,37 @@ class SalesInvoicePostingAdapter:
             ))
 
         tcs = q2(getattr(header, "tcs_amount", None) or ZERO2)
+        tcs_is_reversal = bool(getattr(header, "tcs_is_reversal", False))
         if tcs > ZERO2:
             tcs_payable_ac = resolver.get_account_id(StaticAccountCodes.TCS_PAYABLE, required=True)
-
-            # Dr Customer (increase receivable)
-            jl.append(JLInput(
-                account_id=int(header.customer_id),
-                drcr=True,  # DR
-                amount=tcs,
-                description=f"{narration} (TCS collected)",
-            ))
-
-            # Cr TCS Payable
-            jl.append(JLInput(
-                account_id=int(tcs_payable_ac),
-                drcr=False,  # CR
-                amount=tcs,
-                description=f"{narration} (TCS payable)",
-            ))
+            if tcs_is_reversal:
+                # Credit-note reversal style: reduce TCS payable and increase customer credit.
+                jl.append(JLInput(
+                    account_id=int(tcs_payable_ac),
+                    drcr=True,  # DR
+                    amount=tcs,
+                    description=f"{narration} (TCS reversal)",
+                ))
+                jl.append(JLInput(
+                    account_id=int(header.customer_id),
+                    drcr=False,  # CR
+                    amount=tcs,
+                    description=f"{narration} (Customer TCS reversal)",
+                ))
+            else:
+                # Standard collection style.
+                jl.append(JLInput(
+                    account_id=int(header.customer_id),
+                    drcr=True,  # DR
+                    amount=tcs,
+                    description=f"{narration} (TCS collected)",
+                ))
+                jl.append(JLInput(
+                    account_id=int(tcs_payable_ac),
+                    drcr=False,  # CR
+                    amount=tcs,
+                    description=f"{narration} (TCS payable)",
+                ))
 
 
         # 1D) Customer balancing line (works for Invoice/CN/DN)

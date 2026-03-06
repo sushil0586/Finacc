@@ -30,7 +30,7 @@ class MasterGSTEWayTokenService:
     def get_token(self, *, force: bool = False) -> str:
         row = self._token_row()
         if not force and row.is_valid():
-            return row.auth_token  # type: ignore
+            return row.get_auth_token()  # type: ignore
 
         email_q = quote(self.cred.email)
 
@@ -43,10 +43,10 @@ class MasterGSTEWayTokenService:
             "content-type": "application/json",
             "ip_address": self._resolve_ip(),
             "client_id": self.cred.client_id,
-            "client_secret": self.cred.client_secret,
+            "client_secret": self.cred.get_client_secret(),
             "gstin": self.cred.gstin,
             "username": self.cred.gst_username,
-            "password": self.cred.gst_password,
+            "password": self.cred.get_gst_password(),
         }
 
         resp = requests.get(url, headers=headers, timeout=30)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from django.db.models import Max   # ✅ ADD THIS
+from django.db.models import Sum
+import re
 
 
 from typing import Any
@@ -15,6 +17,8 @@ from typing import Dict, List, Optional, Tuple
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_withholding_service import SalesWithholdingService
+from sales.services.compliance_audit_service import ComplianceAuditService
+from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
@@ -41,6 +45,7 @@ ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
+GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 
 
 def q2(x) -> Decimal:
@@ -105,8 +110,7 @@ class SalesInvoiceService:
         from sales.services.sales_compliance_service import SalesComplianceService
 
         svc = SalesComplianceService(invoice=header, user=user)
-        if hasattr(svc, "ensure_rows"):
-            svc.ensure_rows()
+        svc.ensure_rows()
 
         auto_irn = (
             bool(getattr(settings_obj, "auto_generate_einvoice_on_confirm", False))
@@ -172,15 +176,52 @@ class SalesInvoiceService:
 
         # If not enabled => clear everything
         if not getattr(header, "withholding_enabled", False):
+            preview = WithholdingResult(
+                enabled=False,
+                section=None,
+                rate=Decimal("0.0000"),
+                base_amount=ZERO2,
+                amount=ZERO2,
+                reason="Withholding disabled",
+            )
             header.tcs_section = None
             header.tcs_rate = Decimal("0.0000")
             header.tcs_base_amount = ZERO2
             header.tcs_amount = ZERO2
             header.tcs_reason = None
+            header.tcs_is_reversal = False
             header.updated_by = user
             header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "updated_by"
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal", "updated_by"
             ])
+            cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
+            return
+
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        is_credit_note = int(header.doc_type or 0) == int(SalesInvoiceHeader.DocType.CREDIT_NOTE)
+        credit_note_policy = (getattr(settings_obj, "tcs_credit_note_policy", "REVERSE") or "REVERSE").upper()
+
+        if is_credit_note and credit_note_policy == "DISALLOW":
+            preview = WithholdingResult(
+                enabled=True,
+                section=None,
+                rate=Decimal("0.0000"),
+                base_amount=ZERO2,
+                amount=ZERO2,
+                reason="TCS on credit note disallowed by policy.",
+            )
+            header.tcs_section = None
+            header.tcs_rate = Decimal("0.0000")
+            header.tcs_base_amount = ZERO2
+            header.tcs_amount = ZERO2
+            header.tcs_reason = "TCS on credit note disallowed by policy."
+            header.tcs_is_reversal = False
+            header.updated_by = user
+            header.save(update_fields=[
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount",
+                "tcs_reason", "tcs_is_reversal", "updated_by",
+            ])
+            cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
             return
 
         # Enabled => section must be selected (one at a time)
@@ -192,15 +233,25 @@ class SalesInvoiceService:
         if sec and sec.section_code and sec.section_code.strip().upper() in {"206C(1H)", "206C1H"}:
             bill_date = header.bill_date or timezone.localdate()
             if bill_date >= CUTOFF_DISABLE_206C_1H:
+                preview = WithholdingResult(
+                    enabled=True,
+                    section=sec,
+                    rate=Decimal("0.0000"),
+                    base_amount=ZERO2,
+                    amount=ZERO2,
+                    reason="206C(1H) disabled from 2025-04-01",
+                )
                 header.tcs_section = None
                 header.tcs_rate = Decimal("0.0000")
                 header.tcs_base_amount = ZERO2
                 header.tcs_amount = ZERO2
                 header.tcs_reason = "206C(1H) disabled from 2025-04-01"
+                header.tcs_is_reversal = False
                 header.updated_by = user
                 header.save(update_fields=[
-                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "updated_by"
+                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal", "updated_by"
                 ])
+                cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
                 return
 
         # Compute using authoritative totals (AFTER compute_and_persist_totals)
@@ -221,6 +272,7 @@ class SalesInvoiceService:
         header.tcs_base_amount = res.base_amount
         header.tcs_amount = res.amount
         header.tcs_reason = res.reason
+        header.tcs_is_reversal = bool(is_credit_note and credit_note_policy == "REVERSE" and q2(res.amount) > ZERO2)
         header.updated_by = user
 
         # OPTIONAL: if you have receivable_total field
@@ -228,13 +280,164 @@ class SalesInvoiceService:
             header.customer_receivable = q2((header.grand_total or ZERO2) + (header.tcs_amount or ZERO2))
             header.save(update_fields=[
                 "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                "tcs_is_reversal",
                 "customer_receivable",
                 "updated_by",
             ])
         else:
             header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "updated_by"
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal", "updated_by"
             ])
+
+        status = "REVERSED" if bool(header.tcs_is_reversal) else "CONFIRMED"
+        cls._sync_tcs_computation(header=header, preview=res, user=user, status=status)
+
+    @classmethod
+    def _sync_tcs_computation(cls, *, header: SalesInvoiceHeader, preview: WithholdingResult, user, status: str) -> None:
+        if not getattr(header, "id", None):
+            return
+        if not getattr(header, "entity_id", None) or not getattr(header, "entityfinid_id", None):
+            return
+
+        doc_type_map = {
+            int(SalesInvoiceHeader.DocType.TAX_INVOICE): "invoice",
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE): "credit_note",
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE): "debit_note",
+        }
+        document_type = doc_type_map.get(int(header.doc_type or 0), "invoice")
+        document_no = (header.invoice_number or "").strip() or str(header.doc_no or "")
+
+        upsert_tcs_computation(
+            module_name="sales",
+            document_type=document_type,
+            document_id=int(header.id),
+            document_no=document_no,
+            doc_date=(header.bill_date or timezone.localdate()),
+            entity_id=int(header.entity_id),
+            entityfin_id=int(header.entityfinid_id),
+            subentity_id=header.subentity_id,
+            party_account_id=header.customer_id,
+            preview=preview,
+            status=status,
+            trigger_basis="INVOICE",
+            override_reason=(header.tcs_reason or "") if preview.amount == ZERO2 else "",
+            overridden_by=user,
+        )
+
+    @staticmethod
+    def _normalize_gstin(gstin: Optional[str]) -> str:
+        return (gstin or "").strip().upper()
+
+    @classmethod
+    def _is_valid_gstin(cls, gstin: Optional[str]) -> bool:
+        g = cls._normalize_gstin(gstin)
+        return bool(GSTIN_RE.fullmatch(g))
+
+    @staticmethod
+    def _state_code_from_state_obj(state_obj) -> str:
+        if not state_obj:
+            return ""
+        code = (
+            getattr(state_obj, "gst_state_code", None)
+            or getattr(state_obj, "statecode", None)
+            or getattr(state_obj, "code", None)
+            or ""
+        )
+        s = str(code).strip()
+        return s.zfill(2) if s.isdigit() and s else s
+
+    @classmethod
+    def _refresh_party_snapshots(cls, *, header: SalesInvoiceHeader) -> None:
+        """
+        Keep GST-critical snapshot fields aligned from master records if missing.
+        """
+        cust = getattr(header, "customer", None)
+        ent = getattr(header, "entity", None)
+        if cust:
+            if not (header.customer_name or "").strip():
+                header.customer_name = (getattr(cust, "legalname", None) or getattr(cust, "accountname", None) or "").strip()
+            if not cls._is_valid_gstin(header.customer_gstin):
+                header.customer_gstin = cls._normalize_gstin(getattr(cust, "gstno", None))
+            if not (header.customer_state_code or "").strip():
+                header.customer_state_code = cls._state_code_from_state_obj(getattr(cust, "state", None))
+
+        if ent:
+            if not cls._is_valid_gstin(header.seller_gstin):
+                header.seller_gstin = cls._normalize_gstin(getattr(ent, "gstno", None))
+            if not (header.seller_state_code or "").strip():
+                header.seller_state_code = cls._state_code_from_state_obj(getattr(ent, "state", None))
+
+        # Derive POS from bill-to/ship-to/customer when missing.
+        if not (header.place_of_supply_state_code or "").strip():
+            header.place_of_supply_state_code = (
+                (header.bill_to_state_code or "").strip()
+                or (header.customer_state_code or "").strip()
+            )
+
+    @classmethod
+    def _derive_compliance_flags(cls, *, header: SalesInvoiceHeader, settings_obj: SalesSettings, user=None) -> None:
+        is_b2c = int(header.supply_category or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C)
+        seller_gstin_ok = cls._is_valid_gstin(header.seller_gstin)
+        customer_gstin_ok = cls._is_valid_gstin(header.customer_gstin)
+
+        auto_einvoice = bool(
+            getattr(settings_obj, "enable_einvoice", True)
+            and getattr(settings_obj, "einvoice_entity_applicable", False)
+            and not is_b2c
+            and seller_gstin_ok
+            and customer_gstin_ok
+        )
+        auto_eway = bool(
+            getattr(settings_obj, "enable_eway", True)
+            and q2(getattr(header, "grand_total", ZERO2) or ZERO2) >= q2(getattr(settings_obj, "eway_value_threshold", Decimal("50000.00")))
+        )
+
+        mode = getattr(settings_obj, "compliance_applicability_mode", "AUTO_ONLY")
+        manual_override_enabled = (mode == SalesSettings.ComplianceApplicabilityMode.AUTO_WITH_OVERRIDE)
+        man_einv = getattr(header, "einvoice_applicable_manual", None)
+        man_eway = getattr(header, "eway_applicable_manual", None)
+
+        if manual_override_enabled and (man_einv is not None or man_eway is not None):
+            if not (header.compliance_override_reason or "").strip():
+                raise ValueError("compliance_override_reason is required for manual compliance override.")
+            header.compliance_override_at = timezone.now()
+            header.compliance_override_by = user
+            final_einv = auto_einvoice if man_einv is None else bool(man_einv)
+            final_eway = auto_eway if man_eway is None else bool(man_eway)
+        else:
+            if manual_override_enabled:
+                header.compliance_override_reason = ""
+                header.compliance_override_at = None
+                header.compliance_override_by = None
+            if not manual_override_enabled:
+                header.einvoice_applicable_manual = None
+                header.eway_applicable_manual = None
+                header.compliance_override_reason = ""
+                header.compliance_override_at = None
+                header.compliance_override_by = None
+            final_einv = auto_einvoice
+            final_eway = auto_eway
+
+        header.is_einvoice_applicable = bool(final_einv)
+        header.is_eway_applicable = bool(final_eway)
+        if header.is_einvoice_applicable and header.is_eway_applicable:
+            header.gst_compliance_mode = SalesInvoiceHeader.GstComplianceMode.EINVOICE_AND_EWAY
+        elif header.is_einvoice_applicable:
+            header.gst_compliance_mode = SalesInvoiceHeader.GstComplianceMode.EINVOICE_ONLY
+        elif header.is_eway_applicable:
+            header.gst_compliance_mode = SalesInvoiceHeader.GstComplianceMode.EWAY_ONLY
+        else:
+            header.gst_compliance_mode = SalesInvoiceHeader.GstComplianceMode.NONE
+
+    @classmethod
+    def _validate_b2b_gstin_requirements(cls, *, header: SalesInvoiceHeader) -> None:
+        is_b2c = int(header.supply_category or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C)
+        if is_b2c:
+            return
+        if not cls._is_valid_gstin(header.seller_gstin):
+            raise ValueError("Valid seller_gstin is required for non-B2C invoices.")
+        if not cls._is_valid_gstin(header.customer_gstin):
+            raise ValueError("Valid customer_gstin is required for non-B2C invoices.")
 
     @staticmethod
     def _validate_shipping_detail_for_customer(*, customer_id: Optional[int], shipping_detail_id: Optional[int]) -> None:
@@ -417,6 +620,68 @@ class SalesInvoiceService:
                 raise ValueError("original_invoice is allowed only for Credit Note / Debit Note.")
 
     @staticmethod
+    def _aggregate_adjustment_totals(*, original_invoice_id: int, doc_type: int, exclude_header_id: Optional[int] = None) -> dict:
+        qs = SalesInvoiceHeader.objects.filter(
+            original_invoice_id=original_invoice_id,
+            doc_type=doc_type,
+        ).exclude(status=SalesInvoiceHeader.Status.CANCELLED)
+        if exclude_header_id:
+            qs = qs.exclude(id=exclude_header_id)
+
+        agg = qs.aggregate(
+            taxable=Sum("total_taxable_value"),
+            cgst=Sum("total_cgst"),
+            sgst=Sum("total_sgst"),
+            igst=Sum("total_igst"),
+            cess=Sum("total_cess"),
+            grand=Sum("grand_total"),
+        )
+        return {
+            "total_taxable_value": q2(agg.get("taxable") or ZERO2),
+            "total_cgst": q2(agg.get("cgst") or ZERO2),
+            "total_sgst": q2(agg.get("sgst") or ZERO2),
+            "total_igst": q2(agg.get("igst") or ZERO2),
+            "total_cess": q2(agg.get("cess") or ZERO2),
+            "grand_total": q2(agg.get("grand") or ZERO2),
+        }
+
+    @classmethod
+    def _validate_adjustment_caps(cls, *, header: SalesInvoiceHeader) -> None:
+        doc_type = int(header.doc_type or 0)
+        if doc_type not in (
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            return
+        if not header.original_invoice_id:
+            raise ValueError("original_invoice is required for Credit Note / Debit Note.")
+
+        original = header.original_invoice
+        previous = cls._aggregate_adjustment_totals(
+            original_invoice_id=original.id,
+            doc_type=doc_type,
+            exclude_header_id=header.id,
+        )
+        tol = Decimal("0.05")
+        checks = [
+            "total_taxable_value",
+            "total_cgst",
+            "total_sgst",
+            "total_igst",
+            "total_cess",
+            "grand_total",
+        ]
+        for f in checks:
+            cumulative = q2(previous[f] + q2(getattr(header, f, ZERO2) or ZERO2))
+            cap = q2(getattr(original, f, ZERO2) or ZERO2)
+            if cumulative - cap > tol:
+                kind = "Credit Note" if doc_type == int(SalesInvoiceHeader.DocType.CREDIT_NOTE) else "Debit Note"
+                raise ValueError(
+                    f"{kind} cumulative {f} exceeds original invoice cap. "
+                    f"Allowed={cap}, cumulative={cumulative}."
+                )
+
+    @staticmethod
     def _gross_receivable(header: SalesInvoiceHeader) -> Decimal:
         return q2((header.grand_total or ZERO2) + (header.tcs_amount or ZERO2))
 
@@ -518,6 +783,7 @@ class SalesInvoiceService:
         header.status = SalesInvoiceHeader.Status.DRAFT
 
         cls.apply_dates(header)
+        cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
 
         header.full_clean(exclude=None)
@@ -528,9 +794,28 @@ class SalesInvoiceService:
         cls.upsert_charges(header=header, incoming_charges=charges_data or [], user=user, allow_delete=True)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._derive_compliance_flags(
+            header=header,
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            user=user,
+        )
+        cls._validate_adjustment_caps(header=header)
         cls._apply_tcs(header=header, user=user)
         cls.recompute_settlement_fields(header=header)
-        header.save(update_fields=["settled_amount", "outstanding_amount", "settlement_status", "updated_at"])
+        header.save(update_fields=[
+            "gst_compliance_mode",
+            "is_einvoice_applicable",
+            "is_eway_applicable",
+            "einvoice_applicable_manual",
+            "eway_applicable_manual",
+            "compliance_override_reason",
+            "compliance_override_at",
+            "compliance_override_by",
+            "settled_amount",
+            "outstanding_amount",
+            "settlement_status",
+            "updated_at",
+        ])
 
 
         return header
@@ -607,6 +892,7 @@ class SalesInvoiceService:
         header.updated_by = user
 
         cls.apply_dates(header)
+        cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
 
         header.full_clean(exclude=None)
@@ -619,9 +905,28 @@ class SalesInvoiceService:
             cls.upsert_charges(header=header, incoming_charges=charges_data, user=user, allow_delete=True)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._derive_compliance_flags(
+            header=header,
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            user=user,
+        )
+        cls._validate_adjustment_caps(header=header)
         cls._apply_tcs(header=header, user=user)
         cls.recompute_settlement_fields(header=header)
-        header.save(update_fields=["settled_amount", "outstanding_amount", "settlement_status", "updated_at"])
+        header.save(update_fields=[
+            "gst_compliance_mode",
+            "is_einvoice_applicable",
+            "is_eway_applicable",
+            "einvoice_applicable_manual",
+            "eway_applicable_manual",
+            "compliance_override_reason",
+            "compliance_override_at",
+            "compliance_override_by",
+            "settled_amount",
+            "outstanding_amount",
+            "settlement_status",
+            "updated_at",
+        ])
 
 
         return header
@@ -806,6 +1111,17 @@ class SalesInvoiceService:
         free_qty = q4(line.free_qty)
         bill_qty = qty  # taxable usually on billed qty (not free)
         rate = q4(line.rate)
+        gst_rate = q4(line.gst_rate)
+        hsn = (line.hsn_sac_code or "").strip()
+
+        if qty < ZERO4 or free_qty < ZERO4:
+            raise ValidationError({"lines": [f"Line {line.line_no}: qty/free_qty cannot be negative."]})
+        if rate < ZERO4:
+            raise ValidationError({"lines": [f"Line {line.line_no}: rate cannot be negative."]})
+        if gst_rate < ZERO4 or gst_rate > Decimal("100.0000"):
+            raise ValidationError({"lines": [f"Line {line.line_no}: gst_rate must be between 0 and 100."]})
+        if gst_rate > ZERO4 and bill_qty > ZERO4 and not hsn:
+            raise ValidationError({"lines": [f"Line {line.line_no}: HSN/SAC is required when GST applies."]})
 
         gross = q2(bill_qty * rate)
 
@@ -823,7 +1139,6 @@ class SalesInvoiceService:
 
         net = q2(gross - disc)
 
-        gst_rate = q4(line.gst_rate)
         cess_amt = ZERO2
 
         # If cess percent used (most cases): cess = net * percent
@@ -1179,9 +1494,6 @@ class SalesInvoiceService:
     def confirm(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
         if header.status != SalesInvoiceHeader.Status.DRAFT:
             raise ValueError("Only Draft invoices can be confirmed.")
-        
-        if header.is_eway_applicable and not header.shipping_detail_id:
-            raise ValueError("Shipping detail is required when E-Way is applicable.")
 
         cls.freeze_ship_to_snapshot(header=header)
 
@@ -1189,9 +1501,19 @@ class SalesInvoiceService:
 
         # ✅ recompute everything first
         cls.apply_dates(header)
+        cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._derive_compliance_flags(
+            header=header,
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            user=user,
+        )
+        cls._validate_b2b_gstin_requirements(header=header)
+        cls._validate_adjustment_caps(header=header)
+        if header.is_eway_applicable and not header.shipping_detail_id:
+            raise ValueError("Shipping detail is required when E-Way is applicable.")
         cls._apply_tcs(header=header, user=user)
         cls.recompute_settlement_fields(header=header)
         
@@ -1208,8 +1530,12 @@ class SalesInvoiceService:
             "status", "confirmed_at", "confirmed_by",
             "updated_by", "updated_at",
             "posting_date", "due_date", "tax_regime", "is_igst",
+            "gst_compliance_mode", "is_einvoice_applicable", "is_eway_applicable",
+            "einvoice_applicable_manual", "eway_applicable_manual",
+            "compliance_override_reason", "compliance_override_at", "compliance_override_by",
             "total_taxable_value", "total_cgst", "total_sgst", "total_igst", "total_cess",
             "total_discount", "round_off", "grand_total",
+            "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal",
             "settled_amount", "outstanding_amount", "settlement_status",
         ])
 
@@ -1238,10 +1564,6 @@ class SalesInvoiceService:
         if int(header.status) != int(SalesInvoiceHeader.Status.CONFIRMED):
             raise ValueError("Only Confirmed invoices can be posted.")
 
-        # ---- E-Way safety ----
-        if header.is_eway_applicable and not header.shipping_detail_id:
-            raise ValueError("Shipping detail is required when E-Way is applicable.")
-
         # ---- lock-period validation ----
         cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
 
@@ -1254,9 +1576,19 @@ class SalesInvoiceService:
         # ---- safety recompute (same idea as purchase hook: rebuild + totals) ----
         # If you prefer no recompute at post time, you can remove these, but recommended.
         cls.apply_dates(header)
+        cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
         cls.rebuild_tax_summary(header)
         cls.compute_and_persist_totals(header, user=user)
+        cls._derive_compliance_flags(
+            header=header,
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            user=user,
+        )
+        cls._validate_b2b_gstin_requirements(header=header)
+        cls._validate_adjustment_caps(header=header)
+        if header.is_eway_applicable and not header.shipping_detail_id:
+            raise ValueError("Shipping detail is required when E-Way is applicable.")
         cls._apply_tcs(header=header, user=user)
         cls.recompute_settlement_fields(header=header)
 
@@ -1287,6 +1619,19 @@ class SalesInvoiceService:
             "posted_by",
             "updated_by",
             "updated_at",
+            "gst_compliance_mode",
+            "is_einvoice_applicable",
+            "is_eway_applicable",
+            "einvoice_applicable_manual",
+            "eway_applicable_manual",
+            "compliance_override_reason",
+            "compliance_override_at",
+            "compliance_override_by",
+            "tcs_rate",
+            "tcs_base_amount",
+            "tcs_amount",
+            "tcs_reason",
+            "tcs_is_reversal",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",
@@ -1458,6 +1803,33 @@ class SalesInvoiceService:
     def cancel(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
         if header.status == SalesInvoiceHeader.Status.CANCELLED:
             return header
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        if bool(getattr(settings_obj, "enforce_statutory_cancel_before_business_cancel", True)):
+            einv = getattr(header, "einvoice_artifact", None)
+            ewb = getattr(header, "eway_artifact", None)
+            blocked_reasons = []
+            if einv and int(getattr(einv, "status", 0) or 0) == 2 and getattr(einv, "irn", None):
+                blocked_reasons.append("IRN is generated but not cancelled.")
+            if ewb and int(getattr(ewb, "status", 0) or 0) == 2 and getattr(ewb, "ewb_no", None):
+                blocked_reasons.append("E-Way Bill is generated but not cancelled.")
+            if blocked_reasons:
+                msg = " ".join(blocked_reasons)
+                ComplianceAuditService.log_action(
+                    invoice=header,
+                    action_type="INVOICE_CANCEL_BLOCKED",
+                    outcome="BLOCKED",
+                    user=user,
+                    error_code="STATUTORY_CANCEL_REQUIRED",
+                    error_message=msg,
+                )
+                ComplianceAuditService.open_exception(
+                    invoice=header,
+                    exception_type="STATUTORY_CANCEL_REQUIRED",
+                    error_code="STATUTORY_CANCEL_REQUIRED",
+                    error_message=msg,
+                )
+                raise ValueError(msg)
+
         if header.status == SalesInvoiceHeader.Status.POSTED:
             cls.reverse_posting(header=header, user=user, reason=reason or "Cancelled")
 

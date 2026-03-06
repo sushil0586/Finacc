@@ -1,11 +1,48 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import base64
+import hashlib
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
+from cryptography.fernet import Fernet, InvalidToken
 
 User = settings.AUTH_USER_MODEL
+ENC_PREFIX = "enc$"
+
+
+def _fernet() -> Fernet:
+    raw = getattr(settings, "SALES_SECRET_ENCRYPTION_KEY", None)
+    if raw:
+        key = raw.encode("utf-8") if isinstance(raw, str) else raw
+    else:
+        digest = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+        key = base64.urlsafe_b64encode(digest)
+    return Fernet(key)
+
+
+def _enc(value: str | None) -> str | None:
+    if not value:
+        return value
+    s = str(value)
+    if s.startswith(ENC_PREFIX):
+        return s
+    token = _fernet().encrypt(s.encode("utf-8")).decode("utf-8")
+    return f"{ENC_PREFIX}{token}"
+
+
+def _dec(value: str | None) -> str | None:
+    if not value:
+        return value
+    s = str(value)
+    if not s.startswith(ENC_PREFIX):
+        return s
+    token = s[len(ENC_PREFIX):]
+    try:
+        return _fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return None
 
 
 class MasterGSTEnvironment(models.IntegerChoices):
@@ -67,6 +104,17 @@ class SalesMasterGSTCredential(models.Model):
     def __str__(self) -> str:
         return f"MasterGSTCredential(entity={self.entity_id}, env={self.environment}, scope={self.service_scope}, gstin={self.gstin})"
 
+    def get_client_secret(self) -> str:
+        return _dec(self.client_secret) or ""
+
+    def get_gst_password(self) -> str:
+        return _dec(self.gst_password) or ""
+
+    def save(self, *args, **kwargs):
+        self.client_secret = _enc(self.client_secret)
+        self.gst_password = _enc(self.gst_password)
+        super().save(*args, **kwargs)
+
 
 class SalesMasterGSTToken(models.Model):
     """
@@ -102,6 +150,17 @@ class SalesMasterGSTToken(models.Model):
     def set_expiry_default(self):
         self.token_expiry = timezone.now() + timedelta(hours=5, minutes=45)
 
+    def get_auth_token(self) -> str:
+        return _dec(self.auth_token) or ""
+
+    def get_eway_auth_token(self) -> str:
+        return _dec(self.eway_auth_token) or ""
+
+    def save(self, *args, **kwargs):
+        self.auth_token = _enc(self.auth_token)
+        self.eway_auth_token = _enc(self.eway_auth_token)
+        super().save(*args, **kwargs)
+
 
 class MasterGSTToken(models.Model):
     class Module(models.TextChoices):
@@ -123,3 +182,10 @@ class MasterGSTToken(models.Model):
             return False
         # 6 hours validity; keep buffer 5 mins
         return timezone.now() < (self.token_created_at + timedelta(hours=6, minutes=-5))
+
+    def get_auth_token(self) -> str:
+        return _dec(self.auth_token) or ""
+
+    def save(self, *args, **kwargs):
+        self.auth_token = _enc(self.auth_token)
+        super().save(*args, **kwargs)

@@ -80,7 +80,7 @@ class MasterGSTClient:
     def get_token(self, force: bool = False) -> str:
         tok = self._token_row()
         if not force and tok.is_valid():
-            return tok.auth_token  # type: ignore
+            return tok.get_auth_token()  # type: ignore
 
         ip = self._resolve_ip()
         email_q = quote(self.cred.email)
@@ -89,10 +89,10 @@ class MasterGSTClient:
         headers = {
             "Accept": "*/*",
             "username": self.cred.gst_username,
-            "password": self.cred.gst_password,
+            "password": self.cred.get_gst_password(),
             "ip_address": ip,
             "client_id": self.cred.client_id,
-            "client_secret": self.cred.client_secret,
+            "client_secret": self.cred.get_client_secret(),
             "gstin": self.cred.gstin,
         }
 
@@ -150,7 +150,7 @@ class MasterGSTClient:
                 "Content-Type": "application/json",
                 "auth-token": tok_value,
                 "client_id": self.cred.client_id,
-                "client_secret": self.cred.client_secret,
+                "client_secret": self.cred.get_client_secret(),
                 "gstin": self.cred.gstin,
                 "ip_address": self._resolve_ip(),
                 "username": self.cred.gst_username,
@@ -194,6 +194,125 @@ class MasterGSTClient:
             return data
         return {**debug, "_not_dict": True, "_raw": data}
 
+    def cancel_irn(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        token = self.get_token(force=False)
+        email_q = quote(self.cred.email)
+        url = f"{self.base_url}/einvoice/type/CANCEL/version/V1_03?email={email_q}"
+        headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "auth-token": token,
+            "client_id": self.cred.client_id,
+            "client_secret": self.cred.get_client_secret(),
+            "gstin": self.cred.gstin,
+            "ip_address": self._resolve_ip(),
+            "username": self.cred.gst_username,
+            "txn": uuid.uuid4().hex,
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        data = self._safe_json(resp)
+        debug = {
+            "_url": url,
+            "_payload_sent": payload,
+            "_http_status": str(resp.status_code),
+            "_content_type": resp.headers.get("Content-Type"),
+            "_resp_headers": dict(resp.headers),
+        }
+        if isinstance(data, dict):
+            data.update(debug)
+            return data
+        return {**debug, "_not_dict": True, "_raw": data}
+
+    def get_irn_details(self, *, irn: str, supplier_gstin: str | None = None) -> Dict[str, Any]:
+        token = self.get_token(force=False)
+        email_q = quote(self.cred.email)
+        supplier = (supplier_gstin or self.cred.gstin or "").strip().upper()
+        supplier_q = quote(supplier)
+        irn_q = quote(str(irn).strip())
+        url = (
+            f"{self.base_url}/einvoice/type/GETIRN/version/V1_03"
+            f"?param1={irn_q}&email={email_q}&supplier_gstn={supplier_q}"
+        )
+        headers = {
+            "Accept": "*/*",
+            "auth-token": token,
+            "client_id": self.cred.client_id,
+            "client_secret": self.cred.get_client_secret(),
+            "gstin": self.cred.gstin,
+            "ip_address": self._resolve_ip(),
+            "username": self.cred.gst_username,
+        }
+        resp = requests.get(url, headers=headers, timeout=60)
+        data = self._safe_json(resp)
+
+        # Retry once on invalid token (1005)
+        try:
+            if str(data.get("status_cd")) == "0" and "1005" in str(data.get("status_desc", "")):
+                token = self.get_token(force=True)
+                headers["auth-token"] = token
+                resp = requests.get(url, headers=headers, timeout=60)
+                data = self._safe_json(resp)
+        except Exception:
+            pass
+
+        debug = {
+            "_url": url,
+            "_http_status": str(resp.status_code),
+            "_content_type": resp.headers.get("Content-Type"),
+            "_resp_headers": dict(resp.headers),
+            "_supplier_gstin": supplier,
+            "_irn": str(irn),
+        }
+        if isinstance(data, dict):
+            data.update(debug)
+            return data
+        return {**debug, "_not_dict": True, "_raw": data}
+
+    def get_eway_details_by_irn(self, *, irn: str, supplier_gstin: str | None = None) -> Dict[str, Any]:
+        token = self.get_token(force=False)
+        email_q = quote(self.cred.email)
+        supplier = (supplier_gstin or self.cred.gstin or "").strip().upper()
+        supplier_q = quote(supplier)
+        irn_q = quote(str(irn).strip())
+        url = (
+            f"{self.base_url}/einvoice/type/GETEWAYBILLIRN/version/V1_03"
+            f"?param1={irn_q}&supplier_gstn={supplier_q}&email={email_q}"
+        )
+        headers = {
+            "Accept": "*/*",
+            "auth-token": token,
+            "client_id": self.cred.client_id,
+            "client_secret": self.cred.get_client_secret(),
+            "gstin": self.cred.gstin,
+            "ip_address": self._resolve_ip(),
+            "username": self.cred.gst_username,
+        }
+        resp = requests.get(url, headers=headers, timeout=60)
+        data = self._safe_json(resp)
+
+        # Retry once on invalid token (1005)
+        try:
+            if str(data.get("status_cd")) == "0" and "1005" in str(data.get("status_desc", "")):
+                token = self.get_token(force=True)
+                headers["auth-token"] = token
+                resp = requests.get(url, headers=headers, timeout=60)
+                data = self._safe_json(resp)
+        except Exception:
+            pass
+
+        debug = {
+            "_url": url,
+            "_http_status": str(resp.status_code),
+            "_content_type": resp.headers.get("Content-Type"),
+            "_resp_headers": dict(resp.headers),
+            "_supplier_gstin": supplier,
+            "_irn": str(irn),
+        }
+        if isinstance(data, dict):
+            data.update(debug)
+            return data
+        return {**debug, "_not_dict": True, "_raw": data}
+
     # ----------------------------
     # B2B EWB (IRN based)
     # ----------------------------
@@ -208,7 +327,7 @@ class MasterGSTClient:
             "Content-Type": "application/json",
             "auth-token": token,
             "client_id": self.cred.client_id,
-            "client_secret": self.cred.client_secret,
+            "client_secret": self.cred.get_client_secret(),
             "gstin": self.cred.gstin,
             "ip_address": self._resolve_ip(),
             "username": self.cred.gst_username,
@@ -251,7 +370,7 @@ class MasterGSTClient:
 
         # DB reuse (optional but recommended)
         tok = self._token_row()
-        ewb_token = getattr(tok, "eway_auth_token", None)
+        ewb_token = tok.get_eway_auth_token()
         ewb_expiry = getattr(tok, "eway_token_expiry", None)
         if not force and ewb_token and ewb_expiry and timezone.now() < ewb_expiry:
             self._eway_auth_token = ewb_token
@@ -261,7 +380,7 @@ class MasterGSTClient:
 
         email_q = quote(self.cred.email or "")
         user_q = quote(self.cred.gstin or "")  # as per your curl
-        pass_q = quote(getattr(self.cred, "eway_password", None) or self.cred.gst_password or "")
+        pass_q = quote(getattr(self.cred, "eway_password", None) or self.cred.get_gst_password() or "")
 
         url = f"{self.base_url}/ewaybillapi/v1.03/authenticate?email={email_q}&username={user_q}&password={pass_q}"
 
@@ -269,7 +388,7 @@ class MasterGSTClient:
             "Accept": "application/json",
             "ip_address": self._resolve_ip(),
             "client_id": self.cred.client_id,
-            "client_secret": self.cred.client_secret,
+            "client_secret": self.cred.get_client_secret(),
             "gstin": self.cred.gstin,
         }
 
@@ -325,7 +444,7 @@ class MasterGSTClient:
             "content-type": "application/json",
             "ip_address": self._resolve_ip(),
             "client_id": self.cred.client_id,
-            "client_secret": self.cred.client_secret,
+            "client_secret": self.cred.get_client_secret(),
             "gstin": self.cred.gstin,
             "authtoken": token,  # <- if your integration uses a different header key, change it here
         }
@@ -340,12 +459,12 @@ class MasterGSTClient:
 
             "ip_address": str(self._resolve_ip()).strip(),
             "client_id": self.cred.client_id,
-            "client_secret": self.cred.client_secret,
+            "client_secret": self.cred.get_client_secret(),
             "gstin": self.cred.gstin,
 
             # ✅ Add these (EWB portal creds)
             "username": (getattr(self.cred, "eway_username", None) or self.cred.gstin),
-            "password": (getattr(self.cred, "eway_password", None) or self.cred.gst_password),
+            "password": (getattr(self.cred, "eway_password", None) or self.cred.get_gst_password()),
 
             # ✅ Add txn like your IRN flow (many MasterGST routes expect it)
             "txn": uuid.uuid4().hex,
@@ -365,3 +484,54 @@ class MasterGSTClient:
             data.update(debug)
             return data
         return {**debug, "_not_dict": True, "_raw": data}
+
+    def _eway_direct_headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "ip_address": str(self._resolve_ip()).strip(),
+            "client_id": self.cred.client_id,
+            "client_secret": self.cred.get_client_secret(),
+            "gstin": self.cred.gstin,
+            "username": (getattr(self.cred, "eway_username", None) or self.cred.gstin),
+            "password": (getattr(self.cred, "eway_password", None) or self.cred.get_gst_password()),
+            "txn": uuid.uuid4().hex,
+        }
+
+    def _eway_direct_post(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        email_q = quote(self.cred.email or "")
+        url = f"{self.base_url}{endpoint}?email={email_q}"
+        resp = requests.post(url, json=payload, headers=self._eway_direct_headers(), timeout=60)
+        data = self._safe_json(resp)
+        debug = {
+            "_url": url,
+            "_payload_sent": payload,
+            "_http_status": str(resp.status_code),
+            "_content_type": resp.headers.get("Content-Type"),
+            "_resp_headers": dict(resp.headers),
+        }
+        if isinstance(data, dict):
+            data.update(debug)
+            return data
+        return {**debug, "_not_dict": True, "_raw": data}
+
+    def cancel_eway_direct(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._eway_direct_post("/ewaybillapi/v1.03/ewayapi/canewb", payload)
+
+    def update_eway_vehicle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # MasterGST commonly exposes vehicle update as `vehewb`.
+        # Keep a fallback to older `updvehicle` route for compatibility.
+        primary = self._eway_direct_post("/ewaybillapi/v1.03/ewayapi/vehewb", payload)
+        if str(primary.get("status_cd") or "") == "1":
+            return primary
+        fallback = self._eway_direct_post("/ewaybillapi/v1.03/ewayapi/updvehicle", payload)
+        if str(fallback.get("status_cd") or "") == "1":
+            return fallback
+        # Return primary failure by default (more canonical endpoint for this API)
+        return primary
+
+    def update_eway_transporter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._eway_direct_post("/ewaybillapi/v1.03/ewayapi/updatetransporter", payload)
+
+    def extend_eway_validity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._eway_direct_post("/ewaybillapi/v1.03/ewayapi/extendvalidity", payload)
