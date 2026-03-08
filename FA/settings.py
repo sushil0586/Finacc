@@ -69,6 +69,8 @@ INSTALLED_APPS = [
     "localization",
     "purchase",
     "payments",
+    "receipts",
+    "vouchers",
     "posting",
     "sales.apps.SalesConfig",
     "withholding",

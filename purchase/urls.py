@@ -34,6 +34,7 @@ from purchase.views.purchase_readonly import (
     PurchaseTaxSummaryListAPIView,
 )
 from purchase.views.purchase_ap import (
+    VendorAdvanceBalanceListAPIView,
     VendorBillOpenItemListAPIView,
     VendorSettlementListCreateAPIView,
     VendorSettlementPostAPIView,
@@ -94,6 +95,7 @@ urlpatterns = [
     path("purchase-lines/", PurchaseInvoiceLinesListAPIView.as_view(), name="purchase-lines-list"),
     path("purchase-tax-summaries/", PurchaseTaxSummaryListAPIView.as_view(), name="purchase-tax-summaries-list"),
     path("ap/open-items/", VendorBillOpenItemListAPIView.as_view(), name="purchase-ap-open-items-list"),
+    path("ap/open-advances/", VendorAdvanceBalanceListAPIView.as_view(), name="purchase-ap-open-advances-list"),
     path("ap/settlements/", VendorSettlementListCreateAPIView.as_view(), name="purchase-ap-settlement-list-create"),
     path("ap/settlements/<int:pk>/post/", VendorSettlementPostAPIView.as_view(), name="purchase-ap-settlement-post"),
     path("ap/settlements/<int:pk>/cancel/", VendorSettlementCancelAPIView.as_view(), name="purchase-ap-settlement-cancel"),

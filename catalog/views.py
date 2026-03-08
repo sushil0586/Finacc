@@ -15,6 +15,7 @@ from io import BytesIO
 import math
 
 from django.db import transaction
+from django.utils.dateparse import parse_date
 from rest_framework.generics import ListAPIView
 from django.db.models import Q, Prefetch, OuterRef, Subquery
 from django.shortcuts import get_object_or_404
@@ -357,6 +358,10 @@ class InvoiceProductListAPIView(APIView):
 
     def get(self, request, entity_id, format=None):
         search = (request.query_params.get("search") or "").strip()
+        as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
+        as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
+        if as_of_date_raw and not as_of_date:
+            raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
 
         # Subquery: pick default GST record else latest by valid_from
         gst_default_sq = ProductGstRate.objects.filter(
@@ -368,6 +373,16 @@ class InvoiceProductListAPIView(APIView):
             product_id=OuterRef("pk")
         ).order_by("-valid_from")
 
+        if as_of_date:
+            gst_default_sq = gst_default_sq.filter(
+                Q(valid_from__isnull=True) | Q(valid_from__lte=as_of_date),
+                Q(valid_to__isnull=True) | Q(valid_to__gte=as_of_date),
+            )
+            gst_latest_sq = gst_latest_sq.filter(
+                Q(valid_from__isnull=True) | Q(valid_from__lte=as_of_date),
+                Q(valid_to__isnull=True) | Q(valid_to__gte=as_of_date),
+            )
+
         # Subquery: pick default price record else latest
         price_default_sq = ProductPrice.objects.filter(
             product_id=OuterRef("pk"),
@@ -377,6 +392,14 @@ class InvoiceProductListAPIView(APIView):
         price_latest_sq = ProductPrice.objects.filter(
             product_id=OuterRef("pk")
         ).order_by("-effective_from")
+
+        if as_of_date:
+            price_default_sq = price_default_sq.filter(
+                effective_from__lte=as_of_date,
+            ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date))
+            price_latest_sq = price_latest_sq.filter(
+                effective_from__lte=as_of_date,
+            ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date))
 
         qs = (
             Product.objects
@@ -533,10 +556,18 @@ class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductBarcodeManageSerializer
 
+    def _get_entity(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+        try:
+            return Entity.objects.get(id=int(entity_param))
+        except (ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
+
     def get_product(self):
         product_id = self.kwargs["product_id"]
-        # If you want entity scoping here too, add ?entity= and verify
-        return get_object_or_404(Product, pk=product_id)
+        return get_object_or_404(Product, pk=product_id, entity=self._get_entity())
 
     def get_queryset(self):
         product = self.get_product()
@@ -555,7 +586,16 @@ class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
 class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductBarcodeManageSerializer
-    queryset = ProductBarcode.objects.select_related("product", "uom")
+
+    def get_queryset(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+        try:
+            entity_id = int(entity_param)
+        except (TypeError, ValueError):
+            raise ValidationError({"entity": "Invalid entity id"})
+        return ProductBarcode.objects.select_related("product", "uom").filter(product__entity_id=entity_id)
 
 
 # ----------------------------------------------------------------------
@@ -588,6 +628,13 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
 
     def post(self, request):
         data = request.data
+        entity_param = request.query_params.get("entity")
+        if not entity_param:
+            return Response({"detail": "Query param ?entity=<id> is required."}, status=400)
+        try:
+            entity_id = int(entity_param)
+        except Exception:
+            return Response({"detail": "Invalid entity id"}, status=400)
 
         if not isinstance(data, list):
             return Response({"detail": "Request body must be a JSON array"}, status=400)
@@ -630,7 +677,7 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
 
             barcodes = list(
                 ProductBarcode.objects
-                .filter(id__in=id_list)
+                .filter(id__in=id_list, product__entity_id=entity_id)
                 .select_related("product", "uom")
             )
             if not barcodes:
@@ -862,6 +909,10 @@ class PurchaseInvoiceProductListAPIView(APIView):
 
     def get(self, request, format=None):
         entity = self.request.query_params.get('entity')
+        as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
+        as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
+        if as_of_date_raw and not as_of_date:
+            raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
 
         # ---- Pagination ----
         # sensible defaults (do NOT allow unbounded)
@@ -907,6 +958,10 @@ class PurchaseInvoiceProductListAPIView(APIView):
         gst_rows = list(
             ProductGstRate.objects
             .filter(product_id__in=product_ids)
+            .filter(
+                Q(valid_from__isnull=True) | Q(valid_from__lte=as_of_date) if as_of_date else Q(),
+                Q(valid_to__isnull=True) | Q(valid_to__gte=as_of_date) if as_of_date else Q(),
+            )
             .order_by("product_id", "-isdefault", "-valid_from", "-id")
             .distinct("product_id")
             .values(
@@ -922,6 +977,10 @@ class PurchaseInvoiceProductListAPIView(APIView):
         price_rows = list(
             ProductPrice.objects
             .filter(product_id__in=product_ids)
+            .filter(
+                Q(effective_from__lte=as_of_date) if as_of_date else Q(),
+                Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date) if as_of_date else Q(),
+            )
             .select_related("pricelist")
             .order_by("product_id", "-pricelist__isdefault", "-effective_from", "-id")
             .distinct("product_id")

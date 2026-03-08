@@ -12,6 +12,7 @@ ENFORCEMENT_LEVELS = {"off", "warn", "hard"}
 ON_OFF = {"on", "off"}
 OVER_SETTLEMENT_RULES = {"block", "warn"}
 ALLOCATION_POLICIES = {"manual", "fifo"}
+UNPOST_TARGETS = {"confirmed", "draft"}
 
 
 @dataclass(frozen=True)
@@ -63,12 +64,22 @@ class PaymentSettingsService:
             if key not in DEFAULT_PAYMENT_POLICY_CONTROLS:
                 continue
             v = str(value).lower().strip()
-            if key == "require_allocation_on_post":
+            if key in {"require_allocation_on_post", "allocation_amount_match_rule", "payment_maker_checker", "require_reference_number"}:
                 if v not in ENFORCEMENT_LEVELS:
-                    raise ValueError("policy_controls.require_allocation_on_post must be one of: off, warn, hard.")
+                    raise ValueError(f"policy_controls.{key} must be one of: off, warn, hard.")
                 normalized[key] = v
                 continue
-            if key in {"allow_advance_without_allocation", "sync_ap_settlement_on_post"}:
+            if key in {
+                "allow_advance_without_allocation",
+                "allow_on_account_without_allocation",
+                "sync_ap_settlement_on_post",
+                "sync_advance_balance_on_post",
+                "residual_to_advance_balance",
+                "require_confirm_before_post",
+                "require_submit_before_approve",
+                "allow_edit_after_submit",
+                "same_user_submit_approve",
+            }:
                 if v not in ON_OFF:
                     raise ValueError(f"policy_controls.{key} must be one of: on, off.")
                 normalized[key] = v
@@ -83,9 +94,9 @@ class PaymentSettingsService:
                     raise ValueError("policy_controls.allocation_policy must be one of: manual, fifo.")
                 normalized[key] = v
                 continue
-            if key == "allocation_amount_match_rule":
-                if v not in ENFORCEMENT_LEVELS:
-                    raise ValueError("policy_controls.allocation_amount_match_rule must be one of: off, warn, hard.")
+            if key == "unpost_target_status":
+                if v not in UNPOST_TARGETS:
+                    raise ValueError("policy_controls.unpost_target_status must be one of: confirmed, draft.")
                 normalized[key] = v
                 continue
         return normalized

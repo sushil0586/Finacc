@@ -8,10 +8,20 @@ from .base import TrackingModel
 DEFAULT_PAYMENT_POLICY_CONTROLS = {
     "require_allocation_on_post": "hard",      # off|warn|hard
     "allow_advance_without_allocation": "on",  # on|off
+    "allow_on_account_without_allocation": "on",  # on|off
     "sync_ap_settlement_on_post": "on",        # on|off
+    "sync_advance_balance_on_post": "on",      # on|off
+    "residual_to_advance_balance": "on",       # on|off
+    "require_confirm_before_post": "on",       # on|off
+    "require_submit_before_approve": "off",    # on|off
+    "allow_edit_after_submit": "on",           # on|off
+    "unpost_target_status": "confirmed",       # confirmed|draft
     "allocation_policy": "manual",             # manual|fifo
     "over_settlement_rule": "block",           # block|warn
     "allocation_amount_match_rule": "hard",    # off|warn|hard
+    "payment_maker_checker": "off",            # off|warn|hard
+    "same_user_submit_approve": "on",          # on|off
+    "require_reference_number": "off",         # off|warn|hard
 }
 
 

@@ -78,6 +78,13 @@ class VendorSettlement(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     vendor = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    advance_balance = models.ForeignKey(
+        "purchase.VendorAdvanceBalance",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="settlements",
+    )
 
     settlement_type = models.CharField(max_length=30, choices=SettlementType.choices, default=SettlementType.PAYMENT)
     settlement_date = models.DateField(db_index=True)
@@ -98,6 +105,46 @@ class VendorSettlement(TrackingModel):
 
     def __str__(self) -> str:
         return f"VendorSettlement({self.id}, {self.settlement_type}, {self.total_amount})"
+
+
+class VendorAdvanceBalance(TrackingModel):
+    class SourceType(models.TextChoices):
+        PAYMENT_ADVANCE = "payment_advance", "Payment Advance"
+        ON_ACCOUNT = "on_account", "On Account"
+        MANUAL = "manual", "Manual"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
+    vendor = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+
+    source_type = models.CharField(max_length=30, choices=SourceType.choices, default=SourceType.PAYMENT_ADVANCE, db_index=True)
+    credit_date = models.DateField(db_index=True)
+    reference_no = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+    remarks = models.CharField(max_length=255, null=True, blank=True)
+
+    original_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    adjusted_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    outstanding_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2, db_index=True)
+    is_open = models.BooleanField(default=True, db_index=True)
+    last_adjusted_at = models.DateTimeField(null=True, blank=True)
+
+    payment_voucher = models.OneToOneField(
+        "payments.PaymentVoucherHeader",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vendor_advance_balance",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "entityfinid", "vendor", "is_open"], name="ix_pur_adv_scope"),
+            models.Index(fields=["entity", "entityfinid", "credit_date"], name="ix_pur_adv_creditdt"),
+        ]
+
+    def __str__(self) -> str:
+        return f"VendorAdvanceBalance({self.id}, outstanding={self.outstanding_amount})"
 
 
 class VendorSettlementLine(TrackingModel):

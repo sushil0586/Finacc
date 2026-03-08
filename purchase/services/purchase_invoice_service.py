@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from gst_tds.services.gst_tds_service import GstTdsService
-from purchase.models.purchase_addons import PurchaseChargeLine
+from purchase.models.purchase_addons import PurchaseChargeLine, PurchaseChargeType
 
 
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 
@@ -693,8 +693,14 @@ class PurchaseInvoiceService:
 
         # --- CHARGES (NEW) ---
         for ch in header.charges.all():
+            charge_taxability_map = {
+                PurchaseChargeLine.Taxability.TAXABLE: int(Taxability.TAXABLE),
+                PurchaseChargeLine.Taxability.EXEMPT: int(Taxability.EXEMPT),
+                PurchaseChargeLine.Taxability.NIL: int(Taxability.NIL_RATED),
+                PurchaseChargeLine.Taxability.NON_GST: int(Taxability.NON_GST),
+            }
             key = (
-                int(ch.taxability),
+                int(charge_taxability_map.get(ch.taxability, int(Taxability.TAXABLE))),
                 (ch.hsn_sac_code or "").strip() or None,
                 bool(ch.is_service),
                 q2(ch.gst_rate),
@@ -905,6 +911,68 @@ class PurchaseInvoiceService:
             igst_amount=igst,
             total_value=total,
         )
+
+    @staticmethod
+    def _resolve_charge_master(*, header: PurchaseInvoiceHeader, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row or {})
+        raw_id = data.pop("charge_type_id", None)
+        raw_type = data.get("charge_type")
+        master = None
+
+        qs = PurchaseChargeType.objects.filter(is_active=True).filter(
+            Q(entity_id=header.entity_id) | Q(entity__isnull=True)
+        ).order_by("-entity_id", "id")
+
+        if raw_id not in (None, ""):
+            try:
+                master = qs.filter(id=int(raw_id)).first()
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid charge_type_id '{raw_id}'.")
+            if not master:
+                raise ValueError(f"Charge type id {raw_id} not found for this entity.")
+        elif raw_type not in (None, ""):
+            raw = str(raw_type).strip()
+            normalized = raw.upper().replace("-", "_").replace(" ", "_")
+            valid_enum_map = {
+                str(value): value
+                for value, _label in PurchaseChargeLine.ChargeType.choices
+            }
+            valid_enum_map.update({
+                str(label).upper().replace("-", "_").replace(" ", "_"): value
+                for value, label in PurchaseChargeLine.ChargeType.choices
+            })
+
+            if normalized in valid_enum_map:
+                data["charge_type"] = valid_enum_map[normalized]
+            else:
+                master = qs.filter(code__iexact=raw).first() or qs.filter(name__iexact=raw).first()
+                if not master:
+                    raise ValueError(
+                        f"Invalid charge_type '{raw}'. Provide charge_type_id or a valid charge type code/name."
+                    )
+
+        if master:
+            base_map = {
+                PurchaseChargeType.BaseCategory.FREIGHT: PurchaseChargeLine.ChargeType.FREIGHT,
+                PurchaseChargeType.BaseCategory.PACKING: PurchaseChargeLine.ChargeType.PACKING,
+                PurchaseChargeType.BaseCategory.INSURANCE: PurchaseChargeLine.ChargeType.INSURANCE,
+                PurchaseChargeType.BaseCategory.OTHER: PurchaseChargeLine.ChargeType.OTHER,
+            }
+            data["charge_type"] = base_map.get(master.base_category, PurchaseChargeLine.ChargeType.OTHER)
+            if not (data.get("description") or "").strip():
+                data["description"] = master.name or master.description or ""
+            if data.get("is_service") in (None, ""):
+                data["is_service"] = bool(master.is_service)
+            if not (data.get("hsn_sac_code") or "").strip():
+                data["hsn_sac_code"] = (master.hsn_sac_code_default or "").strip()
+            if data.get("gst_rate") in (None, ""):
+                data["gst_rate"] = q2(master.gst_rate_default or ZERO2)
+            if data.get("itc_eligible") in (None, ""):
+                data["itc_eligible"] = bool(master.itc_eligible_default)
+
+        if data.get("charge_type") in (None, ""):
+            data["charge_type"] = PurchaseChargeLine.ChargeType.OTHER
+        return data
     
 
 
@@ -912,6 +980,8 @@ class PurchaseInvoiceService:
     def validate_charges(*, header: PurchaseInvoiceHeader, charges: List[Dict[str, Any]]) -> None:
         seen_line_no: set[int] = set()
         for i, row in enumerate(charges or [], start=1):
+            row = PurchaseInvoiceService._resolve_charge_master(header=header, row=row)
+            charges[i - 1] = row
             line_no_raw = row.get("line_no")
             if line_no_raw not in (None, ""):
                 try:
@@ -966,6 +1036,7 @@ class PurchaseInvoiceService:
 
         # recompute & upsert
         for idx, row in enumerate(charges_client, start=1):
+            row = PurchaseInvoiceService._resolve_charge_master(header=header, row=row)
             cid = int(row.get("id") or 0)
             row["header"] = header
 

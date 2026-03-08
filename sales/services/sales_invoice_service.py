@@ -40,6 +40,7 @@ from sales.models import (
     SalesSettings,
     SalesLockPeriod,
 )
+from sales.services.sales_ar_service import SalesArService
 
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
@@ -1636,6 +1637,7 @@ class SalesInvoiceService:
             "outstanding_amount",
             "settlement_status",
         ])
+        SalesArService.sync_open_item_for_header(header)
 
         cls._run_auto_compliance(header=header, user=user, stage="post")
         return header
@@ -1782,6 +1784,7 @@ class SalesInvoiceService:
                 "updated_at",
             ]
         )
+        SalesArService.close_open_item_for_header(header)
         return header
 
     @classmethod
@@ -1841,4 +1844,5 @@ class SalesInvoiceService:
             header.remarks = (header.remarks + "\n" + f"Cancelled: {reason}").strip()
         header.updated_by = user
         header.save(update_fields=["status", "cancelled_at", "cancelled_by", "remarks", "updated_by", "updated_at"])
+        SalesArService.close_open_item_for_header(header)
         return header

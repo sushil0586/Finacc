@@ -8,10 +8,10 @@ from django.db.models import Q
 from django.utils import timezone
 
 from financial.models import account
-from invoice.models import Paymentmodes
 from geography.models import State
 
 from .base import TrackingModel
+from .payment_masters import PaymentMode
 
 ZERO2 = Decimal("0.00")
 User = settings.AUTH_USER_MODEL
@@ -51,7 +51,7 @@ class PaymentVoucherHeader(TrackingModel):
 
     paid_from = models.ForeignKey(account, on_delete=models.PROTECT, related_name="new_pv_paid_from")
     paid_to = models.ForeignKey(account, on_delete=models.PROTECT, related_name="new_pv_paid_to")
-    payment_mode = models.ForeignKey(Paymentmodes, on_delete=models.PROTECT, null=True, blank=True)
+    payment_mode = models.ForeignKey(PaymentMode, on_delete=models.PROTECT, null=True, blank=True)
 
     cash_paid_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     total_adjustment_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
@@ -77,6 +77,7 @@ class PaymentVoucherHeader(TrackingModel):
     status = models.IntegerField(choices=Status.choices, default=Status.DRAFT, db_index=True)
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="new_pv_approved")
     approved_at = models.DateTimeField(null=True, blank=True)
+    workflow_payload = models.JSONField(default=dict, blank=True)
 
     is_cancelled = models.BooleanField(default=False)
     cancelled_at = models.DateTimeField(null=True, blank=True)
@@ -184,3 +185,48 @@ class PaymentVoucherAdjustment(TrackingModel):
 
     def __str__(self):
         return f"{self.payment_voucher_id} {self.adj_type} {self.amount} {self.settlement_effect}"
+
+
+class PaymentVoucherAdvanceAdjustment(TrackingModel):
+    payment_voucher = models.ForeignKey(PaymentVoucherHeader, related_name="advance_adjustments", on_delete=models.CASCADE)
+    advance_balance = models.ForeignKey(
+        "purchase.VendorAdvanceBalance",
+        on_delete=models.PROTECT,
+        related_name="payment_advance_adjustments",
+    )
+    allocation = models.ForeignKey(
+        PaymentVoucherAllocation,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="advance_adjustments",
+    )
+    open_item = models.ForeignKey(
+        "purchase.VendorBillOpenItem",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="payment_advance_adjustments",
+    )
+    adjusted_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
+    ap_settlement = models.OneToOneField(
+        "purchase.VendorSettlement",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payment_advance_adjustment",
+    )
+    remarks = models.CharField(max_length=200, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(name="ck_payment_adv_adj_amt_nonneg", check=Q(adjusted_amount__gte=0)),
+        ]
+        indexes = [
+            models.Index(fields=["payment_voucher"], name="ix_payment_adv_adj_voucher"),
+            models.Index(fields=["advance_balance"], name="ix_payment_adv_adj_balance"),
+            models.Index(fields=["open_item"], name="ix_payment_adv_adj_openitem"),
+        ]
+
+    def __str__(self):
+        return f"{self.payment_voucher_id} -> {self.advance_balance_id}: {self.adjusted_amount}"

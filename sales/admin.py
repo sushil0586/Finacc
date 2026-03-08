@@ -26,6 +26,12 @@ from sales.models.sales_compliance import (
     SalesComplianceErrorCode,
 )
 from sales.models.sales_addons import SalesChargeLine, SalesChargeType
+from sales.models.sales_ar import (
+    CustomerBillOpenItem,
+    CustomerAdvanceBalance,
+    CustomerSettlement,
+    CustomerSettlementLine,
+)
 from sales.services.sales_invoice_service import SalesInvoiceService
 
 # If you created separate actions module later, you can swap to that
@@ -992,4 +998,42 @@ class MasterGSTTokenAdmin(admin.ModelAdmin):
     list_filter = ("module", "entity")
     search_fields = ("entity__entityname", "gstin")
     ordering = ("-updated_at",)
+
+
+@admin.register(CustomerBillOpenItem)
+class CustomerBillOpenItemAdmin(admin.ModelAdmin):
+    list_display = ("id", "invoice_number", "customer", "bill_date", "original_amount", "settled_amount", "outstanding_amount", "is_open")
+    list_filter = ("entity", "entityfinid", "subentity", "is_open", "doc_type")
+    search_fields = ("invoice_number", "customer_reference_number", "customer__accountname")
+    list_select_related = ("header", "customer", "entity", "entityfinid", "subentity")
+
+
+@admin.register(CustomerAdvanceBalance)
+class CustomerAdvanceBalanceAdmin(admin.ModelAdmin):
+    list_display = ("id", "customer", "source_type", "credit_date", "original_amount", "adjusted_amount", "outstanding_amount", "is_open")
+    list_filter = ("entity", "entityfinid", "subentity", "source_type", "is_open")
+    search_fields = ("reference_no", "customer__accountname", "receipt_voucher__voucher_code")
+    list_select_related = ("customer", "receipt_voucher", "entity", "entityfinid", "subentity")
+
+
+class CustomerSettlementLineInline(admin.TabularInline):
+    model = CustomerSettlementLine
+    extra = 0
+    show_change_link = True
+    raw_id_fields = ("open_item",)
+
+
+@admin.register(CustomerSettlement)
+class CustomerSettlementAdmin(admin.ModelAdmin):
+    inlines = [CustomerSettlementLineInline]
+    list_display = ("id", "settlement_type", "settlement_date", "customer", "total_amount", "status", "advance_balance")
+    list_filter = ("entity", "entityfinid", "subentity", "settlement_type", "status")
+    search_fields = ("reference_no", "external_voucher_no", "customer__accountname")
+    list_select_related = ("customer", "advance_balance", "entity", "entityfinid", "subentity", "posted_by")
+
+
+@admin.register(CustomerSettlementLine)
+class CustomerSettlementLineAdmin(admin.ModelAdmin):
+    list_display = ("id", "settlement", "open_item", "amount", "applied_amount_signed")
+    list_select_related = ("settlement", "open_item")
 

@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 
 from purchase.models.purchase_ap import VendorSettlement
 from purchase.serializers.purchase_ap import (
+    VendorAdvanceBalanceSerializer,
     VendorBillOpenItemSerializer,
     VendorSettlementSerializer,
     VendorSettlementCreateInputSerializer,
@@ -51,7 +52,31 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
             subentity_id=subentity_id,
             vendor_id=vendor_id,
             is_open=open_flag,
-        )
+        ).select_related("vendor", "header")
+
+
+class VendorAdvanceBalanceListAPIView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = VendorAdvanceBalanceSerializer
+
+    def get_queryset(self):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
+        vendor = self.request.query_params.get("vendor")
+        is_open = self.request.query_params.get("is_open")
+        vendor_id = int(vendor) if vendor not in (None, "", "null") else None
+
+        if is_open in (None, "", "null"):
+            open_flag = True
+        else:
+            open_flag = str(is_open).strip().lower() in ("1", "true", "yes", "y")
+
+        return PurchaseApService.list_open_advances(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            vendor_id=vendor_id,
+            is_open=open_flag,
+        ).select_related("vendor", "payment_voucher").prefetch_related("settlements__lines__open_item")
 
 
 class VendorSettlementListCreateAPIView(generics.ListCreateAPIView):
@@ -91,6 +116,7 @@ class VendorSettlementListCreateAPIView(generics.ListCreateAPIView):
                 remarks=data.get("remarks"),
                 lines=data.get("lines"),
                 amount=data.get("amount"),
+                advance_balance_id=data.get("advance_balance"),
             )
         except ValueError as e:
             raise ValidationError({"detail": str(e)})
@@ -153,5 +179,6 @@ class VendorStatementAPIView(APIView):
         return Response({
             "totals": data["totals"],
             "open_items": VendorBillOpenItemSerializer(data["open_items"], many=True).data,
+            "advances": VendorAdvanceBalanceSerializer(data["advances"], many=True).data,
             "settlements": VendorSettlementSerializer(data["settlements"], many=True).data,
         })

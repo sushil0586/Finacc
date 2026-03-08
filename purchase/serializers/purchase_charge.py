@@ -17,6 +17,9 @@ def q2(x) -> Decimal:
 
 
 class PurchaseChargeLineSerializer(serializers.ModelSerializer):
+    charge_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    charge_type_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    itc_block_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     charge_type_name = serializers.CharField(source="get_charge_type_display", read_only=True)
     taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
 
@@ -27,6 +30,7 @@ class PurchaseChargeLineSerializer(serializers.ModelSerializer):
             "line_no",
 
             "charge_type",
+            "charge_type_id",
             "charge_type_name",
             "description",
 
