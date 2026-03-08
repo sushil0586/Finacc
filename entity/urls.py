@@ -1,5 +1,6 @@
 from django.urls import path
 from entity import views
+from entity.context_views import UserEntitiesV2View
 
 
 app_name = 'entity'
@@ -28,6 +29,7 @@ urlpatterns  = [
     path('menudetails',views.menudetails.as_view(), name = 'unittypeid'),
     path('roledetailsbyroleid',views.roledetails.as_view(), name = 'unittypeid'),
     path('entitydetailsbyuser',views.UserEntitiesView.as_view(), name = 'unittypeid'),
+    path('me/entities',UserEntitiesV2View.as_view(), name = 'entity-context-v2'),
     path('userdetailsbyentity',views.userdetailsbyentity.as_view(), name = 'unittypeid'),
     path('userAddApiView',views.userAddApiView.as_view(), name = 'unittypeid'),
     path('getentitybygst',views.getgstindetails.as_view(), name = 'unittypeid'),

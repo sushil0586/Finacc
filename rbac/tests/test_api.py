@@ -7,21 +7,21 @@ from entity.models import (
     Constitution,
     Entity,
     GstRegistrationType,
-    Role,
+    Role as LegacyRole,
     RolePrivilege,
     UnitType,
     UserRole,
 )
 from geography.models import City, Country, District, State
 from rbac.backfill import LegacyRBACBackfillService
+from rbac.models import Menu, Permission
 
 
-class EntityContextV2Tests(TestCase):
+class RBACAPITests(TestCase):
     def setUp(self):
-        self.client = APIClient()
         self.user = User.objects.create_user(
-            username="entity_user",
-            email="entity_user@example.com",
+            email="viewer@example.com",
+            username="viewer@example.com",
             password="secret123",
         )
         self.country = Country.objects.create(countryname="India", countrycode="IN")
@@ -55,6 +55,34 @@ class EntityContextV2Tests(TestCase):
             const=self.constitution,
             createdby=self.user,
         )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_menu_tree_endpoint_returns_nested_children(self):
+        root = Menu.objects.create(name="Sales", code="sales", menu_type=Menu.TYPE_GROUP)
+        Menu.objects.create(name="Invoices", code="sales.invoices", parent=root)
+
+        response = self.client.get("/api/rbac/menus")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["children"][0]["code"], "sales.invoices")
+
+    def test_permissions_endpoint_returns_catalog(self):
+        Permission.objects.create(
+            code="sales.invoice.view",
+            name="View Sales Invoice",
+            module="sales",
+            resource="invoice",
+            action="view",
+        )
+
+        response = self.client.get("/api/rbac/permissions")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["code"], "sales.invoice.view")
+
+    def test_user_menu_endpoints_return_recursive_tree_for_entity(self):
         main_menu = MainMenu.objects.create(mainmenu="Sales", menuurl="/sales", menucode="sales", order=1)
         submenu = Submenu.objects.create(
             mainmenu=main_menu,
@@ -63,20 +91,19 @@ class EntityContextV2Tests(TestCase):
             subMenuurl="/sales/invoices",
             order=1,
         )
-        self.legacy_role = Role.objects.create(
+        legacy_role = LegacyRole.objects.create(
             rolename="Sales User",
             roledesc="Sales",
             rolelevel=1,
             entity=self.entity,
         )
-        UserRole.objects.create(user=self.user, entity=self.entity, role=self.legacy_role)
-        RolePrivilege.objects.create(role=self.legacy_role, submenu=submenu, entity=self.entity)
+        UserRole.objects.create(user=self.user, entity=self.entity, role=legacy_role)
+        RolePrivilege.objects.create(role=legacy_role, submenu=submenu, entity=self.entity)
         LegacyRBACBackfillService.run()
-        self.client.force_authenticate(user=self.user)
 
-    def test_me_entities_returns_role_context(self):
-        response = self.client.get("/api/entity/me/entities")
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity.id}&role={legacy_role.id}")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data[0]["entityid"], self.entity.id)
-        self.assertEqual(response.data[0]["roles"][0]["name"], "Sales User")
+        self.assertEqual(response.data["entity_id"], self.entity.id)
+        self.assertEqual(response.data["menus"][0]["name"], "Sales")
+        self.assertEqual(response.data["menus"][0]["children"][0]["name"], "Invoices")

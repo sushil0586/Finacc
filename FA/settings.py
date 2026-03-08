@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     "sales.apps.SalesConfig",
     "withholding",
     "gst_tds",
+    "rbac",
     
 ]
 

@@ -7,7 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 
 class CountryApiView(ListAPIView):
     serializer_class = CountrySerializer
-    permission_classes = (permissions.IsAuthenticated,)
+    
 
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['id']
@@ -19,7 +19,7 @@ class CountryApiView(ListAPIView):
 
 class StateApiView(ListAPIView):
     serializer_class = StateListSerializer
-    permission_classes = (permissions.IsAuthenticated,)
+    
 
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['id', 'country']
@@ -31,7 +31,7 @@ class StateApiView(ListAPIView):
 
 class DistrictApiView(ListAPIView):
     serializer_class = DistrictListSerializer
-    permission_classes = (permissions.IsAuthenticated,)
+    
 
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['id', 'state']
@@ -43,7 +43,7 @@ class DistrictApiView(ListAPIView):
 
 class CityApiView(ListAPIView):
     serializer_class = CityListSerializer
-    permission_classes = (permissions.IsAuthenticated,)
+   
 
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['id', 'distt']

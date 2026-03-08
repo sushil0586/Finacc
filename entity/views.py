@@ -19,6 +19,7 @@ from geography.models import Country,State,District,City
 from rest_framework import response,status,permissions
 from helpers.utils.gst_api import get_gst_details
 from django.shortcuts import get_object_or_404
+from rbac.services import LegacyMenuCompatibilityService
 
 
 
@@ -537,23 +538,17 @@ class menudetails(ListAPIView):
 
       
     def get(self, request, format=None):
-        #entity = self.request.query_params.get('entity')
         entity1 = self.request.query_params.get('entity')
         role1 = self.request.query_params.get('role')
-        stk = RolePrivilege.objects.filter(entity = entity1,role = role1).values('submenu__mainmenu__mainmenu','submenu__mainmenu__menuurl','submenu__mainmenu__menucode','submenu__submenu','submenu__subMenuurl','submenu__submenucode').order_by('submenu__mainmenu__order')
+        if not entity1:
+            return Response({"detail": "entity is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        df = read_frame(stk)
-        df.rename(columns = {'submenu__mainmenu__mainmenu':'mainmenu','submenu__mainmenu__menuurl':'menuurl','submenu__mainmenu__menucode':'menucode','submenu__submenu':'submenu','submenu__subMenuurl':'subMenuurl','submenu__submenucode':'submenucode'}, inplace = True)
-
-
-        finaldf = pd.DataFrame()
-
-        if len(df.index) > 0:
-            finaldf = (df.groupby(['mainmenu','menuurl','menucode'])
-            .apply(lambda x: x[['submenu','subMenuurl','submenucode']].to_dict('records'))
-            .reset_index()
-            .rename(columns={0:'submenu'})).T.to_dict().values()
-
+        role_id = int(role1) if role1 else None
+        finaldf = LegacyMenuCompatibilityService.legacy_shape_for_user(
+            user=request.user,
+            entity_id=int(entity1),
+            role_id=role_id,
+        )
         return Response(finaldf)
     
 
@@ -859,6 +854,8 @@ class UserEntitiesView(APIView):
         user = request.user
         serialized = UserSerializerentities(user)
         return Response([serialized.data])  # wrap in list to match expected output
+
+
 
         
             

@@ -47,6 +47,7 @@ urlpatterns = [
     path("api/purchase/", include("purchase.urls")),
     path("api/payments/", include("payments.urls")),
     path("api/receipts/", include("receipts.urls")),
+    path("api/rbac/", include("rbac.urls", namespace="rbac_api")),
     path("api/vouchers/", include("vouchers.urls")),
     path("api/sales/", include("sales.urls.api")),
     path("api/", include("withholding.urls")),
