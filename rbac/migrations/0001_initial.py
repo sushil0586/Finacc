@@ -173,9 +173,36 @@ class Migration(migrations.Migration):
             model_name='menu',
             index=models.Index(fields=['parent', 'sort_order'], name='rbac_menu_parent__fc6f5b_idx'),
         ),
-        migrations.AddConstraint(
-            model_name='menu',
-            constraint=models.CheckConstraint(check=models.Q(('sort_order__gte', 0)), name='rbac_menu_sort_order_check'),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    sql="""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM pg_constraint
+                            WHERE conname = 'rbac_menu_sort_order_check'
+                        ) THEN
+                            ALTER TABLE rbac_menu
+                            ADD CONSTRAINT rbac_menu_sort_order_check
+                            CHECK (sort_order >= 0);
+                        END IF;
+                    END
+                    $$;
+                    """,
+                    reverse_sql="""
+                    ALTER TABLE IF EXISTS rbac_menu
+                    DROP CONSTRAINT IF EXISTS rbac_menu_sort_order_check;
+                    """,
+                ),
+            ],
+            state_operations=[
+                migrations.AddConstraint(
+                    model_name='menu',
+                    constraint=models.CheckConstraint(check=models.Q(('sort_order__gte', 0)), name='rbac_menu_sort_order_check'),
+                ),
+            ],
         ),
         migrations.AddConstraint(
             model_name='menupermission',
