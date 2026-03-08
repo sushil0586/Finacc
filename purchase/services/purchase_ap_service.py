@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from purchase.models.purchase_ap import (
     VendorBillOpenItem,
+    VendorAdvanceBalance,
     VendorSettlement,
     VendorSettlementLine,
 )
@@ -46,6 +47,63 @@ class SettlementCancelResult:
 
 
 class PurchaseApService:
+    @staticmethod
+    @transaction.atomic
+    def create_advance_balance(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        vendor_id: int,
+        source_type: str,
+        credit_date: date,
+        reference_no: Optional[str],
+        remarks: Optional[str],
+        amount: Decimal,
+        payment_voucher_id: Optional[int] = None,
+    ) -> VendorAdvanceBalance:
+        amt = q2(amount)
+        if amt <= ZERO2:
+            raise ValueError("Advance balance amount must be > 0.")
+        return VendorAdvanceBalance.objects.create(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            vendor_id=vendor_id,
+            source_type=source_type,
+            credit_date=credit_date,
+            reference_no=(reference_no or "").strip() or None,
+            remarks=(remarks or "").strip() or None,
+            original_amount=amt,
+            adjusted_amount=ZERO2,
+            outstanding_amount=amt,
+            is_open=True,
+            payment_voucher_id=payment_voucher_id,
+        )
+
+    @staticmethod
+    def list_open_advances(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        vendor_id: Optional[int] = None,
+        is_open: Optional[bool] = True,
+    ) -> QuerySet[VendorAdvanceBalance]:
+        qs = VendorAdvanceBalance.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        if vendor_id is not None:
+            qs = qs.filter(vendor_id=vendor_id)
+        if is_open is not None:
+            qs = qs.filter(is_open=is_open)
+        return qs.order_by("credit_date", "id")
+
     @staticmethod
     def _auto_adjust_credit_note_if_enabled(*, header: PurchaseInvoiceHeader, cn_item: VendorBillOpenItem) -> None:
         policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
@@ -245,6 +303,7 @@ class PurchaseApService:
         remarks: Optional[str],
         lines: Optional[Iterable[Dict[str, Any]]] = None,
         amount: Optional[Decimal] = None,
+        advance_balance_id: Optional[int] = None,
     ) -> SettlementCreateResult:
         policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
         if policy.controls.get("settlement_mode", "off") == "off":
@@ -274,6 +333,7 @@ class PurchaseApService:
             reference_no=(reference_no or "").strip() or None,
             external_voucher_no=(external_voucher_no or "").strip() or None,
             remarks=(remarks or "").strip() or None,
+            advance_balance_id=advance_balance_id,
             total_amount=ZERO2,
             status=VendorSettlement.Status.DRAFT,
         )
@@ -334,6 +394,11 @@ class PurchaseApService:
             raise ValueError("Settlement has no lines.")
 
         applied_total = ZERO2
+        advance_balance = None
+        available_advance = ZERO2
+        if settlement.advance_balance_id:
+            advance_balance = VendorAdvanceBalance.objects.select_for_update().get(pk=settlement.advance_balance_id)
+            available_advance = q2(advance_balance.outstanding_amount)
         for ln in lines:
             item = ln.open_item
             if not item.is_open or abs(q2(item.outstanding_amount)) <= TOL:
@@ -349,6 +414,10 @@ class PurchaseApService:
                 if over_rule == "block":
                     raise ValueError(f"Line for open item {item.id} exceeds outstanding.")
                 apply_abs = remaining_abs
+            if advance_balance is not None and apply_abs - available_advance > TOL:
+                if over_rule == "block":
+                    raise ValueError(f"Advance balance {advance_balance.id} is insufficient for line open item {item.id}.")
+                apply_abs = available_advance
 
             if apply_abs <= ZERO2:
                 continue
@@ -369,6 +438,21 @@ class PurchaseApService:
             ln.applied_amount_signed = applied_signed
             ln.save(update_fields=["applied_amount_signed", "updated_at"])
             applied_total = q2(applied_total + apply_abs)
+            if advance_balance is not None:
+                available_advance = q2(available_advance - apply_abs)
+
+        if advance_balance is not None:
+            advance_balance.adjusted_amount = q2(advance_balance.adjusted_amount + applied_total)
+            advance_balance.outstanding_amount = q2(advance_balance.original_amount - advance_balance.adjusted_amount)
+            if abs(advance_balance.outstanding_amount) <= TOL:
+                advance_balance.outstanding_amount = ZERO2
+                advance_balance.is_open = False
+            else:
+                advance_balance.is_open = True
+            advance_balance.last_adjusted_at = timezone.now()
+            advance_balance.save(
+                update_fields=["adjusted_amount", "outstanding_amount", "is_open", "last_adjusted_at", "updated_at"]
+            )
 
         settlement.total_amount = applied_total
         settlement.status = VendorSettlement.Status.POSTED
@@ -394,6 +478,10 @@ class PurchaseApService:
             .select_for_update()
             .order_by("id")
         )
+        advance_balance = None
+        if settlement.advance_balance_id:
+            advance_balance = VendorAdvanceBalance.objects.select_for_update().get(pk=settlement.advance_balance_id)
+            reversed_total = ZERO2
         for ln in lines:
             item = ln.open_item
             applied_signed = q2(ln.applied_amount_signed)
@@ -412,6 +500,19 @@ class PurchaseApService:
 
             ln.applied_amount_signed = ZERO2
             ln.save(update_fields=["applied_amount_signed", "updated_at"])
+            if settlement.advance_balance_id:
+                reversed_total = q2(reversed_total + abs(applied_signed))
+
+        if advance_balance is not None:
+            advance_balance.adjusted_amount = q2(advance_balance.adjusted_amount - reversed_total)
+            if advance_balance.adjusted_amount < ZERO2:
+                advance_balance.adjusted_amount = ZERO2
+            advance_balance.outstanding_amount = q2(advance_balance.original_amount - advance_balance.adjusted_amount)
+            advance_balance.is_open = abs(advance_balance.outstanding_amount) > TOL
+            advance_balance.last_adjusted_at = timezone.now()
+            advance_balance.save(
+                update_fields=["adjusted_amount", "outstanding_amount", "is_open", "last_adjusted_at", "updated_at"]
+            )
 
         settlement.status = VendorSettlement.Status.CANCELLED
         settlement.save(update_fields=["status", "updated_at"])
@@ -446,13 +547,28 @@ class PurchaseApService:
         if not include_closed:
             settlements_qs = settlements_qs.filter(status=VendorSettlement.Status.POSTED)
 
+        settlements_qs = settlements_qs.select_related("advance_balance").prefetch_related("lines__open_item")
         totals = {
             "original_total": q2(sum((q2(x.original_amount) for x in open_items_qs), ZERO2)),
             "settled_total": q2(sum((q2(x.settled_amount) for x in open_items_qs), ZERO2)),
             "outstanding_total": q2(sum((q2(x.outstanding_amount) for x in open_items_qs), ZERO2)),
         }
+        advances_qs = PurchaseApService.list_open_advances(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            vendor_id=vendor_id,
+            is_open=None if include_closed else True,
+        )
+        totals["advance_outstanding_total"] = q2(sum((q2(x.outstanding_amount) for x in advances_qs), ZERO2))
+        advance_consumed_total = settlements_qs.filter(
+            settlement_type=VendorSettlement.SettlementType.ADVANCE_ADJUSTMENT
+        )
+        totals["advance_consumed_total"] = q2(sum((q2(x.total_amount) for x in advance_consumed_total), ZERO2))
+        totals["net_ap_position"] = q2(totals["outstanding_total"] - totals["advance_outstanding_total"])
         return {
             "open_items": open_items_qs,
+            "advances": advances_qs,
             "settlements": settlements_qs.order_by("-settlement_date", "-id"),
             "totals": totals,
         }

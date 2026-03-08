@@ -473,6 +473,74 @@ class ProductSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("createdon", "modifiedon")
 
+    def _target_entity(self, attrs):
+        entity = self.context.get("entity")
+        if entity is not None:
+            return entity
+        if self.instance is not None:
+            return self.instance.entity
+        return attrs.get("entity")
+
+    def _validate_entity_scoped_fk(self, *, field_name, obj, entity, label):
+        if obj is None or entity is None:
+            return
+        obj_entity_id = getattr(obj, "entity_id", None)
+        if obj_entity_id is not None and int(obj_entity_id) != int(entity.id):
+            raise serializers.ValidationError({field_name: f"{label} must belong to the same entity."})
+
+    def validate(self, attrs):
+        entity = self._target_entity(attrs)
+
+        self._validate_entity_scoped_fk(field_name="productcategory", obj=attrs.get("productcategory", getattr(self.instance, "productcategory", None)), entity=entity, label="Product category")
+        self._validate_entity_scoped_fk(field_name="brand", obj=attrs.get("brand", getattr(self.instance, "brand", None)), entity=entity, label="Brand")
+        self._validate_entity_scoped_fk(field_name="base_uom", obj=attrs.get("base_uom", getattr(self.instance, "base_uom", None)), entity=entity, label="Base UOM")
+
+        for idx, row in enumerate(self.initial_data.get("gst_rates", []) or [], start=1):
+            hsn_id = row.get("hsn")
+            if hsn_id:
+                hsn = HsnSac.objects.filter(pk=hsn_id).first()
+                self._validate_entity_scoped_fk(field_name="gst_rates", obj=hsn, entity=entity, label=f"GST row {idx} HSN/SAC")
+
+        for idx, row in enumerate(self.initial_data.get("barcodes", []) or [], start=1):
+            uom_id = row.get("uom")
+            if uom_id:
+                uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
+                self._validate_entity_scoped_fk(field_name="barcodes", obj=uom, entity=entity, label=f"Barcode row {idx} UOM")
+
+        for idx, row in enumerate(self.initial_data.get("uom_conversions", []) or [], start=1):
+            from_uom_id = row.get("from_uom")
+            to_uom_id = row.get("to_uom")
+            if from_uom_id:
+                from_uom = UnitOfMeasure.objects.filter(pk=from_uom_id).first()
+                self._validate_entity_scoped_fk(field_name="uom_conversions", obj=from_uom, entity=entity, label=f"UOM conversion row {idx} from_uom")
+            if to_uom_id:
+                to_uom = UnitOfMeasure.objects.filter(pk=to_uom_id).first()
+                self._validate_entity_scoped_fk(field_name="uom_conversions", obj=to_uom, entity=entity, label=f"UOM conversion row {idx} to_uom")
+
+        for idx, row in enumerate(self.initial_data.get("opening_stocks", []) or [], start=1):
+            location_id = row.get("location")
+            if location_id:
+                subentity = OpeningStockByLocation._meta.get_field("location").remote_field.model.objects.filter(pk=location_id).first()
+                self._validate_entity_scoped_fk(field_name="opening_stocks", obj=subentity, entity=entity, label=f"Opening stock row {idx} location")
+
+        for idx, row in enumerate(self.initial_data.get("prices", []) or [], start=1):
+            pricelist_id = row.get("pricelist")
+            uom_id = row.get("uom")
+            if pricelist_id:
+                pricelist = PriceList.objects.filter(pk=pricelist_id).first()
+                self._validate_entity_scoped_fk(field_name="prices", obj=pricelist, entity=entity, label=f"Price row {idx} pricelist")
+            if uom_id:
+                uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
+                self._validate_entity_scoped_fk(field_name="prices", obj=uom, entity=entity, label=f"Price row {idx} UOM")
+
+        for idx, row in enumerate(self.initial_data.get("attributes", []) or [], start=1):
+            attr_id = row.get("attribute")
+            if attr_id:
+                attr = ProductAttribute.objects.filter(pk=attr_id).first()
+                self._validate_entity_scoped_fk(field_name="attributes", obj=attr, entity=entity, label=f"Attribute row {idx} attribute")
+
+        return attrs
+
     # -------------------- generic helper --------------------
 
     def _upsert_child_list(self, *, parent_instance, child_model,

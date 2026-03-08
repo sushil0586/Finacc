@@ -13,6 +13,7 @@ from .purchase_addons import (
 )
 from .purchase_ap import (
     VendorBillOpenItem,
+    VendorAdvanceBalance,
     VendorSettlement,
     VendorSettlementLine,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "PurchaseChargeType",
     "PurchaseAttachment",
     "VendorBillOpenItem",
+    "VendorAdvanceBalance",
     "VendorSettlement",
     "VendorSettlementLine",
     "PurchaseSettings",

@@ -21,6 +21,7 @@ from purchase.models.purchase_addons import (
 )
 from purchase.models.purchase_ap import (
     VendorBillOpenItem,
+    VendorAdvanceBalance,
     VendorSettlement,
     VendorSettlementLine,
 )
@@ -674,6 +675,37 @@ class VendorBillOpenItemAdmin(admin.ModelAdmin):
     list_select_related = ("header", "vendor", "entity", "entityfinid", "subentity")
 
 
+@admin.register(VendorAdvanceBalance)
+class VendorAdvanceBalanceAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "source_type",
+        "credit_date",
+        "vendor",
+        "original_amount",
+        "adjusted_amount",
+        "outstanding_amount",
+        "is_open",
+        "reference_no",
+        "payment_voucher",
+        "entity",
+        "entityfinid",
+        "subentity",
+    )
+    list_filter = ("source_type", "is_open", "entity", "entityfinid", "subentity")
+    search_fields = ("reference_no", "remarks", "vendor__accountname", "payment_voucher__voucher_code")
+    date_hierarchy = "credit_date"
+    ordering = ("-credit_date", "-id")
+    list_select_related = (
+        "vendor",
+        "payment_voucher",
+        "entity",
+        "entityfinid",
+        "subentity",
+    )
+    readonly_fields = ("adjusted_amount", "outstanding_amount", "last_adjusted_at", "created_at", "updated_at")
+
+
 @admin.register(VendorSettlement)
 class VendorSettlementAdmin(admin.ModelAdmin):
     inlines = [VendorSettlementLineInline]
@@ -682,6 +714,7 @@ class VendorSettlementAdmin(admin.ModelAdmin):
         "settlement_type",
         "settlement_date",
         "vendor",
+        "advance_balance",
         "total_amount",
         "status",
         "reference_no",
@@ -692,7 +725,7 @@ class VendorSettlementAdmin(admin.ModelAdmin):
     list_filter = ("settlement_type", "status", "entity", "entityfinid", "subentity")
     search_fields = ("reference_no", "external_voucher_no", "remarks", "vendor__accountname")
     date_hierarchy = "settlement_date"
-    list_select_related = ("vendor", "entity", "entityfinid", "subentity", "posted_by")
+    list_select_related = ("vendor", "advance_balance", "entity", "entityfinid", "subentity", "posted_by")
     readonly_fields = ("total_amount", "posted_at", "posted_by")
 
 

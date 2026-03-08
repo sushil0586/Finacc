@@ -1,60 +1,69 @@
+from __future__ import annotations
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from master.models import Entity, entityfinancialyear, subentity as SubEntity  # adjust paths
-from numbering.services import seed_sequences_for_entity
+from numbering.services import ensure_document_type, ensure_series
+
+
+DEFAULT_DOC_TYPES = {
+    "SI": ("sales", "SALES_INVOICE", "Sales Invoice", "SI"),
+    "SR": ("sales", "SALES_RETURN", "Sales Return", "SR"),
+    "PI": ("purchase", "PURCHASE_INVOICE", "Purchase Invoice", "PI"),
+    "PR": ("purchase", "PURCHASE_RETURN", "Purchase Return", "PR"),
+    "RV": ("receipts", "RECEIPT_VOUCHER", "Receipt Voucher", "RV"),
+    "PV": ("payments", "PAYMENT_VOUCHER", "Payment Voucher", "PPV"),
+    "JV": ("vouchers", "JOURNAL_VOUCHER", "Journal Voucher", "JV"),
+}
+
 
 class Command(BaseCommand):
-    help = "Seed default numbering sequences for an Entity & Financial Year (and optional Subentity)."
+    help = "Seed generic document types and number series using the current numbering schema."
 
     def add_arguments(self, parser):
         parser.add_argument("--entity", type=int, required=True, help="Entity ID")
-        parser.add_argument("--finyear", type=int, required=True, help="entityfinancialyear ID")
+        parser.add_argument("--entityfinid", type=int, required=True, help="Entity Financial Year ID")
         parser.add_argument("--subentity", type=int, default=None, help="Optional subentity ID")
-        parser.add_argument("--start", type=int, default=1, help="Starting display number (default 1)")
-        parser.add_argument("--intstart", type=int, default=1, help="Starting integer counter (default 1)")
-        parser.add_argument("--yearly", action="store_true", help="Force yearly reset")
-        parser.add_argument("--monthly", action="store_true", help="Force monthly reset")
-        parser.add_argument("--none", action="store_true", help="Disable resets")
-        parser.add_argument("--preview", action="store_true", help="Preview only (no write)")
+        parser.add_argument("--doc-code", type=str, default=None, help="Limit to one default doc code, e.g. JV")
+        parser.add_argument("--start", type=int, default=1, help="Starting/current number")
+        parser.add_argument("--padding", type=int, default=5, help="Number padding")
+        parser.add_argument("--reset", type=str, default="yearly", choices=["none", "monthly", "yearly"])
 
     @transaction.atomic
     def handle(self, *args, **opts):
-        ent_id = opts["entity"]
-        fy_id  = opts["finyear"]
-        sub_id = opts.get("subentity")
+        entity_id = int(opts["entity"])
+        entityfinid_id = int(opts["entityfinid"])
+        subentity_id = opts.get("subentity")
+        start = int(opts["start"])
+        padding = int(opts["padding"])
+        reset = opts["reset"]
+        target_code = (opts.get("doc_code") or "").strip().upper() or None
 
-        try:
-            ent = Entity.objects.get(id=ent_id)
-        except Entity.DoesNotExist:
-            raise CommandError(f"Entity id={ent_id} not found.")
+        if start < 1:
+            raise CommandError("--start must be >= 1")
+        if padding < 0:
+            raise CommandError("--padding must be >= 0")
 
-        try:
-            fin = entityfinancialyear.objects.get(id=fy_id)
-        except entityfinancialyear.DoesNotExist:
-            raise CommandError(f"entityfinancialyear id={fy_id} not found.")
+        items = DEFAULT_DOC_TYPES
+        if target_code:
+            if target_code not in items:
+                raise CommandError(f"Unsupported --doc-code '{target_code}'.")
+            items = {target_code: items[target_code]}
 
-        se = None
-        if sub_id:
-            try:
-                se = SubEntity.objects.get(id=sub_id)
-            except SubEntity.DoesNotExist:
-                raise CommandError(f"subentity id={sub_id} not found.")
+        output = []
+        for code, (module, doc_key, name, default_code) in items.items():
+            dt = ensure_document_type(module=module, doc_key=doc_key, name=name, default_code=default_code)
+            series, created = ensure_series(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=dt.id,
+                doc_code=default_code,
+                prefix=default_code,
+                start=start,
+                padding=padding,
+                reset=reset,
+            )
+            output.append(f"{code}: dt={dt.id}, series={series.id}, created={created}")
 
-        override = None
-        if opts["yearly"]:
-            override = "yearly"
-        elif opts["monthly"]:
-            override = "monthly"
-        elif opts["none"]:
-            override = "none"
-
-        created, skipped, msg = seed_sequences_for_entity(
-            entity=ent, finyear=fin, subentity=se,
-            start=opts["start"], intstart=opts["intstart"], override_reset=override
-        )
-
-        if opts["preview"]:
-            raise CommandError(f"(Preview) {msg}; would create={created}, skip={skipped}")
-
-        self.stdout.write(self.style.SUCCESS(f"{msg}; created={created}, skipped={skipped}"))
+        self.stdout.write(self.style.SUCCESS("Seeded document sequences -> " + "; ".join(output)))

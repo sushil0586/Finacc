@@ -38,7 +38,7 @@ urlpatterns = [
     path('api/inventory/',include('inventory.urls',namespace = 'inventory_api')),
     path('api/financial/',include('financial.urls',namespace = 'financial_api')),
     path('api/entity/',include('entity.urls',namespace = 'entity_api')),
-    path('api/geography/',include('geography.urls',namespace = 'entity_api')),
+    path('api/geography/',include('geography.urls',namespace = 'geography_api')),
     path('api/invoice/',include('invoice.urls',namespace = 'invoice_api')),
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
     path('api/payroll/',include('payroll.urls',namespace = 'payroll_api')),
@@ -46,6 +46,8 @@ urlpatterns = [
     path("api/localization/", include("localization.urls")),
     path("api/purchase/", include("purchase.urls")),
     path("api/payments/", include("payments.urls")),
+    path("api/receipts/", include("receipts.urls")),
+    path("api/vouchers/", include("vouchers.urls")),
     path("api/sales/", include("sales.urls.api")),
     path("api/", include("withholding.urls")),
 

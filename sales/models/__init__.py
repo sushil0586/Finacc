@@ -14,6 +14,12 @@ from .sales_addons import (
     SalesChargeType,
     SalesChargeLine,
 )
+from .sales_ar import (
+    CustomerBillOpenItem,
+    CustomerAdvanceBalance,
+    CustomerSettlement,
+    CustomerSettlementLine,
+)
 
 from .sales_compliance import (
     SalesEInvoice,

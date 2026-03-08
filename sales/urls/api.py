@@ -35,6 +35,14 @@ from sales.views.sales_charge_type_views import (
     SalesChargeTypeListCreateAPIView,
     SalesChargeTypeRetrieveUpdateAPIView,
 )
+from sales.views.sales_ar import (
+    CustomerBillOpenItemListAPIView,
+    CustomerAdvanceBalanceListAPIView,
+    CustomerSettlementListCreateAPIView,
+    CustomerSettlementPostAPIView,
+    CustomerSettlementCancelAPIView,
+    CustomerStatementAPIView,
+)
 
 urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
@@ -50,6 +58,12 @@ urlpatterns = [
     path("settings/", SalesSettingsAPIView.as_view(), name="sales-settings"),
     path("charge-types/", SalesChargeTypeListCreateAPIView.as_view(), name="sales-charge-type-list"),
     path("charge-types/<int:pk>/", SalesChargeTypeRetrieveUpdateAPIView.as_view(), name="sales-charge-type-detail"),
+    path("ar/open-items/", CustomerBillOpenItemListAPIView.as_view(), name="sales-ar-open-items"),
+    path("ar/open-advances/", CustomerAdvanceBalanceListAPIView.as_view(), name="sales-ar-open-advances"),
+    path("ar/settlements/", CustomerSettlementListCreateAPIView.as_view(), name="sales-ar-settlements"),
+    path("ar/settlements/<int:pk>/post/", CustomerSettlementPostAPIView.as_view(), name="sales-ar-settlement-post"),
+    path("ar/settlements/<int:pk>/cancel/", CustomerSettlementCancelAPIView.as_view(), name="sales-ar-settlement-cancel"),
+    path("ar/customer-statement/", CustomerStatementAPIView.as_view(), name="sales-ar-customer-statement"),
     path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/cancel-irn/", SalesInvoiceCancelIRNAPIView.as_view()),

@@ -67,13 +67,15 @@ class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
         if self.request.method.upper() == "GET":
             return qs.order_by("-voucher_date", "-id")
         return qs.prefetch_related(
-            Prefetch("allocations", queryset=PaymentVoucherAllocation.objects.select_related("open_item"))
+            Prefetch("allocations", queryset=PaymentVoucherAllocation.objects.select_related("open_item")),
+            "advance_adjustments__advance_balance__payment_voucher",
         )
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         if self.request.method.upper() == "GET":
             ctx["skip_preview_numbers"] = True
+            ctx["skip_navigation"] = True
         return ctx
 
     def perform_create(self, serializer):
@@ -110,6 +112,7 @@ class PaymentVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             "ap_settlement",
         ).prefetch_related(
             Prefetch("allocations", queryset=PaymentVoucherAllocation.objects.select_related("open_item")),
+            "advance_adjustments__advance_balance__payment_voucher",
             "adjustments",
         )
         if subentity_id is None:
@@ -150,6 +153,32 @@ class PaymentVoucherPostAPIView(APIView):
         })
 
 
+class PaymentVoucherApprovalAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk: int):
+        action = (request.data.get("action") or "").strip().lower()
+        remarks = (request.data.get("remarks") or "").strip() or None
+        try:
+            if action == "submit":
+                result = PaymentVoucherService.submit_voucher(pk, submitted_by_id=request.user.id, remarks=remarks)
+            elif action == "approve":
+                result = PaymentVoucherService.approve_voucher(pk, approved_by_id=request.user.id, remarks=remarks)
+            elif action == "reject":
+                result = PaymentVoucherService.reject_voucher(pk, rejected_by_id=request.user.id, remarks=remarks)
+            else:
+                raise ValidationError({"detail": "action must be submit|approve|reject"})
+        except ValueError as e:
+            _raise_validation_error(e)
+        out = PaymentVoucherHeaderSerializer(result.header).data
+        return Response({
+            "message": result.message,
+            "approval_status": out.get("approval_status", "DRAFT"),
+            "approval_status_name": out.get("approval_status_name", "Draft"),
+            "data": out,
+        })
+
+
 class PaymentVoucherCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -177,3 +206,34 @@ class PaymentVoucherUnpostAPIView(APIView):
             "message": result.message,
             "data": PaymentVoucherHeaderSerializer(result.header).data,
         }, status=status.HTTP_200_OK)
+
+
+class PaymentVoucherSettlementSummaryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk: int):
+        entity = request.query_params.get("entity")
+        entityfinid = request.query_params.get("entityfinid")
+        subentity = request.query_params.get("subentity")
+        if not entity or not entityfinid:
+            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+
+        qs = PaymentVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
+        qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
+        voucher = qs.prefetch_related("allocations", "advance_adjustments").get(pk=pk)
+        ser = PaymentVoucherHeaderSerializer(voucher, context={"skip_preview_numbers": True})
+        data = ser.data
+        return Response({
+            "cash_paid_amount": data.get("cash_paid_amount", 0),
+            "adjustment_effect_amount": data.get("total_adjustment_amount", 0),
+            "advance_consumed_amount": data.get("advance_consumed_amount", 0),
+            "total_settlement_support_amount": data.get("total_settlement_support_amount", 0),
+            "allocated_amount": data.get("allocated_amount", 0),
+            "balance_amount": data.get("settlement_balance_amount", 0),
+        })
