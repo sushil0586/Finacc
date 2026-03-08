@@ -1126,3 +1126,5 @@ class UserSerializerentities(serializers.ModelSerializer):
         userroles = UserRole.objects.filter(user=obj).select_related('entity', 'role')
         return UserEntityRoleSerializer(userroles, many=True).data
 
+
+

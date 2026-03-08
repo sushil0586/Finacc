@@ -3,7 +3,9 @@ from rest_framework.authentication import get_authorization_header, BaseAuthenti
 from rest_framework import exceptions
 import jwt
 from django.conf import settings
-from Authentication.models import User
+from django.utils import timezone
+from Authentication.models import AuthSession, User
+from Authentication.services import AuthSettings, AuthTokenService
 
 class JwtAuthentication(BaseAuthentication):
 
@@ -25,7 +27,7 @@ class JwtAuthentication(BaseAuthentication):
             raise exceptions.AuthenticationFailed("Token not valid")
 
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            payload = AuthTokenService.decode_access_token(token)
 
             user_id = payload.get("user_id")
             username = payload.get("username")
@@ -40,13 +42,20 @@ class JwtAuthentication(BaseAuthentication):
             else:
                 raise exceptions.AuthenticationFailed("Token missing user identity.")
 
+            if payload.get("ver") and payload["ver"] != user.token_version:
+                raise exceptions.AuthenticationFailed("Token version is no longer valid.")
+
+            session_key = payload.get("sid")
+            if session_key:
+                try:
+                    session = AuthSession.objects.get(session_key=session_key, user=user)
+                except AuthSession.DoesNotExist as exc:
+                    raise exceptions.AuthenticationFailed("Session not found.") from exc
+                AuthTokenService.assert_session_active(session, user)
+                session.last_used_at = timezone.now()
+                session.save(update_fields=["last_used_at", "updated_at"])
+
             return (user, token)
-
-        except jwt.ExpiredSignatureError:
-            raise exceptions.AuthenticationFailed("Token has expired")
-
-        except jwt.DecodeError:
-            raise exceptions.AuthenticationFailed("Token not valid")
         except User.DoesNotExist:
             raise exceptions.AuthenticationFailed("User does not exist")
 

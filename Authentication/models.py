@@ -9,6 +9,7 @@ from django.contrib.auth.hashers import make_password
 import jwt
 from django.conf import settings
 from datetime import datetime, timedelta
+import secrets
 #from entity.models import entity
 
 
@@ -111,6 +112,7 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel):
             
         ),
     )
+    token_version = models.PositiveIntegerField(default=1)
 
 
     objects = MyUserManager()
@@ -122,27 +124,85 @@ class User(AbstractBaseUser,PermissionsMixin,TrackingModel):
 
     @property
     def token(self):
-        from django.core.cache import cache  # import cache
-        cache_key = f"user_token_{self.pk}"
-        token = cache.get(cache_key)
-        if token:
-            return token
-        token = jwt.encode(
-            {
-                'user_id': self.pk,
-                'username': self.username,
-                'email': self.email,
-                'exp': datetime.utcnow() + timedelta(hours=360)
-            },
-            settings.SECRET_KEY,
-            algorithm='HS256'
-        )
-        # pyjwt may return bytes in some environments; normalize to str for serializers.
-        if isinstance(token, bytes):
-            token = token.decode("utf-8")
-        # Cache the token for 60 seconds to reduce computation overhead.
-        cache.set(cache_key, token, timeout=60)
-        return token
+        from Authentication.services import AuthTokenService
+
+        return AuthTokenService.issue_access_token(self)
+
+
+class AuthSession(TrackingModel):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="auth_sessions")
+    session_key = models.CharField(max_length=64, unique=True)
+    jti = models.CharField(max_length=64, unique=True)
+    refresh_token_hash = models.CharField(max_length=128, unique=True, null=True, blank=True)
+    issued_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    refresh_expires_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(default=timezone.now)
+    user_agent = models.CharField(max_length=255, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_reason = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ("-issued_at",)
+
+    @property
+    def is_revoked(self):
+        return self.revoked_at is not None
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    def revoke(self, reason="manual_logout"):
+        self.revoked_at = timezone.now()
+        self.revoked_reason = reason
+        self.save(update_fields=["revoked_at", "revoked_reason", "updated_at"])
+
+
+class AuthAuditLog(TrackingModel):
+    EVENT_CHOICES = [
+        ("login_success", "Login Success"),
+        ("login_failed", "Login Failed"),
+        ("logout", "Logout"),
+        ("password_changed", "Password Changed"),
+    ]
+
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="auth_audit_logs")
+    email = models.EmailField(blank=True)
+    event = models.CharField(max_length=32, choices=EVENT_CHOICES)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+
+class AuthOTP(TrackingModel):
+    PURPOSE_CHOICES = [
+        ("password_reset", "Password Reset"),
+        ("email_verification", "Email Verification"),
+    ]
+
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name="auth_otps")
+    email = models.EmailField(db_index=True)
+    purpose = models.CharField(max_length=32, choices=PURPOSE_CHOICES)
+    code = models.CharField(max_length=6)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_consumed(self):
+        return self.consumed_at is not None
 
 class MainMenu(TrackingModel):
     mainmenu = models.CharField(max_length=50) 
