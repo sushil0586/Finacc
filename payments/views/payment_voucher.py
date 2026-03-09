@@ -54,7 +54,9 @@ class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
             "entityfinid",
             "subentity",
             "paid_from",
+            "paid_from__ledger",
             "paid_to",
+            "paid_to__ledger",
             "payment_mode",
             "ap_settlement",
         )
@@ -107,7 +109,9 @@ class PaymentVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             "entityfinid",
             "subentity",
             "paid_from",
+            "paid_from__ledger",
             "paid_to",
+            "paid_to__ledger",
             "payment_mode",
             "ap_settlement",
         ).prefetch_related(

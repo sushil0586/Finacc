@@ -2,6 +2,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from entity.models import Entity, SubEntity
 from helpers.models import TrackingModel
@@ -93,6 +94,8 @@ class Role(TrackingModel):
             raise ValidationError("Platform role cannot be tied to an entity.")
         if self.role_level == self.LEVEL_ENTITY and self.entity_id is None:
             raise ValidationError("Entity role must be tied to an entity.")
+        if not self.code:
+            raise ValidationError("Role code is required.")
 
     def __str__(self):
         if self.entity_id:
@@ -269,6 +272,8 @@ class UserRoleAssignment(TrackingModel):
             raise ValidationError("Assignment entity must match entity-level role entity.")
         if self.subentity_id and self.subentity.entity_id != self.entity_id:
             raise ValidationError("Sub entity must belong to the same entity.")
+        if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
+            raise ValidationError("effective_from cannot be after effective_to.")
 
     def __str__(self):
         labels = [
@@ -289,6 +294,15 @@ class UserRoleAssignment(TrackingModel):
         except Role.DoesNotExist:
             pass
         return " | ".join(labels)
+
+    @property
+    def is_currently_effective(self):
+        now = timezone.now()
+        if self.effective_from and self.effective_from > now:
+            return False
+        if self.effective_to and self.effective_to < now:
+            return False
+        return self.isactive
 
 
 class Menu(TrackingModel):
@@ -384,3 +398,50 @@ class MenuPermission(TrackingModel):
 
     def __str__(self):
         return f"{self.menu} -> {self.permission}"
+
+
+class RBACAuditLog(models.Model):
+    ACTION_CREATE = "create"
+    ACTION_UPDATE = "update"
+    ACTION_DEACTIVATE = "deactivate"
+    ACTION_DELETE = "delete"
+    ACTION_ASSIGN = "assign"
+    ACTION_UNASSIGN = "unassign"
+    ACTION_CLONE = "clone"
+    ACTION_APPLY_TEMPLATE = "apply_template"
+    ACTION_CHOICES = (
+        (ACTION_CREATE, "Create"),
+        (ACTION_UPDATE, "Update"),
+        (ACTION_DEACTIVATE, "Deactivate"),
+        (ACTION_DELETE, "Delete"),
+        (ACTION_ASSIGN, "Assign"),
+        (ACTION_UNASSIGN, "Unassign"),
+        (ACTION_CLONE, "Clone"),
+        (ACTION_APPLY_TEMPLATE, "Apply Template"),
+    )
+
+    object_type = models.CharField(max_length=50, db_index=True)
+    object_id = models.PositiveBigIntegerField(db_index=True)
+    entity = models.ForeignKey(Entity, null=True, blank=True, on_delete=models.SET_NULL, related_name="rbac_audit_logs")
+    action = models.CharField(max_length=30, choices=ACTION_CHOICES)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="rbac_audit_logs",
+    )
+    message = models.CharField(max_length=255, blank=True)
+    changes = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("entity", "object_type")),
+            models.Index(fields=("object_type", "object_id")),
+            models.Index(fields=("action", "created_at")),
+        ]
+
+    def __str__(self):
+        return f"{self.object_type}#{self.object_id} {self.action}"

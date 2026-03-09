@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from Authentication.models import MainMenu, Submenu, User
@@ -14,7 +15,7 @@ from entity.models import (
 )
 from geography.models import City, Country, District, State
 from rbac.backfill import LegacyRBACBackfillService
-from rbac.models import Menu, Permission
+from rbac.models import Menu, Permission, Role, RolePermission, UserRoleAssignment
 
 
 class RBACAPITests(TestCase):
@@ -107,3 +108,58 @@ class RBACAPITests(TestCase):
         self.assertEqual(response.data["entity_id"], self.entity.id)
         self.assertEqual(response.data["menus"][0]["name"], "Sales")
         self.assertEqual(response.data["menus"][0]["children"][0]["name"], "Invoices")
+
+    def test_effective_access_preview_respects_assignment_validity(self):
+        role = Role.objects.create(entity=self.entity, name="Reports User", code="REPORTS_USER")
+        permission = Permission.objects.create(
+            code="reports.dashboard.view",
+            name="View Dashboard",
+            module="reports",
+            resource="dashboard",
+            action="view",
+        )
+        RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            effective_from=timezone.now() + timezone.timedelta(days=1),
+        )
+
+        response = self.client.get(f"/api/rbac/admin/access-preview?entity={self.entity.id}&user_id={self.user.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["roles"], [])
+        self.assertEqual(response.data["permissions"], [])
+
+    def test_role_clone_endpoint_clones_permissions(self):
+        role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
+        permission = Permission.objects.create(
+            code="sales.invoice.view",
+            name="View Sales Invoice",
+            module="sales",
+            resource="invoice",
+            action="view",
+        )
+        RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity, role=role, is_primary=True)
+
+        response = self.client.post(
+            f"/api/rbac/admin/roles/{role.id}/clone",
+            {"name": "Sales User Copy", "code": "SALES_USER_COPY"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        cloned_role = Role.objects.get(code="SALES_USER_COPY", entity=self.entity)
+        self.assertTrue(RolePermission.objects.filter(role=cloned_role, permission=permission).exists())
+
+    def test_role_delete_is_soft_delete(self):
+        role = Role.objects.create(entity=self.entity, name="Temp Role", code="TEMP_ROLE")
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity, role=role, is_primary=True)
+
+        response = self.client.delete(f"/api/rbac/admin/roles/{role.id}")
+
+        self.assertEqual(response.status_code, 204)
+        role.refresh_from_db()
+        self.assertFalse(role.isactive)

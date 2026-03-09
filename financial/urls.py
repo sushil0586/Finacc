@@ -1,6 +1,17 @@
 from django.urls import path
 from financial import views
 from .views_meta import AccountChoicesAPIView
+from .views_ledger import (
+    AccountProfileV2ListCreateAPIView,
+    AccountProfileV2RetrieveUpdateDestroyAPIView,
+    AccountListPostV2APIView,
+    BaseAccountListV2APIView,
+    LedgerBalanceListAPIView,
+    LedgerListCreateAPIView,
+    LedgerRetrieveUpdateDestroyAPIView,
+    LedgerSimpleListAPIView,
+    SimpleAccountsV2APIView,
+)
 
 
 app_name = 'financial'
@@ -30,6 +41,7 @@ urlpatterns  = [
     
     path('getaccountdetailsbygst',views.GetGstinDetails.as_view(), name = 'unittypeid'),
     path('baseaccountlist/', views.AccountListView.as_view(), name='account-list'),
+    path('baseaccountlistv2/', BaseAccountListV2APIView.as_view(), name='account-list-v2'),
     path('shipping-details/', views.ShippingDetailsListCreateView.as_view(), name='shipping-details-list-create'),
     path('shipping-details/<int:pk>/', views.ShippingDetailsRetrieveUpdateDestroyView.as_view(), name='shipping-details-detail'),
     path('shipping-details/account/<int:account_id>/', views.ShippingDetailsByAccountView.as_view(), name='shipping-details-by-account'),
@@ -45,6 +57,16 @@ urlpatterns  = [
     path('accountheads/entity/<int:entity_id>/', views.AccountHeadListByEntityAPIView.as_view(), name='accounthead-list-by-entity'),   
     path("meta/account-choices/", AccountChoicesAPIView.as_view(), name="meta-account-choices"),
     path("accounts/simple", views.SimpleAccountsAPIView.as_view()),
+    path("accounts/simplev2", SimpleAccountsV2APIView.as_view(), name="account-simple-v2"),
+    path("accountListPostV2", AccountListPostV2APIView.as_view(), name="account-list-post-v2"),
+    # Parallel ledger-first APIs. These are additive and keep all legacy
+    # financial endpoints intact while new screens move to Ledger.
+    path("ledgers", LedgerListCreateAPIView.as_view(), name="ledger-list-create"),
+    path("ledgers/<int:pk>", LedgerRetrieveUpdateDestroyAPIView.as_view(), name="ledger-detail"),
+    path("ledgers/simple", LedgerSimpleListAPIView.as_view(), name="ledger-simple-list"),
+    path("ledger-balances", LedgerBalanceListAPIView.as_view(), name="ledger-balance-list"),
+    path("accounts-v2", AccountProfileV2ListCreateAPIView.as_view(), name="account-profile-v2-list-create"),
+    path("accounts-v2/<int:pk>", AccountProfileV2RetrieveUpdateDestroyAPIView.as_view(), name="account-profile-v2-detail"),
  
 
     

@@ -38,8 +38,8 @@ class _VoucherScopeMixin:
     def _scoped_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids(required=True)
         qs = VoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).select_related(
-            "entity", "entityfinid", "subentity", "cash_bank_account", "created_by", "approved_by", "cancelled_by"
-        ).prefetch_related(Prefetch("lines", queryset=VoucherLine.objects.select_related("account", "generated_from_line").order_by("line_no", "id")))
+            "entity", "entityfinid", "subentity", "cash_bank_account", "cash_bank_account__ledger", "created_by", "approved_by", "cancelled_by"
+        ).prefetch_related(Prefetch("lines", queryset=VoucherLine.objects.select_related("account", "account__ledger", "generated_from_line").order_by("line_no", "id")))
         return qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
 
 

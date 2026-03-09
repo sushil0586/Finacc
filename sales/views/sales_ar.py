@@ -52,7 +52,7 @@ class CustomerBillOpenItemListAPIView(generics.ListAPIView):
             subentity_id=subentity_id,
             customer_id=customer_id,
             is_open=open_flag,
-        ).select_related("customer", "header")
+        ).select_related("customer", "customer__ledger", "header")
 
 
 class CustomerAdvanceBalanceListAPIView(generics.ListAPIView):
@@ -76,7 +76,7 @@ class CustomerAdvanceBalanceListAPIView(generics.ListAPIView):
             subentity_id=subentity_id,
             customer_id=customer_id,
             is_open=open_flag,
-        ).select_related("customer", "receipt_voucher").prefetch_related("settlements__lines__open_item")
+        ).select_related("customer", "customer__ledger", "receipt_voucher").prefetch_related("settlements__lines__open_item")
 
 
 class CustomerSettlementListCreateAPIView(generics.ListCreateAPIView):
