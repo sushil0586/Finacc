@@ -8,7 +8,7 @@ from sales.models.sales_ar import CustomerBillOpenItem, CustomerAdvanceBalance, 
 
 
 class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(source="customer.accountname", read_only=True)
+    customer_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     doc_type_name = serializers.SerializerMethodField()
 
     def get_doc_type_name(self, obj):
@@ -79,7 +79,7 @@ class CustomerSettlementSerializer(serializers.ModelSerializer):
     lines = CustomerSettlementLineSerializer(many=True, required=False)
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     settlement_type_name = serializers.CharField(source="get_settlement_type_display", read_only=True)
-    customer_name = serializers.CharField(source="customer.accountname", read_only=True)
+    customer_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     advance_reference_no = serializers.CharField(source="advance_balance.reference_no", read_only=True)
     advance_original_amount = serializers.DecimalField(source="advance_balance.original_amount", max_digits=14, decimal_places=2, read_only=True)
     advance_balance_outstanding_amount = serializers.DecimalField(source="advance_balance.outstanding_amount", max_digits=14, decimal_places=2, read_only=True)
@@ -121,7 +121,7 @@ class CustomerSettlementSerializer(serializers.ModelSerializer):
 
 class CustomerAdvanceBalanceSerializer(serializers.ModelSerializer):
     advance_balance_id = serializers.IntegerField(source="id", read_only=True)
-    customer_name = serializers.CharField(source="customer.accountname", read_only=True)
+    customer_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     voucher_id = serializers.IntegerField(source="receipt_voucher_id", read_only=True)
     doc_no = serializers.SerializerMethodField()
     voucher_code = serializers.CharField(source="receipt_voucher.doc_code", read_only=True)

@@ -5,6 +5,39 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def add_menu_sort_order_constraint(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'rbac_menu_sort_order_check'
+            ) THEN
+                ALTER TABLE rbac_menu
+                ADD CONSTRAINT rbac_menu_sort_order_check
+                CHECK (sort_order >= 0);
+            END IF;
+        END
+        $$;
+        """
+    )
+
+
+def drop_menu_sort_order_constraint(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(
+        """
+        ALTER TABLE IF EXISTS rbac_menu
+        DROP CONSTRAINT IF EXISTS rbac_menu_sort_order_check;
+        """
+    )
+
+
 class Migration(migrations.Migration):
 
     initial = True
@@ -175,27 +208,7 @@ class Migration(migrations.Migration):
         ),
         migrations.SeparateDatabaseAndState(
             database_operations=[
-                migrations.RunSQL(
-                    sql="""
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT 1
-                            FROM pg_constraint
-                            WHERE conname = 'rbac_menu_sort_order_check'
-                        ) THEN
-                            ALTER TABLE rbac_menu
-                            ADD CONSTRAINT rbac_menu_sort_order_check
-                            CHECK (sort_order >= 0);
-                        END IF;
-                    END
-                    $$;
-                    """,
-                    reverse_sql="""
-                    ALTER TABLE IF EXISTS rbac_menu
-                    DROP CONSTRAINT IF EXISTS rbac_menu_sort_order_check;
-                    """,
-                ),
+                migrations.RunPython(add_menu_sort_order_constraint, drop_menu_sort_order_constraint),
             ],
             state_operations=[
                 migrations.AddConstraint(

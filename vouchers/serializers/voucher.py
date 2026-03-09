@@ -30,7 +30,7 @@ class VoucherWriteLineSerializer(serializers.Serializer):
 
 
 class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
-    account_name = serializers.CharField(source="account.accountname", read_only=True)
+    account_name = serializers.CharField(source="account.effective_accounting_name", read_only=True)
 
     class Meta:
         model = VoucherLine
@@ -48,7 +48,7 @@ class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
 
 
 class VoucherEditableLineReadSerializer(serializers.ModelSerializer):
-    account_name = serializers.CharField(source="account.accountname", read_only=True)
+    account_name = serializers.CharField(source="account.effective_accounting_name", read_only=True)
     entry_type = serializers.SerializerMethodField()
     amount = serializers.SerializerMethodField()
 
@@ -75,7 +75,7 @@ class VoucherEditableLineReadSerializer(serializers.ModelSerializer):
 class VoucherListSerializer(serializers.ModelSerializer):
     voucher_type_name = serializers.CharField(source="get_voucher_type_display", read_only=True)
     status_name = serializers.CharField(source="get_status_display", read_only=True)
-    cash_bank_account_name = serializers.CharField(source="cash_bank_account.accountname", read_only=True)
+    cash_bank_account_name = serializers.CharField(source="cash_bank_account.effective_accounting_name", read_only=True)
     approval_status = serializers.SerializerMethodField()
     approval_status_name = serializers.SerializerMethodField()
     line_count = serializers.SerializerMethodField()
@@ -115,7 +115,7 @@ class VoucherListSerializer(serializers.ModelSerializer):
 class VoucherDetailSerializer(serializers.ModelSerializer):
     voucher_type_name = serializers.CharField(source="get_voucher_type_display", read_only=True)
     status_name = serializers.CharField(source="get_status_display", read_only=True)
-    cash_bank_account_name = serializers.CharField(source="cash_bank_account.accountname", read_only=True)
+    cash_bank_account_name = serializers.CharField(source="cash_bank_account.effective_accounting_name", read_only=True)
     approval_status = serializers.SerializerMethodField()
     approval_status_name = serializers.SerializerMethodField()
     approval_state = serializers.SerializerMethodField()
@@ -202,7 +202,7 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
         amount = dr_total if dr_total > ZERO2 else cr_total
         return {
             "account": obj.cash_bank_account_id,
-            "account_name": getattr(obj.cash_bank_account, "accountname", None),
+            "account_name": getattr(obj.cash_bank_account, "effective_accounting_name", None) or getattr(obj.cash_bank_account, "accountname", None),
             "entry_type": entry_type,
             "amount": amount,
             "is_system_generated": True,

@@ -54,7 +54,9 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
             "entityfinid",
             "subentity",
             "received_in",
+            "received_in__ledger",
             "received_from",
+            "received_from__ledger",
             "receipt_mode",
             "ap_settlement",
         )
@@ -107,7 +109,9 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             "entityfinid",
             "subentity",
             "received_in",
+            "received_in__ledger",
             "received_from",
+            "received_from__ledger",
             "receipt_mode",
             "ap_settlement",
         ).prefetch_related(

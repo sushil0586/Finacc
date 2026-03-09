@@ -604,23 +604,18 @@ class AccountListPostApiView(ListAPIView):
             "entrydatetime__range": (current_dates.finstartyear, current_dates.finendyear)
         }
         if account_ids:
-            stock_filter["account__id__in"] = account_ids
+            stock_filter["account_id__in"] = account_ids
         if accounthead_ids:
             stock_filter["account__accounthead__id__in"] = accounthead_ids
 
-        stock_queryset = StockTransactions.objects.filter(
-            **stock_filter
-        ).exclude(
-            accounttype='MD'
-        ).exclude(
-            transactiontype__in=['PC']
-        ).values(
-            'account__id', 'account__accountname', 'account__gstno', 'account__pan',
-            'account__city__cityname', 'account__accounthead__name', 'account__creditaccounthead__name',
-            'account__canbedeleted'
-        ).annotate(
-            balance=Sum('debitamount') - Sum('creditamount')
+        stock_balance_rows = (
+            StockTransactions.objects.filter(**stock_filter)
+            .exclude(accounttype='MD')
+            .exclude(transactiontype__in=['PC'])
+            .values('account_id')
+            .annotate(balance=Sum('debitamount', default=0) - Sum('creditamount', default=0))
         )
+        balance_map = {row["account_id"]: (row["balance"] or 0) for row in stock_balance_rows}
 
         account_filter = {
             "entity": entity,
@@ -631,35 +626,48 @@ class AccountListPostApiView(ListAPIView):
         if accounthead_ids:
             account_filter["accounthead__id__in"] = accounthead_ids
 
-        account_queryset = account.objects.filter(
-            **account_filter
-        ).values(
-            'id', 'accountname', 'gstno', 'pan', 'city__cityname',
-            'accounthead__name', 'creditaccounthead__name', 'canbedeleted'
+        account_queryset = (
+            account.objects.filter(**account_filter)
+            .select_related(
+                "city",
+                "accounthead",
+                "creditaccounthead",
+                "ledger",
+                "ledger__accounthead",
+                "ledger__creditaccounthead",
+            )
         )
 
-        stock_data = list(stock_queryset)
-        account_data = list(account_queryset)
-
         final_data = []
-        for acc in account_data:
-            balance = next((item.get('balance') for item in stock_data if item['account__id'] == acc['id']), 0)
-            balance = balance if balance is not None else 0
+        for acc in account_queryset:
+            balance = balance_map.get(acc.id, 0) or 0
             drcr = 'CR' if balance < 0 else 'DR'
             debit = max(balance, 0)
             credit = abs(min(balance, 0))
 
+            debit_head_name = None
+            if acc.ledger_id and acc.ledger.accounthead_id:
+                debit_head_name = acc.ledger.accounthead.name
+            elif acc.accounthead_id:
+                debit_head_name = acc.accounthead.name
+
+            credit_head_name = None
+            if acc.ledger_id and acc.ledger.creditaccounthead_id:
+                credit_head_name = acc.ledger.creditaccounthead.name
+            elif acc.creditaccounthead_id:
+                credit_head_name = acc.creditaccounthead.name
+
             final_data.append({
-                'accountname': acc['accountname'],
+                'accountname': acc.effective_accounting_name,
                 'debit': debit,
                 'credit': credit,
-                'accgst': acc['gstno'],
-                'accpan': acc['pan'],
-                'cityname': acc['city__cityname'],
-                'accountid': acc['id'],
-                'daccountheadname': acc['accounthead__name'],
-                'caccountheadname': acc['creditaccounthead__name'],
-                'accanbedeleted': acc['canbedeleted'],
+                'accgst': acc.gstno,
+                'accpan': acc.pan,
+                'cityname': acc.city.cityname if acc.city_id else None,
+                'accountid': acc.id,
+                'daccountheadname': debit_head_name,
+                'caccountheadname': credit_head_name,
+                'accanbedeleted': acc.canbedeleted,
                 'balance': balance,
                 'drcr': drcr
             })
@@ -670,7 +678,7 @@ class AccountListPostApiView(ListAPIView):
         }
         sort_key = sort_field_map.get(sort_by, 'accountname')
         reverse_sort = sort_order.lower() == 'desc'
-        final_data.sort(key=lambda x: x.get(sort_key, '').lower(), reverse=reverse_sort)
+        final_data.sort(key=lambda x: (x.get(sort_key) or '').lower(), reverse=reverse_sort)
 
         if top_n:
             try:
@@ -913,8 +921,41 @@ class AccountListView(ListAPIView):
             filters &= Q(entity_id__in=entity_ids)
         if accounthead_codes:
             filters &= Q(accounthead__code__in=accounthead_codes)
-        
-        return account.objects.filter(filters)
+
+        return account.objects.filter(filters).select_related("ledger", "accounthead", "creditaccounthead")
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        entity_ids_raw = request.GET.get('entity', '')
+        entity_ids = [int(e) for e in entity_ids_raw.split(',') if e.isdigit()] if entity_ids_raw else []
+
+        balance_map = {}
+        if entity_ids:
+            fy_map = {
+                fy.entity_id: (fy.finstartyear, fy.finendyear)
+                for fy in EntityFinancialYear.objects.filter(entity_id__in=entity_ids, isactive=1)
+            }
+            for entity_id, (fin_start, fin_end) in fy_map.items():
+                entity_account_ids = list(queryset.filter(entity_id=entity_id).values_list("id", flat=True))
+                if not entity_account_ids:
+                    continue
+                entity_balances = (
+                    StockTransactions.objects.filter(
+                        entity_id=entity_id,
+                        isactive=1,
+                        account_id__in=entity_account_ids,
+                        entrydatetime__range=(fin_start, fin_end),
+                    )
+                    .exclude(accounttype='MD')
+                    .exclude(transactiontype__in=['PC'])
+                    .values('account_id')
+                    .annotate(balance=Sum('debitamount', default=0) - Sum('creditamount', default=0))
+                )
+                for row in entity_balances:
+                    balance_map[row["account_id"]] = row["balance"] or 0
+
+        serializer = self.get_serializer(queryset, many=True, context={**self.get_serializer_context(), "balance_map": balance_map})
+        return Response(serializer.data)
 
 
 class ShippingDetailsListCreateView(ListCreateAPIView):
@@ -1279,9 +1320,11 @@ class SimpleAccountsAPIView(ListAPIView):
         if not entity_id:
             return account.objects.none()
 
-        return account.objects.filter(
-            entity_id=entity_id   # if entity is on account
-        ).order_by("accountname")
+        return (
+            account.objects.filter(entity_id=entity_id)
+            .select_related("state", "ledger", "ledger__accounthead")
+            .order_by("accountname")
+        )
 
 
     

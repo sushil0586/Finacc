@@ -2,6 +2,8 @@ from django.contrib import admin
 from import_export.admin import ImportExportModelAdmin
 
 from .models import (
+    FinancialSettings,
+    Ledger,
     accounttype,
     accountHead,
     account,
@@ -17,6 +19,36 @@ from .admin_resources import (
     StaticAccountsResource,
     StaticAccountsMappingResource,
 )
+
+
+@admin.register(FinancialSettings)
+class FinancialSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "entity",
+        "opening_balance_edit_mode",
+        "enforce_gst_uniqueness",
+        "enforce_pan_uniqueness",
+        "require_gst_for_registered_parties",
+        "isactive",
+    )
+    list_filter = (
+        "opening_balance_edit_mode",
+        "enforce_gst_uniqueness",
+        "enforce_pan_uniqueness",
+        "require_gst_for_registered_parties",
+        "isactive",
+    )
+    search_fields = ("entity__entityname",)
+    list_select_related = ("entity", "createdby")
+
+
+@admin.register(Ledger)
+class LedgerAdmin(ImportExportModelAdmin):
+    list_display = ("ledger_code", "name", "entity", "accounthead", "is_party", "is_system")
+    list_filter = ("entity", "is_party", "is_system", "isactive")
+    search_fields = ("name", "legal_name", "ledger_code")
+    ordering = ("entity", "ledger_code")
+    list_select_related = ("entity", "accounthead", "creditaccounthead", "accounttype")
 
 
 @admin.register(accounttype)
@@ -50,18 +82,18 @@ class AccountAdmin(ImportExportModelAdmin):
 @admin.register(staticacounts)
 class StaticAccountsAdmin(ImportExportModelAdmin):
     resource_class = StaticAccountsResource
-    list_display = ("staticaccount", "code", "entity")
-    list_filter = ("entity",)
-    search_fields = ("staticaccount", "code")
+    list_display = ("staticaccount", "code", "mapping_scope", "is_required", "entity")
+    list_filter = ("entity", "mapping_scope", "is_required")
+    search_fields = ("staticaccount", "code", "description")
     ordering = ("entity", "code")
 
 
 @admin.register(staticacountsmapping)
 class StaticAccountsMappingAdmin(ImportExportModelAdmin):
     resource_class = StaticAccountsMappingResource
-    list_display = ("staticaccount", "account", "entity")
+    list_display = ("staticaccount", "ledger", "account", "entity")
     list_filter = ("entity",)
-    search_fields = ("staticaccount__code", "account__accountname", "account__accountcode")
+    search_fields = ("staticaccount__code", "ledger__name", "account__accountname", "account__accountcode")
     ordering = ("entity",)
 
 

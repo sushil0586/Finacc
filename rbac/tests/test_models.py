@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
+from django.utils import timezone
 
 from Authentication.models import User
 from Authentication.models import MainMenu, Submenu
@@ -149,3 +150,13 @@ class RBACModelTests(TestCase):
 
         self.assertEqual(response[0]["mainmenu"], "Sales")
         self.assertEqual(response[0]["submenu"][0]["submenu"], "Invoices")
+
+    def test_assignment_effective_window_property(self):
+        role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
+        future_assignment = UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            effective_from=timezone.now() + timezone.timedelta(days=1),
+        )
+        self.assertFalse(future_assignment.is_currently_effective)

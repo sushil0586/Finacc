@@ -52,7 +52,7 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
             subentity_id=subentity_id,
             vendor_id=vendor_id,
             is_open=open_flag,
-        ).select_related("vendor", "header")
+        ).select_related("vendor", "vendor__ledger", "header")
 
 
 class VendorAdvanceBalanceListAPIView(generics.ListAPIView):
@@ -76,7 +76,7 @@ class VendorAdvanceBalanceListAPIView(generics.ListAPIView):
             subentity_id=subentity_id,
             vendor_id=vendor_id,
             is_open=open_flag,
-        ).select_related("vendor", "payment_voucher").prefetch_related("settlements__lines__open_item")
+        ).select_related("vendor", "vendor__ledger", "payment_voucher").prefetch_related("settlements__lines__open_item")
 
 
 class VendorSettlementListCreateAPIView(generics.ListCreateAPIView):

@@ -73,6 +73,18 @@ PAYMENT_TERMS_CHOICES = [
     ("Net60", _("Net 60")),
 ]
 
+STATIC_ACCOUNT_SCOPE_CHOICES = [
+    ("posting", _("Posting")),
+    ("reporting", _("Reporting")),
+    ("system", _("System")),
+]
+
+OPENING_BALANCE_EDIT_MODE_CHOICES = [
+    ("always", _("Always Allow")),
+    ("before_posting", _("Allow Before First Posting")),
+    ("locked", _("Locked")),
+]
+
 
 # ============================================================
 # Shared helper: enforce "no delete if referenced"
@@ -120,7 +132,137 @@ def _protect_if_referenced(instance, label: str, display_value: str):
 # MODELS
 # ============================================================
 
+
+class Ledger(TrackingModel):
+    """
+    Additive parent accounting master.
+
+    Current code still uses `account` as the operational model, so this model is
+    introduced in parallel. Later, posting and reporting should move toward
+    Ledger-first references while `account` becomes the party/commercial profile.
+
+    Intended steady state:
+    - accounting identity lives in Ledger
+    - posting/reporting/static mappings point to Ledger
+    - account keeps only party/commercial/compliance details for party ledgers
+    """
+
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE, db_index=True)
+    ledger_code = models.IntegerField(null=True, blank=True, db_index=True)
+    name = models.CharField(max_length=255, db_index=True)
+    legal_name = models.CharField(max_length=255, null=True, blank=True)
+
+    accounthead = models.ForeignKey(
+        "financial.accountHead",
+        related_name="ledger_accountheads",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    creditaccounthead = models.ForeignKey(
+        "financial.accountHead",
+        related_name="ledger_credit_accountheads",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    contra_ledger = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="contra_ledgers",
+    )
+    accounttype = models.ForeignKey(
+        "financial.accounttype",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ledgers",
+    )
+
+    is_party = models.BooleanField(default=False, db_index=True)
+    is_system = models.BooleanField(default=False)
+    canbedeleted = models.BooleanField(default=True)
+
+    openingbcr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    openingbdr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    def __str__(self):
+        code = self.ledger_code if self.ledger_code is not None else "-"
+        return f"{code} - {self.name}"
+
+    def clean(self):
+        cr = self.openingbcr or 0
+        dr = self.openingbdr or 0
+        if cr and dr:
+            raise ValidationError(_("Only one of Opening Balance Cr or Opening Balance Dr can be non-zero."))
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "ledger_code"], name="uq_ledger_entity_ledger_code"),
+            models.CheckConstraint(check=Q(ledger_code__gt=0) | Q(ledger_code__isnull=True), name="ck_ledger_code_positive"),
+            models.CheckConstraint(check=Q(openingbcr__gte=0) | Q(openingbcr__isnull=True), name="ck_ledger_openingbcr_nonneg"),
+            models.CheckConstraint(check=Q(openingbdr__gte=0) | Q(openingbdr__isnull=True), name="ck_ledger_openingbdr_nonneg"),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "ledger_code"], name="ix_ledger_entity_code"),
+            models.Index(fields=["entity", "name"], name="ix_ledger_entity_name"),
+            models.Index(fields=["entity", "is_party"], name="ix_ledger_entity_party"),
+        ]
+
+
+class FinancialSettings(TrackingModel):
+    """
+    Entity-level financial policy/configuration.
+
+    This is intentionally small and additive. The goal is to move finance rules
+    out of serializer/view hardcoding over time, without changing any existing
+    endpoint contracts right now.
+
+    Immediate expected use:
+    - opening balance edit policy
+    - uniqueness/validation behavior toggles where business needs policy control
+
+    Later candidates:
+    - default currency
+    - round-off/default ledger mappings
+    - voucher numbering / posting strictness flags
+    """
+
+    entity = models.OneToOneField("entity.Entity", on_delete=models.CASCADE, related_name="financial_settings")
+    opening_balance_edit_mode = models.CharField(
+        max_length=20,
+        choices=OPENING_BALANCE_EDIT_MODE_CHOICES,
+        default="before_posting",
+    )
+    enforce_gst_uniqueness = models.BooleanField(default=True)
+    enforce_pan_uniqueness = models.BooleanField(default=True)
+    require_gst_for_registered_parties = models.BooleanField(default=False)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    def __str__(self):
+        return f"Financial Settings - {self.entity}"
+
+    class Meta:
+        verbose_name = _("Financial Settings")
+        verbose_name_plural = _("Financial Settings")
+
 class accounttype(TrackingModel):
+    """
+    Legacy accounting classification bucket.
+
+    Current purpose:
+    - groups account heads / ledgers at a coarse level
+    - used by existing create flows, admin imports, and some lookup APIs
+
+    Likely future direction:
+    - keep only if the business still needs a separate "account type" taxonomy
+    - otherwise this can later be folded into Ledger/AccountHead classification
+      once all APIs stop depending on it directly
+    """
     accounttypename = models.CharField(max_length=255, verbose_name=_("Acc type Name"))
     accounttypecode = models.CharField(max_length=255, verbose_name=_("Acc Type Code"))
     balanceType = models.BooleanField(verbose_name=_("Balance details"), default=True)
@@ -224,6 +366,30 @@ class accountHead(TrackingModel):
 
 
 class account(TrackingModel):
+    # Transitional parent link. Existing posting/invoice code still points to
+    # financial.account. Later, accounting identity should live in Ledger and
+    # this model should focus on party/commercial profile fields.
+    #
+    # Fields that are candidates to move fully to Ledger later:
+    # - accountcode
+    # - accounthead
+    # - creditaccounthead
+    # - contraaccount
+    # - accounttype
+    # - openingbcr / openingbdr
+    #
+    # Fields that are likely to remain here:
+    # - GST/PAN/TDS/TCS/compliance fields
+    # - party/contact/commercial profile fields
+    # - credit terms / payment terms
+    ledger = models.OneToOneField(
+        "financial.Ledger",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="account_profile",
+    )
+
     accountdate = models.DateTimeField(verbose_name="Account date", null=True, blank=True)
 
     iscompany = models.BooleanField(verbose_name=_("IsCompany"), default=False)
@@ -346,6 +512,37 @@ class account(TrackingModel):
     def __str__(self):
         return f"{self.accountname} , {self.gstno}"
 
+    # Ledger-first helper accessors. These allow downstream code to start
+    # reading accounting identity from Ledger without breaking current callers
+    # that still expect the legacy account columns to exist.
+    @property
+    def effective_accounting_code(self):
+        return self.ledger.ledger_code if self.ledger_id and self.ledger.ledger_code is not None else self.accountcode
+
+    @property
+    def effective_accounting_name(self):
+        return self.ledger.name if self.ledger_id and self.ledger.name else self.accountname
+
+    @property
+    def effective_accounthead_id(self):
+        return self.ledger.accounthead_id if self.ledger_id and self.ledger.accounthead_id else self.accounthead_id
+
+    @property
+    def effective_creditaccounthead_id(self):
+        return (
+            self.ledger.creditaccounthead_id
+            if self.ledger_id and self.ledger.creditaccounthead_id
+            else self.creditaccounthead_id
+        )
+
+    @property
+    def effective_openingbdr(self):
+        return self.ledger.openingbdr if self.ledger_id and self.ledger.openingbdr is not None else self.openingbdr
+
+    @property
+    def effective_openingbcr(self):
+        return self.ledger.openingbcr if self.ledger_id and self.ledger.openingbcr is not None else self.openingbcr
+
     def clean(self):
         cr = self.openingbcr or 0
         dr = self.openingbdr or 0
@@ -376,7 +573,16 @@ class account(TrackingModel):
         verbose_name = _("Account")
         verbose_name_plural = _("Accounts")
         constraints = [
-            
+            models.UniqueConstraint(
+                fields=["entity", "gstno"],
+                condition=Q(gstno__isnull=False) & ~Q(gstno=""),
+                name="uq_account_entity_gstno_present",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "accountcode"],
+                condition=Q(accountcode__isnull=False),
+                name="uq_account_entity_accountcode_present",
+            ),
             models.CheckConstraint(check=Q(openingbcr__gte=0) | Q(openingbcr__isnull=True), name="ck_account_openingbcr_nonneg"),
             models.CheckConstraint(check=Q(openingbdr__gte=0) | Q(openingbdr__isnull=True), name="ck_account_openingbdr_nonneg"),
             models.CheckConstraint(check=Q(accountcode__gt=0) | Q(accountcode__isnull=True), name="ck_account_accountcode_positive"),
@@ -391,6 +597,8 @@ class account(TrackingModel):
             models.Index(fields=["entity", "partytype"], name="ix_account_entity_partytype"),
             models.Index(fields=["entity", "isactive"], name="ix_account_entity_isactive"),
         ]
+        # PAN uniqueness is intentionally deferred to a later migration because
+        # current data already contains duplicates that must be cleaned first.
 
 
 class ShippingDetails(models.Model):
@@ -469,9 +677,17 @@ class ContactDetails(models.Model):
 
 
 class staticacounts(TrackingModel):
+    # Kept in financial for compatibility. The wider shape lets this table act
+    # as a system financial mapping key until posting is fully Ledger-first.
+    #
+    # Later this can remain in financial or move to posting/config if the team
+    # wants all posting-key definitions outside the master-data app.
     accounttype = models.ForeignKey(to=accounttype, on_delete=models.SET_NULL, null=True, blank=True)
     staticaccount = models.CharField(max_length=255, verbose_name=_("static acount"))
     code = models.CharField(max_length=255, verbose_name=_("Code"))
+    description = models.CharField(max_length=255, null=True, blank=True)
+    mapping_scope = models.CharField(max_length=20, choices=STATIC_ACCOUNT_SCOPE_CHOICES, default="posting")
+    is_required = models.BooleanField(default=False)
     entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
@@ -491,6 +707,12 @@ class staticacounts(TrackingModel):
 
 class staticacountsmapping(TrackingModel):
     staticaccount = models.ForeignKey(to=staticacounts, on_delete=models.SET_NULL, null=True, blank=True)
+    # New preferred mapping target. Existing code can keep reading `account`
+    # until posting/reporting is switched over to Ledger.
+    #
+    # Later candidate for removal:
+    # - account FK, once all posting logic reads ledger instead
+    ledger = models.ForeignKey(to=Ledger, on_delete=models.SET_NULL, null=True, blank=True, related_name="static_account_mappings")
     account = models.ForeignKey(to=account, on_delete=models.SET_NULL, null=True, blank=True)
     entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)

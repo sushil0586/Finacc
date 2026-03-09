@@ -1,8 +1,10 @@
+from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from entity.models import Entity, RolePrivilege, UserRole
 
-from .models import Menu, MenuPermission, Permission, Role, RolePermission, UserRoleAssignment
+from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
 
 
 class MenuTreeService:
@@ -35,14 +37,22 @@ class LegacyRBACCodes:
 
 class EffectivePermissionService:
     @staticmethod
+    def active_assignments_queryset(user, entity_id):
+        now = timezone.now()
+        return UserRoleAssignment.objects.filter(
+            user=user,
+            entity_id=entity_id,
+            isactive=True,
+            role__isactive=True,
+        ).filter(
+            Q(effective_from__isnull=True) | Q(effective_from__lte=now),
+            Q(effective_to__isnull=True) | Q(effective_to__gte=now),
+        )
+
+    @staticmethod
     def role_summaries_for_user(user, entity_id):
         assignments = list(
-            UserRoleAssignment.objects.filter(
-                user=user,
-                entity_id=entity_id,
-                isactive=True,
-                role__isactive=True,
-            )
+            EffectivePermissionService.active_assignments_queryset(user, entity_id)
             .select_related("role")
             .order_by("-is_primary", "role__priority", "role__name")
         )
@@ -80,14 +90,9 @@ class EffectivePermissionService:
 
     @staticmethod
     def permission_codes_for_user(user, entity_id, role_id=None):
-        assignments = UserRoleAssignment.objects.filter(
-            user=user,
-            entity_id=entity_id,
-            isactive=True,
-            role__isactive=True,
-        ).select_related("role")
+        assignments = EffectivePermissionService.active_assignments_queryset(user, entity_id).select_related("role")
         if role_id is not None:
-            assignments = assignments.filter(role__code=LegacyRBACCodes.role_code(role_id))
+            assignments = assignments.filter(Q(role_id=role_id) | Q(role__code=LegacyRBACCodes.role_code(role_id)))
 
         role_ids = list(assignments.values_list("role_id", flat=True))
         if not role_ids:
@@ -280,3 +285,114 @@ class LegacyMenuCompatibilityService:
         if role_id is None:
             return []
         return LegacyMenuCompatibilityService._legacy_response(entity_id, role_id)
+
+
+class RBACAuditService:
+    @staticmethod
+    def log(*, actor=None, entity=None, object_type, object_id, action, message="", changes=None):
+        RBACAuditLog.objects.create(
+            actor=actor,
+            entity=entity,
+            object_type=object_type,
+            object_id=object_id,
+            action=action,
+            message=message,
+            changes=changes or {},
+        )
+
+
+class RoleTemplateService:
+    TEMPLATE_MODULES = ("sales", "purchase", "reports", "statutory")
+
+    @staticmethod
+    def template_catalog():
+        templates = []
+        for module in RoleTemplateService.TEMPLATE_MODULES:
+            permissions = list(
+                Permission.objects.filter(isactive=True, module=module)
+                .order_by("resource", "action", "name")
+                .values("id", "code", "name", "resource", "action")
+            )
+            templates.append(
+                {
+                    "code": module,
+                    "name": module.title(),
+                    "description": f"Suggested {module.title()} access template.",
+                    "permissions": permissions,
+                }
+            )
+        return templates
+
+    @staticmethod
+    @transaction.atomic
+    def apply_template(role, template_code, permission_ids, actor=None):
+        selected_ids = set(permission_ids)
+        if not selected_ids:
+            selected_ids = set(
+                Permission.objects.filter(isactive=True, module=template_code).values_list("id", flat=True)
+            )
+
+        RolePermission.objects.filter(role=role, permission__module=template_code).exclude(
+            permission_id__in=selected_ids
+        ).delete()
+        existing_ids = set(
+            RolePermission.objects.filter(role=role, permission_id__in=selected_ids).values_list("permission_id", flat=True)
+        )
+        missing_ids = selected_ids - existing_ids
+        RolePermission.objects.bulk_create(
+            [
+                RolePermission(role=role, permission_id=permission_id, effect=RolePermission.EFFECT_ALLOW)
+                for permission_id in missing_ids
+            ]
+        )
+        RBACAuditService.log(
+            actor=actor,
+            entity=role.entity,
+            object_type="role",
+            object_id=role.id,
+            action=RBACAuditLog.ACTION_APPLY_TEMPLATE,
+            message=f"Applied template {template_code} to role {role.name}.",
+            changes={"template": template_code, "permission_ids": sorted(selected_ids)},
+        )
+        return selected_ids
+
+
+class RoleCloneService:
+    @staticmethod
+    @transaction.atomic
+    def clone_role(source_role, *, name, code, actor=None, description=None):
+        clone = Role.objects.create(
+            entity=source_role.entity,
+            name=name,
+            code=code,
+            description=description if description is not None else source_role.description,
+            role_level=source_role.role_level,
+            is_system_role=False,
+            is_assignable=source_role.is_assignable,
+            priority=source_role.priority,
+            metadata=source_role.metadata,
+            createdby=actor,
+            isactive=True,
+        )
+        RolePermission.objects.bulk_create(
+            [
+                RolePermission(
+                    role=clone,
+                    permission=role_permission.permission,
+                    effect=role_permission.effect,
+                    metadata=role_permission.metadata,
+                    isactive=role_permission.isactive,
+                )
+                for role_permission in source_role.role_permissions.filter(isactive=True).select_related("permission")
+            ]
+        )
+        RBACAuditService.log(
+            actor=actor,
+            entity=clone.entity,
+            object_type="role",
+            object_id=clone.id,
+            action=RBACAuditLog.ACTION_CLONE,
+            message=f"Cloned role {source_role.name} to {clone.name}.",
+            changes={"source_role_id": source_role.id},
+        )
+        return clone

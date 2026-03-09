@@ -51,6 +51,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             self._scoped_queryset()
             .select_related(
                 "customer",
+                "customer__ledger",
                 "shipping_detail",              # ✅ new
                 "shipping_detail__state",       # ✅ optional
                 "shipping_detail__city",        # ✅ optional
@@ -108,6 +109,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             self._scoped_queryset()
             .select_related(
                 "customer",
+                "customer__ledger",
                 "shipping_detail",
                 "shipping_detail__state",
                 "shipping_detail__city",

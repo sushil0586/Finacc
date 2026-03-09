@@ -7,7 +7,8 @@ from entity.models import Entity,EntityFinancialYear
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, Sum
-from financial.helper_posting import repost_opening_balance
+from financial.helper_posting import repost_opening_balance, validate_opening_balance_edit
+from financial.services import sync_ledger_for_account
 
 from geography.serializers import CityListSerializer
 import os
@@ -296,6 +297,7 @@ class AccountSerializer(serializers.ModelSerializer):
             validated_data["createdby"] = request.user
 
         acc = account.objects.create(**validated_data, accountcode=accountcode)
+        sync_ledger_for_account(acc)
 
         # nested bulk upsert
         self._upsert_shipping_bulk(acc, shipping_data)
@@ -315,6 +317,19 @@ class AccountSerializer(serializers.ModelSerializer):
         shipping_data = validated_data.pop("shipping_details", None)
         contact_data = validated_data.pop("contact_details", None)
 
+        old_opening_dr = instance.openingbdr
+        old_opening_cr = instance.openingbcr
+        new_opening_dr = validated_data.get("openingbdr", instance.openingbdr)
+        new_opening_cr = validated_data.get("openingbcr", instance.openingbcr)
+
+        validate_opening_balance_edit(
+            instance,
+            old_opening_dr=old_opening_dr,
+            old_opening_cr=old_opening_cr,
+            new_opening_dr=new_opening_dr,
+            new_opening_cr=new_opening_cr,
+        )
+
         # update base fields
         for k, v in validated_data.items():
             setattr(instance, k, v)
@@ -325,6 +340,7 @@ class AccountSerializer(serializers.ModelSerializer):
             instance.createdby = request.user
 
         instance.save()
+        sync_ledger_for_account(instance)
 
         # nested updates only if provided
         if shipping_data is not None:
@@ -571,28 +587,8 @@ class AccountListtopSerializer(serializers.ModelSerializer):
         ]
     
     def get_balance(self, obj):
-        request = self.context.get('request')
-        entity = request.GET.get('entity')
-        
-        if entity:
-            current_dates = EntityFinancialYear.objects.get(entity=entity, isactive=1)
-            transaction = StockTransactions.objects.filter(
-                entity=entity,
-                isactive=1,
-                entrydatetime__range=(current_dates.finstartyear,current_dates.finendyear)
-            ).exclude(
-                accounttype='MD'
-            ).exclude(
-                transactiontype__in=['PC']
-            ).filter(
-                account=obj
-            ).aggregate(
-                balance=Sum('debitamount', default=0) - Sum('creditamount', default=0)
-            )
-            
-            return transaction['balance'] or 0  # Ensure None is replaced with 0
-        
-        return 0
+        balance_map = self.context.get("balance_map", {})
+        return balance_map.get(obj.id, 0)
     
 
 
@@ -764,6 +760,8 @@ class AccountHeadListSerializer(serializers.ModelSerializer):
 
 class SimpleAccountSerializer(serializers.ModelSerializer):
     statecode = serializers.SerializerMethodField()
+    accounthead = serializers.SerializerMethodField()
+    accountcode = serializers.SerializerMethodField()
 
     class Meta:
         model = account
@@ -784,6 +782,12 @@ class SimpleAccountSerializer(serializers.ModelSerializer):
 
     def get_statecode(self, obj):
         return obj.state.statecode if obj.state else None
+
+    def get_accounthead(self, obj):
+        return obj.effective_accounthead_id
+
+    def get_accountcode(self, obj):
+        return obj.effective_accounting_code
            
 
 
