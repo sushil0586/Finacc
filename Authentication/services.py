@@ -5,6 +5,7 @@ from datetime import timedelta
 import jwt
 from django.conf import settings
 from django.core.cache import cache
+from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework import exceptions
 
@@ -18,7 +19,7 @@ class AuthSettings:
     REFRESH_TOKEN_DAYS = getattr(settings, "AUTH_REFRESH_TOKEN_DAYS", 30)
     LOGIN_RATE_LIMIT_ATTEMPTS = getattr(settings, "AUTH_LOGIN_RATE_LIMIT_ATTEMPTS", 5)
     LOGIN_RATE_LIMIT_WINDOW = getattr(settings, "AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 60)
-    REQUIRE_EMAIL_VERIFIED = getattr(settings, "AUTH_REQUIRE_EMAIL_VERIFIED", False)
+    REQUIRE_EMAIL_VERIFIED = getattr(settings, "AUTH_REQUIRE_EMAIL_VERIFIED", True)
     OTP_LENGTH = getattr(settings, "AUTH_OTP_LENGTH", 6)
     OTP_EXPIRY_MINUTES = getattr(settings, "AUTH_OTP_EXPIRY_MINUTES", 15)
 
@@ -216,12 +217,28 @@ class AuthOTPService:
             purpose=purpose,
             consumed_at__isnull=True,
         ).update(consumed_at=timezone.now(), updated_at=timezone.now())
-        return AuthOTP.objects.create(
+        otp = AuthOTP.objects.create(
             user=user,
             email=email.lower(),
             purpose=purpose,
             code=cls._generate_code(),
             expires_at=timezone.now() + timedelta(minutes=AuthSettings.OTP_EXPIRY_MINUTES),
+        )
+        cls.send_otp_email(otp)
+        return otp
+
+    @staticmethod
+    def send_otp_email(otp):
+        purpose_label = dict(AuthOTP.PURPOSE_CHOICES).get(otp.purpose, otp.purpose)
+        send_mail(
+            subject=f"Finacc {purpose_label} OTP",
+            message=(
+                f"Your Finacc OTP for {purpose_label.lower()} is {otp.code}. "
+                f"It expires in {AuthSettings.OTP_EXPIRY_MINUTES} minutes."
+            ),
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=[otp.email],
+            fail_silently=False,
         )
 
     @staticmethod

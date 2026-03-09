@@ -1,3 +1,4 @@
+from django.core import mail
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -171,3 +172,93 @@ class EntityOnboardingTests(TestCase):
         self.assertTrue(Ledger.objects.filter(entity=entity, ledger_code=4000).exists())
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=self.user).exists())
         self.assertTrue(RbacRole.objects.filter(entity=entity, code="entity.super_admin").exists())
+
+
+class RegisterAndEntityOnboardingTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.country = Country.objects.create(countryname="India", countrycode="IN")
+        self.state = State.objects.create(statename="Punjab", statecode="PB", country=self.country)
+        self.district = District.objects.create(districtname="Fatehgarh", districtcode="FGS", state=self.state)
+        self.city = City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=self.district)
+        self.unit_type = UnitType.objects.create(UnitName="Unit", UnitDesc="Unit")
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        self.seed_user = User.objects.create_user(
+            username="seed_user",
+            email="seed_user@example.com",
+            password="secret123",
+        )
+        self.constitution = Constitution.objects.create(
+            constitutionname="Proprietorship",
+            constitutiondesc="Proprietorship",
+            constcode="01",
+            createdby=self.seed_user,
+        )
+        main_menu = MainMenu.objects.create(mainmenu="Admin", menuurl="/admin", menucode="admin", order=1)
+        Submenu.objects.create(
+            mainmenu=main_menu,
+            submenu="Role",
+            submenucode="role",
+            subMenuurl="/role",
+            order=1,
+        )
+        LegacyRBACBackfillService.run()
+
+    def test_register_and_onboard_creates_user_entity_tokens_and_rbac(self):
+        payload = {
+            "user": {
+                "email": "founder@example.com",
+                "username": "founder@example.com",
+                "first_name": "Founding",
+                "last_name": "User",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "New Entity",
+                    "legalname": "New Entity Pvt Ltd",
+                    "unitType": self.unit_type.id,
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "founder@example.com",
+                    "address": "4369 GT Road",
+                    "address2": "Sirhind",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+                "seed_options": {
+                    "template_code": "standard_trading",
+                    "seed_financial": True,
+                    "seed_rbac": True,
+                    "seed_default_subentity": True,
+                    "seed_default_roles": True,
+                },
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(response.data["verification"]["email_verified"])
+        self.assertTrue(response.data["verification"]["verification_required"])
+        self.assertEqual(len(mail.outbox), 1)
+        user = User.objects.get(email="founder@example.com")
+        self.assertEqual(response.data["user"]["id"], user.id)
+        entity = Entity.objects.get(id=response.data["onboarding"]["entity_id"])
+        self.assertEqual(entity.createdby, user)
+        self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=user).exists())

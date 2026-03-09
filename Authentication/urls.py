@@ -12,6 +12,7 @@ urlpatterns  = [
     path('forgotpassword',views.ForgotPasswordApiView.as_view(), name = 'forgotpassword'),
     path('resetpassword',views.ResetPasswordApiView.as_view(), name = 'resetpassword'),
     path('request-email-verification',views.RequestEmailVerificationApiView.as_view(), name = 'request-email-verification'),
+    path('resend-email-verification',views.ResendEmailVerificationApiView.as_view(), name = 'resend-email-verification'),
     path('verify-email',views.VerifyEmailApiView.as_view(), name = 'verify-email'),
     path('user',views.AuthApiView.as_view(), name = 'user'),
     path('me',views.AuthMeView.as_view(), name = 'me'),

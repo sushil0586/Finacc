@@ -1,5 +1,7 @@
 from django.db import transaction
 
+from Authentication.models import User
+from Authentication.services import AuthOTPService
 from entity.models import BankAccount, Entity, EntityConstitution, EntityDetail, EntityFinancialYear, SubEntity
 from financial.seeding import FinancialSeedService
 from rbac.seeding import RBACSeedService
@@ -31,10 +33,13 @@ class EntityOnboardingService:
         detail = None
         if detail_data:
             detail_defaults = {
-                "email": entity.email,
                 "gstno": entity.gstno,
                 "gstintype": entity.gstintype,
             }
+            # Legacy EntityDetail.email is capped at 24 chars, while Entity.email
+            # supports real business email lengths. Do not implicitly mirror the
+            # entity email into EntityDetail; only persist detail.email if the
+            # caller explicitly sends one that fits the legacy column.
             detail_defaults.update(detail_data)
             detail = EntityDetail.objects.update_or_create(entity=entity, defaults=detail_defaults)[0]
 
@@ -105,4 +110,39 @@ class EntityOnboardingService:
             "constitution_ids": constitution_ids,
             "financial": financial_summary,
             "rbac": rbac_summary,
+        }
+
+    @classmethod
+    @transaction.atomic
+    def register_user_and_create_entity(cls, *, payload, user_agent="", ip_address=None):
+        user_data = dict(payload["user"])
+        onboarding_payload = dict(payload["onboarding"])
+
+        email = user_data["email"].strip().lower()
+        username = (user_data.get("username") or email).strip() or email
+        password = user_data.pop("password")
+        first_name = user_data.get("first_name", "")
+        last_name = user_data.get("last_name", "")
+
+        user = User.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            first_name=first_name,
+            last_name=last_name,
+            email_verified=False,
+        )
+
+        onboarding_result = cls.create_entity(actor=user, payload=onboarding_payload)
+        otp = AuthOTPService.create_otp(user=user, email=email, purpose="email_verification")
+
+        return {
+            "user": user,
+            "onboarding": onboarding_result,
+            "verification": {
+                "email": user.email,
+                "email_verified": user.email_verified,
+                "otp_generated": bool(otp),
+                "verification_required": True,
+            },
         }

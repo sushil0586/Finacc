@@ -1,7 +1,7 @@
 from django.urls import path
 from entity import views
 from entity.context_views import UserEntitiesV2View
-from entity.onboarding_views import EntityOnboardingCreateAPIView
+from entity.onboarding_views import EntityOnboardingCreateAPIView, RegisterAndEntityOnboardingCreateAPIView
 
 
 app_name = 'entity'
@@ -41,6 +41,7 @@ urlpatterns  = [
     path('bankaccounts/entity/<int:entity_id>/', views.BankAccountListByEntityView.as_view(), name='bankaccount-by-entity'),
     path('entity/create/', views.EntityCreateUpdateAPIView.as_view(), name='entity-create'),
     path('onboarding/create/', EntityOnboardingCreateAPIView.as_view(), name='entity-onboarding-create'),
+    path('onboarding/register/', RegisterAndEntityOnboardingCreateAPIView.as_view(), name='entity-onboarding-register'),
     path('entity/update/<int:pk>/', views.EntityCreateUpdateAPIView.as_view(), name='entity-update'),
     path('entity/<int:id>/', views.EntityRetrieveAPIView.as_view(), name='entity-detail'),
     
