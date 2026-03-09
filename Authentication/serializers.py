@@ -154,6 +154,10 @@ class RequestEmailVerificationSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False)
 
 
+class ResendEmailVerificationSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
 class VerifyEmailSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(max_length=6)

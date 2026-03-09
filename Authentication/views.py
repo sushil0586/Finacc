@@ -8,7 +8,7 @@ from Authentication.serializers import (
     RegisterSerializer,LoginSerializer,UserSerializer,ChangePasswordSerializer,MainMenuSerializer,
     SubmenuSerializer,LogoutSerializer,RefreshTokenSerializer,ForgotPasswordSerializer,
     ResetPasswordSerializer,RequestEmailVerificationSerializer,VerifyEmailSerializer,
-    AuthenticatedUserSerializer,
+    AuthenticatedUserSerializer, ResendEmailVerificationSerializer,
 )
 from django.contrib.auth import authenticate,get_user_model
 from Authentication.models import User,MainMenu,Submenu
@@ -148,7 +148,13 @@ class LoginApiView(GenericAPIView):
                 details={"reason": "email_not_verified"},
             )
             return response.Response(
-                {'message': 'Email is not verified'},
+                {
+                    'message': 'Email is not verified',
+                    'code': 'email_not_verified',
+                    'next_action': 'verify_email',
+                    'email': user.email,
+                    'verify_endpoint': '/api/auth/verify-email',
+                },
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -375,6 +381,45 @@ class RequestEmailVerificationApiView(GenericAPIView):
             raise AuthenticationFailed("You can request verification only for your own email.")
         AuthOTPService.create_otp(user=request.user, email=email, purpose="email_verification")
         return Response({"message": "Verification OTP generated."}, status=status.HTTP_200_OK)
+
+
+class ResendEmailVerificationApiView(GenericAPIView):
+    permission_classes = (permissions.AllowAny,)
+    authentication_classes = []
+    serializer_class = ResendEmailVerificationSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].lower()
+        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        if user and not user.email_verified:
+            AuthOTPService.create_otp(user=user, email=email, purpose="email_verification")
+            return Response(
+                {
+                    "message": "Verification OTP generated.",
+                    "email": email,
+                    "email_verified": False,
+                },
+                status=status.HTTP_200_OK,
+            )
+        if user and user.email_verified:
+            return Response(
+                {
+                    "message": "Email is already verified.",
+                    "email": email,
+                    "email_verified": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+        return Response(
+            {
+                "message": "If the email exists, a verification OTP has been generated.",
+                "email": email,
+                "email_verified": False,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class VerifyEmailApiView(GenericAPIView):

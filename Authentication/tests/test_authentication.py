@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.test import TestCase
 from rest_framework import exceptions
 from rest_framework.test import APIClient, APIRequestFactory
@@ -126,6 +127,7 @@ class AuthFlowTests(TestCase):
         self.client.force_authenticate(user=self.user)
         request_resp = self.client.post("/api/auth/request-email-verification", {}, format="json")
         self.assertEqual(request_resp.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
         otp = AuthOTP.objects.filter(email=self.user.email, purpose="email_verification").latest("created_at")
         self.client.force_authenticate(user=None)
         verify_resp = self.client.post(
@@ -136,3 +138,33 @@ class AuthFlowTests(TestCase):
         self.assertEqual(verify_resp.status_code, 200)
         self.user.refresh_from_db()
         self.assertTrue(self.user.email_verified)
+
+    def test_resend_email_verification_works_without_login(self):
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified", "updated_at"])
+        resp = self.client.post(
+            "/api/auth/resend-email-verification",
+            {"email": self.user.email},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["email_verified"], False)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_resend_email_verification_reports_already_verified(self):
+        resp = self.client.post(
+            "/api/auth/resend-email-verification",
+            {"email": self.user.email},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["email_verified"], True)
+
+    def test_login_requires_verified_email(self):
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified", "updated_at"])
+        resp = self.client.post("/api/auth/login", {"email": self.user.email, "password": "pass@12345"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.data["code"], "email_not_verified")
+        self.assertEqual(resp.data["next_action"], "verify_email")
+        self.assertEqual(resp.data["email"], self.user.email)

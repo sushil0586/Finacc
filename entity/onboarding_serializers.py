@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from Authentication.models import User
 from entity.models import BankAccount, Constitution, Entity, EntityConstitution, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 
 
@@ -38,7 +39,7 @@ class OnboardingEntityDetailPayloadSerializer(serializers.Serializer):
     style = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     commodity = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     weightDecimal = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True, max_length=24)
     registrationno = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     division = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     collectorate = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -113,6 +114,25 @@ class EntityOnboardingCreateSerializer(serializers.Serializer):
         return value
 
 
+class OnboardingUserPayloadSerializer(serializers.Serializer):
+    first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    email = serializers.EmailField()
+    username = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    password = serializers.CharField(min_length=6, max_length=128, write_only=True)
+
+    def validate_email(self, value):
+        normalized = value.strip().lower()
+        if User.objects.filter(email__iexact=normalized).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return normalized
+
+
+class RegisterAndOnboardSerializer(serializers.Serializer):
+    user = OnboardingUserPayloadSerializer()
+    onboarding = EntityOnboardingCreateSerializer()
+
+
 class EntityOnboardingResponseSerializer(serializers.Serializer):
     entity_id = serializers.IntegerField()
     entity_name = serializers.CharField()
@@ -123,3 +143,9 @@ class EntityOnboardingResponseSerializer(serializers.Serializer):
     constitution_ids = serializers.ListField(child=serializers.IntegerField())
     financial = serializers.DictField()
     rbac = serializers.DictField()
+
+
+class RegisterAndOnboardResponseSerializer(serializers.Serializer):
+    user = serializers.DictField()
+    onboarding = EntityOnboardingResponseSerializer()
+    verification = serializers.DictField()
