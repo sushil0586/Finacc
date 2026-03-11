@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -11,6 +12,12 @@ class MenuTreeService:
     @staticmethod
     def root_queryset():
         return Menu.objects.filter(parent__isnull=True, isactive=True).order_by("sort_order", "name")
+
+
+class RBACDevelopmentAccess:
+    @staticmethod
+    def allow_all():
+        return bool(getattr(settings, "RBAC_DEV_ALLOW_ALL_ACCESS", False))
 
 
 class LegacyRBACCodes:
@@ -51,6 +58,18 @@ class EffectivePermissionService:
 
     @staticmethod
     def role_summaries_for_user(user, entity_id):
+        if RBACDevelopmentAccess.allow_all():
+            return [
+                {
+                    "id": 0,
+                    "name": "Development Full Access",
+                    "code": "dev.full_access",
+                    "description": "Dev-only synthetic full access role.",
+                    "source": "development",
+                    "is_primary": True,
+                }
+            ]
+
         assignments = list(
             EffectivePermissionService.active_assignments_queryset(user, entity_id)
             .select_related("role")
@@ -90,6 +109,11 @@ class EffectivePermissionService:
 
     @staticmethod
     def permission_codes_for_user(user, entity_id, role_id=None):
+        if RBACDevelopmentAccess.allow_all():
+            return set(
+                Permission.objects.filter(isactive=True).values_list("code", flat=True)
+            )
+
         assignments = EffectivePermissionService.active_assignments_queryset(user, entity_id).select_related("role")
         if role_id is not None:
             assignments = assignments.filter(Q(role_id=role_id) | Q(role__code=LegacyRBACCodes.role_code(role_id)))
@@ -118,6 +142,9 @@ class EffectivePermissionService:
 
     @staticmethod
     def entity_for_user(user, entity_id):
+        if RBACDevelopmentAccess.allow_all():
+            return Entity.objects.filter(id=entity_id).first()
+
         return (
             Entity.objects.filter(id=entity_id)
             .filter(Q(userrole__user=user) | Q(user_role_assignments__user=user))
@@ -160,6 +187,14 @@ class EffectiveMenuService:
 
     @staticmethod
     def menu_tree_for_user(user, entity_id, role_id=None):
+        if RBACDevelopmentAccess.allow_all():
+            queryset = (
+                Menu.objects.filter(isactive=True)
+                .only("id", "parent_id", "name", "code", "menu_type", "route_path", "route_name", "icon", "sort_order", "depth")
+                .order_by("parent_id", "sort_order", "name")
+            )
+            return EffectiveMenuService._build_recursive_tree(queryset)
+
         permission_codes = EffectivePermissionService.permission_codes_for_user(user, entity_id, role_id=role_id)
         visible_menu_ids = EffectiveMenuService._collect_visible_menu_ids(permission_codes)
         if not visible_menu_ids:

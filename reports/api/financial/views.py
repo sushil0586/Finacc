@@ -30,6 +30,15 @@ class _BaseFinancialReportAPIView(APIView):
             "to_date": scope.get("to_date"),
             "as_of_date": scope.get("as_of_date"),
             "group_by": scope.get("group_by"),
+            "period_by": scope.get("period_by"),
+            "stock_valuation_mode": scope.get(
+                "stock_valuation_mode",
+                REPORT_DEFAULTS["balance_sheet_stock_valuation_mode"],
+            ),
+            "stock_valuation_method": scope.get(
+                "stock_valuation_method",
+                REPORT_DEFAULTS["balance_sheet_stock_valuation_method"],
+            ),
             "include_zero_balances": scope.get(
                 "include_zero_balances",
                 REPORT_DEFAULTS["show_zero_balances_default"],
@@ -63,6 +72,18 @@ class TrialBalanceAPIView(_BaseFinancialReportAPIView):
             subentity_id=scope.get("subentity"),
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            group_by=scope.get("group_by"),
+            include_zero_balances=scope.get(
+                "include_zero_balances",
+                REPORT_DEFAULTS["show_zero_balances_default"],
+            ),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "asc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+            period_by=scope.get("period_by"),
         )
         return Response(
             build_report_envelope(
@@ -108,6 +129,18 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
             subentity_id=scope.get("subentity"),
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            group_by=scope.get("group_by"),
+            include_zero_balances=scope.get(
+                "include_zero_balances",
+                REPORT_DEFAULTS["show_zero_balances_default"],
+            ),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "asc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+            period_by=scope.get("period_by"),
         )
         return Response(
             build_report_envelope(
@@ -129,6 +162,18 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             subentity_id=scope.get("subentity"),
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            group_by=scope.get("group_by"),
+            include_zero_balances=scope.get(
+                "include_zero_balances",
+                REPORT_DEFAULTS["show_zero_balances_default"],
+            ),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "asc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+            period_by=scope.get("period_by"),
         )
         return Response(
             build_report_envelope(

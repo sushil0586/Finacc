@@ -14,6 +14,18 @@ from reports.api.financial import (
     ProfitAndLossAPIView,
     TrialBalanceAPIView,
 )
+from reports.api.receivables_views import (
+    CustomerOutstandingReportAPIView,
+    CustomerOutstandingCSVAPIView,
+    CustomerOutstandingExcelAPIView,
+    CustomerOutstandingPDFAPIView,
+    CustomerOutstandingPrintAPIView,
+    ReceivableAgingReportAPIView,
+    ReceivableAgingCSVAPIView,
+    ReceivableAgingExcelAPIView,
+    ReceivableAgingPDFAPIView,
+    ReceivableAgingPrintAPIView,
+)
 
 
 
@@ -27,6 +39,16 @@ urlpatterns  = [
     path('financial/ledger-book/', LedgerBookAPIView.as_view(), name='financial-ledger-book'),
     path('financial/profit-loss/', ProfitAndLossAPIView.as_view(), name='financial-profit-loss'),
     path('financial/balance-sheet/', BalanceSheetAPIView.as_view(), name='financial-balance-sheet'),
+    path('receivables/customer-outstanding/', CustomerOutstandingReportAPIView.as_view(), name='customer-outstanding-report'),
+    path('receivables/customer-outstanding/excel/', CustomerOutstandingExcelAPIView.as_view(), name='customer-outstanding-report-excel'),
+    path('receivables/customer-outstanding/pdf/', CustomerOutstandingPDFAPIView.as_view(), name='customer-outstanding-report-pdf'),
+    path('receivables/customer-outstanding/csv/', CustomerOutstandingCSVAPIView.as_view(), name='customer-outstanding-report-csv'),
+    path('receivables/customer-outstanding/print/', CustomerOutstandingPrintAPIView.as_view(), name='customer-outstanding-report-print'),
+    path('receivables/aging/', ReceivableAgingReportAPIView.as_view(), name='receivable-aging-report'),
+    path('receivables/aging/excel/', ReceivableAgingExcelAPIView.as_view(), name='receivable-aging-report-excel'),
+    path('receivables/aging/pdf/', ReceivableAgingPDFAPIView.as_view(), name='receivable-aging-report-pdf'),
+    path('receivables/aging/csv/', ReceivableAgingCSVAPIView.as_view(), name='receivable-aging-report-csv'),
+    path('receivables/aging/print/', ReceivableAgingPrintAPIView.as_view(), name='receivable-aging-report-print'),
     path('closingstockview', views.closingstocknew.as_view(), name='closingstockView'),
     path('closingstockbalance', views.closingstockBalance.as_view(), name='closingstockView'),
     path('closingstock', views.closingstockView.as_view(), name='closingstockView'),

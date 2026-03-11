@@ -1,9 +1,10 @@
+from django.conf import settings
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.context_serializers import EntityContextSerializer
-from entity.models import UserRole
+from entity.models import Entity, UserRole
 from rbac.models import UserRoleAssignment
 from rbac.services import EffectivePermissionService
 
@@ -13,6 +14,26 @@ class UserEntitiesV2View(APIView):
 
     def get(self, request):
         user = request.user
+
+        if getattr(settings, "RBAC_DEV_ALLOW_ALL_ACCESS", False):
+            entities = Entity.objects.filter(isactive=True).order_by("entityname", "id")
+            serializer = EntityContextSerializer(
+                [
+                    {
+                        "entityid": entity.id,
+                        "entityname": entity.entityname,
+                        "gstno": entity.gstno,
+                        "email": user.email,
+                        "role": "Development Full Access",
+                        "roleid": 0,
+                        "roles": EffectivePermissionService.role_summaries_for_user(user, entity.id),
+                    }
+                    for entity in entities
+                ],
+                many=True,
+            )
+            return Response(serializer.data)
+
         entity_map = {}
 
         legacy_user_roles = (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.db.models import Q
 from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -132,7 +133,7 @@ class VoucherMetaBaseAPIView(APIView):
         )
         if subentity_id is None:
             return qs.filter(subentity__isnull=True)
-        return qs.filter(subentity_id=subentity_id)
+        return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
 
     def _action_flags(self, header: VoucherHeader):
         is_draft = int(header.status) == int(VoucherHeader.Status.DRAFT)

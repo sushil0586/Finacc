@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from django.db.models import F
 from django.db.models.functions import Coalesce
@@ -17,10 +17,12 @@ def normalize_scope_ids(entity_id, entityfin_id=None, subentity_id=None):
 
 
 def resolve_date_window(entityfin_id=None, from_date=None, to_date=None):
+    explicit_from = ensure_date(from_date)
+    explicit_to = ensure_date(to_date)
     if entityfin_id:
         fy = EntityFinancialYear.objects.get(id=entityfin_id)
-        return ensure_date(fy.finstartyear), ensure_date(fy.finendyear)
-    return ensure_date(from_date), ensure_date(to_date)
+        return explicit_from or ensure_date(fy.finstartyear), explicit_to or ensure_date(fy.finendyear)
+    return explicit_from, explicit_to
 
 
 def journal_lines_for_scope(entity_id, entityfin_id=None, subentity_id=None, from_date=None, to_date=None):
@@ -56,8 +58,14 @@ def journal_lines_for_scope(entity_id, entityfin_id=None, subentity_id=None, fro
 
 
 def ensure_date(value):
-    if value is None or isinstance(value, date):
+    if value is None:
         return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
     return value.date()
 
 
