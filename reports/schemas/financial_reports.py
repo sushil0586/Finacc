@@ -13,6 +13,21 @@ class FinancialReportScopeSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+    period_by = serializers.ChoiceField(
+        choices=("month", "quarter", "year"),
+        required=False,
+        allow_null=True,
+    )
+    stock_valuation_mode = serializers.ChoiceField(
+        choices=("auto", "gl", "valuation", "none"),
+        required=False,
+        allow_null=True,
+    )
+    stock_valuation_method = serializers.ChoiceField(
+        choices=("fifo", "lifo", "mwa", "wac", "latest"),
+        required=False,
+        allow_null=True,
+    )
     include_zero_balances = serializers.BooleanField(required=False)
     include_inactive_ledgers = serializers.BooleanField(required=False)
     search = serializers.CharField(required=False, allow_blank=True)

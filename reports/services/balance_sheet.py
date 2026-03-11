@@ -10,8 +10,8 @@ from django.db.models import (
     Subquery, OuterRef
 )
 
-# Adjust app labels if needed
-from invoice.models import JournalLine, InventoryMove, Product
+from catalog.models import Product
+from posting.models import InventoryMove, JournalLine
 from .trading_account import STRATEGIES
 from .profit_and_loss import build_profit_and_loss_statement  # for prior & current earnings
 
@@ -27,8 +27,18 @@ def _rate_from_move(qty: Decimal, unit_cost, ext_cost) -> Decimal:
     if unit_cost is not None:
         return Decimal(str(unit_cost))
     if ext_cost is not None and qty:
-        return Decimal(str(ext_cost)) / Decimal(str(qty))
+        return Decimal(str(ext_cost)) / abs(Decimal(str(qty)))
     return Decimal('0')
+
+
+def _signed_move_qty(move) -> Decimal:
+    qty = Decimal(str(move.get("base_qty") if move.get("base_qty") is not None else move.get("qty") or 0))
+    move_type = str(move.get("move_type") or "").upper()
+    if move_type == "OUT":
+        return -abs(qty)
+    if move_type == "IN":
+        return abs(qty)
+    return qty
 
 
 def _nest_under_accounthead(rows: list, *, head_field: str = "_head") -> list:
@@ -57,6 +67,14 @@ def _nest_under_accounthead(rows: list, *, head_field: str = "_head") -> list:
 
 def _inventory_value_asof(entity_id: int, enddate, method: str) -> Decimal:
     method = (method or "fifo").lower()
+    if method in {"fifo", "lifo"}:
+        _rows, _qty, closing = _inventory_breakdown_asof(
+            entity_id=entity_id,
+            enddate=enddate,
+            method=method,
+            include_zero=False,
+        )
+        return closing
     strat = STRATEGIES.get(method, STRATEGIES["fifo"])
     _opening, _cogs, closing = strat(entity_id, enddate, enddate)
     return closing
@@ -72,9 +90,9 @@ def _inventory_breakdown_asof(
 ) -> Tuple[List[Dict], Decimal, Decimal]:
     method = (method or "fifo").lower()
     moves_qs = (InventoryMove.objects
-                .filter(entity_id=entity_id, entrydate__lte=enddate)
-                .values('product_id', 'entrydate', 'id', 'qty', 'unit_cost', 'ext_cost')
-                .order_by('product_id', 'entrydate', 'id'))
+                .filter(entity_id=entity_id, posting_date__lte=enddate)
+                .values('product_id', 'posting_date', 'id', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+                .order_by('product_id', 'posting_date', 'id'))
 
     if product_ids:
         moves_qs = moves_qs.filter(product_id__in=product_ids)
@@ -101,8 +119,9 @@ def _inventory_breakdown_asof(
             return
 
         if method in ("fifo", "lifo"):
-            qty = sum((l["qty"] for l in layers), Decimal('0'))
-            val = sum((l["qty"] * l["rate"] for l in layers), Decimal('0'))
+            positive_layers = [l for l in layers if l["qty"] > 0]
+            qty = sum((l["qty"] for l in positive_layers), Decimal('0'))
+            val = sum((l["qty"] * l["rate"] for l in positive_layers), Decimal('0'))
         elif method in ("mwa", "latest"):
             qty, val = q, v
         elif method == "wac":
@@ -138,34 +157,64 @@ def _inventory_breakdown_asof(
             flush_product(cur_pid)
             cur_pid = pid
 
-        qty = Decimal(str(m['qty']))
-        rate = _rate_from_move(qty, m['unit_cost'], m['ext_cost'])
+        qty = _signed_move_qty(m)
+        rate = _rate_from_move(abs(qty), m['unit_cost'], m['ext_cost'])
 
         if method == "fifo":
             if qty > 0:
-                layers.append({"qty": qty, "rate": rate})
+                incoming = qty
+                for layer in layers:
+                    if incoming <= 0:
+                        break
+                    if layer["qty"] < 0:
+                        settle = min(-layer["qty"], incoming)
+                        layer["qty"] += settle
+                        incoming -= settle
+                layers = [l for l in layers if l["qty"] != 0]
+                if incoming > 0:
+                    layers.append({"qty": incoming, "rate": rate})
             elif qty < 0:
                 need = -qty; i = 0
                 while need > 0 and i < len(layers):
+                    if layers[i]["qty"] <= 0:
+                        i += 1
+                        continue
                     take = min(layers[i]["qty"], need)
                     layers[i]["qty"] -= take
                     need -= take
                     if layers[i]["qty"] == 0:
                         i += 1
-                layers = [l for l in layers if l["qty"] > 0]
+                layers = [l for l in layers if l["qty"] != 0]
+                if need > 0:
+                    layers.append({"qty": -need, "rate": rate})
 
         elif method == "lifo":
             if qty > 0:
-                layers.append({"qty": qty, "rate": rate})
+                incoming = qty
+                i = len(layers) - 1
+                while incoming > 0 and i >= 0:
+                    if layers[i]["qty"] < 0:
+                        settle = min(-layers[i]["qty"], incoming)
+                        layers[i]["qty"] += settle
+                        incoming -= settle
+                    i -= 1
+                layers = [l for l in layers if l["qty"] != 0]
+                if incoming > 0:
+                    layers.append({"qty": incoming, "rate": rate})
             elif qty < 0:
                 need = -qty; i = len(layers) - 1
                 while need > 0 and i >= 0:
+                    if layers[i]["qty"] <= 0:
+                        i -= 1
+                        continue
                     take = min(layers[i]["qty"], need)
                     layers[i]["qty"] -= take
                     need -= take
                     if layers[i]["qty"] == 0:
                         layers.pop(i)
                         i -= 1
+                if need > 0:
+                    layers.append({"qty": -need, "rate": rate})
 
         elif method == "mwa":
             if qty > 0:
@@ -208,9 +257,9 @@ def _build_label(level: str, row: dict) -> str:
         hd = row.get('accounthead__name')
         return f"{nm} ({hd})" if hd else nm
     if level == 'voucher':
-        vt = row.get('transactiontype') or "TXN"
-        vid = row.get('transactionid')
-        vno = row.get('voucherno')
+        vt = row.get('txn_type') or "TXN"
+        vid = row.get('txn_id')
+        vno = row.get('voucher_no')
         return vno or f"{vt}#{vid}"
     if level == 'product':
         # align with Product.productname
@@ -237,7 +286,7 @@ def _aggregate_balance_sheet_gl(
     """
     base = JournalLine.objects.filter(
         entity_id=entity_id,
-        entrydate__lte=end,
+        posting_date__lte=end,
         accounthead__detailsingroup__in=bs_detailsingroup_values
     )
     if exclude_head_ids:
@@ -251,24 +300,24 @@ def _aggregate_balance_sheet_gl(
         qs = base.values('accounthead_id', 'accounthead__name', 'account_id', 'account__accountname')
         label_build = lambda r: (r.get('account__accountname') or f"Account {r.get('account_id')}")
     elif level == 'voucher':
-        qs = base.values('accounthead_id', 'accounthead__name', 'transactiontype', 'transactionid', 'voucherno')
-        label_build = lambda r: (r.get('voucherno') or f"{r.get('transactiontype') or 'TXN'}#{r.get('transactionid')}")
+        qs = base.values('accounthead_id', 'accounthead__name', 'txn_type', 'txn_id', 'voucher_no')
+        label_build = lambda r: (r.get('voucher_no') or f"{r.get('txn_type') or 'TXN'}#{r.get('txn_id')}")
     elif level == 'product':
         # Subqueries aligned with your InventoryMove linkage and Product.productname
         prod_id_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
-                transactiontype=OuterRef('transactiontype'),
-                transactionid=OuterRef('transactionid'),
-                detailid=OuterRef('detailid')
+                txn_type=OuterRef('txn_type'),
+                txn_id=OuterRef('txn_id'),
+                detail_id=OuterRef('detail_id')
             ).values('product_id')[:1]
         )
         prod_name_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
-                transactiontype=OuterRef('transactiontype'),
-                transactionid=OuterRef('transactionid'),
-                detailid=OuterRef('detailid')
+                txn_type=OuterRef('txn_type'),
+                txn_id=OuterRef('txn_id'),
+                detail_id=OuterRef('detail_id')
             ).values('product__productname')[:1]
         )
         qs = (base.annotate(product_id=prod_id_sub, product__productname=prod_name_sub)

@@ -151,7 +151,7 @@ class ReceiptMetaBaseAPIView(APIView):
         )
         if subentity_id is None:
             return qs.filter(subentity__isnull=True)
-        return qs.filter(subentity_id=subentity_id)
+        return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
 
     def _action_flags(self, header: ReceiptVoucherHeader):
         is_draft = int(header.status) == int(ReceiptVoucherHeader.Status.DRAFT)

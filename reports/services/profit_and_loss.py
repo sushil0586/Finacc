@@ -8,8 +8,7 @@ from django.db.models import (
     Subquery, OuterRef
 )
 
-# Adjust app labels if needed
-from invoice.models import JournalLine, InventoryMove
+from posting.models import InventoryMove, JournalLine
 from .trading_account import build_trading_account_dynamic  # safe: one-way dependency
 
 
@@ -28,11 +27,11 @@ def _build_label(level: str, row: dict) -> str:
         hd = row.get('accounthead__name')
         return f"{nm} ({hd})" if hd else nm
     if level == 'product':
-        return row.get('product__name') or "Unmapped Product"
+        return row.get('product__productname') or "Unmapped Product"
     if level == 'voucher':
-        vt = row.get('transactiontype') or "TXN"
-        vid = row.get('transactionid')
-        vno = row.get('voucherno')
+        vt = row.get('txn_type') or "TXN"
+        vid = row.get('txn_id')
+        vno = row.get('voucher_no')
         return vno or f"{vt}#{vid}"
     return row.get('accounthead__name') or "Row"
 
@@ -83,7 +82,7 @@ def _aggregate_pl(
     base = (JournalLine.objects
             .filter(
                 entity_id=entity_id,
-                entrydate__range=(start, end),
+                posting_date__range=(start, end),
                 accounthead__detailsingroup__in=pl_detailsingroup_values
             )
             .exclude(accounthead__detailsingroup__in=trading_detailsingroup_values))
@@ -96,29 +95,29 @@ def _aggregate_pl(
         values_fields = ['accounthead_id', 'accounthead__name', 'account_id', 'account__accountname']
         qs = base.values(*values_fields)
     elif level == 'voucher':
-        values_fields = ['accounthead_id', 'accounthead__name', 'transactiontype', 'transactionid', 'voucherno']
+        values_fields = ['accounthead_id', 'accounthead__name', 'txn_type', 'txn_id', 'voucher_no']
         qs = base.values(*values_fields)
     elif level == 'product':
         # Map product via InventoryMove keys; first match per line
         prod_id_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
-                transactiontype=OuterRef('transactiontype'),
-                transactionid=OuterRef('transactionid'),
-                detailid=OuterRef('detailid')
+                txn_type=OuterRef('txn_type'),
+                txn_id=OuterRef('txn_id'),
+                detail_id=OuterRef('detail_id')
             ).values('product_id')[:1]
         )
         prod_name_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
-                transactiontype=OuterRef('transactiontype'),
-                transactionid=OuterRef('transactionid'),
-                detailid=OuterRef('detailid')
-            ).values('product__name')[:1]
+                txn_type=OuterRef('txn_type'),
+                txn_id=OuterRef('txn_id'),
+                detail_id=OuterRef('detail_id')
+            ).values('product__productname')[:1]
         )
-        qs = base.annotate(product_id=prod_id_sub, product__name=prod_name_sub)\
-                 .values('product_id', 'product__name')
-        values_fields = ['product_id', 'product__name']
+        qs = base.annotate(product_id=prod_id_sub, product__productname=prod_name_sub)\
+                 .values('product_id', 'product__productname')
+        values_fields = ['product_id', 'product__productname']
     else:
         # default to head
         values_fields = ['accounthead_id', 'accounthead__name']
@@ -169,7 +168,7 @@ def _aggregate_pl(
         if any(r['label'] == "Unmapped Product" for r in debit_rows + credit_rows):
             warnings.append({
                 "code": "UNMAPPED_PRODUCT",
-                "msg": "Some journals could not be mapped to products (missing detailid or no InventoryMove match)."
+                "msg": "Some journals could not be mapped to products (missing detail_id or no InventoryMove match)."
             })
 
     # Group accounts under their Account Head parents with subtotals when level='account'

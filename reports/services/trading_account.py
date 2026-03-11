@@ -8,8 +8,8 @@ from django.db.models import (
     Subquery, OuterRef
 )
 
-# ⬇️ Adjust app label(s) if needed
-from invoice.models import JournalLine, InventoryMove, Product
+from catalog.models import Product
+from posting.models import InventoryMove, JournalLine
 
 
 # --------------------------- Common helpers ---------------------------
@@ -24,7 +24,7 @@ def _in_rate(qty: Decimal, unit_cost, ext_cost) -> Decimal:
     if unit_cost is not None:
         return Decimal(str(unit_cost))
     if ext_cost is not None and qty:
-        return Decimal(str(ext_cost)) / Decimal(str(qty))
+        return Decimal(str(ext_cost)) / abs(Decimal(str(qty)))
     return Decimal('0')
 
 def _sum_debits(qs):
@@ -69,8 +69,18 @@ def _rate_from_move(qty: Decimal, unit_cost, ext_cost) -> Decimal:
     if unit_cost is not None:
         return Decimal(str(unit_cost))
     if ext_cost is not None and qty:
-        return Decimal(str(ext_cost)) / Decimal(str(qty))
+        return Decimal(str(ext_cost)) / abs(Decimal(str(qty)))
     return Decimal('0')
+
+
+def _signed_move_qty(move) -> Decimal:
+    qty = Decimal(str(move.get("base_qty") if move.get("base_qty") is not None else move.get("qty") or 0))
+    move_type = str(move.get("move_type") or "").upper()
+    if move_type == "OUT":
+        return -abs(qty)
+    if move_type == "IN":
+        return abs(qty)
+    return qty
 
 def _inventory_breakdown_asof(
     *,
@@ -87,9 +97,9 @@ def _inventory_breakdown_asof(
     method = (method or "fifo").lower()
 
     moves_qs = (InventoryMove.objects
-                .filter(entity_id=entity_id, entrydate__lte=enddate)
-                .values('product_id', 'entrydate', 'id', 'qty', 'unit_cost', 'ext_cost')
-                .order_by('product_id', 'entrydate', 'id'))
+                .filter(entity_id=entity_id, posting_date__lte=enddate)
+                .values('product_id', 'posting_date', 'id', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+                .order_by('product_id', 'posting_date', 'id'))
 
     if product_ids:
         moves_qs = moves_qs.filter(product_id__in=product_ids)
@@ -159,7 +169,7 @@ def _inventory_breakdown_asof(
             flush_product(cur_pid)
             cur_pid = pid
 
-        qty = Decimal(str(m['qty']))
+        qty = _signed_move_qty(m)
         rate = _rate_from_move(qty, m['unit_cost'], m['ext_cost'])
 
         if method == "fifo":
@@ -237,9 +247,9 @@ def _value_by_fifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
       Returns (opening_value, cogs_issues_in_period, closing_value) at 2 decimals.
     """
     moves = (InventoryMove.objects
-             .filter(entity_id=entity_id, entrydate__lte=end_date)
-             .values('id', 'entrydate', 'qty', 'unit_cost', 'ext_cost')
-             .order_by('entrydate', 'id'))
+             .filter(entity_id=entity_id, posting_date__lte=end_date)
+             .values('id', 'posting_date', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+             .order_by('posting_date', 'id'))
 
     layers: List[Dict[str, Decimal]] = []
     opening_value = Decimal('0')
@@ -267,7 +277,7 @@ def _value_by_fifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
     day_before = start_date - timedelta(days=1)
     # Build opening
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d > day_before:
             break
         if qty > 0:
@@ -278,7 +288,7 @@ def _value_by_fifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
 
     # Period movements
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d < start_date:
             continue
         if qty > 0:
@@ -297,9 +307,9 @@ def _value_by_lifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
       - OUT pops from most recent layers first
     """
     moves = (InventoryMove.objects
-             .filter(entity_id=entity_id, entrydate__lte=end_date)
-             .values('id', 'entrydate', 'qty', 'unit_cost', 'ext_cost')
-             .order_by('entrydate', 'id'))
+             .filter(entity_id=entity_id, posting_date__lte=end_date)
+             .values('id', 'posting_date', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+             .order_by('posting_date', 'id'))
 
     layers: List[Dict[str, Decimal]] = []
     opening_value = Decimal('0')
@@ -326,7 +336,7 @@ def _value_by_lifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
 
     day_before = start_date - timedelta(days=1)
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d > day_before:
             break
         if qty > 0:
@@ -336,7 +346,7 @@ def _value_by_lifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
     opening_value = sum((l["qty"] * l["rate"] for l in layers), Decimal('0'))
 
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d < start_date:
             continue
         if qty > 0:
@@ -350,16 +360,16 @@ def _value_by_lifo(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, D
 
 def _value_by_mwa(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, Decimal]:
     moves = (InventoryMove.objects
-             .filter(entity_id=entity_id, entrydate__lte=end_date)
-             .values('id', 'entrydate', 'qty', 'unit_cost', 'ext_cost')
-             .order_by('entrydate', 'id'))
+             .filter(entity_id=entity_id, posting_date__lte=end_date)
+             .values('id', 'posting_date', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+             .order_by('posting_date', 'id'))
 
     day_before = start_date - timedelta(days=1)
 
     # Opening running avg
     oq = Decimal('0'); ov = Decimal('0')
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d > day_before:
             break
         if qty > 0:
@@ -376,7 +386,7 @@ def _value_by_mwa(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, De
     q = oq; v = ov
     cogs = Decimal('0')
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d < start_date:
             continue
         if qty > 0:
@@ -398,18 +408,18 @@ def _value_by_wac(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, De
 
     # Opening (<= start-1)
     opening_in = (InventoryMove.objects
-                  .filter(entity_id=entity_id, entrydate__lte=day_before, qty__gt=0)
-                  .values('qty', 'unit_cost', 'ext_cost'))
+                  .filter(entity_id=entity_id, posting_date__lte=day_before, move_type='IN')
+                  .values('qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost'))
     opening_out = (InventoryMove.objects
-                   .filter(entity_id=entity_id, entrydate__lte=day_before, qty__lt=0)
-                   .values('qty'))
+                   .filter(entity_id=entity_id, posting_date__lte=day_before, move_type='OUT')
+                   .values('qty', 'base_qty', 'move_type'))
 
     oq = Decimal('0'); ov = Decimal('0')
     for m in opening_in:
-        qty = Decimal(str(m['qty'])); rate = _in_rate(qty, m['unit_cost'], m['ext_cost'])
+        qty = _signed_move_qty(m); rate = _in_rate(abs(qty), m['unit_cost'], m['ext_cost'])
         oq += qty; ov += qty * rate
     for m in opening_out:
-        qty = -Decimal(str(m['qty']))
+        qty = abs(_signed_move_qty(m))
         take = min(oq, qty)
         if oq > 0:
             avg = ov / oq
@@ -418,17 +428,17 @@ def _value_by_wac(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, De
 
     # Period purchases (IN)
     period_in = (InventoryMove.objects
-                 .filter(entity_id=entity_id, entrydate__range=(start_date, end_date), qty__gt=0)
-                 .values('qty', 'unit_cost', 'ext_cost'))
+                 .filter(entity_id=entity_id, posting_date__range=(start_date, end_date), move_type='IN')
+                 .values('qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost'))
     pq = Decimal('0'); pv = Decimal('0')
     for m in period_in:
-        qty = Decimal(str(m['qty'])); rate = _in_rate(qty, m['unit_cost'], m['ext_cost'])
+        qty = _signed_move_qty(m); rate = _in_rate(abs(qty), m['unit_cost'], m['ext_cost'])
         pq += qty; pv += qty * rate
 
     # Period issues (OUT)
     issues_qty = (InventoryMove.objects
-                  .filter(entity_id=entity_id, entrydate__range=(start_date, end_date), qty__lt=0)
-                  .aggregate(v=Sum(-F('qty')))['v'] or Decimal('0'))
+                  .filter(entity_id=entity_id, posting_date__range=(start_date, end_date), move_type='OUT')
+                  .aggregate(v=Sum('base_qty'))['v'] or Decimal('0'))
 
     denom_qty = oq + pq
     avg = (ov + pv) / denom_qty if denom_qty > 0 else Decimal('0')
@@ -442,9 +452,9 @@ def _value_by_wac(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, De
 
 def _value_by_latest(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal, Decimal]:
     moves = (InventoryMove.objects
-             .filter(entity_id=entity_id, entrydate__lte=end_date)
-             .values('id', 'entrydate', 'qty', 'unit_cost', 'ext_cost')
-             .order_by('entrydate', 'id'))
+             .filter(entity_id=entity_id, posting_date__lte=end_date)
+             .values('id', 'posting_date', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+             .order_by('posting_date', 'id'))
 
     day_before = start_date - timedelta(days=1)
 
@@ -452,7 +462,7 @@ def _value_by_latest(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal,
     oq = Decimal('0'); ov = Decimal('0')
 
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d > day_before:
             break
         if qty > 0:
@@ -467,7 +477,7 @@ def _value_by_latest(entity_id, start_date, end_date) -> Tuple[Decimal, Decimal,
     q = oq; v = ov
     cogs = Decimal('0')
     for m in moves:
-        d = m['entrydate']; qty = Decimal(str(m['qty']))
+        d = m['posting_date']; qty = _signed_move_qty(m)
         if d < start_date:
             continue
         if qty > 0:
@@ -503,11 +513,11 @@ def _build_label(level: str, row: dict) -> str:
         hd = row.get('accounthead__name')
         return f"{nm} ({hd})" if hd else nm
     if level == 'product':
-        return row.get('product__name') or "Unmapped Product"
+        return row.get('product__productname') or "Unmapped Product"
     if level == 'voucher':
-        vt = row.get('transactiontype') or "TXN"
-        vid = row.get('transactionid')
-        vno = row.get('voucherno')
+        vt = row.get('txn_type') or "TXN"
+        vid = row.get('txn_id')
+        vno = row.get('voucher_no')
         return vno or f"{vt}#{vid}"
     return row.get('accounthead__name') or "Row"
 
@@ -519,7 +529,7 @@ def _aggregate_journal(entity_id, start, end, detailsingroup_values, level):
     warnings = []
     jl_base = JournalLine.objects.filter(
         entity_id=entity_id,
-        entrydate__range=(start, end),
+        posting_date__range=(start, end),
         accounthead__detailsingroup__in=detailsingroup_values
     )
 
@@ -530,29 +540,29 @@ def _aggregate_journal(entity_id, start, end, detailsingroup_values, level):
         values_fields = ['accounthead_id', 'accounthead__name', 'account_id', 'account__accountname']
         qs = jl_base.values(*values_fields)
     elif level == 'voucher':
-        values_fields = ['accounthead_id', 'accounthead__name', 'transactiontype', 'transactionid', 'voucherno']
+        values_fields = ['accounthead_id', 'accounthead__name', 'txn_type', 'txn_id', 'voucher_no']
         qs = jl_base.values(*values_fields)
     elif level == 'product':
         # Map product via InventoryMove keys; first matching product per line
         prod_id_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
-                transactiontype=OuterRef('transactiontype'),
-                transactionid=OuterRef('transactionid'),
-                detailid=OuterRef('detailid')
+                txn_type=OuterRef('txn_type'),
+                txn_id=OuterRef('txn_id'),
+                detail_id=OuterRef('detail_id')
             ).values('product_id')[:1]
         )
         prod_name_sub = Subquery(
             InventoryMove.objects.filter(
                 entity_id=entity_id,
-                transactiontype=OuterRef('transactiontype'),
-                transactionid=OuterRef('transactionid'),
-                detailid=OuterRef('detailid')
-            ).values('product__name')[:1]
+                txn_type=OuterRef('txn_type'),
+                txn_id=OuterRef('txn_id'),
+                detail_id=OuterRef('detail_id')
+            ).values('product__productname')[:1]
         )
-        qs = jl_base.annotate(product_id=prod_id_sub, product__name=prod_name_sub)\
-                    .values('product_id', 'product__name')
-        values_fields = ['product_id', 'product__name']
+        qs = jl_base.annotate(product_id=prod_id_sub, product__productname=prod_name_sub)\
+                    .values('product_id', 'product__productname')
+        values_fields = ['product_id', 'product__productname']
     else:
         # default fallback to head
         values_fields = ['accounthead_id', 'accounthead__name']
@@ -602,7 +612,7 @@ def _aggregate_journal(entity_id, start, end, detailsingroup_values, level):
         if any(r['label'] == "Unmapped Product" for r in debit_rows + credit_rows):
             warnings.append({
                 "code": "UNMAPPED_PRODUCT",
-                "msg": "Some journals could not be mapped to products (missing detailid or no InventoryMove match)."
+                "msg": "Some journals could not be mapped to products (missing detail_id or no InventoryMove match)."
             })
 
     # ⬇️ When level='account', group accounts under their Account Head parents with subtotals
