@@ -4,12 +4,18 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from purchase.models.purchase_ap import VendorBillOpenItem, VendorAdvanceBalance, VendorSettlement, VendorSettlementLine
+from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement, VendorSettlementLine
 
 
 class VendorBillOpenItemSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
     doc_type_name = serializers.SerializerMethodField()
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(getattr(obj, "vendor_ledger", None), "id", None)
 
     def get_doc_type_name(self, obj):
         try:
@@ -27,6 +33,9 @@ class VendorBillOpenItemSerializer(serializers.ModelSerializer):
             "subentity",
             "vendor",
             "vendor_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
             "doc_type",
             "doc_type_name",
             "bill_date",
@@ -76,15 +85,21 @@ class VendorSettlementLineSerializer(serializers.ModelSerializer):
 
 
 class VendorSettlementSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
     lines = VendorSettlementLineSerializer(many=True, required=False)
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     settlement_type_name = serializers.CharField(source="get_settlement_type_display", read_only=True)
-    vendor_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     advance_reference_no = serializers.CharField(source="advance_balance.reference_no", read_only=True)
     advance_original_amount = serializers.DecimalField(source="advance_balance.original_amount", max_digits=14, decimal_places=2, read_only=True)
     advance_balance_outstanding_amount = serializers.DecimalField(source="advance_balance.outstanding_amount", max_digits=14, decimal_places=2, read_only=True)
     source_payment_voucher_id = serializers.IntegerField(source="advance_balance.payment_voucher_id", read_only=True)
     source_payment_voucher_code = serializers.CharField(source="advance_balance.payment_voucher.voucher_code", read_only=True)
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(getattr(obj, "vendor_ledger", None), "id", None)
 
     class Meta:
         model = VendorSettlement
@@ -95,6 +110,9 @@ class VendorSettlementSerializer(serializers.ModelSerializer):
             "subentity",
             "vendor",
             "vendor_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
             "settlement_type",
             "settlement_type_name",
             "settlement_date",
@@ -120,8 +138,11 @@ class VendorSettlementSerializer(serializers.ModelSerializer):
 
 
 class VendorAdvanceBalanceSerializer(serializers.ModelSerializer):
-    advance_balance_id = serializers.IntegerField(source="id", read_only=True)
     vendor_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
+    advance_balance_id = serializers.IntegerField(source="id", read_only=True)
     voucher_id = serializers.IntegerField(source="payment_voucher_id", read_only=True)
     doc_no = serializers.SerializerMethodField()
     voucher_code = serializers.CharField(source="payment_voucher.doc_code", read_only=True)
@@ -133,6 +154,9 @@ class VendorAdvanceBalanceSerializer(serializers.ModelSerializer):
     def get_doc_no(self, obj):
         pv = getattr(obj, "payment_voucher", None)
         return getattr(pv, "voucher_code", None) or obj.reference_no
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(getattr(obj, "vendor_ledger", None), "id", None)
 
     def get_consumption_history(self, obj):
         rows = []
@@ -173,6 +197,9 @@ class VendorAdvanceBalanceSerializer(serializers.ModelSerializer):
             "subentity",
             "vendor",
             "vendor_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
             "source_type",
             "credit_date",
             "reference_no",

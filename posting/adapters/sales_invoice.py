@@ -96,7 +96,14 @@ class SalesInvoicePostingAdapter:
             raise ValueError("Sales header.bill_date is required for posting.")
         posting_date = getattr(header, "posting_date", None) or bill_date
 
-        # ---- customer ledger account id (must exist) ----
+        # ---- customer account id for posting + ledger validation ----
+        customer_ledger_id = (
+            getattr(header, "customer_ledger_id", None)
+            or getattr(getattr(header, "customer", None), "ledger_id", None)
+        )
+        if not customer_ledger_id:
+            raise ValueError("Header must have customer_ledger_id/customer.ledger_id.")
+
         customer_account_id = (
             getattr(header, "customer_id", None)
             or getattr(header, "customer_account_id", None)
@@ -161,13 +168,19 @@ class SalesInvoicePostingAdapter:
         resolver = StaticAccountResolver(entity_id)
 
         ro_income_ac = int(resolver.get_account_id(StaticAccountCodes.ROUND_OFF_INCOME, required=True))
+        ro_income_ledger = int(resolver.get_ledger_id(StaticAccountCodes.ROUND_OFF_INCOME, required=True))
         ro_exp_ac = int(resolver.get_account_id(StaticAccountCodes.ROUND_OFF_EXPENSE, required=True))
+        ro_exp_ledger = int(resolver.get_ledger_id(StaticAccountCodes.ROUND_OFF_EXPENSE, required=True))
 
         # Output GST payable accounts
         out_cgst = resolver.get_account_id(StaticAccountCodes.OUTPUT_CGST, required=False)
+        out_cgst_ledger = resolver.get_ledger_id(StaticAccountCodes.OUTPUT_CGST, required=False)
         out_sgst = resolver.get_account_id(StaticAccountCodes.OUTPUT_SGST, required=False)
+        out_sgst_ledger = resolver.get_ledger_id(StaticAccountCodes.OUTPUT_SGST, required=False)
         out_igst = resolver.get_account_id(StaticAccountCodes.OUTPUT_IGST, required=False)
+        out_igst_ledger = resolver.get_ledger_id(StaticAccountCodes.OUTPUT_IGST, required=False)
         out_cess = resolver.get_account_id(StaticAccountCodes.OUTPUT_CESS, required=False)
+        out_cess_ledger = resolver.get_ledger_id(StaticAccountCodes.OUTPUT_CESS, required=False)
         
 
         # Revenue fallback (if product has no sales account)
@@ -260,13 +273,14 @@ class SalesInvoicePostingAdapter:
             output_tax["igst"] = q2(output_tax["igst"] + q2(getattr(ch, "igst_amount", None) or ZERO2))
 
         # 1B) Output GST payable (credit on invoice/DN; debit on CN)
-        def _add_out(acct_id: Optional[int], amt: Decimal, label: str):
+        def _add_out(acct_id: Optional[int], ledger_id: Optional[int], amt: Decimal, label: str):
             if amt <= ZERO2:
                 return
             if not acct_id:
                 raise ValueError(f"{label} not mapped.")
             jl.append(JLInput(
                 account_id=int(acct_id),
+                ledger_id=int(ledger_id) if ledger_id else None,
                 drcr=output_tax_is_debit,
                 amount=amt,
                 description=f"{narration} ({label})",
@@ -275,10 +289,10 @@ class SalesInvoicePostingAdapter:
 
 
 
-        _add_out(out_cgst, output_tax["cgst"], "Output CGST")
-        _add_out(out_sgst, output_tax["sgst"], "Output SGST")
-        _add_out(out_igst, output_tax["igst"], "Output IGST")
-        _add_out(out_cess, output_tax["cess"], "Output CESS")
+        _add_out(out_cgst, out_cgst_ledger, output_tax["cgst"], "Output CGST")
+        _add_out(out_sgst, out_sgst_ledger, output_tax["sgst"], "Output SGST")
+        _add_out(out_igst, out_igst_ledger, output_tax["igst"], "Output IGST")
+        _add_out(out_cess, out_cess_ledger, output_tax["cess"], "Output CESS")
 
         # 1C) Round-off (same semantics as purchase)
         # Original semantics:
@@ -288,6 +302,7 @@ class SalesInvoicePostingAdapter:
             if header_roundoff > ZERO2:
                 jl.append(JLInput(
                     account_id=ro_exp_ac,
+                    ledger_id=ro_exp_ledger,
                     drcr=not is_credit_note,  # invoice/DN Dr, CN Cr
                     amount=header_roundoff,
                     description=f"{narration} (Round-off expense)",
@@ -295,6 +310,7 @@ class SalesInvoicePostingAdapter:
             else:
                 jl.append(JLInput(
                     account_id=ro_income_ac,
+                    ledger_id=ro_income_ledger,
                     drcr=is_credit_note,  # invoice/DN Cr, CN Dr
                     amount=abs(header_roundoff),
                     description=f"{narration} (Round-off income)",
@@ -308,6 +324,7 @@ class SalesInvoicePostingAdapter:
             other_income_ac = resolver.get_account_id(other_income_code, required=True)
             jl.append(JLInput(
                 account_id=int(other_income_ac),
+                ledger_id=resolver.get_ledger_id(other_income_code, required=True) if other_income_code else None,
                 drcr=is_credit_note,  # True for CN (debit), False for invoice (credit)
                 amount=other_charges,
                 description=f"{narration} (Other charges)",
@@ -317,16 +334,19 @@ class SalesInvoicePostingAdapter:
         tcs_is_reversal = bool(getattr(header, "tcs_is_reversal", False))
         if tcs > ZERO2:
             tcs_payable_ac = resolver.get_account_id(StaticAccountCodes.TCS_PAYABLE, required=True)
+            tcs_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.TCS_PAYABLE, required=True)
             if tcs_is_reversal:
                 # Credit-note reversal style: reduce TCS payable and increase customer credit.
                 jl.append(JLInput(
                     account_id=int(tcs_payable_ac),
+                    ledger_id=int(tcs_payable_ledger),
                     drcr=True,  # DR
                     amount=tcs,
                     description=f"{narration} (TCS reversal)",
                 ))
                 jl.append(JLInput(
                     account_id=int(header.customer_id),
+                    ledger_id=int(customer_ledger_id),
                     drcr=False,  # CR
                     amount=tcs,
                     description=f"{narration} (Customer TCS reversal)",
@@ -335,12 +355,14 @@ class SalesInvoicePostingAdapter:
                 # Standard collection style.
                 jl.append(JLInput(
                     account_id=int(header.customer_id),
+                    ledger_id=int(customer_ledger_id),
                     drcr=True,  # DR
                     amount=tcs,
                     description=f"{narration} (TCS collected)",
                 ))
                 jl.append(JLInput(
                     account_id=int(tcs_payable_ac),
+                    ledger_id=int(tcs_payable_ledger),
                     drcr=False,  # CR
                     amount=tcs,
                     description=f"{narration} (TCS payable)",
@@ -363,6 +385,7 @@ class SalesInvoicePostingAdapter:
 
         jl.append(JLInput(
             account_id=customer_account_id,
+            ledger_id=int(customer_ledger_id),
             drcr=customer_is_debit,
             amount=customer_amt,
             description=f"{narration} ({'Customer receivable' if customer_is_debit else 'Customer reversal'})",

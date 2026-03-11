@@ -38,6 +38,8 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
             subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if subentity_id == 0:
+                subentity_id = None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
         return entity_id, entityfinid_id, subentity_id
@@ -98,6 +100,8 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
             subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if subentity_id == 0:
+                subentity_id = None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
         return entity_id, entityfinid_id, subentity_id
@@ -215,6 +219,39 @@ class ReceiptVoucherUnpostAPIView(APIView):
 class ReceiptVoucherSettlementSummaryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @staticmethod
+    def _action_flags(voucher: ReceiptVoucherHeader):
+        is_draft = int(voucher.status) == int(ReceiptVoucherHeader.Status.DRAFT)
+        is_confirmed = int(voucher.status) == int(ReceiptVoucherHeader.Status.CONFIRMED)
+        is_posted = int(voucher.status) == int(ReceiptVoucherHeader.Status.POSTED)
+        is_cancelled = int(voucher.status) == int(ReceiptVoucherHeader.Status.CANCELLED)
+        return {
+            "can_edit": not is_posted and not is_cancelled,
+            "can_confirm": is_draft,
+            "can_post": is_confirmed,
+            "can_cancel": is_draft or is_confirmed,
+            "can_unpost": is_posted,
+            "status": int(voucher.status),
+            "status_name": voucher.get_status_display(),
+        }
+
+    @staticmethod
+    def _account_block(voucher: ReceiptVoucherHeader, field_name: str):
+        acct = getattr(voucher, field_name, None)
+        if not acct:
+            return None
+        stored_ledger_id = getattr(voucher, f"{field_name}_ledger_id", None)
+        return {
+            "id": acct.id,
+            "accountname": getattr(acct, "accountname", None),
+            "display_name": getattr(acct, "effective_accounting_name", None),
+            "accountcode": getattr(acct, "effective_accounting_code", None),
+            "ledger_id": stored_ledger_id or getattr(acct, "ledger_id", None),
+            "partytype": getattr(acct, "partytype", None),
+            "gstno": getattr(acct, "gstno", None),
+            "pan": getattr(acct, "pan", None),
+        }
+
     def get(self, request, pk: int):
         entity = request.query_params.get("entity")
         entityfinid = request.query_params.get("entityfinid")
@@ -225,19 +262,41 @@ class ReceiptVoucherSettlementSummaryAPIView(APIView):
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
             subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if subentity_id == 0:
+                subentity_id = None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
 
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
         qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
-        voucher = qs.prefetch_related("allocations", "advance_adjustments").get(pk=pk)
+        voucher = qs.select_related(
+            "received_in",
+            "received_in__ledger",
+            "received_from",
+            "received_from__ledger",
+            "receipt_mode",
+        ).prefetch_related("allocations", "advance_adjustments").filter(pk=pk).first()
+        if not voucher:
+            raise ValidationError({"voucher": "Receipt voucher not found in selected scope."})
         ser = ReceiptVoucherHeaderSerializer(voucher, context={"skip_preview_numbers": True})
         data = ser.data
         return Response({
+            "voucher_id": voucher.id,
+            "voucher_date": data.get("voucher_date"),
+            "doc_code": data.get("doc_code"),
+            "doc_no": data.get("doc_no"),
+            "voucher_code": data.get("voucher_code"),
+            "receipt_type": data.get("receipt_type"),
+            "receipt_type_name": data.get("receipt_type_name"),
+            "status": data.get("status"),
+            "status_name": data.get("status_name"),
+            "received_in": self._account_block(voucher, "received_in"),
+            "received_from": self._account_block(voucher, "received_from"),
             "cash_received_amount": data.get("cash_received_amount", 0),
             "adjustment_effect_amount": data.get("total_adjustment_amount", 0),
             "advance_consumed_amount": data.get("advance_consumed_amount", 0),
             "total_settlement_support_amount": data.get("total_settlement_support_amount", 0),
             "allocated_amount": data.get("allocated_amount", 0),
             "balance_amount": data.get("settlement_balance_amount", 0),
+            "action_flags": self._action_flags(voucher),
         })

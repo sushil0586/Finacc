@@ -31,6 +31,8 @@ class PaymentVoucherPostingAdapter:
         cash_paid = q2(getattr(header, "cash_paid_amount", ZERO2))
         paid_from_id = int(getattr(header, "paid_from_id", 0) or 0)
         paid_to_id = int(getattr(header, "paid_to_id", 0) or 0)
+        paid_from_ledger_id = int(getattr(header, "paid_from_ledger_id", 0) or getattr(getattr(header, "paid_from", None), "ledger_id", 0) or 0)
+        paid_to_ledger_id = int(getattr(header, "paid_to_ledger_id", 0) or getattr(getattr(header, "paid_to", None), "ledger_id", 0) or 0)
 
         if paid_from_id <= 0:
             raise ValueError("paid_from is required for payment posting.")
@@ -47,17 +49,18 @@ class PaymentVoucherPostingAdapter:
             amt = q2(getattr(adj, "amount", ZERO2))
             if amt <= ZERO2:
                 continue
-            ledger_id = int(getattr(adj, "ledger_account_id", 0) or 0)
-            if ledger_id <= 0:
+            account_id = int(getattr(adj, "ledger_account_id", 0) or 0)
+            ledger_id = int(getattr(adj, "ledger_id", 0) or getattr(getattr(adj, "ledger_account", None), "ledger_id", 0) or 0)
+            if account_id <= 0:
                 raise ValueError(f"Adjustment {getattr(adj, 'id', '')}: ledger_account is required.")
             effect = str(getattr(adj, "settlement_effect", "PLUS")).upper().strip()
 
             if effect == "PLUS":
                 plus_total = q2(plus_total + amt)
-                rows.append(("CR", ledger_id, amt, f"Payment adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("CR", account_id, ledger_id or None, amt, f"Payment adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             elif effect == "MINUS":
                 minus_total = q2(minus_total + amt)
-                rows.append(("DR", ledger_id, amt, f"Payment adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("DR", account_id, ledger_id or None, amt, f"Payment adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             else:
                 raise ValueError(f"Unsupported settlement_effect '{effect}'.")
 
@@ -69,6 +72,7 @@ class PaymentVoucherPostingAdapter:
         # Dr Vendor (paid_to)
         jl_inputs.append(JLInput(
             account_id=paid_to_id,
+            ledger_id=paid_to_ledger_id or None,
             drcr=True,
             amount=vendor_settlement,
             description=f"Payment voucher {getattr(header, 'voucher_code', '')} vendor settlement",
@@ -77,14 +81,16 @@ class PaymentVoucherPostingAdapter:
         if cash_paid > ZERO2:
             jl_inputs.append(JLInput(
                 account_id=paid_from_id,
+                ledger_id=paid_from_ledger_id or None,
                 drcr=False,
                 amount=cash_paid,
                 description=f"Payment voucher {getattr(header, 'voucher_code', '')} cash/bank",
             ))
 
-        for side, ledger_id, amt, desc in rows:
+        for side, account_id, ledger_id, amt, desc in rows:
             jl_inputs.append(JLInput(
-                account_id=ledger_id,
+                account_id=account_id,
+                ledger_id=ledger_id,
                 drcr=(side == "DR"),
                 amount=amt,
                 description=f"{getattr(header, 'voucher_code', '')} {desc}",
@@ -95,6 +101,7 @@ class PaymentVoucherPostingAdapter:
             for x in jl_inputs:
                 flipped.append(JLInput(
                     account_id=x.account_id,
+                    ledger_id=x.ledger_id,
                     accounthead_id=x.accounthead_id,
                     drcr=not bool(x.drcr),
                     amount=q2(x.amount),

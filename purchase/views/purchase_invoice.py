@@ -63,7 +63,7 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids(required=True)
         base_qs = PurchaseInvoiceHeader.objects.all().select_related(
-            "vendor", "vendor__ledger", "vendor_state",
+            "vendor", "vendor_ledger", "vendor_state",
             "supplier_state", "place_of_supply_state",
             "entity", "entityfinid", "subentity",
             "ref_document",
@@ -124,7 +124,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             PurchaseInvoiceHeader.objects.all()
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
             .select_related(
-                "vendor", "vendor__ledger", "vendor_state",
+                "vendor", "vendor_ledger", "vendor_state",
                 "supplier_state", "place_of_supply_state",
                 "entity", "entityfinid", "subentity",
                 "ref_document",
@@ -214,6 +214,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "entityfinid",
                 "subentity",
                 "vendor",
+                "vendor_ledger",
                 "vendor_state",
                
             )
@@ -225,6 +226,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "bill_date", "posting_date", "credit_days", "due_date",
                 "supplier_invoice_number", "supplier_invoice_date", "po_reference_no", "grn_reference_no",
                 "vendor_id", "vendor_name", "vendor_gstin", "vendor_state_id",
+                "vendor__partytype", "vendor_ledger_id", "vendor_ledger__ledger_code", "vendor_ledger__name",
                 "supply_category", "default_taxability", "tax_regime",
                 "is_igst", "is_reverse_charge", "is_itc_eligible",
                 "gstr2b_match_status", "itc_claim_status", "itc_claim_period", "itc_block_reason",

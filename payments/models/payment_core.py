@@ -7,7 +7,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from financial.models import account
+from financial.models import Ledger, account
 from geography.models import State
 
 from .base import TrackingModel
@@ -50,7 +50,23 @@ class PaymentVoucherHeader(TrackingModel):
     supply_type = models.CharField(max_length=10, choices=SupplyType.choices, default=SupplyType.SERVICES)
 
     paid_from = models.ForeignKey(account, on_delete=models.PROTECT, related_name="new_pv_paid_from")
+    paid_from_ledger = models.ForeignKey(
+        Ledger,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="payment_vouchers_paid_from",
+        help_text="Additive ledger-native mirror of paid_from for the staged accounting cutover.",
+    )
     paid_to = models.ForeignKey(account, on_delete=models.PROTECT, related_name="new_pv_paid_to")
+    paid_to_ledger = models.ForeignKey(
+        Ledger,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="payment_vouchers_paid_to",
+        help_text="Additive ledger-native mirror of paid_to for the staged accounting cutover.",
+    )
     payment_mode = models.ForeignKey(PaymentMode, on_delete=models.PROTECT, null=True, blank=True)
 
     cash_paid_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
@@ -111,6 +127,7 @@ class PaymentVoucherHeader(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "voucher_date"], name="ix_pay_ent_fin_date"),
             models.Index(fields=["entity", "entityfinid", "paid_to"], name="ix_pay_ent_fin_vendor"),
+            models.Index(fields=["entity", "entityfinid", "paid_to_ledger"], name="ix_pay_ent_fin_vendor_led"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_pay_ent_fin_status"),
         ]
 
@@ -173,6 +190,14 @@ class PaymentVoucherAdjustment(TrackingModel):
         account,
         on_delete=models.PROTECT,
         related_name="new_payment_adjustment_ledgers",
+    )
+    ledger = models.ForeignKey(
+        Ledger,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="payment_adjustments",
+        help_text="Additive ledger-native mirror of ledger_account for the staged accounting cutover.",
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     settlement_effect = models.CharField(max_length=5, choices=Effect.choices, default=Effect.PLUS)

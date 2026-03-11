@@ -12,6 +12,7 @@ from posting.models import StaticAccount, EntityStaticAccountMap, StaticAccountG
 class StaticAccountResolved:
     code: str
     account_id: int
+    ledger_id: Optional[int] = None
 
 
 class StaticAccountService:
@@ -23,14 +24,17 @@ class StaticAccountService:
 
     @staticmethod
     @lru_cache(maxsize=2048)
-    def _entity_map(entity_id: int) -> Dict[str, int]:
+    def _entity_map(entity_id: int) -> Dict[str, StaticAccountResolved]:
         qs = (
             EntityStaticAccountMap.objects
             .filter(entity_id=entity_id, is_active=True, static_account__is_active=True)
             .select_related("static_account")
-            .values_list("static_account__code", "account_id")
+            .values_list("static_account__code", "account_id", "ledger_id")
         )
-        return {code: acc_id for code, acc_id in qs}
+        return {
+            code: StaticAccountResolved(code=code, account_id=acc_id, ledger_id=ledger_id)
+            for code, acc_id, ledger_id in qs
+        }
 
     @staticmethod
     def invalidate(entity_id: int) -> None:
@@ -40,10 +44,20 @@ class StaticAccountService:
     @staticmethod
     def get_account_id(entity_id: int, code: str, *, required: bool = True) -> Optional[int]:
         m = StaticAccountService._entity_map(entity_id)
-        acc_id = m.get(code)
+        resolved = m.get(code)
+        acc_id = resolved.account_id if resolved else None
         if required and not acc_id:
             raise ValueError(f"Missing static account mapping: entity={entity_id} code={code}")
         return acc_id
+
+    @staticmethod
+    def get_ledger_id(entity_id: int, code: str, *, required: bool = True) -> Optional[int]:
+        m = StaticAccountService._entity_map(entity_id)
+        resolved = m.get(code)
+        ledger_id = resolved.ledger_id if resolved else None
+        if required and not ledger_id:
+            raise ValueError(f"Missing static ledger mapping: entity={entity_id} code={code}")
+        return ledger_id
 
     @staticmethod
     def get_group(entity_id: int, group: str) -> Dict[str, int]:
@@ -54,7 +68,7 @@ class StaticAccountService:
             .values_list("code", flat=True)
         )
         m = StaticAccountService._entity_map(entity_id)
-        return {c: m.get(c) for c in codes if c in m}
+        return {c: m[c].account_id for c in codes if c in m}
 
     @staticmethod
     def missing_required_codes(entity_id: int) -> List[str]:

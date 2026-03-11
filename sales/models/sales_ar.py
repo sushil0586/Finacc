@@ -31,6 +31,8 @@ class CustomerBillOpenItem(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     customer = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    # New code should use customer_ledger for accounting identity.
+    customer_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
 
     doc_type = models.IntegerField(db_index=True)
     bill_date = models.DateField(db_index=True)
@@ -52,6 +54,7 @@ class CustomerBillOpenItem(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "entityfinid", "customer", "is_open"], name="ix_sales_ar_open_scope"),
+            models.Index(fields=["entity", "entityfinid", "customer_ledger", "is_open"], name="ix_sales_ar_open_led_scope"),
             models.Index(fields=["entity", "entityfinid", "bill_date"], name="ix_sales_ar_open_billdt"),
             models.Index(fields=["entity", "entityfinid", "due_date"], name="ix_sales_ar_open_duedt"),
         ]
@@ -78,6 +81,8 @@ class CustomerSettlement(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     customer = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    # New code should use customer_ledger for accounting identity.
+    customer_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     advance_balance = models.ForeignKey(
         "sales.CustomerAdvanceBalance",
         on_delete=models.PROTECT,
@@ -100,6 +105,7 @@ class CustomerSettlement(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "entityfinid", "customer", "status"], name="ix_sales_ar_settle_scope"),
+            models.Index(fields=["entity", "entityfinid", "customer_ledger", "status"], name="ix_sales_ar_settle_led_scope"),
             models.Index(fields=["entity", "entityfinid", "settlement_date"], name="ix_sales_ar_settle_date"),
         ]
 
@@ -117,6 +123,8 @@ class CustomerAdvanceBalance(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     customer = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    # New code should use customer_ledger for accounting identity.
+    customer_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
 
     source_type = models.CharField(max_length=30, choices=SourceType.choices, default=SourceType.RECEIPT_ADVANCE, db_index=True)
     credit_date = models.DateField(db_index=True)
@@ -140,6 +148,7 @@ class CustomerAdvanceBalance(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "entityfinid", "customer", "is_open"], name="ix_sales_ar_adv_scope"),
+            models.Index(fields=["entity", "entityfinid", "customer_ledger", "is_open"], name="ix_sales_ar_adv_led_scope"),
             models.Index(fields=["entity", "entityfinid", "credit_date"], name="ix_sales_ar_adv_creditdt"),
         ]
 

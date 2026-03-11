@@ -139,6 +139,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     tax_regime_name = serializers.CharField(source="get_tax_regime_display", read_only=True)
     supply_category_name = serializers.CharField(source="get_supply_category_display", read_only=True)
     navigation = serializers.SerializerMethodField()
+    customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
+    customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
+    customer_ledger_id = serializers.IntegerField(read_only=True)
+    customer_partytype = serializers.CharField(source="customer.partytype", read_only=True)
 
     class Meta:
         model = SalesInvoiceHeader
@@ -167,6 +171,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             "customer",
             "customer_name",
+            "customer_display_name",
+            "customer_accountcode",
+            "customer_ledger_id",
+            "customer_partytype",
             "customer_gstin",
             "customer_state_code",
 

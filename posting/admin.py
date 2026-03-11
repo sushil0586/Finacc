@@ -60,9 +60,9 @@ class StaticAccountAdmin(admin.ModelAdmin):
 
 @admin.register(EntityStaticAccountMap)
 class EntityStaticAccountMapAdmin(admin.ModelAdmin):
-    list_display = ("entity", "static_account", "account", "is_active", "effective_from", "created_at")
+    list_display = ("entity", "static_account", "account", "ledger", "is_active", "effective_from", "created_at")
     list_filter = ("entity", "is_active", "static_account__group")
-    search_fields = ("static_account__code", "static_account__name", "account__accountname")
+    search_fields = ("static_account__code", "static_account__name", "account__accountname", "ledger__name")
     ordering = ("entity", "static_account__group", "static_account__code")
     readonly_fields = ("created_at", "updated_at")
 
@@ -78,6 +78,7 @@ class JournalLineInline(admin.TabularInline):
         "drcr",
         "amount",
         "account",
+        "ledger",
         "accounthead",
         "detail_id",
         "description",
@@ -313,6 +314,7 @@ class JournalLineAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
         "drcr",
         "amount",
         "account",
+        "ledger",
         "accounthead",
         "entry_link",
         "batch_link",

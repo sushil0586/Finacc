@@ -25,6 +25,8 @@ def _parse_scope(request):
         entity_id = int(entity)
         entityfinid_id = int(entityfinid)
         subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        if subentity_id == 0:
+            subentity_id = None
     except (TypeError, ValueError):
         raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
     return entity_id, entityfinid_id, subentity_id
@@ -85,14 +87,18 @@ class VendorSettlementListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
-        qs = VendorSettlement.objects.prefetch_related("lines").filter(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
+        qs = (
+            VendorSettlement.objects
+            .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
+            .select_related(
+                "vendor",
+                "vendor__ledger",
+                "advance_balance",
+                "advance_balance__payment_voucher",
+            )
+            .prefetch_related("lines__open_item")
         )
-        if subentity_id is None:
-            qs = qs.filter(subentity__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
+        qs = PurchaseApService._apply_subentity_scope(qs, subentity_id)
         vendor = self.request.query_params.get("vendor")
         if vendor not in (None, "", "null"):
             qs = qs.filter(vendor_id=int(vendor))
@@ -175,8 +181,19 @@ class VendorStatementAPIView(APIView):
             vendor_id=vendor_id,
             include_closed=include_closed,
         )
+        vendor = data["vendor"]
 
         return Response({
+            "vendor": {
+                "id": vendor.id,
+                "accountname": getattr(vendor, "accountname", None),
+                "display_name": getattr(vendor, "effective_accounting_name", None),
+                "accountcode": getattr(vendor, "effective_accounting_code", None),
+                "ledger_id": getattr(vendor, "ledger_id", None),
+                "partytype": getattr(vendor, "partytype", None),
+                "gstno": getattr(vendor, "gstno", None),
+                "pan": getattr(vendor, "pan", None),
+            },
             "totals": data["totals"],
             "open_items": VendorBillOpenItemSerializer(data["open_items"], many=True).data,
             "advances": VendorAdvanceBalanceSerializer(data["advances"], many=True).data,

@@ -27,6 +27,8 @@ from .views import (
     # Lightweight lists
     ProductImportantListAPIView,
     InvoiceProductListAPIView,
+    TransactionProductMetaAPIView,
+    TransactionProductDetailAPIView,
 
     # Barcode APIs
     ProductBarcodeListCreateAPIView,
@@ -87,6 +89,8 @@ urlpatterns = [
     # ------------------------------------------------------------------
     path("entity/<int:entity_id>/list/", ProductImportantListAPIView.as_view(), name="product-important-list"),
     path("invoice-products/<int:entity_id>/", InvoiceProductListAPIView.as_view(), name="invoice-product-list"),
+    path("meta/transaction-products/", TransactionProductMetaAPIView.as_view(), name="transaction-product-meta"),
+    path("products/<int:product_id>/transaction-meta/", TransactionProductDetailAPIView.as_view(), name="transaction-product-detail"),
 
     # ------------------------------------------------------------------
     # BARCODES

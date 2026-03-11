@@ -114,6 +114,13 @@ class PurchaseInvoicePostingAdapter:
         if not supplier_account_id:
             raise ValueError("Header must have vendor_id/vendor_account_id (ledger account id for vendor).")
         supplier_account_id = int(supplier_account_id)
+        supplier_ledger_id = (
+            getattr(header, "vendor_ledger_id", None)
+            or getattr(getattr(header, "vendor", None), "ledger_id", None)
+        )
+        if not supplier_ledger_id:
+            raise ValueError("Header vendor must have a linked ledger for posting.")
+        supplier_ledger_id = int(supplier_ledger_id)
 
         # ---- doc type policy ----
         doc_type = int(getattr(header, "doc_type", 1))
@@ -177,21 +184,34 @@ class PurchaseInvoicePostingAdapter:
         resolver = StaticAccountResolver(entity_id)
 
         misc_exp_ac = int(resolver.get_account_id(StaticAccountCodes.PURCHASE_MISC_EXPENSE, required=True))
+        misc_exp_ledger = int(resolver.get_ledger_id(StaticAccountCodes.PURCHASE_MISC_EXPENSE, required=True))
         ro_income_ac = int(resolver.get_account_id(StaticAccountCodes.ROUND_OFF_INCOME, required=True))
+        ro_income_ledger = int(resolver.get_ledger_id(StaticAccountCodes.ROUND_OFF_INCOME, required=True))
         ro_exp_ac = int(resolver.get_account_id(StaticAccountCodes.ROUND_OFF_EXPENSE, required=True))
+        ro_exp_ledger = int(resolver.get_ledger_id(StaticAccountCodes.ROUND_OFF_EXPENSE, required=True))
 
         itc_blocked_ac = resolver.get_account_id(StaticAccountCodes.ITC_BLOCKED_EXPENSE, required=False)
         itc_blocked_ac = int(itc_blocked_ac) if itc_blocked_ac else misc_exp_ac
+        itc_blocked_ledger = resolver.get_ledger_id(StaticAccountCodes.ITC_BLOCKED_EXPENSE, required=False)
+        itc_blocked_ledger = int(itc_blocked_ledger) if itc_blocked_ledger else misc_exp_ledger
 
         in_cgst = resolver.get_account_id(StaticAccountCodes.INPUT_CGST, required=False)
         in_sgst = resolver.get_account_id(StaticAccountCodes.INPUT_SGST, required=False)
         in_igst = resolver.get_account_id(StaticAccountCodes.INPUT_IGST, required=False)
         in_cess = resolver.get_account_id(StaticAccountCodes.INPUT_CESS, required=False)
+        in_cgst_ledger = resolver.get_ledger_id(StaticAccountCodes.INPUT_CGST, required=False)
+        in_sgst_ledger = resolver.get_ledger_id(StaticAccountCodes.INPUT_SGST, required=False)
+        in_igst_ledger = resolver.get_ledger_id(StaticAccountCodes.INPUT_IGST, required=False)
+        in_cess_ledger = resolver.get_ledger_id(StaticAccountCodes.INPUT_CESS, required=False)
 
         rcm_cgst = resolver.get_account_id(StaticAccountCodes.RCM_CGST_PAYABLE, required=False)
         rcm_sgst = resolver.get_account_id(StaticAccountCodes.RCM_SGST_PAYABLE, required=False)
         rcm_igst = resolver.get_account_id(StaticAccountCodes.RCM_IGST_PAYABLE, required=False)
         rcm_cess = resolver.get_account_id(StaticAccountCodes.RCM_CESS_PAYABLE, required=False)
+        rcm_cgst_ledger = resolver.get_ledger_id(StaticAccountCodes.RCM_CGST_PAYABLE, required=False)
+        rcm_sgst_ledger = resolver.get_ledger_id(StaticAccountCodes.RCM_SGST_PAYABLE, required=False)
+        rcm_igst_ledger = resolver.get_ledger_id(StaticAccountCodes.RCM_IGST_PAYABLE, required=False)
+        rcm_cess_ledger = resolver.get_ledger_id(StaticAccountCodes.RCM_CESS_PAYABLE, required=False)
 
         # Optional default purchase account (fallback if product has no purchase account)
         default_purchase_ac = resolver.get_account_id(StaticAccountCodes.PURCHASE_DEFAULT, required=False)
@@ -238,6 +258,7 @@ class PurchaseInvoicePostingAdapter:
 
             jl.append(JLInput(
                 account_id=purchase_ac,
+                ledger_id=int(getattr(getattr(ln, "product_purchase_account", None), "ledger_id", 0) or 0) or None,
                 drcr=base_is_debit,
                 amount=q2(base.copy_abs()),
                 description=f"{narration} (line {getattr(ln, 'line_no', '-')})",
@@ -277,6 +298,7 @@ class PurchaseInvoicePostingAdapter:
             if c_base > ZERO2:
                 jl.append(JLInput(
                     account_id=misc_exp_ac,
+                    ledger_id=misc_exp_ledger,
                     drcr=(sign > 0),  # invoice/DN Dr, CN Cr
                     amount=q2(c_base.copy_abs()),
                     description=f"{narration} (charge {getattr(ch, 'line_no', '-')})",
@@ -309,6 +331,7 @@ class PurchaseInvoicePostingAdapter:
         if header_expenses > ZERO2 and not cfg.capitalize_header_expenses_to_inventory:
             jl.append(JLInput(
                 account_id=misc_exp_ac,
+                ledger_id=misc_exp_ledger,
                 drcr=not is_credit_note,  # invoice/DN Dr, CN Cr
                 amount=header_expenses,
                 description=f"{narration} (header expenses)",
@@ -317,47 +340,50 @@ class PurchaseInvoicePostingAdapter:
         # 1C) Tax postings
         if is_rcm:
             # RCM payable: invoice/DN Cr, CN Dr
-            def _add_rcm(acct_id: Optional[int], amt: Decimal, label: str):
+            def _add_rcm(acct_id: Optional[int], ledger_id: Optional[int], amt: Decimal, label: str):
                 if amt <= ZERO2:
                     return
                 if not acct_id:
                     raise ValueError(f"{label} static account not mapped.")
                 jl.append(JLInput(
                     account_id=int(acct_id),
+                    ledger_id=int(ledger_id) if ledger_id else None,
                     drcr=rcm_payable_is_debit,
                     amount=amt,
                     description=f"{narration} ({label})",
                 ))
 
-            _add_rcm(rcm_cgst, rcm_tax["cgst"], "RCM CGST")
-            _add_rcm(rcm_sgst, rcm_tax["sgst"], "RCM SGST")
-            _add_rcm(rcm_igst, rcm_tax["igst"], "RCM IGST")
-            _add_rcm(rcm_cess, rcm_tax["cess"], "RCM CESS")
+            _add_rcm(rcm_cgst, rcm_cgst_ledger, rcm_tax["cgst"], "RCM CGST")
+            _add_rcm(rcm_sgst, rcm_sgst_ledger, rcm_tax["sgst"], "RCM SGST")
+            _add_rcm(rcm_igst, rcm_igst_ledger, rcm_tax["igst"], "RCM IGST")
+            _add_rcm(rcm_cess, rcm_cess_ledger, rcm_tax["cess"], "RCM CESS")
 
         else:
             # Input GST (eligible): invoice/DN Dr, CN Cr
-            def _add_input(acct_id: Optional[int], amt: Decimal, label: str):
+            def _add_input(acct_id: Optional[int], ledger_id: Optional[int], amt: Decimal, label: str):
                 if amt <= ZERO2:
                     return
                 if not acct_id:
                     raise ValueError(f"{label} not mapped.")
                 jl.append(JLInput(
                     account_id=int(acct_id),
+                    ledger_id=int(ledger_id) if ledger_id else None,
                     drcr=input_tax_is_debit,
                     amount=amt,
                     description=f"{narration} ({label})",
                 ))
 
-            _add_input(in_cgst, eligible_tax["cgst"], "Input CGST")
-            _add_input(in_sgst, eligible_tax["sgst"], "Input SGST")
-            _add_input(in_igst, eligible_tax["igst"], "Input IGST")
-            _add_input(in_cess, eligible_tax["cess"], "Input CESS")
+            _add_input(in_cgst, in_cgst_ledger, eligible_tax["cgst"], "Input CGST")
+            _add_input(in_sgst, in_sgst_ledger, eligible_tax["sgst"], "Input SGST")
+            _add_input(in_igst, in_igst_ledger, eligible_tax["igst"], "Input IGST")
+            _add_input(in_cess, in_cess_ledger, eligible_tax["cess"], "Input CESS")
 
             # Blocked ITC tax -> expense (or reversed on CN)
             blocked_total = q2(blocked_tax["cgst"] + blocked_tax["sgst"] + blocked_tax["igst"] + blocked_tax["cess"])
             if blocked_total > ZERO2 and cfg.post_blocked_itc_tax_to_expense:
                 jl.append(JLInput(
                     account_id=itc_blocked_ac,
+                    ledger_id=itc_blocked_ledger,
                     drcr=blocked_tax_is_debit,
                     amount=blocked_total,
                     description=f"{narration} (Blocked ITC tax)",
@@ -371,6 +397,7 @@ class PurchaseInvoicePostingAdapter:
             if header_roundoff > ZERO2:
                 jl.append(JLInput(
                     account_id=ro_exp_ac,
+                    ledger_id=ro_exp_ledger,
                     drcr=not is_credit_note,  # invoice/DN Dr, CN Cr
                     amount=header_roundoff,
                     description=f"{narration} (Round-off expense)",
@@ -378,6 +405,7 @@ class PurchaseInvoicePostingAdapter:
             else:
                 jl.append(JLInput(
                     account_id=ro_income_ac,
+                    ledger_id=ro_income_ledger,
                     drcr=is_credit_note,  # invoice/DN Cr, CN Dr
                     amount=abs(header_roundoff),
                     description=f"{narration} (Round-off income)",
@@ -386,10 +414,12 @@ class PurchaseInvoicePostingAdapter:
         tds = q2(getattr(header, "tds_amount", None) or ZERO2)
         if tds > ZERO2:
             tds_payable_ac = resolver.get_account_id(StaticAccountCodes.TDS_PAYABLE, required=True)
+            tds_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.TDS_PAYABLE, required=True)
 
             # Dr Vendor Payable (reduce vendor liability)
             jl.append(JLInput(
                 account_id=int(header.vendor_id),
+                ledger_id=supplier_ledger_id,
                 drcr=True,  # DR
                 amount=tds,
                 description=f"{narration} (TDS deducted)",
@@ -398,6 +428,7 @@ class PurchaseInvoicePostingAdapter:
             # Cr TDS Payable
             jl.append(JLInput(
                 account_id=int(tds_payable_ac),
+                ledger_id=int(tds_payable_ledger),
                 drcr=False,  # CR
                 amount=tds,
                 description=f"{narration} (TDS payable)",
@@ -406,10 +437,12 @@ class PurchaseInvoicePostingAdapter:
         gst_tds = q2(getattr(header, "gst_tds_amount", None) or ZERO2)
         if cfg.post_gst_tds_on_invoice and gst_tds > ZERO2:
             gst_tds_payable_ac = resolver.get_account_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
+            gst_tds_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
 
             # Dr Vendor Payable (reduce vendor liability)
             jl.append(JLInput(
                 account_id=int(header.vendor_id),
+                ledger_id=supplier_ledger_id,
                 drcr=True,  # DR
                 amount=gst_tds,
                 description=f"{narration} (GST-TDS deducted)",
@@ -418,6 +451,7 @@ class PurchaseInvoicePostingAdapter:
             # Cr GST-TDS Payable
             jl.append(JLInput(
                 account_id=int(gst_tds_payable_ac),
+                ledger_id=int(gst_tds_payable_ledger),
                 drcr=False,  # CR
                 amount=gst_tds,
                 description=f"{narration} (GST-TDS payable)",
@@ -436,6 +470,7 @@ class PurchaseInvoicePostingAdapter:
 
         jl.append(JLInput(
             account_id=supplier_account_id,
+            ledger_id=supplier_ledger_id,
             drcr=vendor_is_debit,
             amount=vendor_amt,
             description=f"{narration} ({'Vendor reversal' if vendor_is_debit else 'Vendor payable'})",

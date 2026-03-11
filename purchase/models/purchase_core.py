@@ -6,7 +6,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 from geography.models import State
-from financial.models import account
+from financial.models import Ledger, account
 from catalog.models import Product,UnitOfMeasure
 
 User = settings.AUTH_USER_MODEL
@@ -97,6 +97,15 @@ class PurchaseInvoiceHeader(models.Model):
 
     vendor = models.ForeignKey(
        account, on_delete=models.PROTECT, null=True, blank=True, related_name="purchase_documents"
+    )
+    # Ledger-native mirror for the selected vendor. Keep vendor(account) for
+    # compatibility while new accounting flows prefer the stored ledger.
+    vendor_ledger = models.ForeignKey(
+        Ledger,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_documents",
     )
 
     # snapshot fields
@@ -257,8 +266,10 @@ class PurchaseInvoiceHeader(models.Model):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "bill_date"], name="ix_pur_ent_fin_dt"),
             models.Index(fields=["entity", "entityfinid", "vendor"], name="ix_pur_ent_fin_vendor"),
+            models.Index(fields=["entity", "entityfinid", "vendor_ledger"], name="ix_pur_ent_fin_vledger"),
             models.Index(fields=["entity", "entityfinid", "doc_code", "doc_no"], name="ix_pur_docno_lookup"),
             models.Index(fields=["entity", "entityfinid", "vendor", "due_date"], name="ix_pur_ap_due"),
+            models.Index(fields=["entity", "entityfinid", "vendor_ledger", "due_date"], name="ix_pur_ap_vldue"),
         ]
 
     def __str__(self):

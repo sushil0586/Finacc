@@ -112,7 +112,13 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
     navigation = serializers.SerializerMethodField()
     number_navigation = serializers.SerializerMethodField()
     paid_from_name = serializers.CharField(source="paid_from.effective_accounting_name", read_only=True)
+    paid_from_accountcode = serializers.IntegerField(source="paid_from.effective_accounting_code", read_only=True)
+    paid_from_ledger_id = serializers.IntegerField(read_only=True)
+    paid_from_partytype = serializers.CharField(source="paid_from.partytype", read_only=True)
     paid_to_name = serializers.CharField(source="paid_to.effective_accounting_name", read_only=True)
+    paid_to_accountcode = serializers.IntegerField(source="paid_to.effective_accounting_code", read_only=True)
+    paid_to_ledger_id = serializers.IntegerField(read_only=True)
+    paid_to_partytype = serializers.CharField(source="paid_to.partytype", read_only=True)
     payment_mode_name = serializers.CharField(source="payment_mode.paymentmode", read_only=True)
     advance_consumed_amount = serializers.SerializerMethodField()
     total_settlement_support_amount = serializers.SerializerMethodField()
@@ -212,8 +218,14 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
             "supply_type_name",
             "paid_from",
             "paid_from_name",
+            "paid_from_accountcode",
+            "paid_from_ledger_id",
+            "paid_from_partytype",
             "paid_to",
             "paid_to_name",
+            "paid_to_accountcode",
+            "paid_to_ledger_id",
+            "paid_to_partytype",
             "payment_mode",
             "payment_mode_name",
             "cash_paid_amount",
@@ -362,6 +374,13 @@ class PaymentVoucherListSerializer(serializers.ModelSerializer):
     approval_status_name = serializers.SerializerMethodField()
     advance_balance_id = serializers.SerializerMethodField()
     paid_to_name = serializers.CharField(source="paid_to.effective_accounting_name", read_only=True)
+    paid_to_accountcode = serializers.IntegerField(source="paid_to.effective_accounting_code", read_only=True)
+    paid_to_ledger_id = serializers.IntegerField(read_only=True)
+    paid_to_partytype = serializers.CharField(source="paid_to.partytype", read_only=True)
+    paid_from_name = serializers.CharField(source="paid_from.effective_accounting_name", read_only=True)
+    paid_from_accountcode = serializers.IntegerField(source="paid_from.effective_accounting_code", read_only=True)
+    paid_from_ledger_id = serializers.IntegerField(read_only=True)
+    paid_from_partytype = serializers.CharField(source="paid_from.partytype", read_only=True)
     payment_mode_name = serializers.CharField(source="payment_mode.paymentmode", read_only=True)
     advance_consumed_amount = serializers.SerializerMethodField()
     total_settlement_support_amount = serializers.SerializerMethodField()
@@ -415,8 +434,16 @@ class PaymentVoucherListSerializer(serializers.ModelSerializer):
             "approval_status_name",
             "payment_type",
             "payment_type_name",
+            "paid_from",
+            "paid_from_name",
+            "paid_from_accountcode",
+            "paid_from_ledger_id",
+            "paid_from_partytype",
             "paid_to",
             "paid_to_name",
+            "paid_to_accountcode",
+            "paid_to_ledger_id",
+            "paid_to_partytype",
             "payment_mode_name",
             "cash_paid_amount",
             "total_adjustment_amount",

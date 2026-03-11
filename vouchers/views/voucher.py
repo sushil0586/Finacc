@@ -31,6 +31,8 @@ class _VoucherScopeMixin:
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
             subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if subentity_id == 0:
+                subentity_id = None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
         return entity_id, entityfinid_id, subentity_id
@@ -155,11 +157,60 @@ class VoucherCancelAPIView(APIView):
 class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    def _action_flags(self, voucher: VoucherHeader):
+        is_draft = int(voucher.status) == int(VoucherHeader.Status.DRAFT)
+        is_confirmed = int(voucher.status) == int(VoucherHeader.Status.CONFIRMED)
+        is_posted = int(voucher.status) == int(VoucherHeader.Status.POSTED)
+        is_cancelled = int(voucher.status) == int(VoucherHeader.Status.CANCELLED)
+        return {
+            "can_edit": not is_posted and not is_cancelled,
+            "can_confirm": is_draft,
+            "can_post": is_confirmed,
+            "can_cancel": is_draft or is_confirmed,
+            "can_unpost": is_posted,
+            "status": int(voucher.status),
+            "status_name": voucher.get_status_display(),
+        }
+
+    def _cash_bank_block(self, voucher: VoucherHeader):
+        acct = voucher.cash_bank_account
+        if not acct:
+            return None
+        return {
+            "id": acct.id,
+            "accountname": getattr(acct, "accountname", None),
+            "display_name": getattr(acct, "effective_accounting_name", None),
+            "accountcode": getattr(acct, "effective_accounting_code", None),
+            "ledger_id": voucher.cash_bank_ledger_id or getattr(acct, "ledger_id", None),
+            "partytype": getattr(acct, "partytype", None),
+            "gstno": getattr(acct, "gstno", None),
+            "pan": getattr(acct, "pan", None),
+        }
+
     def get(self, request, pk: int):
         voucher = self._scoped_queryset().get(pk=pk)
-        return Response({
-            "total_debit_amount": voucher.total_debit_amount,
-            "total_credit_amount": voucher.total_credit_amount,
-            "balance_amount": voucher.total_debit_amount - voucher.total_credit_amount,
-            "line_count": voucher.lines.filter(is_system_generated=False).count(),
-        })
+        line_count = voucher.lines.filter(is_system_generated=False).count()
+        system_line_count = voucher.lines.filter(is_system_generated=True).count()
+        return Response(
+            {
+                "voucher_id": voucher.id,
+                "voucher_date": voucher.voucher_date,
+                "doc_code": voucher.doc_code,
+                "doc_no": voucher.doc_no,
+                "voucher_code": voucher.voucher_code,
+                "voucher_type": voucher.voucher_type,
+                "voucher_type_name": voucher.get_voucher_type_display(),
+                "status": int(voucher.status),
+                "status_name": voucher.get_status_display(),
+                "cash_bank_account": self._cash_bank_block(voucher),
+                "total_debit_amount": voucher.total_debit_amount,
+                "total_credit_amount": voucher.total_credit_amount,
+                "balance_amount": voucher.total_debit_amount - voucher.total_credit_amount,
+                "counts": {
+                    "line_count": line_count,
+                    "system_line_count": system_line_count,
+                    "business_line_count": line_count,
+                },
+                "action_flags": self._action_flags(voucher),
+            }
+        )

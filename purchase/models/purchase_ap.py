@@ -31,6 +31,7 @@ class VendorBillOpenItem(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     vendor = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    vendor_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
 
     doc_type = models.IntegerField(db_index=True)
     bill_date = models.DateField(db_index=True)
@@ -52,6 +53,7 @@ class VendorBillOpenItem(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "entityfinid", "vendor", "is_open"], name="ix_pur_ap_open_scope"),
+            models.Index(fields=["entity", "entityfinid", "vendor_ledger", "is_open"], name="ix_pur_ap_open_vscope"),
             models.Index(fields=["entity", "entityfinid", "bill_date"], name="ix_pur_ap_open_billdt"),
             models.Index(fields=["entity", "entityfinid", "due_date"], name="ix_pur_ap_open_duedt"),
         ]
@@ -78,6 +80,7 @@ class VendorSettlement(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     vendor = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    vendor_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     advance_balance = models.ForeignKey(
         "purchase.VendorAdvanceBalance",
         on_delete=models.PROTECT,
@@ -100,6 +103,7 @@ class VendorSettlement(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "entityfinid", "vendor", "status"], name="ix_pur_settle_scope"),
+            models.Index(fields=["entity", "entityfinid", "vendor_ledger", "status"], name="ix_pur_settle_vscope"),
             models.Index(fields=["entity", "entityfinid", "settlement_date"], name="ix_pur_settle_date"),
         ]
 
@@ -117,6 +121,7 @@ class VendorAdvanceBalance(TrackingModel):
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
     vendor = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    vendor_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
 
     source_type = models.CharField(max_length=30, choices=SourceType.choices, default=SourceType.PAYMENT_ADVANCE, db_index=True)
     credit_date = models.DateField(db_index=True)
@@ -140,6 +145,7 @@ class VendorAdvanceBalance(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "entityfinid", "vendor", "is_open"], name="ix_pur_adv_scope"),
+            models.Index(fields=["entity", "entityfinid", "vendor_ledger", "is_open"], name="ix_pur_adv_vscope"),
             models.Index(fields=["entity", "entityfinid", "credit_date"], name="ix_pur_adv_creditdt"),
         ]
 

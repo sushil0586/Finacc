@@ -1,9 +1,18 @@
 from django.urls import path
 from financial import views
-from .views_meta import AccountChoicesAPIView
+from .views_meta import (
+    AccountChoicesAPIView,
+    AccountFormMetaAPIView,
+    AccountingMastersMetaAPIView,
+    LedgerFormMetaAPIView,
+)
 from .views_ledger import (
+    AccountHeadV2ListCreateAPIView,
+    AccountHeadV2RetrieveUpdateDestroyAPIView,
     AccountProfileV2ListCreateAPIView,
     AccountProfileV2RetrieveUpdateDestroyAPIView,
+    AccountTypeV2ListCreateAPIView,
+    AccountTypeV2RetrieveUpdateDestroyAPIView,
     AccountListPostV2APIView,
     BaseAccountListV2APIView,
     LedgerBalanceListAPIView,
@@ -56,9 +65,16 @@ urlpatterns  = [
     path('top-account-head/', views.TopAccountHeadAPIView.as_view(), name='top-account-head'),
     path('accountheads/entity/<int:entity_id>/', views.AccountHeadListByEntityAPIView.as_view(), name='accounthead-list-by-entity'),   
     path("meta/account-choices/", AccountChoicesAPIView.as_view(), name="meta-account-choices"),
+    path("meta/account-form/", AccountFormMetaAPIView.as_view(), name="meta-account-form"),
+    path("meta/accounting-masters/", AccountingMastersMetaAPIView.as_view(), name="meta-accounting-masters"),
+    path("meta/ledger-form/", LedgerFormMetaAPIView.as_view(), name="meta-ledger-form"),
     path("accounts/simple", views.SimpleAccountsAPIView.as_view()),
     path("accounts/simplev2", SimpleAccountsV2APIView.as_view(), name="account-simple-v2"),
     path("accountListPostV2", AccountListPostV2APIView.as_view(), name="account-list-post-v2"),
+    path("accounttypes-v2", AccountTypeV2ListCreateAPIView.as_view(), name="accounttype-v2-list-create"),
+    path("accounttypes-v2/<int:pk>", AccountTypeV2RetrieveUpdateDestroyAPIView.as_view(), name="accounttype-v2-detail"),
+    path("accountheads-v2", AccountHeadV2ListCreateAPIView.as_view(), name="accounthead-v2-list-create"),
+    path("accountheads-v2/<int:pk>", AccountHeadV2RetrieveUpdateDestroyAPIView.as_view(), name="accounthead-v2-detail"),
     # Parallel ledger-first APIs. These are additive and keep all legacy
     # financial endpoints intact while new screens move to Ledger.
     path("ledgers", LedgerListCreateAPIView.as_view(), name="ledger-list-create"),

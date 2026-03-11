@@ -215,6 +215,39 @@ class PaymentVoucherUnpostAPIView(APIView):
 class PaymentVoucherSettlementSummaryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @staticmethod
+    def _account_block(voucher: PaymentVoucherHeader, field_name: str):
+        acct = getattr(voucher, field_name, None)
+        if not acct:
+            return None
+        stored_ledger_id = getattr(voucher, f"{field_name}_ledger_id", None)
+        return {
+            "id": acct.id,
+            "accountname": getattr(acct, "accountname", None),
+            "display_name": getattr(acct, "effective_accounting_name", None),
+            "accountcode": getattr(acct, "effective_accounting_code", None),
+            "ledger_id": stored_ledger_id or getattr(acct, "ledger_id", None),
+            "partytype": getattr(acct, "partytype", None),
+            "gstno": getattr(acct, "gstno", None),
+            "pan": getattr(acct, "pan", None),
+        }
+
+    @staticmethod
+    def _action_flags(voucher: PaymentVoucherHeader):
+        is_draft = int(voucher.status) == int(PaymentVoucherHeader.Status.DRAFT)
+        is_confirmed = int(voucher.status) == int(PaymentVoucherHeader.Status.CONFIRMED)
+        is_posted = int(voucher.status) == int(PaymentVoucherHeader.Status.POSTED)
+        is_cancelled = int(voucher.status) == int(PaymentVoucherHeader.Status.CANCELLED)
+        return {
+            "can_edit": not is_posted and not is_cancelled,
+            "can_confirm": is_draft,
+            "can_post": is_confirmed,
+            "can_cancel": is_draft or is_confirmed,
+            "can_unpost": is_posted,
+            "status": int(voucher.status),
+            "status_name": voucher.get_status_display(),
+        }
+
     def get(self, request, pk: int):
         entity = request.query_params.get("entity")
         entityfinid = request.query_params.get("entityfinid")
@@ -234,10 +267,22 @@ class PaymentVoucherSettlementSummaryAPIView(APIView):
         ser = PaymentVoucherHeaderSerializer(voucher, context={"skip_preview_numbers": True})
         data = ser.data
         return Response({
+            "voucher_id": voucher.id,
+            "voucher_date": data.get("voucher_date"),
+            "doc_code": data.get("doc_code"),
+            "doc_no": data.get("doc_no"),
+            "voucher_code": data.get("voucher_code"),
+            "payment_type": data.get("payment_type"),
+            "payment_type_name": data.get("payment_type_name"),
+            "status": data.get("status"),
+            "status_name": data.get("status_name"),
+            "paid_from": self._account_block(voucher, "paid_from"),
+            "paid_to": self._account_block(voucher, "paid_to"),
             "cash_paid_amount": data.get("cash_paid_amount", 0),
             "adjustment_effect_amount": data.get("total_adjustment_amount", 0),
             "advance_consumed_amount": data.get("advance_consumed_amount", 0),
             "total_settlement_support_amount": data.get("total_settlement_support_amount", 0),
             "allocated_amount": data.get("allocated_amount", 0),
             "balance_amount": data.get("settlement_balance_amount", 0),
+            "action_flags": self._action_flags(voucher),
         })

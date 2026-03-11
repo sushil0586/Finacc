@@ -13,6 +13,7 @@ from sales.serializers.sales_ar import (
     CustomerSettlementCreateInputSerializer,
 )
 from sales.services.sales_ar_service import SalesArService
+from financial.models import account
 
 
 def _parse_scope(request):
@@ -25,6 +26,8 @@ def _parse_scope(request):
         entity_id = int(entity)
         entityfinid_id = int(entityfinid)
         subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        if subentity_id == 0:
+            subentity_id = None
     except (TypeError, ValueError):
         raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
     return entity_id, entityfinid_id, subentity_id
@@ -176,7 +179,27 @@ class CustomerStatementAPIView(APIView):
             include_closed=include_closed,
         )
 
+        customer_obj = (
+            account.objects.filter(id=customer_id)
+            .select_related("ledger")
+            .only("id", "accountname", "partytype", "gstno", "pan", "ledger_id", "ledger__ledger_code", "ledger__name")
+            .first()
+        )
+        customer_block = None
+        if customer_obj is not None:
+            customer_block = {
+                "id": customer_obj.id,
+                "accountname": customer_obj.accountname,
+                "display_name": customer_obj.effective_accounting_name,
+                "accountcode": customer_obj.effective_accounting_code,
+                "ledger_id": customer_obj.ledger_id,
+                "partytype": customer_obj.partytype,
+                "gstno": customer_obj.gstno,
+                "pan": customer_obj.pan,
+            }
+
         return Response({
+            "customer": customer_block,
             "totals": data["totals"],
             "open_items": CustomerBillOpenItemSerializer(data["open_items"], many=True).data,
             "advances": CustomerAdvanceBalanceSerializer(data["advances"], many=True).data,

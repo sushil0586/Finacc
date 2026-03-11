@@ -62,6 +62,7 @@ from .serializers import (
     ProductStatusChoiceSerializer,
     ProductBarcodeManageSerializer,
 )
+from .transaction_products import TransactionProductCatalogService
 
 
 # ----------------------------------------------------------------------
@@ -342,17 +343,87 @@ class ProductPageBootstrapAPIView(APIView):
 
 
 # ----------------------------------------------------------------------
+# Transaction-ready product meta APIs
+# ----------------------------------------------------------------------
+
+class TransactionProductMetaAPIView(APIView):
+    """
+    Rich product catalog for transactional line-entry screens.
+    Returns product-specific UOM options, conversions, prices, and barcodes.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, format=None):
+        entity = request.query_params.get("entity")
+        if not entity:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+
+        try:
+            entity_id = int(entity)
+        except (TypeError, ValueError):
+            raise ValidationError({"entity": "Invalid entity id."})
+
+        search = (request.query_params.get("search") or "").strip()
+        as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
+        as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
+        if as_of_date_raw and not as_of_date:
+            raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
+
+        try:
+            limit = int(request.query_params.get("limit") or 50)
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = int(request.query_params.get("offset") or 0)
+        except (TypeError, ValueError):
+            offset = 0
+
+        payload = TransactionProductCatalogService.list_products(
+            entity_id=entity_id,
+            search=search,
+            as_of_date=as_of_date,
+            limit=max(1, min(limit, 200)),
+            offset=max(0, offset),
+        )
+        return Response(payload)
+
+
+class TransactionProductDetailAPIView(APIView):
+    """
+    Rich single-product transaction meta for line-entry defaults.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, product_id: int, format=None):
+        entity = request.query_params.get("entity")
+        if not entity:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+
+        try:
+            entity_id = int(entity)
+        except (TypeError, ValueError):
+            raise ValidationError({"entity": "Invalid entity id."})
+
+        as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
+        as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
+        if as_of_date_raw and not as_of_date:
+            raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
+
+        payload = TransactionProductCatalogService.get_product(
+            entity_id=entity_id,
+            product_id=product_id,
+            as_of_date=as_of_date,
+        )
+        return Response(payload)
+
+
+# ----------------------------------------------------------------------
 # Lightweight product list for invoice page (optimized)
 # ----------------------------------------------------------------------
 
 class InvoiceProductListAPIView(APIView):
     """
-    GET /api/catalog/entity/<entity_id>/invoice-products/?search=<text>
-    Returns flat list with:
-    - default GST rate (isdefault=True else latest valid_from)
-    - default price from default pricelist (else latest)
-    - UOM code
-    - cess_type + cess_specific_amount (NEW)
+    Lightweight transaction-ready product list for invoice pages.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -363,136 +434,14 @@ class InvoiceProductListAPIView(APIView):
         if as_of_date_raw and not as_of_date:
             raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
 
-        # Subquery: pick default GST record else latest by valid_from
-        gst_default_sq = ProductGstRate.objects.filter(
-            product_id=OuterRef("pk"),
-            isdefault=True
-        ).order_by("-valid_from")
-
-        gst_latest_sq = ProductGstRate.objects.filter(
-            product_id=OuterRef("pk")
-        ).order_by("-valid_from")
-
-        if as_of_date:
-            gst_default_sq = gst_default_sq.filter(
-                Q(valid_from__isnull=True) | Q(valid_from__lte=as_of_date),
-                Q(valid_to__isnull=True) | Q(valid_to__gte=as_of_date),
-            )
-            gst_latest_sq = gst_latest_sq.filter(
-                Q(valid_from__isnull=True) | Q(valid_from__lte=as_of_date),
-                Q(valid_to__isnull=True) | Q(valid_to__gte=as_of_date),
-            )
-
-        # Subquery: pick default price record else latest
-        price_default_sq = ProductPrice.objects.filter(
-            product_id=OuterRef("pk"),
-            pricelist__isdefault=True
-        ).order_by("-effective_from")
-
-        price_latest_sq = ProductPrice.objects.filter(
-            product_id=OuterRef("pk")
-        ).order_by("-effective_from")
-
-        if as_of_date:
-            price_default_sq = price_default_sq.filter(
-                effective_from__lte=as_of_date,
-            ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date))
-            price_latest_sq = price_latest_sq.filter(
-                effective_from__lte=as_of_date,
-            ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date))
-
-        qs = (
-            Product.objects
-            .filter(entity_id=entity_id, isactive=True)
-            .select_related("base_uom")
-            .annotate(
-                # GST (try default first; if null, fallback latest)
-                gst_hsn_id=Subquery(gst_default_sq.values("hsn_id")[:1]),
-                gst_cgst=Subquery(gst_default_sq.values("cgst")[:1]),
-                gst_sgst=Subquery(gst_default_sq.values("sgst")[:1]),
-                gst_igst=Subquery(gst_default_sq.values("igst")[:1]),
-                gst_rate=Subquery(gst_default_sq.values("gst_rate")[:1]),
-                gst_cess=Subquery(gst_default_sq.values("cess")[:1]),
-                gst_cess_type=Subquery(gst_default_sq.values("cess_type")[:1]),
-                gst_cess_specific=Subquery(gst_default_sq.values("cess_specific_amount")[:1]),
-
-                gst_hsn_id2=Subquery(gst_latest_sq.values("hsn_id")[:1]),
-                gst_cgst2=Subquery(gst_latest_sq.values("cgst")[:1]),
-                gst_sgst2=Subquery(gst_latest_sq.values("sgst")[:1]),
-                gst_igst2=Subquery(gst_latest_sq.values("igst")[:1]),
-                gst_rate2=Subquery(gst_latest_sq.values("gst_rate")[:1]),
-                gst_cess2=Subquery(gst_latest_sq.values("cess")[:1]),
-                gst_cess_type2=Subquery(gst_latest_sq.values("cess_type")[:1]),
-                gst_cess_specific2=Subquery(gst_latest_sq.values("cess_specific_amount")[:1]),
-
-                # Prices (try default pricelist first; else latest)
-                price_mrp=Subquery(price_default_sq.values("mrp")[:1]),
-                price_sales=Subquery(price_default_sq.values("selling_price")[:1]),
-                price_purchase=Subquery(price_default_sq.values("purchase_rate")[:1]),
-
-                price_mrp2=Subquery(price_latest_sq.values("mrp")[:1]),
-                price_sales2=Subquery(price_latest_sq.values("selling_price")[:1]),
-                price_purchase2=Subquery(price_latest_sq.values("purchase_rate")[:1]),
-            )
-            .order_by("productname")
+        payload = TransactionProductCatalogService.list_products(
+            entity_id=entity_id,
+            search=search,
+            as_of_date=as_of_date,
+            limit=200,
+            offset=0,
         )
-
-        if search:
-            qs = qs.filter(Q(productname__icontains=search) | Q(sku__icontains=search))
-
-        # load HSN codes in one query
-        hsn_ids = set()
-        for row in qs.values("gst_hsn_id", "gst_hsn_id2"):
-            if row["gst_hsn_id"]:
-                hsn_ids.add(row["gst_hsn_id"])
-            if row["gst_hsn_id2"]:
-                hsn_ids.add(row["gst_hsn_id2"])
-        hsn_map = {h.id: h.code for h in HsnSac.objects.filter(id__in=hsn_ids)}
-
-        items = []
-        for p in qs:
-            # GST choose default else latest
-            hsn_id = p.gst_hsn_id or p.gst_hsn_id2
-            cgst = p.gst_cgst if p.gst_hsn_id else p.gst_cgst2
-            sgst = p.gst_sgst if p.gst_hsn_id else p.gst_sgst2
-            igst = p.gst_igst if p.gst_hsn_id else p.gst_igst2
-            gst_rate = p.gst_rate if p.gst_hsn_id else p.gst_rate2
-            cess = p.gst_cess if p.gst_hsn_id else p.gst_cess2
-            cess_type = p.gst_cess_type if p.gst_hsn_id else p.gst_cess_type2
-            cess_specific = p.gst_cess_specific if p.gst_hsn_id else p.gst_cess_specific2
-
-            # Prices choose default else latest
-            mrp = p.price_mrp if p.price_mrp is not None else p.price_mrp2
-            salesprice = p.price_sales if p.price_sales is not None else p.price_sales2
-            purchaserate = p.price_purchase if p.price_purchase is not None else p.price_purchase2
-
-            uom_code = p.base_uom.code if p.base_uom else None
-
-            items.append({
-                "id": p.id,
-                "productname": p.productname,
-                "productdesc": p.productdesc,
-                "sku": p.sku,
-                "uom": uom_code,
-                "is_service": p.is_service,
-                "is_pieces": p.is_pieces,
-
-                "mrp": float(mrp) if mrp is not None else None,
-                "salesprice": float(salesprice) if salesprice is not None else None,
-                "purchaserate": float(purchaserate) if purchaserate is not None else None,
-
-                "hsn": hsn_map.get(hsn_id),
-                "cgst": float(cgst) if cgst is not None else None,
-                "sgst": float(sgst) if sgst is not None else None,
-                "igst": float(igst) if igst is not None else None,
-                "gst_rate": float(gst_rate) if gst_rate is not None else None,
-
-                "cess": float(cess) if cess is not None else None,
-                "cesstype": cess_type,
-                "cess_specific_amount": float(cess_specific) if cess_specific is not None else None,  # ✅ NEW
-            })
-
-        return Response(items, status=status.HTTP_200_OK)
+        return Response(payload["items"], status=status.HTTP_200_OK)
 
 
 # ----------------------------------------------------------------------
@@ -897,25 +846,17 @@ def _taxability_from_hsn(hsn_row) -> int:
 
 class PurchaseInvoiceProductListAPIView(APIView):
     """
-    GET /api/catalog/entity/<entity_id>/invoice-products/?search=<text>&limit=50&offset=0
-
-    Postgres-optimized:
-    - Query products (paged)
-    - Query best GST row per product using DISTINCT ON (default first else latest)
-    - Query best Price row per product using DISTINCT ON (default pricelist first else latest)
-    - Query HSN ids once
+    Paged transaction-ready product list for purchase invoice screens.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, format=None):
-        entity = self.request.query_params.get('entity')
+        entity = self.request.query_params.get("entity")
         as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
         as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
         if as_of_date_raw and not as_of_date:
             raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
 
-        # ---- Pagination ----
-        # sensible defaults (do NOT allow unbounded)
         try:
             limit = int(request.query_params.get("limit") or 50)
         except Exception:
@@ -925,142 +866,22 @@ class PurchaseInvoiceProductListAPIView(APIView):
         except Exception:
             offset = 0
 
-        limit = max(1, min(limit, 200))  # hard cap
+        limit = max(1, min(limit, 200))
         offset = max(0, offset)
 
-        # ---- Base product query (paged) ----
-        prod_qs = (
-            Product.objects
-            .filter(entity_id=entity, isactive=True)
-            .select_related("base_uom")
-            .only(
-                "id", "productname", "productdesc", "sku",
-                "base_uom_id", "base_uom__code",
-                "is_service", "is_pieces",
-                # ITC defaults (if you added them on product)
-                "is_itc_eligible", "itc_block_reason",
-            )
-            .order_by("productname", "id")
+        if not entity:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+        try:
+            entity_id = int(entity)
+        except (TypeError, ValueError):
+            raise ValidationError({"entity": "Invalid entity id."})
+
+        search = (request.query_params.get("search") or "").strip()
+        payload = TransactionProductCatalogService.list_products(
+            entity_id=entity_id,
+            search=search,
+            as_of_date=as_of_date,
+            limit=limit,
+            offset=offset,
         )
-
-        
-
-        total = prod_qs.count()  # optional; remove if you don't need total for UI
-
-        products = list(prod_qs[offset: offset + limit])
-        if not products:
-            return Response({"count": total, "items": []}, status=status.HTTP_200_OK)
-
-        product_ids = [p.id for p in products]
-
-        # ---- GST rows: best row per product (default first else latest valid_from) ----
-        # DISTINCT ON is Postgres-specific: keep one row per product_id based on ordering.
-        gst_rows = list(
-            ProductGstRate.objects
-            .filter(product_id__in=product_ids)
-            .filter(
-                Q(valid_from__isnull=True) | Q(valid_from__lte=as_of_date) if as_of_date else Q(),
-                Q(valid_to__isnull=True) | Q(valid_to__gte=as_of_date) if as_of_date else Q(),
-            )
-            .order_by("product_id", "-isdefault", "-valid_from", "-id")
-            .distinct("product_id")
-            .values(
-                "product_id",
-                "hsn_id",
-                "cgst", "sgst", "igst", "gst_rate",
-                "cess", "cess_type", "cess_specific_amount",
-            )
-        )
-        gst_map = {r["product_id"]: r for r in gst_rows}
-
-        # ---- Price rows: best row per product (default pricelist first else latest) ----
-        price_rows = list(
-            ProductPrice.objects
-            .filter(product_id__in=product_ids)
-            .filter(
-                Q(effective_from__lte=as_of_date) if as_of_date else Q(),
-                Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date) if as_of_date else Q(),
-            )
-            .select_related("pricelist")
-            .order_by("product_id", "-pricelist__isdefault", "-effective_from", "-id")
-            .distinct("product_id")
-            .values(
-                "product_id",
-                "mrp", "selling_price", "purchase_rate",
-            )
-        )
-        price_map = {r["product_id"]: r for r in price_rows}
-
-        # ---- HSN fetch once ----
-        hsn_ids = {gst_map[p.id]["hsn_id"] for p in products if p.id in gst_map and gst_map[p.id]["hsn_id"]}
-        hsn_rows = list(
-            HsnSac.objects
-            .filter(id__in=hsn_ids)
-            .values("id", "code", "is_service", "is_exempt", "is_nil_rated", "is_non_gst")
-        )
-        hsn_map = {h["id"]: h for h in hsn_rows}
-
-        # ---- Build response ----
-        items = []
-        for p in products:
-            gst = gst_map.get(p.id) or {}
-            pr = price_map.get(p.id) or {}
-
-            hsn_id = gst.get("hsn_id")
-            hsn = hsn_map.get(hsn_id) if hsn_id else None
-
-            taxability = _taxability_from_hsn(hsn)
-
-            # ITC defaults (product policy) + taxability guard
-            if taxability in (2, 3, 4):
-                itc_eligible = False
-                itc_reason = "No GST / no ITC"
-            else:
-                itc_eligible = bool(getattr(p, "default_is_itc_eligible", True))
-                itc_reason = getattr(p, "default_itc_block_reason", None)
-
-            items.append({
-                "id": p.id,
-                "productname": p.productname,
-                "productdesc": p.productdesc,
-                "sku": p.sku,
-
-                # UOM
-                "uom_id": p.base_uom_id,
-                "uom": p.base_uom.code if p.base_uom else None,
-
-                "is_service": p.is_service,
-                "is_pieces": p.is_pieces,
-
-                # Prices
-                "mrp": float(pr["mrp"]) if pr.get("mrp") is not None else None,
-                "salesprice": float(pr["selling_price"]) if pr.get("selling_price") is not None else None,
-                "purchaserate": float(pr["purchase_rate"]) if pr.get("purchase_rate") is not None else None,
-
-                # HSN
-                "hsn_id": hsn_id,
-                "hsn": hsn.get("code") if hsn else None,
-                "hsn_is_service": hsn.get("is_service") if hsn else None,
-
-                # Taxability aligned to PurchaseInvoiceHeader.Taxability
-                "taxability": taxability,
-
-                # GST
-                "cgst": float(gst["cgst"]) if gst.get("cgst") is not None else None,
-                "sgst": float(gst["sgst"]) if gst.get("sgst") is not None else None,
-                "igst": float(gst["igst"]) if gst.get("igst") is not None else None,
-                "gst_rate": float(gst["gst_rate"]) if gst.get("gst_rate") is not None else None,
-
-                # CESS
-                "cess": float(gst["cess"]) if gst.get("cess") is not None else None,
-                "cesstype": gst.get("cess_type"),
-                "cess_specific_amount": float(gst["cess_specific_amount"])
-                if gst.get("cess_specific_amount") is not None else None,
-                "is_itc_eligible": itc_eligible,
-                "itc_block_reason": itc_reason,
-
-                
-                
-            })
-
-        return Response(items, status=status.HTTP_200_OK)
+        return Response(payload, status=status.HTTP_200_OK)

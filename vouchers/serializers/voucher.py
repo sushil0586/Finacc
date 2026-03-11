@@ -31,6 +31,9 @@ class VoucherWriteLineSerializer(serializers.Serializer):
 
 class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="account.effective_accounting_name", read_only=True)
+    accountcode = serializers.IntegerField(source="account.effective_accounting_code", read_only=True)
+    ledger_id = serializers.IntegerField(source="ledger_id", read_only=True)
+    partytype = serializers.CharField(source="account.partytype", read_only=True)
 
     class Meta:
         model = VoucherLine
@@ -39,6 +42,9 @@ class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
             "line_no",
             "account",
             "account_name",
+            "accountcode",
+            "ledger_id",
+            "partytype",
             "narration",
             "dr_amount",
             "cr_amount",
@@ -49,6 +55,9 @@ class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
 
 class VoucherEditableLineReadSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="account.effective_accounting_name", read_only=True)
+    accountcode = serializers.IntegerField(source="account.effective_accounting_code", read_only=True)
+    ledger_id = serializers.IntegerField(source="ledger_id", read_only=True)
+    partytype = serializers.CharField(source="account.partytype", read_only=True)
     entry_type = serializers.SerializerMethodField()
     amount = serializers.SerializerMethodField()
 
@@ -59,6 +68,9 @@ class VoucherEditableLineReadSerializer(serializers.ModelSerializer):
             "line_no",
             "account",
             "account_name",
+            "accountcode",
+            "ledger_id",
+            "partytype",
             "narration",
             "entry_type",
             "amount",
@@ -76,6 +88,9 @@ class VoucherListSerializer(serializers.ModelSerializer):
     voucher_type_name = serializers.CharField(source="get_voucher_type_display", read_only=True)
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     cash_bank_account_name = serializers.CharField(source="cash_bank_account.effective_accounting_name", read_only=True)
+    cash_bank_accountcode = serializers.IntegerField(source="cash_bank_account.effective_accounting_code", read_only=True)
+    cash_bank_ledger_id = serializers.IntegerField(source="cash_bank_ledger_id", read_only=True)
+    cash_bank_partytype = serializers.CharField(source="cash_bank_account.partytype", read_only=True)
     approval_status = serializers.SerializerMethodField()
     approval_status_name = serializers.SerializerMethodField()
     line_count = serializers.SerializerMethodField()
@@ -92,6 +107,9 @@ class VoucherListSerializer(serializers.ModelSerializer):
             "voucher_type_name",
             "cash_bank_account",
             "cash_bank_account_name",
+            "cash_bank_accountcode",
+            "cash_bank_ledger_id",
+            "cash_bank_partytype",
             "reference_number",
             "status",
             "status_name",
@@ -116,6 +134,9 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
     voucher_type_name = serializers.CharField(source="get_voucher_type_display", read_only=True)
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     cash_bank_account_name = serializers.CharField(source="cash_bank_account.effective_accounting_name", read_only=True)
+    cash_bank_accountcode = serializers.IntegerField(source="cash_bank_account.effective_accounting_code", read_only=True)
+    cash_bank_ledger_id = serializers.IntegerField(source="cash_bank_ledger_id", read_only=True)
+    cash_bank_partytype = serializers.CharField(source="cash_bank_account.partytype", read_only=True)
     approval_status = serializers.SerializerMethodField()
     approval_status_name = serializers.SerializerMethodField()
     approval_state = serializers.SerializerMethodField()
@@ -140,6 +161,9 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
             "voucher_type_name",
             "cash_bank_account",
             "cash_bank_account_name",
+            "cash_bank_accountcode",
+            "cash_bank_ledger_id",
+            "cash_bank_partytype",
             "reference_number",
             "narration",
             "instrument_bank_name",
@@ -203,6 +227,9 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
         return {
             "account": obj.cash_bank_account_id,
             "account_name": getattr(obj.cash_bank_account, "effective_accounting_name", None) or getattr(obj.cash_bank_account, "accountname", None),
+            "accountcode": getattr(obj.cash_bank_account, "effective_accounting_code", None),
+            "ledger_id": obj.cash_bank_ledger_id or getattr(obj.cash_bank_account, "ledger_id", None),
+            "partytype": getattr(obj.cash_bank_account, "partytype", None),
             "entry_type": entry_type,
             "amount": amount,
             "is_system_generated": True,

@@ -31,6 +31,16 @@ class ReceiptVoucherPostingAdapter:
         cash_received = q2(getattr(header, "cash_received_amount", ZERO2))
         received_in_id = int(getattr(header, "received_in_id", 0) or 0)
         received_from_id = int(getattr(header, "received_from_id", 0) or 0)
+        received_in_ledger_id = int(
+            getattr(header, "received_in_ledger_id", 0)
+            or getattr(getattr(header, "received_in", None), "ledger_id", 0)
+            or 0
+        )
+        received_from_ledger_id = int(
+            getattr(header, "received_from_ledger_id", 0)
+            or getattr(getattr(header, "received_from", None), "ledger_id", 0)
+            or 0
+        )
 
         if received_in_id <= 0:
             raise ValueError("received_in is required for receipt posting.")
@@ -47,17 +57,22 @@ class ReceiptVoucherPostingAdapter:
             amt = q2(getattr(adj, "amount", ZERO2))
             if amt <= ZERO2:
                 continue
-            ledger_id = int(getattr(adj, "ledger_account_id", 0) or 0)
-            if ledger_id <= 0:
+            account_id = int(getattr(adj, "ledger_account_id", 0) or 0)
+            ledger_id = int(
+                getattr(adj, "ledger_id", 0)
+                or getattr(getattr(adj, "ledger_account", None), "ledger_id", 0)
+                or 0
+            )
+            if account_id <= 0:
                 raise ValueError(f"Adjustment {getattr(adj, 'id', '')}: ledger_account is required.")
             effect = str(getattr(adj, "settlement_effect", "PLUS")).upper().strip()
 
             if effect == "PLUS":
                 plus_total = q2(plus_total + amt)
-                rows.append(("DR", ledger_id, amt, f"Receipt adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("DR", account_id, ledger_id or None, amt, f"Receipt adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             elif effect == "MINUS":
                 minus_total = q2(minus_total + amt)
-                rows.append(("CR", ledger_id, amt, f"Receipt adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("CR", account_id, ledger_id or None, amt, f"Receipt adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             else:
                 raise ValueError(f"Unsupported settlement_effect '{effect}'.")
 
@@ -68,20 +83,23 @@ class ReceiptVoucherPostingAdapter:
         jl_inputs: list[JLInput] = []
         jl_inputs.append(JLInput(
             account_id=received_in_id,
+            ledger_id=received_in_ledger_id or None,
             drcr=True,
             amount=cash_received,
             description=f"Receipt voucher {getattr(header, 'voucher_code', '')} cash/bank",
         ))
         jl_inputs.append(JLInput(
             account_id=received_from_id,
+            ledger_id=received_from_ledger_id or None,
             drcr=False,
             amount=customer_settlement,
             description=f"Receipt voucher {getattr(header, 'voucher_code', '')} customer settlement",
         ))
 
-        for side, ledger_id, amt, desc in rows:
+        for side, account_id, ledger_id, amt, desc in rows:
             jl_inputs.append(JLInput(
-                account_id=ledger_id,
+                account_id=account_id,
+                ledger_id=ledger_id,
                 drcr=(side == "DR"),
                 amount=amt,
                 description=f"{getattr(header, 'voucher_code', '')} {desc}",
@@ -91,6 +109,7 @@ class ReceiptVoucherPostingAdapter:
             return [
                 JLInput(
                     account_id=x.account_id,
+                    ledger_id=x.ledger_id,
                     accounthead_id=x.accounthead_id,
                     drcr=not bool(x.drcr),
                     amount=q2(x.amount),
