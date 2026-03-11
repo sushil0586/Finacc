@@ -4,12 +4,13 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional, List, Iterable
+from typing import Dict, Optional, List, Iterable
 
 from django.db import transaction, connection, models
 from django.db.models import Sum, Q
 from django.utils import timezone
 
+from financial.models import account as FinancialAccount
 from posting.models import (
     PostingBatch, Entry, JournalLine, InventoryMove,
     TxnType, EntryStatus
@@ -38,6 +39,7 @@ def q4(x) -> Decimal:
 class JLInput:
     account_id: Optional[int] = None
     accounthead_id: Optional[int] = None
+    ledger_id: Optional[int] = None
     drcr: bool = True
     amount: Decimal = ZERO2
     description: str = ""
@@ -71,6 +73,7 @@ class PostingService:
         self.entityfin_id = entityfin_id
         self.subentity_id = subentity_id
         self.user_id = user_id
+        self._account_ledger_cache: Dict[int, Optional[int]] = {}
 
     # ---------- advisory lock (Postgres optional) ----------
     def _pg_advisory_lock(self, key: int) -> None:
@@ -148,6 +151,24 @@ class PostingService:
         if q2(dr) != q2(cr):
             raise ValueError(f"Unbalanced entry: Dr {dr} != Cr {cr} for {txn_type}#{txn_id}")
 
+    def _resolve_ledger_id(self, account_id: Optional[int], ledger_id: Optional[int]) -> Optional[int]:
+        if ledger_id:
+            return int(ledger_id)
+        if not account_id:
+            return None
+        if account_id in self._account_ledger_cache:
+            cached = self._account_ledger_cache[account_id]
+            return int(cached) if cached else None
+
+        resolved = (
+            FinancialAccount.objects
+            .filter(id=account_id)
+            .values_list("ledger_id", flat=True)
+            .first()
+        )
+        self._account_ledger_cache[account_id] = int(resolved) if resolved else None
+        return int(resolved) if resolved else None
+
     @transaction.atomic
     def post(
         self,
@@ -218,6 +239,10 @@ class PostingService:
             if bool(x.account_id) == bool(x.accounthead_id):
                 raise ValueError("JournalLine requires exactly one of account_id or accounthead_id")
 
+            resolved_ledger_id = self._resolve_ledger_id(x.account_id, x.ledger_id)
+            if x.account_id and not resolved_ledger_id:
+                raise ValueError(f"Account {x.account_id} is not linked to a ledger.")
+
             jl_rows.append(JournalLine(
                 entry=entry,
                 posting_batch=batch,
@@ -230,6 +255,7 @@ class PostingService:
                 voucher_no=voucher_no,
                 account_id=x.account_id,
                 accounthead_id=x.accounthead_id,
+                ledger_id=resolved_ledger_id,
                 drcr=bool(x.drcr),
                 amount=amt,
                 description=x.description or narration,

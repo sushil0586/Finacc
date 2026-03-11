@@ -9,6 +9,9 @@ from sales.models.sales_ar import CustomerBillOpenItem, CustomerAdvanceBalance, 
 
 class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
+    customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
+    customer_ledger_id = serializers.IntegerField(read_only=True)
+    customer_partytype = serializers.CharField(source="customer.partytype", read_only=True)
     doc_type_name = serializers.SerializerMethodField()
 
     def get_doc_type_name(self, obj):
@@ -27,6 +30,9 @@ class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
             "subentity",
             "customer",
             "customer_name",
+            "customer_accountcode",
+            "customer_ledger_id",
+            "customer_partytype",
             "doc_type",
             "doc_type_name",
             "bill_date",
@@ -80,6 +86,9 @@ class CustomerSettlementSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     settlement_type_name = serializers.CharField(source="get_settlement_type_display", read_only=True)
     customer_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
+    customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
+    customer_ledger_id = serializers.IntegerField(read_only=True)
+    customer_partytype = serializers.CharField(source="customer.partytype", read_only=True)
     advance_reference_no = serializers.CharField(source="advance_balance.reference_no", read_only=True)
     advance_original_amount = serializers.DecimalField(source="advance_balance.original_amount", max_digits=14, decimal_places=2, read_only=True)
     advance_balance_outstanding_amount = serializers.DecimalField(source="advance_balance.outstanding_amount", max_digits=14, decimal_places=2, read_only=True)
@@ -95,6 +104,9 @@ class CustomerSettlementSerializer(serializers.ModelSerializer):
             "subentity",
             "customer",
             "customer_name",
+            "customer_accountcode",
+            "customer_ledger_id",
+            "customer_partytype",
             "settlement_type",
             "settlement_type_name",
             "settlement_date",
@@ -122,6 +134,9 @@ class CustomerSettlementSerializer(serializers.ModelSerializer):
 class CustomerAdvanceBalanceSerializer(serializers.ModelSerializer):
     advance_balance_id = serializers.IntegerField(source="id", read_only=True)
     customer_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
+    customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
+    customer_ledger_id = serializers.IntegerField(read_only=True)
+    customer_partytype = serializers.CharField(source="customer.partytype", read_only=True)
     voucher_id = serializers.IntegerField(source="receipt_voucher_id", read_only=True)
     doc_no = serializers.SerializerMethodField()
     voucher_code = serializers.CharField(source="receipt_voucher.doc_code", read_only=True)
@@ -173,6 +188,9 @@ class CustomerAdvanceBalanceSerializer(serializers.ModelSerializer):
             "subentity",
             "customer",
             "customer_name",
+            "customer_accountcode",
+            "customer_ledger_id",
+            "customer_partytype",
             "source_type",
             "credit_date",
             "reference_no",

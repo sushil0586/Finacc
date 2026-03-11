@@ -42,13 +42,14 @@ class VoucherPostingAdapter:
         for row in list(lines or []):
             dr_amount = q2(getattr(row, "dr_amount", ZERO2))
             cr_amount = q2(getattr(row, "cr_amount", ZERO2))
-            ledger_id = int(getattr(row, "account_id", 0) or 0)
-            if ledger_id <= 0:
+            account_id = int(getattr(row, "account_id", 0) or 0)
+            ledger_id = int(getattr(row, "ledger_id", 0) or getattr(getattr(row, "account", None), "ledger_id", 0) or 0)
+            if account_id <= 0:
                 raise ValueError(f"Voucher line {getattr(row, 'id', '')}: account is required.")
             if dr_amount > ZERO2:
-                jl_inputs.append(JLInput(account_id=ledger_id, drcr=not reverse, amount=dr_amount, description=str(getattr(row, "narration", "") or ""), detail_id=getattr(row, "id", None)))
+                jl_inputs.append(JLInput(account_id=account_id, ledger_id=ledger_id or None, drcr=not reverse, amount=dr_amount, description=str(getattr(row, "narration", "") or ""), detail_id=getattr(row, "id", None)))
             if cr_amount > ZERO2:
-                jl_inputs.append(JLInput(account_id=ledger_id, drcr=reverse, amount=cr_amount, description=str(getattr(row, "narration", "") or ""), detail_id=getattr(row, "id", None)))
+                jl_inputs.append(JLInput(account_id=account_id, ledger_id=ledger_id or None, drcr=reverse, amount=cr_amount, description=str(getattr(row, "narration", "") or ""), detail_id=getattr(row, "id", None)))
         return jl_inputs
 
     @staticmethod

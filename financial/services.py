@@ -1,7 +1,5 @@
-from django.db.models import Sum
-
 from financial.models import FinancialSettings, Ledger
-from invoice.models import StockTransactions
+from posting.services.balances import ledger_balance_map
 
 
 def get_or_create_financial_settings(entity, createdby=None):
@@ -43,7 +41,7 @@ def sync_ledger_for_account(acc, ledger_overrides=None):
         "isactive": acc.isactive,
     }
     if ledger_overrides:
-        ledger_defaults.update({k: v for k, v in ledger_overrides.items() if v is not None})
+        ledger_defaults.update(ledger_overrides)
 
     if acc.ledger_id:
         ledger = acc.ledger
@@ -64,6 +62,24 @@ def sync_ledger_for_account(acc, ledger_overrides=None):
         ledger.save(update_fields=["contra_ledger"])
 
     return ledger
+
+
+def allocate_next_ledger_code(*, entity_id):
+    """
+    Generate the next ledger code for an entity.
+
+    The new financial APIs should not rely on the legacy account-code endpoint.
+    For account-managed ledgers, we allocate a code lazily if one is not
+    supplied. This keeps the account page simple while still producing a real
+    posting ledger.
+    """
+    max_code = (
+        Ledger.objects.filter(entity_id=entity_id, ledger_code__isnull=False)
+        .order_by("-ledger_code")
+        .values_list("ledger_code", flat=True)
+        .first()
+    )
+    return (max_code or 999) + 1
 
 
 def bootstrap_financial_settings_for_all_entities(entity_model, createdby=None):
@@ -105,30 +121,19 @@ def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, ac
     if accounthead_ids:
         qs = qs.filter(accounthead_id__in=accounthead_ids)
 
-    account_profile_ids = list(
-        qs.exclude(account_profile__isnull=True).values_list("account_profile_id", flat=True)
+    balance_map = ledger_balance_map(
+        entity_id=entity_id,
+        fin_start=fin_start,
+        fin_end=fin_end,
+        ledger_ids=ledger_ids,
+        accounthead_ids=accounthead_ids,
     )
-
-    balance_map = {}
-    if account_profile_ids:
-        balance_rows = (
-            StockTransactions.objects.filter(
-                entity_id=entity_id,
-                isactive=1,
-                account_id__in=account_profile_ids,
-                entrydatetime__range=(fin_start, fin_end),
-            )
-            .exclude(accounttype="MD")
-            .exclude(transactiontype__in=["PC"])
-            .values("account_id")
-            .annotate(balance=Sum("debitamount", default=0) - Sum("creditamount", default=0))
-        )
-        balance_map = {row["account_id"]: (row["balance"] or 0) for row in balance_rows}
 
     rows = []
     for ledger in qs:
         account_profile = getattr(ledger, "account_profile", None)
-        balance = balance_map.get(getattr(account_profile, "id", None), 0)
+        ledger_balance = balance_map.get(ledger.id, {"balance": 0, "debit": 0, "credit": 0})
+        balance = ledger_balance["balance"]
         rows.append(
             {
                 "ledger_id": ledger.id,
@@ -145,8 +150,8 @@ def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, ac
                 "creditaccounthead_name": getattr(ledger.creditaccounthead, "name", None),
                 "accanbedeleted": ledger.canbedeleted,
                 "balance": balance,
-                "debit": max(balance, 0),
-                "credit": abs(min(balance, 0)),
+                "debit": ledger_balance["debit"],
+                "credit": ledger_balance["credit"],
                 "drcr": "CR" if balance < 0 else "DR",
                 "is_party": ledger.is_party,
             }

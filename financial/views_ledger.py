@@ -1,10 +1,12 @@
+from django.db.models import Q
 from rest_framework import permissions, status
 from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import EntityFinancialYear
-from financial.models import Ledger, account
+from financial.models import Ledger, account, accountHead, accounttype
+from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
 from financial.serializers_ledger import (
     AccountProfileV2ReadSerializer,
     AccountProfileV2WriteSerializer,
@@ -18,11 +20,90 @@ from financial.serializers_ledger import (
 from financial.services import build_ledger_balance_rows
 
 
+def _include_inactive(request):
+    return str(request.query_params.get("include_inactive", "")).lower() in {"1", "true", "yes"}
+
+
+class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
+    """
+    New financial APIs are deactivate-first.
+    Legacy endpoints remain unchanged.
+    """
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if hasattr(instance, "isactive"):
+            instance.isactive = False
+            instance.save(update_fields=["isactive"])
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return super().destroy(request, *args, **kwargs)
+
+
+class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = AccountTypeV2Serializer
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get("entity")
+        q = (self.request.query_params.get("q") or "").strip()
+        qs = accounttype.objects.all()
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if not _include_inactive(self.request):
+            qs = qs.filter(isactive=True)
+        if q:
+            qs = qs.filter(Q(accounttypename__icontains=q) | Q(accounttypecode__icontains=q))
+        return qs.order_by("accounttypename")
+
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+
+class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = AccountTypeV2Serializer
+
+    def get_queryset(self):
+        return accounttype.objects.all()
+
+
+class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = AccountHeadV2Serializer
+
+    def get_queryset(self):
+        entity_id = self.request.query_params.get("entity")
+        q = (self.request.query_params.get("q") or "").strip()
+        qs = accountHead.objects.select_related("accountheadsr", "accounttype")
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if not _include_inactive(self.request):
+            qs = qs.filter(isactive=True)
+        if q:
+            filters = Q(name__icontains=q) | Q(description__icontains=q)
+            if q.isdigit():
+                filters |= Q(code=int(q))
+            qs = qs.filter(filters)
+        return qs.order_by("code", "name")
+
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+
+class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = AccountHeadV2Serializer
+
+    def get_queryset(self):
+        return accountHead.objects.select_related("accountheadsr", "accounttype")
+
+
 class LedgerListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         entity_id = self.request.query_params.get("entity")
+        q = (self.request.query_params.get("q") or "").strip()
         qs = Ledger.objects.select_related(
             "entity",
             "accounthead",
@@ -33,6 +114,13 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         )
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
+        if not _include_inactive(self.request):
+            qs = qs.filter(isactive=True)
+        if q:
+            filters = Q(name__icontains=q) | Q(legal_name__icontains=q)
+            if q.isdigit():
+                filters |= Q(ledger_code=int(q))
+            qs = qs.filter(filters)
         return qs.order_by("ledger_code", "name")
 
     def get_serializer_class(self):
@@ -42,7 +130,7 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         serializer.save(createdby=self.request.user)
 
 
-class LedgerRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
+class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = LedgerSerializer
 
@@ -55,6 +143,32 @@ class LedgerRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
             "accounttype",
             "account_profile",
         )
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if getattr(instance, "account_profile_id", None):
+            return Response(
+                {
+                    "error": "This ledger is auto-managed from the Account page. Edit the linked account instead.",
+                    "code": "ledger_auto_managed",
+                    "account_id": instance.account_profile_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if getattr(instance, "account_profile_id", None):
+            return Response(
+                {
+                    "error": "This ledger is auto-managed from the Account page. Deactivate the linked account instead.",
+                    "code": "ledger_auto_managed",
+                    "account_id": instance.account_profile_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class LedgerSimpleListAPIView(ListAPIView):
@@ -295,6 +409,7 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
 
     def get_queryset(self):
         entity_id = self.request.query_params.get("entity")
+        q = (self.request.query_params.get("q") or "").strip()
         qs = account.objects.select_related(
             "ledger",
             "ledger__accounthead",
@@ -306,13 +421,34 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
         )
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
+        if not _include_inactive(self.request):
+            qs = qs.filter(isactive=True)
+        if q:
+            filters = (
+                Q(accountname__icontains=q) |
+                Q(legalname__icontains=q) |
+                Q(gstno__icontains=q) |
+                Q(pan__icontains=q) |
+                Q(emailid__icontains=q)
+            )
+            if q.isdigit():
+                filters |= Q(ledger__ledger_code=int(q))
+            qs = qs.filter(filters)
         return qs.order_by("accountname")
 
     def get_serializer_class(self):
         return AccountProfileV2ReadSerializer if self.request.method.upper() == "GET" else AccountProfileV2WriteSerializer
 
+    def create(self, request, *args, **kwargs):
+        write_serializer = self.get_serializer(data=request.data)
+        write_serializer.is_valid(raise_exception=True)
+        instance = write_serializer.save()
+        read_serializer = AccountProfileV2ReadSerializer(instance, context=self.get_serializer_context())
+        headers = self.get_success_headers(read_serializer.data)
+        return Response(read_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
-class AccountProfileV2RetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
+
+class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -328,3 +464,12 @@ class AccountProfileV2RetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView)
 
     def get_serializer_class(self):
         return AccountProfileV2ReadSerializer if self.request.method.upper() == "GET" else AccountProfileV2WriteSerializer
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        write_serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        write_serializer.is_valid(raise_exception=True)
+        instance = write_serializer.save()
+        read_serializer = AccountProfileV2ReadSerializer(instance, context=self.get_serializer_context())
+        return Response(read_serializer.data)

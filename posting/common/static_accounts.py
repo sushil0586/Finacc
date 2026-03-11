@@ -55,7 +55,7 @@ class StaticAccountResolver:
     Caches per resolver instance.
     """
     entity_id: int
-    _cache: Dict[str, int] = None
+    _cache: Dict[str, Dict[str, Optional[int]]] = None
 
     def __post_init__(self):
         if self._cache is None:
@@ -63,26 +63,15 @@ class StaticAccountResolver:
 
     def get_account_id(self, code: str, *, required: bool = True) -> Optional[int]:
         if code in self._cache:
-            return self._cache[code]
+            return self._cache[code]["account_id"]
 
-        sa_id = (
-            StaticAccount.objects
-            .filter(code=code, is_active=True)
-            .values_list("id", flat=True)
-            .first()
-        )
-        if not sa_id:
-            if required:
-                raise ValueError(f"StaticAccount missing for code='{code}'. Seed StaticAccount first.")
-            return None
-
-        acct_id = (
+        row = (
             EntityStaticAccountMap.objects
-            .filter(entity_id=self.entity_id, static_account_id=sa_id, is_active=True)
-            .values_list("account_id", flat=True)
+            .filter(entity_id=self.entity_id, static_account__code=code, static_account__is_active=True, is_active=True)
+            .values("account_id", "ledger_id")
             .first()
         )
-        if not acct_id:
+        if not row:
             if required:
                 raise ValueError(
                     f"StaticAccount '{code}' not mapped for entity_id={self.entity_id}. "
@@ -90,5 +79,19 @@ class StaticAccountResolver:
                 )
             return None
 
-        self._cache[code] = int(acct_id)
-        return int(acct_id)
+        self._cache[code] = {
+            "account_id": int(row["account_id"]) if row.get("account_id") else None,
+            "ledger_id": int(row["ledger_id"]) if row.get("ledger_id") else None,
+        }
+        return self._cache[code]["account_id"]
+
+    def get_ledger_id(self, code: str, *, required: bool = True) -> Optional[int]:
+        if code not in self._cache:
+            _ = self.get_account_id(code, required=required)
+        ledger_id = self._cache.get(code, {}).get("ledger_id")
+        if required and not ledger_id:
+            raise ValueError(
+                f"StaticAccount '{code}' has no ledger mapping for entity_id={self.entity_id}. "
+                f"Update Posting static account mapping."
+            )
+        return ledger_id

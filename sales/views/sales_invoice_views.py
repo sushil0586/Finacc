@@ -33,7 +33,10 @@ class _SalesScopeMixin:
         if entityfinid_id:
             filters["entityfinid_id"] = int(entityfinid_id)
         if subentity_id is not None:
-            filters["subentity_id"] = int(subentity_id) if str(subentity_id).strip() else None
+            parsed_subentity_id = int(subentity_id) if str(subentity_id).strip() else None
+            if parsed_subentity_id == 0:
+                parsed_subentity_id = None
+            filters["subentity_id"] = parsed_subentity_id
         return filters
 
     def _scoped_queryset(self):
@@ -72,12 +75,14 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         entity_id = params.get("entity_id")
         entityfinid_id = params.get("entityfinid_id")
         subentity_id = params.get("subentity_id")
+        if subentity_id == "0":
+            subentity_id = None
 
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
         if entityfinid_id:
             qs = qs.filter(entityfinid_id=entityfinid_id)
-        if subentity_id is not None:
+        if "subentity_id" in params:
             qs = qs.filter(subentity_id=subentity_id or None)
 
         if params.get("doc_type"):

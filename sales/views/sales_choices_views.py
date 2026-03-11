@@ -16,6 +16,8 @@ class SalesChoicesAPIView(APIView):
         if not entity_id:
             return Response({"entity_id": "This query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
         subentity_id = request.query_params.get("subentity_id")
+        if subentity_id == "0":
+            subentity_id = None
         data = SalesChoicesService.get_choices(
             entity_id=int(entity_id),
             subentity_id=int(subentity_id) if subentity_id else None,

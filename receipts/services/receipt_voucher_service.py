@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from django.db import transaction
 from django.utils import timezone
 
+from financial.models import account as FinancialAccount
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_ar_service import SalesArService
@@ -58,8 +59,17 @@ class ReceiptVoucherService:
             item = dict(row or {})
             item["allocation"] = cls._as_pk(item.get("allocation"))
             item["ledger_account"] = cls._as_pk(item.get("ledger_account"))
+            item["ledger"] = cls._account_ledger_id(item.get("ledger_account"))
             rows.append(item)
         return rows
+
+    @staticmethod
+    def _account_ledger_id(value: Any) -> Optional[int]:
+        account_id = ReceiptVoucherService._as_pk(value)
+        if account_id in (None, ""):
+            return None
+        acct = FinancialAccount.objects.filter(pk=account_id).only("id", "ledger_id").first()
+        return getattr(acct, "ledger_id", None)
 
     @classmethod
     def _normalize_advance_adjustments(cls, rows_in: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -118,6 +128,15 @@ class ReceiptVoucherService:
         for row in rows or []:
             total = q2(total + q2(row.get("adjusted_amount") or ZERO2))
         return total
+
+    @staticmethod
+    def _fresh_allocation_rows(voucher: ReceiptVoucherHeader) -> List[ReceiptVoucherAllocation]:
+        # Posting paths may create allocations after the voucher was loaded with
+        # prefetched relations. Always requery allocations to avoid stale
+        # prefetched caches masking newly created rows.
+        return list(
+            ReceiptVoucherAllocation.objects.filter(receipt_voucher_id=voucher.id).select_related("open_item")
+        )
 
     @staticmethod
     def _doc_type_id_for_receipt(doc_code: str) -> int:
@@ -386,6 +405,8 @@ class ReceiptVoucherService:
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
         validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
+        validated_data["received_in_ledger_id"] = ReceiptVoucherService._account_ledger_id(validated_data.get("received_in"))
+        validated_data["received_from_ledger_id"] = ReceiptVoucherService._account_ledger_id(validated_data.get("received_from"))
 
         allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
         if (
@@ -431,6 +452,7 @@ class ReceiptVoucherService:
                 allocation_id=row.get("allocation"),
                 adj_type=row.get("adj_type"),
                 ledger_account_id=row.get("ledger_account"),
+                ledger_id=row.get("ledger"),
                 amount=q2(row.get("amount") or ZERO2),
                 settlement_effect=row.get("settlement_effect") or ReceiptVoucherAdjustment.Effect.PLUS,
                 remarks=(row.get("remarks") or "").strip() or None,
@@ -502,6 +524,10 @@ class ReceiptVoucherService:
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
+        if "received_in" in validated_data:
+            instance.received_in_ledger_id = ReceiptVoucherService._account_ledger_id(validated_data.get("received_in"))
+        if "received_from" in validated_data:
+            instance.received_from_ledger_id = ReceiptVoucherService._account_ledger_id(validated_data.get("received_from"))
         instance.save()
 
         if allocations is not None:
@@ -565,6 +591,7 @@ class ReceiptVoucherService:
                     obj.allocation_id = row.get("allocation")
                     obj.adj_type = row.get("adj_type")
                     obj.ledger_account_id = row.get("ledger_account")
+                    obj.ledger_id = row.get("ledger")
                     obj.amount = q2(row.get("amount") or ZERO2)
                     obj.settlement_effect = row.get("settlement_effect") or ReceiptVoucherAdjustment.Effect.PLUS
                     obj.remarks = (row.get("remarks") or "").strip() or None
@@ -576,6 +603,7 @@ class ReceiptVoucherService:
                         allocation_id=row.get("allocation"),
                         adj_type=row.get("adj_type"),
                         ledger_account_id=row.get("ledger_account"),
+                        ledger_id=row.get("ledger"),
                         amount=q2(row.get("amount") or ZERO2),
                         settlement_effect=row.get("settlement_effect") or ReceiptVoucherAdjustment.Effect.PLUS,
                         remarks=(row.get("remarks") or "").strip() or None,
@@ -832,29 +860,20 @@ class ReceiptVoucherService:
                 "updated_at",
             ])
 
-        allocation_rows = list(h.allocations.all())
-        if str(policy.controls.get("require_allocation_on_post", "hard")).lower().strip() == "hard":
-            if h.receipt_type == ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE and not allocation_rows:
-                raise ValueError("Allocations are required for AGAINST_INVOICE posting.")
-            if (
-                h.receipt_type == ReceiptVoucherHeader.ReceiptType.ADVANCE
-                and str(policy.controls.get("allow_advance_without_allocation", "on")).lower().strip() == "off"
-                and not allocation_rows
-            ):
-                raise ValueError("Allocations are required for ADVANCE posting by policy.")
-            if (
-                h.receipt_type == ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT
-                and str(policy.controls.get("allow_on_account_without_allocation", "on")).lower().strip() == "off"
-                and not allocation_rows
-            ):
-                raise ValueError("Allocations are required for ON_ACCOUNT posting by policy.")
-
+        allocation_rows = ReceiptVoucherService._fresh_allocation_rows(h)
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
         allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
         effective_amount = live_effective_amount
         total_support_amount = q2(live_effective_amount + live_advance_total)
-        if not allocation_rows and allocation_policy == "fifo" and h.receipt_type == ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE:
+        should_auto_allocate = (
+            not allocation_rows
+            and h.receipt_type == ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE
+            and total_support_amount > ZERO2
+        )
+        if should_auto_allocate and allocation_policy not in {"fifo", "manual"}:
+            should_auto_allocate = False
+        if should_auto_allocate:
             fifo_rows = ReceiptVoucherService._auto_fifo_allocations(
                 entity_id=h.entity_id,
                 entityfinid_id=h.entityfinid_id,
@@ -871,7 +890,23 @@ class ReceiptVoucherService:
                     is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
                 )
             if fifo_rows:
-                allocation_rows = list(h.allocations.all())
+                allocation_rows = ReceiptVoucherService._fresh_allocation_rows(h)
+
+        if str(policy.controls.get("require_allocation_on_post", "hard")).lower().strip() == "hard":
+            if h.receipt_type == ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE and not allocation_rows:
+                raise ValueError("Allocations are required for AGAINST_INVOICE posting.")
+            if (
+                h.receipt_type == ReceiptVoucherHeader.ReceiptType.ADVANCE
+                and str(policy.controls.get("allow_advance_without_allocation", "on")).lower().strip() == "off"
+                and not allocation_rows
+            ):
+                raise ValueError("Allocations are required for ADVANCE posting by policy.")
+            if (
+                h.receipt_type == ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT
+                and str(policy.controls.get("allow_on_account_without_allocation", "on")).lower().strip() == "off"
+                and not allocation_rows
+            ):
+                raise ValueError("Allocations are required for ON_ACCOUNT posting by policy.")
 
         if allocation_rows:
             allocation_total = ReceiptVoucherService._sum_allocations(

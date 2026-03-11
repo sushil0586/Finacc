@@ -6,9 +6,10 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 
+from financial.models import account
 from purchase.models.purchase_ap import (
     VendorBillOpenItem,
     VendorAdvanceBalance,
@@ -48,6 +49,21 @@ class SettlementCancelResult:
 
 class PurchaseApService:
     @staticmethod
+    def _apply_subentity_scope(qs, subentity_id: Optional[int]):
+        """
+        AP items can be created at entity scope (subentity null) or branch scope.
+        When a branch is selected, keep entity-scope liabilities visible as well,
+        otherwise payment/settlement screens hide valid open payables/advances.
+        """
+        if subentity_id in (None, 0):
+            return qs
+        return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+
+    @staticmethod
+    def _resolve_vendor_ledger_id(vendor_id: int) -> Optional[int]:
+        return account.objects.filter(pk=vendor_id).values_list("ledger_id", flat=True).first()
+
+    @staticmethod
     @transaction.atomic
     def create_advance_balance(
         *,
@@ -70,6 +86,7 @@ class PurchaseApService:
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             vendor_id=vendor_id,
+            vendor_ledger_id=PurchaseApService._resolve_vendor_ledger_id(vendor_id),
             source_type=source_type,
             credit_date=credit_date,
             reference_no=(reference_no or "").strip() or None,
@@ -94,10 +111,7 @@ class PurchaseApService:
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
         )
-        if subentity_id is None:
-            qs = qs.filter(subentity__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
+        qs = PurchaseApService._apply_subentity_scope(qs, subentity_id)
         if vendor_id is not None:
             qs = qs.filter(vendor_id=vendor_id)
         if is_open is not None:
@@ -190,6 +204,7 @@ class PurchaseApService:
                 "entityfinid_id": header.entityfinid_id,
                 "subentity_id": header.subentity_id,
                 "vendor_id": header.vendor_id,
+                "vendor_ledger_id": header.vendor_ledger_id or getattr(header.vendor, "ledger_id", None),
                 "doc_type": int(header.doc_type),
                 "bill_date": header.bill_date,
                 "due_date": header.due_date,
@@ -211,6 +226,7 @@ class PurchaseApService:
         item.entityfinid_id = header.entityfinid_id
         item.subentity_id = header.subentity_id
         item.vendor_id = header.vendor_id
+        item.vendor_ledger_id = header.vendor_ledger_id or getattr(header.vendor, "ledger_id", None)
         item.doc_type = int(header.doc_type)
         item.bill_date = header.bill_date
         item.due_date = header.due_date
@@ -241,14 +257,11 @@ class PurchaseApService:
         vendor_id: Optional[int] = None,
         is_open: Optional[bool] = True,
     ) -> QuerySet[VendorBillOpenItem]:
-        qs = VendorBillOpenItem.objects.select_related("header").filter(
+        qs = VendorBillOpenItem.objects.select_related("header", "vendor", "vendor_ledger").filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
         )
-        if subentity_id is None:
-            qs = qs.filter(subentity__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
+        qs = PurchaseApService._apply_subentity_scope(qs, subentity_id)
         if vendor_id is not None:
             qs = qs.filter(vendor_id=vendor_id)
         if is_open is not None:
@@ -328,6 +341,7 @@ class PurchaseApService:
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             vendor_id=vendor_id,
+            vendor_ledger_id=PurchaseApService._resolve_vendor_ledger_id(vendor_id),
             settlement_type=settlement_type,
             settlement_date=settlement_date,
             reference_no=(reference_no or "").strip() or None,
@@ -527,6 +541,7 @@ class PurchaseApService:
         vendor_id: int,
         include_closed: bool = False,
     ) -> Dict[str, Any]:
+        vendor = account.objects.select_related("ledger").get(pk=vendor_id)
         open_items_qs = PurchaseApService.list_open_items(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -534,20 +549,17 @@ class PurchaseApService:
             vendor_id=vendor_id,
             is_open=None if include_closed else True,
         )
-        settlements_qs = VendorSettlement.objects.filter(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            vendor_id=vendor_id,
+        settlements_qs = (
+            VendorSettlement.objects
+            .filter(entity_id=entity_id, entityfinid_id=entityfinid_id, vendor_id=vendor_id)
+            .select_related("vendor", "vendor_ledger", "advance_balance", "advance_balance__payment_voucher")
         )
-        if subentity_id is None:
-            settlements_qs = settlements_qs.filter(subentity__isnull=True)
-        else:
-            settlements_qs = settlements_qs.filter(subentity_id=subentity_id)
+        settlements_qs = PurchaseApService._apply_subentity_scope(settlements_qs, subentity_id)
 
         if not include_closed:
             settlements_qs = settlements_qs.filter(status=VendorSettlement.Status.POSTED)
 
-        settlements_qs = settlements_qs.select_related("advance_balance").prefetch_related("lines__open_item")
+        settlements_qs = settlements_qs.prefetch_related("lines__open_item")
         totals = {
             "original_total": q2(sum((q2(x.original_amount) for x in open_items_qs), ZERO2)),
             "settled_total": q2(sum((q2(x.settled_amount) for x in open_items_qs), ZERO2)),
@@ -567,6 +579,7 @@ class PurchaseApService:
         totals["advance_consumed_total"] = q2(sum((q2(x.total_amount) for x in advance_consumed_total), ZERO2))
         totals["net_ap_position"] = q2(totals["outstanding_total"] - totals["advance_outstanding_total"])
         return {
+            "vendor": vendor,
             "open_items": open_items_qs,
             "advances": advances_qs,
             "settlements": settlements_qs.order_by("-settlement_date", "-id"),

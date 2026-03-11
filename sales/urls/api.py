@@ -31,6 +31,17 @@ from sales.views.sales_invoice_compliance_api import (
 )
 from sales.views.sales_choices_views import SalesChoicesAPIView
 from sales.views.sales_settings_views import SalesSettingsAPIView
+from sales.views.sales_meta import (
+    SalesInvoiceFormMetaAPIView,
+    SalesInvoiceDetailFormMetaAPIView,
+    SalesInvoiceSearchMetaAPIView,
+    SalesInvoiceLinesMetaAPIView,
+    SalesInvoiceSummaryAPIView,
+    SalesArMetaAPIView,
+    SalesArSettlementFormMetaAPIView,
+    SalesSettingsMetaAPIView,
+    SalesComplianceMetaAPIView,
+)
 from sales.views.sales_charge_type_views import (
     SalesChargeTypeListCreateAPIView,
     SalesChargeTypeRetrieveUpdateAPIView,
@@ -56,8 +67,17 @@ urlpatterns = [
 
     path("choices/", SalesChoicesAPIView.as_view(), name="sales-choices"),
     path("settings/", SalesSettingsAPIView.as_view(), name="sales-settings"),
+    path("meta/invoice-form/", SalesInvoiceFormMetaAPIView.as_view(), name="sales-invoice-form-meta"),
+    path("meta/invoice-detail-form/", SalesInvoiceDetailFormMetaAPIView.as_view(), name="sales-invoice-detail-form-meta"),
+    path("meta/invoice-search/", SalesInvoiceSearchMetaAPIView.as_view(), name="sales-invoice-search-meta"),
+    path("meta/invoice-lines/", SalesInvoiceLinesMetaAPIView.as_view(), name="sales-invoice-lines-meta"),
+    path("meta/settings/", SalesSettingsMetaAPIView.as_view(), name="sales-settings-meta"),
+    path("meta/compliance/", SalesComplianceMetaAPIView.as_view(), name="sales-compliance-meta"),
     path("charge-types/", SalesChargeTypeListCreateAPIView.as_view(), name="sales-charge-type-list"),
     path("charge-types/<int:pk>/", SalesChargeTypeRetrieveUpdateAPIView.as_view(), name="sales-charge-type-detail"),
+    path("invoices/<int:pk>/summary/", SalesInvoiceSummaryAPIView.as_view(), name="sales-invoice-summary"),
+    path("ar/meta/", SalesArMetaAPIView.as_view(), name="sales-ar-meta"),
+    path("ar/meta/settlement-form/", SalesArSettlementFormMetaAPIView.as_view(), name="sales-ar-settlement-form-meta"),
     path("ar/open-items/", CustomerBillOpenItemListAPIView.as_view(), name="sales-ar-open-items"),
     path("ar/open-advances/", CustomerAdvanceBalanceListAPIView.as_view(), name="sales-ar-open-advances"),
     path("ar/settlements/", CustomerSettlementListCreateAPIView.as_view(), name="sales-ar-settlements"),

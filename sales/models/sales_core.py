@@ -104,6 +104,15 @@ class SalesInvoiceHeader(EntityScopedModel):
         null=True,
         blank=True,
     )
+    # New code should use customer_ledger for accounting identity.
+    # customer is retained for compatibility with existing modules and forms.
+    customer_ledger = models.ForeignKey(
+        "financial.Ledger",
+        on_delete=models.PROTECT,
+        related_name="sales_invoices_by_ledger",
+        null=True,
+        blank=True,
+    )
     customer_name = models.CharField(max_length=255, blank=True, default="")
     customer_gstin = models.CharField(max_length=15, blank=True, default="", validators=[GSTIN_VALIDATOR])
     customer_state_code = models.CharField(max_length=2, blank=True, default="")  # GST state code
@@ -251,6 +260,7 @@ class SalesInvoiceHeader(EntityScopedModel):
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"], name="ix_sales_hdr_nav"),
             models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_sales_hdr_status"),
             models.Index(fields=["entity", "entityfinid", "subentity", "customer"], name="ix_sales_hdr_customer"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "customer_ledger"], name="ix_sales_hdr_cust_ledger"),
             models.Index(fields=["entity", "entityfinid", "subentity", "gst_compliance_mode"], name="ix_sales_hdr_gstmode"),
             models.Index(fields=["entity", "entityfinid", "subentity", "original_invoice"], name="ix_sales_hdr_original"),
             models.Index(fields=["entity", "entityfinid", "subentity", "settlement_status"], name="ix_sales_hdr_settle"),

@@ -114,7 +114,13 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
     navigation = serializers.SerializerMethodField()
     number_navigation = serializers.SerializerMethodField()
     received_in_name = serializers.CharField(source="received_in.effective_accounting_name", read_only=True)
+    received_in_accountcode = serializers.IntegerField(source="received_in.effective_accounting_code", read_only=True)
+    received_in_ledger_id = serializers.IntegerField(read_only=True)
+    received_in_partytype = serializers.CharField(source="received_in.partytype", read_only=True)
     received_from_name = serializers.CharField(source="received_from.effective_accounting_name", read_only=True)
+    received_from_accountcode = serializers.IntegerField(source="received_from.effective_accounting_code", read_only=True)
+    received_from_ledger_id = serializers.IntegerField(read_only=True)
+    received_from_partytype = serializers.CharField(source="received_from.partytype", read_only=True)
     receipt_mode_name = serializers.CharField(source="receipt_mode.paymentmode", read_only=True)
     advance_consumed_amount = serializers.SerializerMethodField()
     total_settlement_support_amount = serializers.SerializerMethodField()
@@ -214,8 +220,14 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
             "supply_type_name",
             "received_in",
             "received_in_name",
+            "received_in_accountcode",
+            "received_in_ledger_id",
+            "received_in_partytype",
             "received_from",
             "received_from_name",
+            "received_from_accountcode",
+            "received_from_ledger_id",
+            "received_from_partytype",
             "receipt_mode",
             "receipt_mode_name",
             "cash_received_amount",
@@ -364,6 +376,9 @@ class ReceiptVoucherListSerializer(serializers.ModelSerializer):
     approval_status_name = serializers.SerializerMethodField()
     advance_balance_id = serializers.SerializerMethodField()
     received_from_name = serializers.CharField(source="received_from.effective_accounting_name", read_only=True)
+    received_from_accountcode = serializers.IntegerField(source="received_from.effective_accounting_code", read_only=True)
+    received_from_ledger_id = serializers.IntegerField(read_only=True)
+    received_from_partytype = serializers.CharField(source="received_from.partytype", read_only=True)
     receipt_mode_name = serializers.CharField(source="receipt_mode.paymentmode", read_only=True)
     advance_consumed_amount = serializers.SerializerMethodField()
     total_settlement_support_amount = serializers.SerializerMethodField()
@@ -419,6 +434,9 @@ class ReceiptVoucherListSerializer(serializers.ModelSerializer):
             "receipt_type_name",
             "received_from",
             "received_from_name",
+            "received_from_accountcode",
+            "received_from_ledger_id",
+            "received_from_partytype",
             "receipt_mode_name",
             "cash_received_amount",
             "total_adjustment_amount",

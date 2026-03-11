@@ -7,7 +7,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from financial.models import account
+from financial.models import Ledger, account
 
 from .base import TrackingModel
 
@@ -43,6 +43,13 @@ class VoucherHeader(TrackingModel):
         null=True,
         blank=True,
         related_name="voucher_cash_bank_accounts",
+    )
+    cash_bank_ledger = models.ForeignKey(
+        Ledger,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="voucher_cash_bank_ledgers",
     )
     reference_number = models.CharField(max_length=100, null=True, blank=True)
     narration = models.TextField(null=True, blank=True)
@@ -98,6 +105,13 @@ class VoucherLine(TrackingModel):
     header = models.ForeignKey(VoucherHeader, related_name="lines", on_delete=models.CASCADE)
     line_no = models.PositiveIntegerField(default=1)
     account = models.ForeignKey(account, on_delete=models.PROTECT, related_name="voucher_lines")
+    ledger = models.ForeignKey(
+        Ledger,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="voucher_lines_ledgers",
+    )
     narration = models.CharField(max_length=255, null=True, blank=True)
     dr_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     cr_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)

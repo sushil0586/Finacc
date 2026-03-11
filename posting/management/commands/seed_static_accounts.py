@@ -13,7 +13,7 @@ from posting.models import StaticAccount, EntityStaticAccountMap
 
 # ✅ Adjust these imports if your project differs:
 from entity.models import Entity
-from financial.models import account as Account  # ledger table is "account"
+from financial.models import account as Account
 
 
 @dataclass(frozen=True)
@@ -319,6 +319,7 @@ class Command(BaseCommand):
                     entity_id=entity.id,
                     static_account_id=static_by_code[code].id,
                     account_id=acc_id,
+                    ledger_id=getattr(acc_by_id.get(acc_id), "ledger_id", None),
                 )
             )
 
@@ -329,7 +330,9 @@ class Command(BaseCommand):
         for r in rows_to_create:
             sa = StaticAccount.objects.get(id=r.static_account_id)
             a = acc_by_id.get(r.account_id)
-            self.stdout.write(f"  {sa.code:<22} -> {a.id} ({_account_label(a)})")
+            self.stdout.write(
+                f"  {sa.code:<22} -> account={a.id} ledger={getattr(a, 'ledger_id', None)} ({_account_label(a)})"
+            )
 
         if dry_run:
             self.stdout.write(self.style.SUCCESS("Dry-run complete. No changes saved."))

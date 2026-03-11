@@ -289,13 +289,36 @@ class PurchaseInvoiceService:
         if bill_date and attrs.get("posting_date") and attrs["posting_date"] < bill_date:
             raise ValueError("Posting date cannot be before bill date.")
     @staticmethod
+    def validate_vendor_account(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
+        vendor = attrs.get("vendor") or (instance.vendor if instance else None)
+        if not vendor:
+            return
+
+        partytype = (getattr(vendor, "partytype", None) or "").strip()
+        allowed_partytypes = {"", "Vendor", "Both", "Bank"}
+        if partytype not in allowed_partytypes:
+            raise ValueError("Selected vendor account is not marked as Vendor/Both/Bank.")
+
+        if hasattr(vendor, "isactive") and vendor.isactive is False:
+            raise ValueError("Selected vendor account is inactive.")
+
+        if not getattr(vendor, "ledger_id", None):
+            raise ValueError("Selected vendor account does not have a linked ledger.")
+
+    @staticmethod
+    def apply_vendor_ledger(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
+        vendor = attrs.get("vendor") or (instance.vendor if instance else None)
+        if vendor:
+            attrs["vendor_ledger_id"] = getattr(vendor, "ledger_id", None)
+
+    @staticmethod
     def apply_vendor_snapshot(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
         vendor = attrs.get("vendor") or (instance.vendor if instance else None)
         if not vendor:
             return
 
         if not (attrs.get("vendor_name") or (instance.vendor_name if instance else None)):
-            attrs["vendor_name"] = (getattr(vendor, "accountname", None) or str(vendor)).strip()[:200]
+            attrs["vendor_name"] = (getattr(vendor, "effective_accounting_name", None) or getattr(vendor, "accountname", None) or str(vendor)).strip()[:200]
 
         if not (attrs.get("vendor_gstin") or (instance.vendor_gstin if instance else None)):
             gstno = getattr(vendor, "gstno", None)
@@ -332,6 +355,9 @@ class PurchaseInvoiceService:
     # ---------------------------
     @staticmethod
     def validate_header(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
+        PurchaseInvoiceService.validate_vendor_account(attrs, instance=instance)
+        PurchaseInvoiceService.apply_vendor_ledger(attrs, instance=instance)
+
         doc_type = attrs.get("doc_type", DocType.TAX_INVOICE)
         ref_document = attrs.get("ref_document") or (instance.ref_document if instance else None)
 

@@ -19,7 +19,7 @@ from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.compliance_audit_service import ComplianceAuditService
 from withholding.services import WithholdingResult, upsert_tcs_computation
-from financial.models import ShippingDetails
+from financial.models import ShippingDetails, account
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
@@ -86,6 +86,23 @@ class Totals:
 
 
 class SalesInvoiceService:
+    @staticmethod
+    def _resolve_customer_ledger_id(customer_id: Optional[int]) -> Optional[int]:
+        if not customer_id:
+            return None
+        customer = (
+            account.objects.filter(id=customer_id)
+            .only("id", "isactive", "partytype", "ledger_id")
+            .first()
+        )
+        if not customer:
+            raise ValueError("Selected customer account does not exist.")
+        if not bool(getattr(customer, "isactive", True)):
+            raise ValueError("Selected customer account is inactive.")
+        if not getattr(customer, "ledger_id", None):
+            raise ValueError("Selected customer account does not have a linked ledger.")
+        return int(customer.ledger_id)
+
     """
     Mirrors PurchaseInvoiceService patterns:
       - create_with_lines / update_with_lines
@@ -734,6 +751,8 @@ class SalesInvoiceService:
         elif header_data.get("customer"):
             customer_id = int(header_data["customer"].id)
 
+        customer_ledger_id = cls._resolve_customer_ledger_id(customer_id)
+
         # ---- resolve shipping_detail_id ----
         shipping_detail_id: Optional[int] = None
         if "shipping_detail_id" in header_data:
@@ -770,6 +789,7 @@ class SalesInvoiceService:
         # keep ids only
         if customer_id is not None:
             header_data["customer_id"] = customer_id
+        header_data["customer_ledger_id"] = customer_ledger_id
         header_data["shipping_detail_id"] = shipping_detail_id  # can be None
 
         header = SalesInvoiceHeader(
@@ -847,6 +867,8 @@ class SalesInvoiceService:
         elif header_data.get("customer"):
             customer_id = int(header_data["customer"].id)
 
+        customer_ledger_id = cls._resolve_customer_ledger_id(customer_id)
+
         # ---- resolve shipping_detail_id ----
         shipping_detail_id = header.shipping_detail_id
         shipping_detail_changed = ("shipping_detail_id" in header_data) or ("shipping_detail" in header_data)
@@ -884,6 +906,7 @@ class SalesInvoiceService:
         header_data.pop("customer", None)
         header_data.pop("shipping_detail", None)
         header_data["customer_id"] = customer_id
+        header_data["customer_ledger_id"] = customer_ledger_id
         header_data["shipping_detail_id"] = shipping_detail_id
 
         # ---- apply fields ----

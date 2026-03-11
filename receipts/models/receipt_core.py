@@ -7,7 +7,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from financial.models import account
+from financial.models import Ledger, account
 from geography.models import State
 
 from .base import TrackingModel
@@ -51,6 +51,22 @@ class ReceiptVoucherHeader(TrackingModel):
 
     received_in = models.ForeignKey(account, on_delete=models.PROTECT, related_name="new_rv_received_in")
     received_from = models.ForeignKey(account, on_delete=models.PROTECT, related_name="new_rv_received_from")
+    received_in_ledger = models.ForeignKey(
+        Ledger,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="receipt_vouchers_received_in",
+        help_text="Additive ledger-native mirror of received_in for the staged accounting cutover.",
+    )
+    received_from_ledger = models.ForeignKey(
+        Ledger,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="receipt_vouchers_received_from",
+        help_text="Additive ledger-native mirror of received_from for the staged accounting cutover.",
+    )
     receipt_mode = models.ForeignKey(ReceiptMode, on_delete=models.PROTECT, null=True, blank=True)
 
     cash_received_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
@@ -111,6 +127,7 @@ class ReceiptVoucherHeader(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "voucher_date"], name="ix_receipt_ent_fin_date"),
             models.Index(fields=["entity", "entityfinid", "received_from"], name="ix_receipt_ent_fin_customer"),
+            models.Index(fields=["entity", "entityfinid", "received_from_ledger"], name="ix_receipt_ent_fin_cust_led"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_receipt_ent_fin_status"),
         ]
 
@@ -173,6 +190,14 @@ class ReceiptVoucherAdjustment(TrackingModel):
         account,
         on_delete=models.PROTECT,
         related_name="new_receipt_adjustment_ledgers",
+    )
+    ledger = models.ForeignKey(
+        Ledger,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="receipt_adjustments",
+        help_text="Additive ledger-native mirror of ledger_account for the staged accounting cutover.",
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     settlement_effect = models.CharField(max_length=5, choices=Effect.choices, default=Effect.PLUS)

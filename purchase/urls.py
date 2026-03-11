@@ -13,6 +13,18 @@ from purchase.views.purchase_charge_type import (
 from purchase.views.purchase_withholding import PurchaseTdsSectionListAPIView
 
 from purchase.views.purchase_choices import PurchaseCompiledChoicesAPIView
+from purchase.views.purchase_meta import (
+    PurchaseApMetaAPIView,
+    PurchaseApSettlementFormMetaAPIView,
+    PurchaseInvoiceDetailFormMetaAPIView,
+    PurchaseInvoiceFormMetaAPIView,
+    PurchaseInvoiceLinesMetaAPIView,
+    PurchaseInvoiceSearchMetaAPIView,
+    PurchaseInvoiceSummaryAPIView,
+    PurchaseSettingsMetaAPIView,
+    PurchaseStatutoryMetaAPIView,
+    PurchaseWithholdingMetaAPIView,
+)
 
 from purchase.views.purchase_settings import PurchaseSettingsAPIView
 
@@ -124,6 +136,16 @@ urlpatterns = [
     path("statutory/reconciliation-gl/", PurchaseStatutoryGlReconciliationAPIView.as_view(), name="purchase-statutory-reconciliation-gl"),
     path("settings/", PurchaseSettingsAPIView.as_view(), name="purchase-settings"),
     path("choices/", PurchaseCompiledChoicesAPIView.as_view(), name="purchase-compiled-choices"),
+    path("meta/invoice-form/", PurchaseInvoiceFormMetaAPIView.as_view(), name="purchase-invoice-form-meta"),
+    path("meta/invoice-detail-form/", PurchaseInvoiceDetailFormMetaAPIView.as_view(), name="purchase-invoice-detail-form-meta"),
+    path("meta/invoice-search/", PurchaseInvoiceSearchMetaAPIView.as_view(), name="purchase-invoice-search-meta"),
+    path("meta/invoice-lines/", PurchaseInvoiceLinesMetaAPIView.as_view(), name="purchase-invoice-lines-meta"),
+    path("meta/settings/", PurchaseSettingsMetaAPIView.as_view(), name="purchase-settings-meta"),
+    path("meta/withholding/", PurchaseWithholdingMetaAPIView.as_view(), name="purchase-withholding-meta"),
+    path("meta/statutory/", PurchaseStatutoryMetaAPIView.as_view(), name="purchase-statutory-meta"),
+    path("purchase-invoices/<int:pk>/summary/", PurchaseInvoiceSummaryAPIView.as_view(), name="purchase-invoice-summary"),
+    path("ap/meta/", PurchaseApMetaAPIView.as_view(), name="purchase-ap-meta"),
+    path("ap/meta/settlement-form/", PurchaseApSettlementFormMetaAPIView.as_view(), name="purchase-ap-settlement-form-meta"),
     path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),
 
 ]

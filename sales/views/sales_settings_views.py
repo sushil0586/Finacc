@@ -22,6 +22,8 @@ class SalesSettingsAPIView(APIView):
         if not entity_id:
             return Response({"entity_id": "This query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
         subentity_id = request.query_params.get("subentity_id")
+        if subentity_id == "0":
+            subentity_id = None
         subentity_id = int(subentity_id) if subentity_id else None
         entityfinid_raw = request.query_params.get("entityfinid")
         if not entityfinid_raw:

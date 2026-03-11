@@ -7,6 +7,13 @@ from reports.views_stock_movement import StockMovementAPIView
 from reports.views_stock_aging import StockAgingAPIView
 from reports.views_stock_aging_export import StockAgingExcelAPIView, StockAgingPDFAPIView
 from reports.views_stock_movement_export import StockMovementExcelAPIView, StockMovementPDFAPIView
+from reports.api.financial import (
+    BalanceSheetAPIView,
+    FinancialReportsMetaAPIView,
+    LedgerBookAPIView,
+    ProfitAndLossAPIView,
+    TrialBalanceAPIView,
+)
 
 
 
@@ -15,6 +22,11 @@ app_name = 'reports'
 
 
 urlpatterns  = [
+    path('financial/meta/', FinancialReportsMetaAPIView.as_view(), name='financial-meta'),
+    path('financial/trial-balance/', TrialBalanceAPIView.as_view(), name='financial-trial-balance'),
+    path('financial/ledger-book/', LedgerBookAPIView.as_view(), name='financial-ledger-book'),
+    path('financial/profit-loss/', ProfitAndLossAPIView.as_view(), name='financial-profit-loss'),
+    path('financial/balance-sheet/', BalanceSheetAPIView.as_view(), name='financial-balance-sheet'),
     path('closingstockview', views.closingstocknew.as_view(), name='closingstockView'),
     path('closingstockbalance', views.closingstockBalance.as_view(), name='closingstockView'),
     path('closingstock', views.closingstockView.as_view(), name='closingstockView'),

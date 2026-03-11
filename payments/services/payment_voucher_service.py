@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
+from financial.models import account as FinancialAccount
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.models.purchase_ap import VendorBillOpenItem
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter, PaymentVoucherPostingConfig
@@ -42,6 +43,21 @@ class PaymentVoucherService:
             return None
         return getattr(value, "pk", value)
 
+    @staticmethod
+    def _account_ledger_id(value: Any) -> Optional[int]:
+        account_obj = value if hasattr(value, "ledger_id") else None
+        account_id = getattr(account_obj, "pk", None) or (value if isinstance(value, int) else None)
+        ledger_id = getattr(account_obj, "ledger_id", None)
+        if ledger_id:
+            return int(ledger_id)
+        if not account_id:
+            return None
+        return (
+            FinancialAccount.objects.filter(pk=account_id)
+            .values_list("ledger_id", flat=True)
+            .first()
+        )
+
     @classmethod
     def _normalize_allocations(cls, allocations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -58,6 +74,7 @@ class PaymentVoucherService:
             item = dict(row or {})
             item["allocation"] = cls._as_pk(item.get("allocation"))
             item["ledger_account"] = cls._as_pk(item.get("ledger_account"))
+            item["ledger"] = cls._account_ledger_id(item.get("ledger_account"))
             rows.append(item)
         return rows
 
@@ -118,6 +135,15 @@ class PaymentVoucherService:
         for row in rows or []:
             total = q2(total + q2(row.get("adjusted_amount") or ZERO2))
         return total
+
+    @staticmethod
+    def _fresh_allocation_rows(voucher: PaymentVoucherHeader) -> List[PaymentVoucherAllocation]:
+        # Posting paths may create allocations after the voucher was loaded with
+        # prefetched relations. Always requery allocations to avoid stale
+        # prefetched caches masking newly created rows.
+        return list(
+            PaymentVoucherAllocation.objects.filter(payment_voucher_id=voucher.id).select_related("open_item")
+        )
 
     @staticmethod
     def _doc_type_id_for_payment(doc_code: str) -> int:
@@ -410,6 +436,9 @@ class PaymentVoucherService:
                 level=amount_match_level,
             )
 
+        validated_data["paid_from_ledger_id"] = PaymentVoucherService._account_ledger_id(validated_data.get("paid_from"))
+        validated_data["paid_to_ledger_id"] = PaymentVoucherService._account_ledger_id(validated_data.get("paid_to"))
+
         header = PaymentVoucherHeader.objects.create(**validated_data)
 
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
@@ -431,6 +460,7 @@ class PaymentVoucherService:
                 allocation_id=row.get("allocation"),
                 adj_type=row.get("adj_type"),
                 ledger_account_id=row.get("ledger_account"),
+                ledger_id=row.get("ledger"),
                 amount=q2(row.get("amount") or ZERO2),
                 settlement_effect=row.get("settlement_effect") or PaymentVoucherAdjustment.Effect.PLUS,
                 remarks=(row.get("remarks") or "").strip() or None,
@@ -502,6 +532,10 @@ class PaymentVoucherService:
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
+        if "paid_from" in validated_data:
+            instance.paid_from_ledger_id = PaymentVoucherService._account_ledger_id(validated_data.get("paid_from"))
+        if "paid_to" in validated_data:
+            instance.paid_to_ledger_id = PaymentVoucherService._account_ledger_id(validated_data.get("paid_to"))
         instance.save()
 
         if allocations is not None:
@@ -565,6 +599,7 @@ class PaymentVoucherService:
                     obj.allocation_id = row.get("allocation")
                     obj.adj_type = row.get("adj_type")
                     obj.ledger_account_id = row.get("ledger_account")
+                    obj.ledger_id = row.get("ledger")
                     obj.amount = q2(row.get("amount") or ZERO2)
                     obj.settlement_effect = row.get("settlement_effect") or PaymentVoucherAdjustment.Effect.PLUS
                     obj.remarks = (row.get("remarks") or "").strip() or None
@@ -576,6 +611,7 @@ class PaymentVoucherService:
                         allocation_id=row.get("allocation"),
                         adj_type=row.get("adj_type"),
                         ledger_account_id=row.get("ledger_account"),
+                        ledger_id=row.get("ledger"),
                         amount=q2(row.get("amount") or ZERO2),
                         settlement_effect=row.get("settlement_effect") or PaymentVoucherAdjustment.Effect.PLUS,
                         remarks=(row.get("remarks") or "").strip() or None,
@@ -832,29 +868,23 @@ class PaymentVoucherService:
                 "updated_at",
             ])
 
-        allocation_rows = list(h.allocations.all())
-        if str(policy.controls.get("require_allocation_on_post", "hard")).lower().strip() == "hard":
-            if h.payment_type == PaymentVoucherHeader.PaymentType.AGAINST_BILL and not allocation_rows:
-                raise ValueError("Allocations are required for AGAINST_BILL posting.")
-            if (
-                h.payment_type == PaymentVoucherHeader.PaymentType.ADVANCE
-                and str(policy.controls.get("allow_advance_without_allocation", "on")).lower().strip() == "off"
-                and not allocation_rows
-            ):
-                raise ValueError("Allocations are required for ADVANCE posting by policy.")
-            if (
-                h.payment_type == PaymentVoucherHeader.PaymentType.ON_ACCOUNT
-                and str(policy.controls.get("allow_on_account_without_allocation", "on")).lower().strip() == "off"
-                and not allocation_rows
-            ):
-                raise ValueError("Allocations are required for ON_ACCOUNT posting by policy.")
-
+        allocation_rows = PaymentVoucherService._fresh_allocation_rows(h)
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
         allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
         effective_amount = live_effective_amount
         total_support_amount = q2(live_effective_amount + live_advance_total)
-        if not allocation_rows and allocation_policy == "fifo" and h.payment_type == PaymentVoucherHeader.PaymentType.AGAINST_BILL:
+        # For AGAINST_BILL posting, create missing allocations before enforcing the
+        # hard allocation policy. This keeps posting strict while avoiding a separate
+        # save-allocation round trip when open items are already available.
+        should_auto_allocate = (
+            not allocation_rows
+            and h.payment_type == PaymentVoucherHeader.PaymentType.AGAINST_BILL
+            and total_support_amount > ZERO2
+        )
+        if should_auto_allocate and allocation_policy not in {"fifo", "manual"}:
+            should_auto_allocate = False
+        if should_auto_allocate:
             fifo_rows = PaymentVoucherService._auto_fifo_allocations(
                 entity_id=h.entity_id,
                 entityfinid_id=h.entityfinid_id,
@@ -871,7 +901,23 @@ class PaymentVoucherService:
                     is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
                 )
             if fifo_rows:
-                allocation_rows = list(h.allocations.all())
+                allocation_rows = PaymentVoucherService._fresh_allocation_rows(h)
+
+        if str(policy.controls.get("require_allocation_on_post", "hard")).lower().strip() == "hard":
+            if h.payment_type == PaymentVoucherHeader.PaymentType.AGAINST_BILL and not allocation_rows:
+                raise ValueError("Allocations are required for AGAINST_BILL posting.")
+            if (
+                h.payment_type == PaymentVoucherHeader.PaymentType.ADVANCE
+                and str(policy.controls.get("allow_advance_without_allocation", "on")).lower().strip() == "off"
+                and not allocation_rows
+            ):
+                raise ValueError("Allocations are required for ADVANCE posting by policy.")
+            if (
+                h.payment_type == PaymentVoucherHeader.PaymentType.ON_ACCOUNT
+                and str(policy.controls.get("allow_on_account_without_allocation", "on")).lower().strip() == "off"
+                and not allocation_rows
+            ):
+                raise ValueError("Allocations are required for ON_ACCOUNT posting by policy.")
 
         if allocation_rows:
             allocation_total = PaymentVoucherService._sum_allocations(

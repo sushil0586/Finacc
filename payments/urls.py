@@ -13,8 +13,16 @@ from payments.views import (
     PaymentCompiledChoicesAPIView,
     PaymentVendorAdvanceBalanceListAPIView,
     PaymentVendorBillOpenItemListAPIView,
+    PaymentVendorSettlementListAPIView,
+    PaymentVendorStatementAPIView,
     PaymentModeListAPIView,
     PaymentVoucherPDFAPIView,
+    PaymentVoucherFormMetaAPIView,
+    PaymentVoucherDetailFormMetaAPIView,
+    PaymentVoucherSearchMetaAPIView,
+    PaymentApMetaAPIView,
+    PaymentApSettlementFormMetaAPIView,
+    PaymentSettingsMetaAPIView,
 )
 
 
@@ -30,7 +38,15 @@ urlpatterns = [
     path("payment-vouchers/<int:pk>/pdf/", PaymentVoucherPDFAPIView.as_view(), name="payment-voucher-pdf"),
     path("open-items/", PaymentVendorBillOpenItemListAPIView.as_view(), name="payment-open-items-list"),
     path("open-advances/", PaymentVendorAdvanceBalanceListAPIView.as_view(), name="payment-open-advances-list"),
+    path("ap/settlements/", PaymentVendorSettlementListAPIView.as_view(), name="payment-ap-settlements-list"),
+    path("ap/vendor-statement/", PaymentVendorStatementAPIView.as_view(), name="payment-ap-vendor-statement"),
     path("payment-modes/", PaymentModeListAPIView.as_view(), name="payment-mode-list"),
     path("settings/", PaymentSettingsAPIView.as_view(), name="payment-settings"),
     path("choices/", PaymentCompiledChoicesAPIView.as_view(), name="payment-choices"),
+    path("meta/voucher-form/", PaymentVoucherFormMetaAPIView.as_view(), name="payment-voucher-form-meta"),
+    path("meta/voucher-detail-form/", PaymentVoucherDetailFormMetaAPIView.as_view(), name="payment-voucher-detail-form-meta"),
+    path("meta/voucher-search/", PaymentVoucherSearchMetaAPIView.as_view(), name="payment-voucher-search-meta"),
+    path("meta/settings/", PaymentSettingsMetaAPIView.as_view(), name="payment-settings-meta"),
+    path("ap/meta/", PaymentApMetaAPIView.as_view(), name="payment-ap-meta"),
+    path("ap/meta/settlement-form/", PaymentApSettlementFormMetaAPIView.as_view(), name="payment-ap-settlement-form-meta"),
 ]

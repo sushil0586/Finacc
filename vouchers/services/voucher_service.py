@@ -29,6 +29,18 @@ class VoucherResult:
 
 class VoucherService:
     @staticmethod
+    def _account_ledger_id(account_obj_or_id) -> Optional[int]:
+        if account_obj_or_id in (None, "", 0):
+            return None
+        if hasattr(account_obj_or_id, "ledger_id"):
+            ledger_id = getattr(account_obj_or_id, "ledger_id", None)
+            return int(ledger_id) if ledger_id else None
+        from financial.models import account as Account
+
+        row = Account.objects.filter(pk=account_obj_or_id).values_list("ledger_id", flat=True).first()
+        return int(row) if row else None
+
+    @staticmethod
     def _workflow_state(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         data = dict(payload or {})
         st = data.get("_approval_state")
@@ -165,6 +177,7 @@ class VoucherService:
                 header=header,
                 line_no=next_line_no,
                 account_id=int(row["account"]),
+                ledger_id=cls._account_ledger_id(row["account"]),
                 narration=row.get("narration") or None,
                 dr_amount=amount if entry_type == "DR" else ZERO2,
                 cr_amount=amount if entry_type == "CR" else ZERO2,
@@ -178,6 +191,7 @@ class VoucherService:
                 header=header,
                 line_no=next_line_no,
                 account_id=int(header.cash_bank_account_id),
+                ledger_id=header.cash_bank_ledger_id,
                 narration=cls._build_offset_narration(
                     line_narration=row.get("narration"),
                     header_narration=header.narration,
@@ -202,6 +216,7 @@ class VoucherService:
                     header=header,
                     line_no=int(row.get("line_no") or i),
                     account_id=int(row["account"]),
+                    ledger_id=cls._account_ledger_id(row["account"]),
                     narration=row.get("narration") or None,
                     dr_amount=q2(row.get("dr_amount") or ZERO2),
                     cr_amount=q2(row.get("cr_amount") or ZERO2),
@@ -249,8 +264,11 @@ class VoucherService:
         policy = VoucherSettingsService.get_policy(header.entity_id, header.subentity_id)
         if header.voucher_type == VoucherHeader.VoucherType.JOURNAL:
             header.cash_bank_account_id = None
+            header.cash_bank_ledger_id = None
         elif str(policy.controls.get("require_cash_bank_account_for_cash_bank", "on")).lower().strip() == "on" and not header.cash_bank_account_id:
             raise ValueError(f"cash_bank_account is required for {header.voucher_type} voucher")
+        else:
+            header.cash_bank_ledger_id = cls._account_ledger_id(header.cash_bank_account)
         lines = cls._normalize_payload_lines(voucher_type=header.voucher_type, payload_lines=payload_lines)
         rows, total_dr, total_cr = cls._build_rows_and_totals(header=header, payload_lines=lines, policy_controls=policy.controls)
         header.total_debit_amount = total_dr
@@ -284,8 +302,11 @@ class VoucherService:
             setattr(instance, key, value)
         if instance.voucher_type == VoucherHeader.VoucherType.JOURNAL:
             instance.cash_bank_account_id = None
+            instance.cash_bank_ledger_id = None
         elif str(policy.controls.get("require_cash_bank_account_for_cash_bank", "on")).lower().strip() == "on" and not instance.cash_bank_account_id:
             raise ValueError(f"cash_bank_account is required for {instance.voucher_type} voucher")
+        else:
+            instance.cash_bank_ledger_id = cls._account_ledger_id(instance.cash_bank_account)
         lines = cls._normalize_payload_lines(voucher_type=instance.voucher_type, payload_lines=payload_lines)
         rows, total_dr, total_cr = cls._build_rows_and_totals(header=instance, payload_lines=lines, policy_controls=policy.controls)
         instance.total_debit_amount = total_dr

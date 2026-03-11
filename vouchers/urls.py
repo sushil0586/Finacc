@@ -12,9 +12,17 @@ from vouchers.views import (
     VoucherSettingsAPIView,
     VoucherCompiledChoicesAPIView,
     VoucherPDFAPIView,
+    VoucherFormMetaAPIView,
+    VoucherDetailFormMetaAPIView,
+    VoucherSearchMetaAPIView,
+    VoucherSettingsMetaAPIView,
 )
 
 urlpatterns = [
+    path("meta/voucher-form/", VoucherFormMetaAPIView.as_view(), name="voucher-form-meta"),
+    path("meta/voucher-detail-form/", VoucherDetailFormMetaAPIView.as_view(), name="voucher-detail-form-meta"),
+    path("meta/voucher-search/", VoucherSearchMetaAPIView.as_view(), name="voucher-search-meta"),
+    path("meta/settings/", VoucherSettingsMetaAPIView.as_view(), name="voucher-settings-meta"),
     path("vouchers/", VoucherListCreateAPIView.as_view(), name="voucher-list-create"),
     path("vouchers/<int:pk>/", VoucherRetrieveUpdateDestroyAPIView.as_view(), name="voucher-rud"),
     path("vouchers/<int:pk>/confirm/", VoucherConfirmAPIView.as_view(), name="voucher-confirm"),

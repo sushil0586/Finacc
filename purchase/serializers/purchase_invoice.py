@@ -153,6 +153,10 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
 class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     lines = PurchaseInvoiceLineSerializer(many=True, required=False)
     charges = PurchaseChargeLineSerializer(many=True, required=False)
+    vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
 
     tds_section = serializers.PrimaryKeyRelatedField(
         queryset=WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TDS, is_active=True),
@@ -162,6 +166,9 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
     preview_doc_no = serializers.SerializerMethodField()
     preview_purchase_number = serializers.SerializerMethodField()
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(getattr(obj, "vendor_ledger", None), "id", None)
     status_name = serializers.SerializerMethodField()
 
     gst_tds_cgst_rate = serializers.SerializerMethodField()
@@ -218,6 +225,10 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "vendor_name",
             "vendor_gstin",
             "vendor_state",
+            "vendor_display_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
 
             "supply_category",
             "default_taxability",
@@ -709,6 +720,13 @@ class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
     subentity_id = serializers.IntegerField(read_only=True)
     vendor_id = serializers.IntegerField(read_only=True)
     vendor_state_id = serializers.IntegerField(read_only=True)
+    vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(obj.vendor, "ledger_id", None)
 
     class Meta:
         model = PurchaseInvoiceHeader
@@ -732,6 +750,10 @@ class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
             "vendor_name",
             "vendor_gstin",
             "vendor_state_id",
+            "vendor_display_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
 
             "supply_category", "supply_category_name",
             "default_taxability", "taxability_name",
@@ -757,6 +779,13 @@ class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
 class PurchaseInvoiceListSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
+    vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(obj.vendor, "ledger_id", None)
 
     class Meta:
         model = PurchaseInvoiceHeader
@@ -778,6 +807,10 @@ class PurchaseInvoiceListSerializer(serializers.ModelSerializer):
             "vendor",
             "vendor_name",
             "vendor_gstin",
+            "vendor_display_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
             "supply_category",
             "default_taxability",
             "tax_regime",

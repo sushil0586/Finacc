@@ -7,7 +7,7 @@ from django.db import models
 
 from django.db.models import Q, Index, UniqueConstraint, CheckConstraint
 from django.utils import timezone
-from financial.models import account, accountHead
+from financial.models import Ledger, account, accountHead
 from catalog.models import Product,UnitOfMeasure
 
 User = settings.AUTH_USER_MODEL
@@ -79,6 +79,9 @@ class EntityStaticAccountMap(models.Model):
     entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE,related_name="posting_static_account_maps",)
     static_account = models.ForeignKey(StaticAccount, on_delete=models.PROTECT,related_name="entity_maps",)
     account = models.ForeignKey(account, on_delete=models.PROTECT, related_name="+",)
+    # Additive ledger storage. Keep account for compatibility until all downstream
+    # posting/reporting code is fully ledger-native.
+    ledger = models.ForeignKey(Ledger, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
 
     is_active = models.BooleanField(default=True, db_index=True)
     effective_from = models.DateField(null=True, blank=True)  # optional for future use
@@ -98,11 +101,12 @@ class EntityStaticAccountMap(models.Model):
         indexes = [
             Index(fields=["entity", "static_account"], name="ix_esam_entity_static"),
             Index(fields=["entity", "account"], name="ix_esam_entity_account"),
+            Index(fields=["entity", "ledger"], name="ix_esam_entity_ledger"),
             Index(fields=["static_account"], name="ix_esam_static"),
         ]
 
     def __str__(self) -> str:
-        return f"{self.entity_id} {self.static_account.code} -> {self.account_id}"
+        return f"{self.entity_id} {self.static_account.code} -> {self.ledger_id or self.account_id}"
 
 
 class PostingBatch(models.Model):
@@ -209,6 +213,9 @@ class JournalLine(models.Model):
     # XOR: exactly one must be set
     account = models.ForeignKey(account, on_delete=models.PROTECT, null=True, blank=True,  related_name="+",)
     accounthead = models.ForeignKey(accountHead, on_delete=models.PROTECT, null=True, blank=True,  related_name="+",)
+    # Store resolved ledger alongside account. Keep account/accounthead XOR for
+    # compatibility while the accounting spine is migrated incrementally.
+    ledger = models.ForeignKey(Ledger, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
 
     # True=Debit, False=Credit
     drcr = models.BooleanField(db_index=True)
@@ -237,13 +244,14 @@ class JournalLine(models.Model):
             Index(fields=["entity", "txn_type", "txn_id", "detail_id"], name="ix_jl_locator_line"),
             Index(fields=["entity", "posting_date"], name="ix_jl_entity_postdate"),
             Index(fields=["account"], name="ix_jl_posting_account"),
+            Index(fields=["ledger"], name="ix_jl_posting_ledger"),
             Index(fields=["accounthead"], name="ix_jl_head"),
             Index(fields=["posting_batch"], name="ix_jl_batch"),
         ]
 
     def __str__(self) -> str:
         side = "Dr" if self.drcr else "Cr"
-        target = self.account_id or self.accounthead_id
+        target = self.ledger_id or self.account_id or self.accounthead_id
         return f"{side} {self.amount} -> {target} ({self.txn_type}#{self.txn_id})"
 
 

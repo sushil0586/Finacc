@@ -9,6 +9,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 
+from financial.models import account
 from sales.models.sales_ar import (
     CustomerBillOpenItem,
     CustomerAdvanceBalance,
@@ -47,6 +48,17 @@ class SettlementCancelResult:
 
 
 class SalesArService:
+    @staticmethod
+    def _resolve_customer_ledger_id(customer_id: Optional[int]) -> Optional[int]:
+        if not customer_id:
+            return None
+        customer = account.objects.filter(id=customer_id).only("id", "ledger_id").first()
+        if not customer:
+            raise ValueError("Selected customer account does not exist.")
+        if not getattr(customer, "ledger_id", None):
+            raise ValueError("Selected customer account does not have a linked ledger.")
+        return int(customer.ledger_id)
+
     @staticmethod
     def _sync_header_from_open_item(item: CustomerBillOpenItem) -> None:
         header = getattr(item, "header", None)
@@ -90,11 +102,13 @@ class SalesArService:
         amt = q2(amount)
         if amt <= ZERO2:
             raise ValueError("Advance balance amount must be > 0.")
+        customer_ledger_id = SalesArService._resolve_customer_ledger_id(customer_id)
         return CustomerAdvanceBalance.objects.create(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             customer_id=customer_id,
+            customer_ledger_id=customer_ledger_id,
             source_type=source_type,
             credit_date=credit_date,
             reference_no=(reference_no or "").strip() or None,
@@ -213,6 +227,7 @@ class SalesArService:
                 "entityfinid_id": header.entityfinid_id,
                 "subentity_id": header.subentity_id,
                 "customer_id": header.customer_id,
+                "customer_ledger_id": header.customer_ledger_id,
                 "doc_type": int(header.doc_type),
                 "bill_date": header.bill_date,
                 "due_date": header.due_date,
@@ -234,6 +249,7 @@ class SalesArService:
         item.entityfinid_id = header.entityfinid_id
         item.subentity_id = header.subentity_id
         item.customer_id = header.customer_id
+        item.customer_ledger_id = header.customer_ledger_id
         item.doc_type = int(header.doc_type)
         item.bill_date = header.bill_date
         item.due_date = header.due_date
@@ -329,6 +345,7 @@ class SalesArService:
         advance_balance_id: Optional[int] = None,
     ) -> SettlementCreateResult:
         lines_data = list(lines or [])
+        customer_ledger_id = SalesArService._resolve_customer_ledger_id(customer_id)
         if not lines_data:
             if q2(amount or ZERO2) > ZERO2:
                 lines_data = SalesArService._auto_fifo_lines(
@@ -346,6 +363,7 @@ class SalesArService:
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             customer_id=customer_id,
+            customer_ledger_id=customer_ledger_id,
             settlement_type=settlement_type,
             settlement_date=settlement_date,
             reference_no=(reference_no or "").strip() or None,
