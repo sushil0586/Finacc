@@ -676,57 +676,6 @@ class ContactDetails(models.Model):
         ]
 
 
-class staticacounts(TrackingModel):
-    # Kept in financial for compatibility. The wider shape lets this table act
-    # as a system financial mapping key until posting is fully Ledger-first.
-    #
-    # Later this can remain in financial or move to posting/config if the team
-    # wants all posting-key definitions outside the master-data app.
-    accounttype = models.ForeignKey(to=accounttype, on_delete=models.SET_NULL, null=True, blank=True)
-    staticaccount = models.CharField(max_length=255, verbose_name=_("static acount"))
-    code = models.CharField(max_length=255, verbose_name=_("Code"))
-    description = models.CharField(max_length=255, null=True, blank=True)
-    mapping_scope = models.CharField(max_length=20, choices=STATIC_ACCOUNT_SCOPE_CHOICES, default="posting")
-    is_required = models.BooleanField(default=False)
-    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
-    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
-
-    def __str__(self):
-        return f"{self.staticaccount}"
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["entity", "code"], name="uq_staticacounts_entity_code"),
-            models.UniqueConstraint(fields=["entity", "staticaccount"], name="uq_staticacounts_entity_name"),
-        ]
-        indexes = [
-            models.Index(fields=["entity", "code"], name="ix_staticacc_entity_code"),
-            models.Index(fields=["entity", "staticaccount"], name="ix_staticacc_entity_name"),
-        ]
-
-
-class staticacountsmapping(TrackingModel):
-    staticaccount = models.ForeignKey(to=staticacounts, on_delete=models.SET_NULL, null=True, blank=True)
-    # New preferred mapping target. Existing code can keep reading `account`
-    # until posting/reporting is switched over to Ledger.
-    #
-    # Later candidate for removal:
-    # - account FK, once all posting logic reads ledger instead
-    ledger = models.ForeignKey(to=Ledger, on_delete=models.SET_NULL, null=True, blank=True, related_name="static_account_mappings")
-    account = models.ForeignKey(to=account, on_delete=models.SET_NULL, null=True, blank=True)
-    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
-    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["entity", "staticaccount"], name="uq_staticmap_entity_staticaccount"),
-        ]
-        indexes = [
-            models.Index(fields=["entity", "staticaccount"], name="ix_staticmap_entity_static"),
-            models.Index(fields=["entity", "account"], name="ix_staticmap_entity_account"),
-        ]
-
-
 class AccountBankDetails(TrackingModel):
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name="bank_details")
     entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)

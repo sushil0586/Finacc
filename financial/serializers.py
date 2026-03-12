@@ -1,8 +1,7 @@
 from sys import implementation
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField
-from financial.models import accountHead,account,accounttype,ShippingDetails,staticacounts,staticacountsmapping,ContactDetails
-from invoice.models import entry,StockTransactions
+from financial.models import accountHead,account,accounttype,ShippingDetails,ContactDetails
 from entity.models import Entity,EntityFinancialYear
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -466,22 +465,6 @@ class accountcodeSerializer(serializers.ModelSerializer):
         model = account
         fields =  ['newcode']
 
-class StaticAccountsSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = staticacounts
-        fields = (
-            "id",
-            "accounttype",
-            "staticaccount",
-            "code",
-            "entity",
-            "createdby",
-        )
-        read_only_fields = ("id", "createdby")
-
-
-
-
 class AccountListSerializer(serializers.ModelSerializer):
     debit = serializers.DecimalField(max_digits=10, decimal_places=2)
     credit = serializers.DecimalField(max_digits=10, decimal_places=2)
@@ -683,21 +666,6 @@ class accounttypeserializer(serializers.ModelSerializer):
     class Meta:
         model = accounttype
         fields = ('accounttypeid','accounttypename',)
-
-
-class StaticAccountMappingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = staticacountsmapping
-        fields = (
-            "id",
-            "staticaccount",
-            "account",
-            "entity",
-            "createdby",
-        )
-        read_only_fields = ("id", "createdby")
-
-
 
 
 class AccountTypeJsonSerializer(serializers.ModelSerializer):

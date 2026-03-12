@@ -6,35 +6,15 @@ import django.db.models.deletion
 
 
 def copy_invoice_payment_modes(apps, schema_editor):
-    PaymentMode = apps.get_model("payments", "PaymentMode")
-    InvoicePaymentMode = apps.get_model("invoice", "Paymentmodes")
-
-    db_alias = schema_editor.connection.alias
-    if PaymentMode.objects.using(db_alias).exists():
-        return
-
-    rows = []
-    for old in InvoicePaymentMode.objects.using(db_alias).all().order_by("id"):
-        rows.append(
-            PaymentMode(
-                id=old.id,
-                paymentmode=old.paymentmode,
-                paymentmodecode=old.paymentmodecode,
-                iscash=old.iscash,
-                createdby_id=old.createdby_id,
-                created_at=getattr(old, "created_at", None),
-                updated_at=getattr(old, "updated_at", None),
-            )
-        )
-    if rows:
-        PaymentMode.objects.using(db_alias).bulk_create(rows)
+    # Invoice app was retired; keep this migration as a no-op data step so
+    # fresh installs and existing databases share the same migration chain.
+    return
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
-        ("invoice", "0001_initial"),
         ("payments", "0004_paymentvoucherheader_workflow_payload"),
     ]
 
@@ -59,7 +39,7 @@ class Migration(migrations.Migration):
             constraint=models.UniqueConstraint(fields=("paymentmodecode",), name="uq_pay_mode_code"),
         ),
         migrations.RunPython(copy_invoice_payment_modes, migrations.RunPython.noop),
-        migrations.AlterField(
+        migrations.AddField(
             model_name="paymentvoucherheader",
             name="payment_mode",
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to="payments.paymentmode"),

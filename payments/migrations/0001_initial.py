@@ -23,7 +23,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
-        ("invoice", "0001_initial"),
         ("purchase", "0012_vendor_ap_models_and_policy_settlement_defaults"),
     ]
 
@@ -84,7 +83,6 @@ class Migration(migrations.Migration):
                 ("entityfinid", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to="entity.entityfinancialyear")),
                 ("paid_from", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="new_pv_paid_from", to="financial.account")),
                 ("paid_to", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="new_pv_paid_to", to="financial.account")),
-                ("payment_mode", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to="invoice.paymentmodes")),
                 ("place_of_supply_state", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to="geography.state")),
                 ("subentity", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, to="entity.subentity")),
             ],

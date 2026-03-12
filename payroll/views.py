@@ -26,7 +26,6 @@ from rest_framework.response import Response
 from django.db.models import Sum,OuterRef,Subquery,F,Count,IntegerField,Case, When,Value, CharField
 from django.db.models import Prefetch
 from financial.models import account
-from inventory.models import Product
 from django.db import connection
 from django.core import serializers
 from rest_framework.renderers import JSONRenderer

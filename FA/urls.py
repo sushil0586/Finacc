@@ -35,11 +35,9 @@ schema_view = get_schema_view(
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/',include('Authentication.urls',namespace = 'Authentication_api')),
-    path('api/inventory/',include('inventory.urls',namespace = 'inventory_api')),
     path('api/financial/',include('financial.urls',namespace = 'financial_api')),
     path('api/entity/',include('entity.urls',namespace = 'entity_api')),
     path('api/geography/',include('geography.urls',namespace = 'geography_api')),
-    path('api/invoice/',include('invoice.urls',namespace = 'invoice_api')),
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
     path('api/payroll/',include('payroll.urls',namespace = 'payroll_api')),
     path("api/catalog/", include("catalog.urls")),

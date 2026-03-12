@@ -9,15 +9,11 @@ from .models import (
     account,
     ShippingDetails,
     ContactDetails,
-    staticacounts,
-    staticacountsmapping,
 )
 from .admin_resources import (
     AccountTypeResource,
     AccountHeadResource,
     AccountResource,
-    StaticAccountsResource,
-    StaticAccountsMappingResource,
 )
 
 
@@ -77,24 +73,6 @@ class AccountAdmin(ImportExportModelAdmin):
     search_fields = ("accountname", "gstno", "accountcode")
     ordering = ("entity", "accountcode")
     list_select_related = ("entity", "accounthead")
-
-
-@admin.register(staticacounts)
-class StaticAccountsAdmin(ImportExportModelAdmin):
-    resource_class = StaticAccountsResource
-    list_display = ("staticaccount", "code", "mapping_scope", "is_required", "entity")
-    list_filter = ("entity", "mapping_scope", "is_required")
-    search_fields = ("staticaccount", "code", "description")
-    ordering = ("entity", "code")
-
-
-@admin.register(staticacountsmapping)
-class StaticAccountsMappingAdmin(ImportExportModelAdmin):
-    resource_class = StaticAccountsMappingResource
-    list_display = ("staticaccount", "ledger", "account", "entity")
-    list_filter = ("entity",)
-    search_fields = ("staticaccount__code", "ledger__name", "account__accountname", "account__accountcode")
-    ordering = ("entity",)
 
 
 # Optional: keep these normal (not import/export), because they depend on Account IDs heavily

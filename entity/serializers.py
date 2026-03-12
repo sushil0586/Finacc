@@ -6,8 +6,6 @@ from Authentication.models import User,Submenu
 from Authentication.serializers import Registerserializers
 from financial.models import accountHead,account
 from financial.serializers import AccountHeadSerializer,AccountSerializer,accountHeadSerializer2,accounttypeserializer,AccountTypeJsonSerializer
-from inventory.serializers import RateCalculateSerializer,UOMSerializer,TOGSerializer,TOGSerializer,ProductCategoryMainSerializer
-from invoice.serializers import purchasetaxtypeserializer,InvoiceTypeSerializer
 import os
 import json
 import collections
@@ -259,14 +257,6 @@ class entityAddSerializer(serializers.ModelSerializer):
     roleserializer = rolemainSerializer1
 
  
-    rateerializer = RateCalculateSerializer
-    uomser = UOMSerializer
-    TOGSR = TOGSerializer
-    GSTSR = TOGSerializer
-    PTaxType = purchasetaxtypeserializer
-
-    InvoiceType = InvoiceTypeSerializer
-    pcategory = ProductCategoryMainSerializer
     acounttype = AccountTypeJsonSerializer
 
     def process_json_file(self, newentity, users, accountdate1):
@@ -278,16 +268,7 @@ class entityAddSerializer(serializers.ModelSerializer):
         # Mapping serializers to corresponding JSON keys
         serializers_mapping = {
             "acconttype": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
-            # "accountheads": (self.accounthead, {"entity": newentity, "createdby": users[0]}),
             "Roles": (self.roleserializer, {"entity": newentity}),
-            "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": users[0]}),
-            "UOM": (self.uomser, {"entity": newentity, "createdby": users[0]}),
-            "TOG": (self.TOGSR, {"entity": newentity, "createdby": users[0]}),
-            "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": users[0]}),
-          #  "ACCOUNTTYPE": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
-            "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": users[0]}),
-            "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": users[0]}),
-            "productcategory": (self.pcategory, {"createdby": users[0]}),
         }
 
         # Iterate through the JSON keys and process data
@@ -770,14 +751,6 @@ class EntityNewSerializer(serializers.ModelSerializer):
     serializer = AccountHeadSerializer
     accounthead = accountHeadSerializer2
 
-    rateerializer = RateCalculateSerializer
-    uomser = UOMSerializer
-    TOGSR = TOGSerializer
-    GSTSR = TOGSerializer
-    PTaxType = purchasetaxtypeserializer
-
-    InvoiceType = InvoiceTypeSerializer
-    pcategory = ProductCategoryMainSerializer
     acounttype = AccountTypeJsonSerializer
 
     # -------------------------
@@ -793,13 +766,6 @@ class EntityNewSerializer(serializers.ModelSerializer):
 
         serializers_mapping = {
             "acconttype": (self.acounttype, {"createdby": user}),
-            "Ratecalc": (self.rateerializer, {"entity": newentity, "createdby": user}),
-            "UOM": (self.uomser, {"entity": newentity, "createdby": user}),
-            "TOG": (self.TOGSR, {"entity": newentity, "createdby": user}),
-            "GSTTYPE": (self.GSTSR, {"entity": newentity, "createdby": user}),
-            "PurchaseType": (self.PTaxType, {"entity": newentity, "createdby": user}),
-            "InvoiceType": (self.InvoiceType, {"entity": newentity, "createdby": user}),
-            "productcategory": (self.pcategory, {"createdby": user}),
         }
 
         for key, (serializer_class, extra_kwargs) in serializers_mapping.items():
