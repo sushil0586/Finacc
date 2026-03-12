@@ -17,6 +17,8 @@ from .views import (
     HsnSacRetrieveUpdateDestroyAPIView,
     PriceListListCreateAPIView,
     PriceListRetrieveUpdateDestroyAPIView,
+    ProductAttributeListCreateAPIView,
+    ProductAttributeRetrieveUpdateDestroyAPIView,
 
     # Choices + Bootstrap
     GstTypeListAPIView,
@@ -35,6 +37,20 @@ from .views import (
     ProductBarcodeRUDAPIView,
     ProductBarcodeDownloadPDFAPIView,
     BarcodeLayoutOptionsAPIView,PurchaseInvoiceProductListAPIView,
+    ProductGstRateListCreateAPIView,
+    ProductGstRateRUDAPIView,
+    ProductUomConversionListCreateAPIView,
+    ProductUomConversionRUDAPIView,
+    OpeningStockByLocationListCreateAPIView,
+    OpeningStockByLocationRUDAPIView,
+    ProductPriceListCreateAPIView,
+    ProductPriceRUDAPIView,
+    ProductPlanningListCreateAPIView,
+    ProductPlanningRUDAPIView,
+    ProductAttributeValueListCreateAPIView,
+    ProductAttributeValueRUDAPIView,
+    ProductImageListCreateAPIView,
+    ProductImageRUDAPIView,
 )
 
 
@@ -85,6 +101,12 @@ urlpatterns = [
     path("pricelists/<int:pk>/", PriceListRetrieveUpdateDestroyAPIView.as_view(), name="pricelist-detail"),
 
     # ------------------------------------------------------------------
+    # PRODUCT ATTRIBUTE MASTER
+    # ------------------------------------------------------------------
+    path("product-attributes/", ProductAttributeListCreateAPIView.as_view(), name="product-attribute-list-create"),
+    path("product-attributes/<int:pk>/", ProductAttributeRetrieveUpdateDestroyAPIView.as_view(), name="product-attribute-detail"),
+
+    # ------------------------------------------------------------------
     # LIGHTWEIGHT LIST ENDPOINTS (keep same style)
     # ------------------------------------------------------------------
     path("entity/<int:entity_id>/list/", ProductImportantListAPIView.as_view(), name="product-important-list"),
@@ -99,6 +121,20 @@ urlpatterns = [
     path("barcodes/<int:pk>/", ProductBarcodeRUDAPIView.as_view(), name="barcode-detail"),
     path("barcodes/download/", ProductBarcodeDownloadPDFAPIView.as_view(), name="barcode-download-pdf"),
     path("barcodes/layout-options/", BarcodeLayoutOptionsAPIView.as_view(), name="barcode-layout-options"),
+    path("products/<int:product_id>/gst-rates/", ProductGstRateListCreateAPIView.as_view(), name="product-gst-rate-list-create"),
+    path("gst-rates/<int:pk>/", ProductGstRateRUDAPIView.as_view(), name="product-gst-rate-detail"),
+    path("products/<int:product_id>/uom-conversions/", ProductUomConversionListCreateAPIView.as_view(), name="product-uom-conversion-list-create"),
+    path("uom-conversions/<int:pk>/", ProductUomConversionRUDAPIView.as_view(), name="product-uom-conversion-detail"),
+    path("products/<int:product_id>/opening-stocks/", OpeningStockByLocationListCreateAPIView.as_view(), name="opening-stock-list-create"),
+    path("opening-stocks/<int:pk>/", OpeningStockByLocationRUDAPIView.as_view(), name="opening-stock-detail"),
+    path("products/<int:product_id>/prices/", ProductPriceListCreateAPIView.as_view(), name="product-price-list-create"),
+    path("prices/<int:pk>/", ProductPriceRUDAPIView.as_view(), name="product-price-detail"),
+    path("products/<int:product_id>/planning/", ProductPlanningListCreateAPIView.as_view(), name="product-planning-list-create"),
+    path("planning/<int:pk>/", ProductPlanningRUDAPIView.as_view(), name="product-planning-detail"),
+    path("products/<int:product_id>/attribute-values/", ProductAttributeValueListCreateAPIView.as_view(), name="product-attribute-value-list-create"),
+    path("attribute-values/<int:pk>/", ProductAttributeValueRUDAPIView.as_view(), name="product-attribute-value-detail"),
+    path("products/<int:product_id>/images/", ProductImageListCreateAPIView.as_view(), name="product-image-list-create"),
+    path("images/<int:pk>/", ProductImageRUDAPIView.as_view(), name="product-image-detail"),
     path(
         "purchaseinvoice-products/",
         PurchaseInvoiceProductListAPIView.as_view(),
