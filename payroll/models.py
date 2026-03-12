@@ -6,9 +6,7 @@ from django.forms import DateField
 from helpers.models import TrackingModel
 from Authentication.models import User
 from financial.models import account,accountHead
-from inventory.models import Product
 from entity.models import Entity,Role
-from inventory.models import Product
 from django.db.models import Sum
 import datetime
 from geography.models import Country,State,District,City

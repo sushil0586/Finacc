@@ -6,20 +6,14 @@ Use this layout for new report work:
 
 - `reports/api/financial/`
   Financial report endpoints like trial balance, ledger book, balance sheet, P&L.
-- `reports/api/inventory/`
-  Stock and inventory report endpoints.
 - `reports/api/statutory/`
   GST, TDS, TCS and other compliance reports.
 - `reports/serializers/financial/`
   Financial report serializers.
-- `reports/serializers/inventory/`
-  Inventory report serializers.
 - `reports/serializers/statutory/`
   Statutory report serializers.
 - `reports/services/financial/`
   Business/reporting logic for financial reports.
-- `reports/services/inventory/`
-  Business/reporting logic for stock and inventory reports.
 - `reports/services/statutory/`
   Business/reporting logic for compliance/statutory reports.
 - `reports/selectors/`
@@ -33,7 +27,6 @@ Recommended rule for new financial reports:
 
 - Use `posting.JournalLine.ledger` as the accounting source.
 - Use `financial.Ledger` and `financial.accountHead` for master joins.
-- Do not build new financial reports from `StockTransactions`.
 
 Recommended migration approach:
 

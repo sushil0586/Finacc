@@ -11,8 +11,6 @@ from .models import (
     account,
     ShippingDetails,
     ContactDetails,
-    staticacounts,
-    staticacountsmapping,
 )
 
 
@@ -213,75 +211,3 @@ class AccountResource(resources.ModelResource):
             row[k] = _blank_to_none(row.get(k))
 
 
-# -----------------------------
-# staticacounts
-# Natural key: (entity, code)
-# -----------------------------
-class StaticAccountsResource(resources.ModelResource):
-    entity = fields.Field(
-        column_name="entity",
-        attribute="entity",
-        widget=ForeignKeyWidget(Entity, "entityname"),
-    )
-    createdby = fields.Field(
-        column_name="createdby",
-        attribute="createdby",
-        widget=ForeignKeyWidget(User, "username"),
-    )
-
-    class Meta:
-        model = staticacounts
-        import_id_fields = ("entity", "code")
-        fields = ("accounttype","entity", "code", "staticaccount", "createdby")
-        skip_unchanged = True
-        report_skipped = True
-
-    def before_import_row(self, row, **kwargs):
-        row["entity"] = _blank_to_none(row.get("entity"))
-        row["createdby"] = _blank_to_none(row.get("createdby"))
-
-
-# -----------------------------
-# staticacountsmapping
-# Natural key: (entity, staticacounts.code, account.accountcode)
-# -----------------------------
-class StaticAccountsMappingResource(resources.ModelResource):
-    entity = fields.Field(
-        column_name="entity",
-        attribute="entity",
-        widget=ForeignKeyWidget(Entity, "entityname"),
-    )
-    staticaccount = fields.Field(
-        column_name="static_code",
-        attribute="staticaccount",
-        widget=ForeignKeyWidget(staticacounts, "code"),
-    )
-    account = fields.Field(
-        column_name="accountcode",
-        attribute="account",
-        widget=ForeignKeyWidget(account, "accountcode"),
-    )
-    createdby = fields.Field(
-        column_name="createdby",
-        attribute="createdby",
-        widget=ForeignKeyWidget(User, "username"),
-    )
-
-    class Meta:
-        model = staticacountsmapping
-        import_id_fields = ("entity", "static_code", "accountcode")
-        fields = ("entity", "static_code", "accountcode", "createdby")
-        skip_unchanged = True
-        report_skipped = True
-
-    def dehydrate_static_code(self, obj):
-        return obj.staticaccount.code if obj.staticaccount else ""
-
-    def dehydrate_accountcode(self, obj):
-        return obj.account.accountcode if obj.account else ""
-
-    def before_import_row(self, row, **kwargs):
-        row["entity"] = _blank_to_none(row.get("entity"))
-        row["createdby"] = _blank_to_none(row.get("createdby"))
-        row["static_code"] = _blank_to_none(row.get("static_code"))
-        row["accountcode"] = _blank_to_none(row.get("accountcode"))
