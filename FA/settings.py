@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     "receipts",
     "vouchers",
     "posting",
+    "assets",
     "sales.apps.SalesConfig",
     "withholding",
     "gst_tds",

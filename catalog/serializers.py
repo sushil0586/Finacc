@@ -12,6 +12,8 @@
 
 from rest_framework import serializers
 from django.db import transaction
+from entity.models import SubEntity
+from financial.models import account
 
 from .models import (
     ProductCategory,
@@ -154,7 +156,36 @@ class PriceListSerializer(serializers.ModelSerializer):
 # Nested child serializers
 # ----------------------------------------------------------------------
 
-class ProductGstRateSerializer(serializers.ModelSerializer):
+class EntityScopedValidationMixin:
+    def _target_entity(self, attrs):
+        entity = self.context.get("entity")
+        if entity is not None:
+            return entity
+
+        product = self.context.get("product")
+        if product is not None:
+            return product.entity
+
+        instance = getattr(self, "instance", None)
+        if instance is not None:
+            instance_entity = getattr(instance, "entity", None)
+            if instance_entity is not None:
+                return instance_entity
+
+            instance_product = getattr(instance, "product", None)
+            if instance_product is not None:
+                return instance_product.entity
+
+        return attrs.get("entity")
+
+    def _validate_entity_scoped_fk(self, *, field_name, obj, entity, label):
+        if obj is None or entity is None:
+            return
+        obj_entity_id = getattr(obj, "entity_id", None)
+        if obj_entity_id is not None and int(obj_entity_id) != int(entity.id):
+            raise serializers.ValidationError({field_name: f"{label} must belong to the same entity."})
+
+class ProductGstRateSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     """
     Aligns with new model:
     - includes cess_specific_amount
@@ -186,6 +217,10 @@ class ProductGstRateSerializer(serializers.ModelSerializer):
         read_only_fields = ("product", "gst_rate", "createdon", "modifiedon")
 
     def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        hsn = attrs.get("hsn", getattr(self.instance, "hsn", None))
+        self._validate_entity_scoped_fk(field_name="hsn", obj=hsn, entity=entity, label="HSN/SAC")
+
         # validate dates
         vf = attrs.get("valid_from")
         vt = attrs.get("valid_to")
@@ -247,7 +282,7 @@ class ProductGstRateSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class ProductBarcodeSerializer(serializers.ModelSerializer):
+class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
@@ -281,6 +316,10 @@ class ProductBarcodeSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        uom = attrs.get("uom", getattr(self.instance, "uom", None))
+        self._validate_entity_scoped_fk(field_name="uom", obj=uom, entity=entity, label="UOM")
+
         pack_size = attrs.get("pack_size", None)
         if pack_size in (None, 0, "0", ""):
             attrs["pack_size"] = 1
@@ -292,7 +331,7 @@ class ProductBarcodeSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class ProductUomConversionSerializer(serializers.ModelSerializer):
+class ProductUomConversionSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
     class Meta:
@@ -308,8 +347,25 @@ class ProductUomConversionSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("product", "createdon", "modifiedon")
 
+    def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        from_uom = attrs.get("from_uom", getattr(self.instance, "from_uom", None))
+        to_uom = attrs.get("to_uom", getattr(self.instance, "to_uom", None))
 
-class OpeningStockByLocationSerializer(serializers.ModelSerializer):
+        self._validate_entity_scoped_fk(field_name="from_uom", obj=from_uom, entity=entity, label="From UOM")
+        self._validate_entity_scoped_fk(field_name="to_uom", obj=to_uom, entity=entity, label="To UOM")
+
+        if from_uom and to_uom and from_uom.id == to_uom.id:
+            raise serializers.ValidationError({"to_uom": "to_uom must be different from from_uom."})
+
+        factor = attrs.get("factor", getattr(self.instance, "factor", None))
+        if factor is not None and factor <= 0:
+            raise serializers.ValidationError({"factor": "factor must be greater than 0."})
+
+        return attrs
+
+
+class OpeningStockByLocationSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
     class Meta:
@@ -328,8 +384,14 @@ class OpeningStockByLocationSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("product", "entity", "createdon", "modifiedon")
 
+    def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        location = attrs.get("location", getattr(self.instance, "location", None))
+        self._validate_entity_scoped_fk(field_name="location", obj=location, entity=entity, label="Location")
+        return attrs
 
-class ProductPriceSerializer(serializers.ModelSerializer):
+
+class ProductPriceSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
     class Meta:
@@ -350,6 +412,20 @@ class ProductPriceSerializer(serializers.ModelSerializer):
             "modifiedon",
         )
         read_only_fields = ("product", "createdon", "modifiedon")
+
+    def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        pricelist = attrs.get("pricelist", getattr(self.instance, "pricelist", None))
+        uom = attrs.get("uom", getattr(self.instance, "uom", None))
+        self._validate_entity_scoped_fk(field_name="pricelist", obj=pricelist, entity=entity, label="Price list")
+        self._validate_entity_scoped_fk(field_name="uom", obj=uom, entity=entity, label="UOM")
+
+        effective_from = attrs.get("effective_from", getattr(self.instance, "effective_from", None))
+        effective_to = attrs.get("effective_to", getattr(self.instance, "effective_to", None))
+        if effective_from and effective_to and effective_to < effective_from:
+            raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
+
+        return attrs
 
 
 class ProductPlanningSerializer(serializers.ModelSerializer):
@@ -373,7 +449,7 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
         read_only_fields = ("product", "createdon", "modifiedon")
 
 
-class ProductAttributeValueSerializer(serializers.ModelSerializer):
+class ProductAttributeValueSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
     class Meta:
@@ -390,6 +466,12 @@ class ProductAttributeValueSerializer(serializers.ModelSerializer):
             "modifiedon",
         )
         read_only_fields = ("product", "createdon", "modifiedon")
+
+    def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        attribute = attrs.get("attribute", getattr(self.instance, "attribute", None))
+        self._validate_entity_scoped_fk(field_name="attribute", obj=attribute, entity=entity, label="Attribute")
+        return attrs
 
 
 class ProductImageNestedSerializer(serializers.ModelSerializer):
@@ -413,7 +495,7 @@ class ProductImageNestedSerializer(serializers.ModelSerializer):
 # Main Product serializer with nested create/update
 # ----------------------------------------------------------------------
 
-class ProductSerializer(serializers.ModelSerializer):
+class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     gst_rates = ProductGstRateSerializer(many=True, required=False)
 
     barcodes = ProductBarcodeSerializer(
@@ -471,75 +553,131 @@ class ProductSerializer(serializers.ModelSerializer):
             "attributes",
             "images",
         )
-        read_only_fields = ("createdon", "modifiedon")
-
-    def _target_entity(self, attrs):
-        entity = self.context.get("entity")
-        if entity is not None:
-            return entity
-        if self.instance is not None:
-            return self.instance.entity
-        return attrs.get("entity")
-
-    def _validate_entity_scoped_fk(self, *, field_name, obj, entity, label):
-        if obj is None or entity is None:
-            return
-        obj_entity_id = getattr(obj, "entity_id", None)
-        if obj_entity_id is not None and int(obj_entity_id) != int(entity.id):
-            raise serializers.ValidationError({field_name: f"{label} must belong to the same entity."})
 
     def validate(self, attrs):
         entity = self._target_entity(attrs)
 
-        self._validate_entity_scoped_fk(field_name="productcategory", obj=attrs.get("productcategory", getattr(self.instance, "productcategory", None)), entity=entity, label="Product category")
-        self._validate_entity_scoped_fk(field_name="brand", obj=attrs.get("brand", getattr(self.instance, "brand", None)), entity=entity, label="Brand")
-        self._validate_entity_scoped_fk(field_name="base_uom", obj=attrs.get("base_uom", getattr(self.instance, "base_uom", None)), entity=entity, label="Base UOM")
+        self._validate_entity_scoped_fk(
+            field_name="productcategory",
+            obj=attrs.get("productcategory", getattr(self.instance, "productcategory", None)),
+            entity=entity,
+            label="Product category",
+        )
+        self._validate_entity_scoped_fk(
+            field_name="brand",
+            obj=attrs.get("brand", getattr(self.instance, "brand", None)),
+            entity=entity,
+            label="Brand",
+        )
+        self._validate_entity_scoped_fk(
+            field_name="base_uom",
+            obj=attrs.get("base_uom", getattr(self.instance, "base_uom", None)),
+            entity=entity,
+            label="Base UOM",
+        )
+        self._validate_entity_scoped_fk(
+            field_name="sales_account",
+            obj=attrs.get("sales_account", getattr(self.instance, "sales_account", None)),
+            entity=entity,
+            label="Sales account",
+        )
+        self._validate_entity_scoped_fk(
+            field_name="purchase_account",
+            obj=attrs.get("purchase_account", getattr(self.instance, "purchase_account", None)),
+            entity=entity,
+            label="Purchase account",
+        )
 
-        for idx, row in enumerate(self.initial_data.get("gst_rates", []) or [], start=1):
-            hsn_id = row.get("hsn")
-            if hsn_id:
-                hsn = HsnSac.objects.filter(pk=hsn_id).first()
-                self._validate_entity_scoped_fk(field_name="gst_rates", obj=hsn, entity=entity, label=f"GST row {idx} HSN/SAC")
+        if entity is not None:
+            for idx, row in enumerate(self.initial_data.get("gst_rates", []) or [], start=1):
+                hsn_id = row.get("hsn")
+                if hsn_id:
+                    hsn = HsnSac.objects.filter(pk=hsn_id).first()
+                    self._validate_entity_scoped_fk(field_name="gst_rates", obj=hsn, entity=entity, label=f"GST row {idx} HSN/SAC")
 
-        for idx, row in enumerate(self.initial_data.get("barcodes", []) or [], start=1):
-            uom_id = row.get("uom")
-            if uom_id:
-                uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
-                self._validate_entity_scoped_fk(field_name="barcodes", obj=uom, entity=entity, label=f"Barcode row {idx} UOM")
+            for idx, row in enumerate(self.initial_data.get("barcodes", []) or [], start=1):
+                uom_id = row.get("uom")
+                if uom_id:
+                    uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
+                    self._validate_entity_scoped_fk(field_name="barcodes", obj=uom, entity=entity, label=f"Barcode row {idx} UOM")
 
-        for idx, row in enumerate(self.initial_data.get("uom_conversions", []) or [], start=1):
-            from_uom_id = row.get("from_uom")
-            to_uom_id = row.get("to_uom")
-            if from_uom_id:
-                from_uom = UnitOfMeasure.objects.filter(pk=from_uom_id).first()
-                self._validate_entity_scoped_fk(field_name="uom_conversions", obj=from_uom, entity=entity, label=f"UOM conversion row {idx} from_uom")
-            if to_uom_id:
-                to_uom = UnitOfMeasure.objects.filter(pk=to_uom_id).first()
-                self._validate_entity_scoped_fk(field_name="uom_conversions", obj=to_uom, entity=entity, label=f"UOM conversion row {idx} to_uom")
+            for idx, row in enumerate(self.initial_data.get("uom_conversions", []) or [], start=1):
+                from_uom_id = row.get("from_uom")
+                to_uom_id = row.get("to_uom")
+                if from_uom_id:
+                    from_uom = UnitOfMeasure.objects.filter(pk=from_uom_id).first()
+                    self._validate_entity_scoped_fk(field_name="uom_conversions", obj=from_uom, entity=entity, label=f"UOM conversion row {idx} from_uom")
+                if to_uom_id:
+                    to_uom = UnitOfMeasure.objects.filter(pk=to_uom_id).first()
+                    self._validate_entity_scoped_fk(field_name="uom_conversions", obj=to_uom, entity=entity, label=f"UOM conversion row {idx} to_uom")
 
-        for idx, row in enumerate(self.initial_data.get("opening_stocks", []) or [], start=1):
-            location_id = row.get("location")
-            if location_id:
-                subentity = OpeningStockByLocation._meta.get_field("location").remote_field.model.objects.filter(pk=location_id).first()
-                self._validate_entity_scoped_fk(field_name="opening_stocks", obj=subentity, entity=entity, label=f"Opening stock row {idx} location")
+            for idx, row in enumerate(self.initial_data.get("opening_stocks", []) or [], start=1):
+                location_id = row.get("location")
+                if location_id:
+                    location = SubEntity.objects.filter(pk=location_id).first()
+                    self._validate_entity_scoped_fk(field_name="opening_stocks", obj=location, entity=entity, label=f"Opening stock row {idx} location")
 
-        for idx, row in enumerate(self.initial_data.get("prices", []) or [], start=1):
-            pricelist_id = row.get("pricelist")
-            uom_id = row.get("uom")
-            if pricelist_id:
-                pricelist = PriceList.objects.filter(pk=pricelist_id).first()
-                self._validate_entity_scoped_fk(field_name="prices", obj=pricelist, entity=entity, label=f"Price row {idx} pricelist")
-            if uom_id:
-                uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
-                self._validate_entity_scoped_fk(field_name="prices", obj=uom, entity=entity, label=f"Price row {idx} UOM")
+            for idx, row in enumerate(self.initial_data.get("prices", []) or [], start=1):
+                pricelist_id = row.get("pricelist")
+                uom_id = row.get("uom")
+                if pricelist_id:
+                    pricelist = PriceList.objects.filter(pk=pricelist_id).first()
+                    self._validate_entity_scoped_fk(field_name="prices", obj=pricelist, entity=entity, label=f"Price row {idx} pricelist")
+                if uom_id:
+                    uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
+                    self._validate_entity_scoped_fk(field_name="prices", obj=uom, entity=entity, label=f"Price row {idx} UOM")
 
-        for idx, row in enumerate(self.initial_data.get("attributes", []) or [], start=1):
-            attr_id = row.get("attribute")
-            if attr_id:
-                attr = ProductAttribute.objects.filter(pk=attr_id).first()
-                self._validate_entity_scoped_fk(field_name="attributes", obj=attr, entity=entity, label=f"Attribute row {idx} attribute")
+            for idx, row in enumerate(self.initial_data.get("attributes", []) or [], start=1):
+                attr_id = row.get("attribute")
+                if attr_id:
+                    attr = ProductAttribute.objects.filter(pk=attr_id).first()
+                    self._validate_entity_scoped_fk(field_name="attributes", obj=attr, entity=entity, label=f"Attribute row {idx} attribute")
+
+        launch_date = attrs.get("launch_date", getattr(self.instance, "launch_date", None))
+        discontinue_date = attrs.get("discontinue_date", getattr(self.instance, "discontinue_date", None))
+        if launch_date and discontinue_date and discontinue_date < launch_date:
+            raise serializers.ValidationError({"discontinue_date": "Discontinue date cannot be before launch date."})
 
         return attrs
+
+
+class ProductListSerializer(serializers.ModelSerializer):
+    productcategory_name = serializers.CharField(source="productcategory.pcategoryname", read_only=True)
+    brand_name = serializers.CharField(source="brand.name", read_only=True)
+    base_uom_code = serializers.CharField(source="base_uom.code", read_only=True)
+
+    class Meta:
+        model = Product
+        fields = (
+            "id",
+            "productname",
+            "sku",
+            "productdesc",
+            "productcategory",
+            "productcategory_name",
+            "brand",
+            "brand_name",
+            "base_uom",
+            "base_uom_code",
+            "is_service",
+            "product_status",
+            "isactive",
+            "createdon",
+            "modifiedon",
+        )
+
+
+class ProductAttributeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductAttribute
+        fields = (
+            "id",
+            "entity",
+            "name",
+            "data_type",
+            "isactive",
+        )
+        read_only_fields = ("createdon", "modifiedon")
 
     # -------------------- generic helper --------------------
 
@@ -780,7 +918,7 @@ class ProductStatusChoiceSerializer(serializers.Serializer):
 # Barcode manage serializer (updated only if you want strict primary handling)
 # ----------------------------------------------------------------------
 
-class ProductBarcodeManageSerializer(serializers.ModelSerializer):
+class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     product_id = serializers.IntegerField(source="product.id", read_only=True)
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
@@ -834,6 +972,10 @@ class ProductBarcodeManageSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
     def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        uom = attrs.get("uom", getattr(self.instance, "uom", None))
+        self._validate_entity_scoped_fk(field_name="uom", obj=uom, entity=entity, label="UOM")
+
         pack_size = attrs.get("pack_size", None)
         if pack_size in (None, 0, "0", ""):
             attrs["pack_size"] = 1

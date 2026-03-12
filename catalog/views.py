@@ -33,7 +33,10 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from entity.models import Entity
+from entity.models import Entity, SubEntity
+from entity.serializers import subentitySerializerbyentity
+from financial.models import account
+from financial.serializers import SimpleAccountSerializer
 
 from .models import (
     ProductCategory,
@@ -48,6 +51,12 @@ from .models import (
     ProductBarcode,
     ProductGstRate,
     ProductPrice,
+    ProductUomConversion,
+    ProductAttribute,
+    ProductAttributeValue,
+    ProductImage,
+    OpeningStockByLocation,
+    ProductPlanning,
 )
 from .serializers import (
     ProductCategorySerializer,
@@ -55,8 +64,17 @@ from .serializers import (
     BrandSerializer,
     UnitOfMeasureSerializer,
     ProductSerializer,
+    ProductListSerializer,
     HsnSacSerializer,
     PriceListSerializer,
+    ProductAttributeSerializer,
+    ProductGstRateSerializer,
+    ProductUomConversionSerializer,
+    OpeningStockByLocationSerializer,
+    ProductPriceSerializer,
+    ProductPlanningSerializer,
+    ProductAttributeValueSerializer,
+    ProductImageNestedSerializer,
     GstTypeChoiceSerializer,
     CessTypeChoiceSerializer,
     ProductStatusChoiceSerializer,
@@ -133,7 +151,19 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
 
     def get_queryset(self):
         entity = self.get_entity()
+        queryset = Product.objects.filter(entity=entity).select_related(
+            "productcategory",
+            "brand",
+            "base_uom",
+        )
+        if self.request.method.upper() == "GET":
+            return queryset.order_by("productname", "id")
         return product_queryset_optimized().filter(entity=entity)
+
+    def get_serializer_class(self):
+        if self.request.method.upper() == "GET":
+            return ProductListSerializer
+        return ProductSerializer
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())
@@ -267,6 +297,25 @@ class PriceListRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.Retri
         return PriceList.objects.filter(entity=self.get_entity())
 
 
+class ProductAttributeListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductAttributeSerializer
+
+    def get_queryset(self):
+        return ProductAttribute.objects.filter(entity=self.get_entity()).order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class ProductAttributeRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductAttributeSerializer
+
+    def get_queryset(self):
+        return ProductAttribute.objects.filter(entity=self.get_entity())
+
+
 # ----------------------------------------------------------------------
 # Choice APIs
 # ----------------------------------------------------------------------
@@ -326,6 +375,13 @@ class ProductPageBootstrapAPIView(APIView):
         uoms = UnitOfMeasure.objects.filter(entity_id=entity_id_int, isactive=True)
         hsn_sac = HsnSac.objects.filter(entity_id=entity_id_int, isactive=True)
         pricelists = PriceList.objects.filter(entity_id=entity_id_int, isactive=True)
+        product_attributes = ProductAttribute.objects.filter(entity_id=entity_id_int, isactive=True).order_by("name")
+        accounts = (
+            account.objects.filter(entity_id=entity_id_int)
+            .select_related("state", "ledger", "ledger__accounthead")
+            .order_by("accountname", "id")
+        )
+        locations = SubEntity.objects.filter(entity_id=entity_id_int).order_by("subentityname", "id")
 
         data = {
             "product": product,
@@ -338,6 +394,9 @@ class ProductPageBootstrapAPIView(APIView):
             "uoms": UnitOfMeasureSerializer(uoms, many=True).data,          # includes uqc now
             "hsn_sac": HsnSacSerializer(hsn_sac, many=True).data,
             "pricelists": PriceListSerializer(pricelists, many=True).data,
+            "product_attributes": ProductAttributeSerializer(product_attributes, many=True).data,
+            "accounts": SimpleAccountSerializer(accounts, many=True).data,
+            "locations": subentitySerializerbyentity(locations, many=True).data,
         }
         return Response(data)
 
@@ -545,6 +604,164 @@ class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
         except (TypeError, ValueError):
             raise ValidationError({"entity": "Invalid entity id"})
         return ProductBarcode.objects.select_related("product", "uom").filter(product__entity_id=entity_id)
+
+
+class ProductScopedChildMixin:
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_entity(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+        try:
+            return Entity.objects.get(id=int(entity_param))
+        except (ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
+
+    def _get_entity_id(self):
+        entity_param = self.request.query_params.get("entity")
+        if not entity_param:
+            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
+        try:
+            return int(entity_param)
+        except (TypeError, ValueError):
+            raise ValidationError({"entity": "Invalid entity id"})
+
+    def get_product(self):
+        return get_object_or_404(Product, pk=self.kwargs["product_id"], entity=self._get_entity())
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        if "product_id" in self.kwargs:
+            ctx["product"] = self.get_product()
+        ctx["entity"] = self._get_entity()
+        return ctx
+
+
+class ProductGstRateListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = ProductGstRateSerializer
+
+    def get_queryset(self):
+        return ProductGstRate.objects.filter(product=self.get_product()).select_related("hsn").order_by("-isdefault", "-valid_from", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product())
+
+
+class ProductGstRateRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductGstRateSerializer
+
+    def get_queryset(self):
+        return ProductGstRate.objects.select_related("product", "hsn").filter(product__entity_id=self._get_entity_id())
+
+
+class ProductUomConversionListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = ProductUomConversionSerializer
+
+    def get_queryset(self):
+        return ProductUomConversion.objects.filter(product=self.get_product()).select_related("from_uom", "to_uom").order_by("id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product())
+
+
+class ProductUomConversionRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductUomConversionSerializer
+
+    def get_queryset(self):
+        return ProductUomConversion.objects.select_related("product", "from_uom", "to_uom").filter(product__entity_id=self._get_entity_id())
+
+
+class OpeningStockByLocationListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = OpeningStockByLocationSerializer
+
+    def get_queryset(self):
+        return OpeningStockByLocation.objects.filter(product=self.get_product()).select_related("location").order_by("-as_of_date", "id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product(), entity=self.get_product().entity)
+
+
+class OpeningStockByLocationRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = OpeningStockByLocationSerializer
+
+    def get_queryset(self):
+        return OpeningStockByLocation.objects.select_related("product", "location").filter(entity_id=self._get_entity_id())
+
+
+class ProductPriceListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = ProductPriceSerializer
+
+    def get_queryset(self):
+        return ProductPrice.objects.filter(product=self.get_product()).select_related("pricelist", "uom").order_by("-effective_from", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product())
+
+
+class ProductPriceRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductPriceSerializer
+
+    def get_queryset(self):
+        return ProductPrice.objects.select_related("product", "pricelist", "uom").filter(product__entity_id=self._get_entity_id())
+
+
+class ProductPlanningListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = ProductPlanningSerializer
+
+    def get_queryset(self):
+        return ProductPlanning.objects.filter(product=self.get_product()).order_by("id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product())
+
+
+class ProductPlanningRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductPlanningSerializer
+
+    def get_queryset(self):
+        return ProductPlanning.objects.select_related("product").filter(product__entity_id=self._get_entity_id())
+
+
+class ProductAttributeValueListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = ProductAttributeValueSerializer
+
+    def get_queryset(self):
+        return ProductAttributeValue.objects.filter(product=self.get_product()).select_related("attribute").order_by("id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product())
+
+
+class ProductAttributeValueRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductAttributeValueSerializer
+
+    def get_queryset(self):
+        return ProductAttributeValue.objects.select_related("product", "attribute").filter(product__entity_id=self._get_entity_id())
+
+
+class ProductImageListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
+    serializer_class = ProductImageNestedSerializer
+
+    def get_queryset(self):
+        return ProductImage.objects.filter(product=self.get_product()).order_by("-is_primary", "id")
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_product())
+
+
+class ProductImageRUDAPIView(ProductScopedChildMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductImageNestedSerializer
+
+    def get_queryset(self):
+        return ProductImage.objects.select_related("product").filter(product__entity_id=self._get_entity_id())
 
 
 # ----------------------------------------------------------------------
