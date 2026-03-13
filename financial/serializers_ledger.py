@@ -38,7 +38,7 @@ class LedgerSerializer(serializers.ModelSerializer):
         )
 
     def get_management_mode(self, obj):
-        return "auto_managed" if getattr(obj, "account_profile_id", None) else "direct"
+        return "auto_managed" if hasattr(obj, "account_profile") else "direct"
 
 
 class LedgerSimpleSerializer(serializers.ModelSerializer):
