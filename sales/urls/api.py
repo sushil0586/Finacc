@@ -32,6 +32,7 @@ from sales.views.sales_invoice_compliance_api import (
 from sales.views.sales_choices_views import SalesChoicesAPIView
 from sales.views.sales_settings_views import SalesSettingsAPIView
 from sales.views.sales_meta import (
+    LegacyCombinedSalesMetaAPIView,
     SalesInvoiceFormMetaAPIView,
     SalesInvoiceDetailFormMetaAPIView,
     SalesInvoiceSearchMetaAPIView,
@@ -71,6 +72,7 @@ urlpatterns = [
     path("meta/invoice-detail-form/", SalesInvoiceDetailFormMetaAPIView.as_view(), name="sales-invoice-detail-form-meta"),
     path("meta/invoice-search/", SalesInvoiceSearchMetaAPIView.as_view(), name="sales-invoice-search-meta"),
     path("meta/invoice-lines/", SalesInvoiceLinesMetaAPIView.as_view(), name="sales-invoice-lines-meta"),
+    path("meta/combined/", LegacyCombinedSalesMetaAPIView.as_view(), name="sales-legacy-combined-meta"),
     path("meta/settings/", SalesSettingsMetaAPIView.as_view(), name="sales-settings-meta"),
     path("meta/compliance/", SalesComplianceMetaAPIView.as_view(), name="sales-compliance-meta"),
     path("charge-types/", SalesChargeTypeListCreateAPIView.as_view(), name="sales-charge-type-list"),

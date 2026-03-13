@@ -472,3 +472,74 @@ class SalesComplianceMetaAPIView(SalesMetaBaseAPIView):
                 },
             }
         )
+
+
+class LegacyCombinedSalesMetaAPIView(SalesMetaBaseAPIView):
+    """
+    Compatibility replacement for the old /api/invoice/combinedapi endpoint.
+
+    The legacy invoice tables were removed, so this endpoint now serves the
+    same bootstrap shape from current sales metadata:
+    - taxtypes     -> sales Taxability choices
+    - invoicetypes -> sales DocType choices
+    - branches     -> active subentities
+    - defaultvalues -> derived defaults (no legacy persisted table exists now)
+    """
+
+    def get(self, request):
+        entity_id = self._parse_int(request.query_params.get("entity"), "entity", required=True)
+        choices = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=None)
+        branches = self._subentities(entity_id)
+
+        tax_types = [
+            {
+                "id": row["value"],
+                "taxtypename": row["label"],
+                "taxtypecode": row["key"],
+            }
+            for row in choices.get("Taxability", [])
+            if row.get("enabled", True)
+        ]
+        invoice_types = [
+            {
+                "id": row["value"],
+                "invoicetype": row["label"],
+                "invoicetypecode": row["key"],
+            }
+            for row in choices.get("DocType", [])
+            if row.get("enabled", True)
+        ]
+
+        default_branch_id = next((row["id"] for row in branches if row.get("ismainentity")), None)
+        if default_branch_id is None and branches:
+            default_branch_id = branches[0]["id"]
+
+        default_tax_type_id = next((row["id"] for row in tax_types if row["taxtypecode"] == "TAXABLE"), None)
+        if default_tax_type_id is None and tax_types:
+            default_tax_type_id = tax_types[0]["id"]
+
+        default_invoice_type_id = next(
+            (row["id"] for row in invoice_types if row["invoicetypecode"] == "TAX_INVOICE"),
+            None,
+        )
+        if default_invoice_type_id is None and invoice_types:
+            default_invoice_type_id = invoice_types[0]["id"]
+
+        default_values = []
+        if default_tax_type_id is not None or default_invoice_type_id is not None or default_branch_id is not None:
+            default_values.append(
+                {
+                    "taxtype": default_tax_type_id,
+                    "invoicetype": default_invoice_type_id,
+                    "subentity": default_branch_id,
+                }
+            )
+
+        return Response(
+            [
+                {"taxtypes": tax_types},
+                {"invoicetypes": invoice_types},
+                {"branches": branches},
+                {"defaultvalues": default_values},
+            ]
+        )

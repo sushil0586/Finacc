@@ -15,10 +15,16 @@ from .views_ledger import (
     AccountTypeV2ListCreateAPIView,
     AccountTypeV2RetrieveUpdateDestroyAPIView,
     BaseAccountListV2APIView,
+    ContactDetailsByAccountView,
+    ContactDetailsListCreateView,
+    ContactDetailsRetrieveUpdateDestroyView,
     LedgerBalanceListAPIView,
     LedgerListCreateAPIView,
     LedgerRetrieveUpdateDestroyAPIView,
     LedgerSimpleListAPIView,
+    ShippingDetailsByAccountView,
+    ShippingDetailsListCreateAPIView,
+    ShippingDetailsRetrieveUpdateDestroyView,
     SimpleAccountsV2APIView,
 )
 
@@ -27,6 +33,7 @@ app_name = "financial"
 
 
 urlpatterns = [
+    path("baseaccountlist/", BaseAccountListV2APIView.as_view(), name="account-list"),
     path("baseaccountlistv2/", BaseAccountListV2APIView.as_view(), name="account-list-v2"),
     path("meta/account-choices/", AccountChoicesAPIView.as_view(), name="meta-account-choices"),
     path("meta/account-form/", AccountFormMetaAPIView.as_view(), name="meta-account-form"),
@@ -44,4 +51,10 @@ urlpatterns = [
     path("ledger-balances", LedgerBalanceListAPIView.as_view(), name="ledger-balance-list"),
     path("accounts-v2", AccountProfileV2ListCreateAPIView.as_view(), name="account-profile-v2-list-create"),
     path("accounts-v2/<int:pk>", AccountProfileV2RetrieveUpdateDestroyAPIView.as_view(), name="account-profile-v2-detail"),
+    path("shipping-details/", ShippingDetailsListCreateAPIView.as_view(), name="shipping-details-list-create"),
+    path("shipping-details/<int:pk>/", ShippingDetailsRetrieveUpdateDestroyView.as_view(), name="shipping-details-detail"),
+    path("shipping-details/account/<int:account_id>/", ShippingDetailsByAccountView.as_view(), name="shipping-details-by-account"),
+    path("contact-details/", ContactDetailsListCreateView.as_view(), name="contact-details-list-create"),
+    path("contact-details/<int:pk>/", ContactDetailsRetrieveUpdateDestroyView.as_view(), name="contact-details-detail"),
+    path("contact-details/account/<int:account_id>/", ContactDetailsByAccountView.as_view(), name="contact-details-by-account"),
 ]

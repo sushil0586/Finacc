@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import EntityFinancialYear
-from financial.models import Ledger, account, accountHead, accounttype
+from financial.models import ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
 from financial.serializers_ledger import (
     AccountProfileV2ReadSerializer,
@@ -17,11 +17,23 @@ from financial.serializers_ledger import (
     LedgerSimpleSerializer,
     SimpleAccountV2Serializer,
 )
+from financial.serializers import (
+    ContactDetailsListSerializer,
+    ContactDetailsSerializer,
+    ShippingDetailsListSerializer,
+    ShippingDetailsSerializer,
+)
 from financial.services import build_ledger_balance_rows
 
 
 def _include_inactive(request):
     return str(request.query_params.get("include_inactive", "")).lower() in {"1", "true", "yes"}
+
+
+def _linked_account_id(ledger):
+    if not hasattr(ledger, "account_profile"):
+        return None
+    return ledger.account_profile.id
 
 
 class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
@@ -57,6 +69,124 @@ class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
 
     def perform_create(self, serializer):
         serializer.save(createdby=self.request.user)
+
+
+class ShippingDetailsListCreateAPIView(ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return ShippingDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+    def get_serializer_class(self):
+        if self.request.method.upper() == "GET":
+            return ShippingDetailsListSerializer
+        return ShippingDetailsSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+
+class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ShippingDetailsSerializer
+
+    def get_queryset(self):
+        return ShippingDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+
+class ShippingDetailsByAccountView(ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ShippingDetailsListSerializer
+
+    def get_queryset(self):
+        account_id = self.kwargs.get("account_id")
+        return (
+            ShippingDetails.objects.select_related(
+                "account", "entity", "country", "state", "district", "city"
+            )
+            .filter(account_id=account_id)
+            .order_by("-isprimary", "id")
+            .only(
+                "id",
+                "account_id",
+                "entity_id",
+                "gstno",
+                "address1",
+                "address2",
+                "pincode",
+                "phoneno",
+                "full_name",
+                "emailid",
+                "isprimary",
+                "country_id",
+                "state_id",
+                "district_id",
+                "city_id",
+            )
+        )
+
+
+class ContactDetailsListCreateView(ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return ContactDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+    def get_serializer_class(self):
+        if self.request.method.upper() == "GET":
+            return ContactDetailsListSerializer
+        return ContactDetailsSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(createdby=self.request.user)
+
+
+class ContactDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ContactDetailsSerializer
+
+    def get_queryset(self):
+        return ContactDetails.objects.select_related(
+            "account", "entity", "country", "state", "district", "city"
+        )
+
+
+class ContactDetailsByAccountView(ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ContactDetailsListSerializer
+
+    def get_queryset(self):
+        account_id = self.kwargs.get("account_id")
+        return (
+            ContactDetails.objects.select_related(
+                "account", "entity", "country", "state", "district", "city"
+            )
+            .filter(account_id=account_id)
+            .order_by("-isprimary", "id")
+            .only(
+                "id",
+                "account_id",
+                "entity_id",
+                "address1",
+                "address2",
+                "pincode",
+                "phoneno",
+                "full_name",
+                "emailid",
+                "designation",
+                "isprimary",
+                "country_id",
+                "state_id",
+                "district_id",
+                "city_id",
+            )
+        )
 
 
 class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
@@ -146,12 +276,13 @@ class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if getattr(instance, "account_profile_id", None):
+        account_id = _linked_account_id(instance)
+        if account_id:
             return Response(
                 {
                     "error": "This ledger is auto-managed from the Account page. Edit the linked account instead.",
                     "code": "ledger_auto_managed",
-                    "account_id": instance.account_profile_id,
+                    "account_id": account_id,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -159,12 +290,13 @@ class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if getattr(instance, "account_profile_id", None):
+        account_id = _linked_account_id(instance)
+        if account_id:
             return Response(
                 {
                     "error": "This ledger is auto-managed from the Account page. Deactivate the linked account instead.",
                     "code": "ledger_auto_managed",
-                    "account_id": instance.account_profile_id,
+                    "account_id": account_id,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -263,13 +395,20 @@ class BaseAccountListV2APIView(APIView):
         if not entity_ids:
             return Response([], status=status.HTTP_200_OK)
 
-        ledger_qs = Ledger.objects.filter(entity_id__in=entity_ids, account_profile__isnull=False, isactive=True)
+        ledger_qs = Ledger.objects.filter(entity_id__in=entity_ids, account_profile__isnull=False, isactive=True).select_related(
+            "account_profile"
+        )
         if accounthead_codes:
             ledger_qs = ledger_qs.filter(accounthead__code__in=accounthead_codes)
 
         ledger_map = {
-            row["id"]: row
-            for row in ledger_qs.values("id", "entity_id", "name", "account_profile_id")
+            ledger.id: {
+                "id": ledger.id,
+                "entity_id": ledger.entity_id,
+                "name": ledger.name,
+                "account_profile_id": ledger.account_profile.id,
+            }
+            for ledger in ledger_qs
         }
         if not ledger_map:
             return Response([], status=status.HTTP_200_OK)
@@ -356,7 +495,7 @@ class AccountListPostV2APIView(APIView):
 
         if not ledger_ids and account_ids:
             ledger_ids = list(
-                Ledger.objects.filter(entity_id=entity, account_profile_id__in=account_ids).values_list("id", flat=True)
+                Ledger.objects.filter(entity_id=entity, account_profile__id__in=account_ids).values_list("id", flat=True)
             )
 
         rows = build_ledger_balance_rows(
