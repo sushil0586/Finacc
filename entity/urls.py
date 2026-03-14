@@ -1,7 +1,17 @@
 from django.urls import path
 from entity import views
 from entity.context_views import UserEntitiesV2View
-from entity.onboarding_views import EntityOnboardingCreateAPIView, RegisterAndEntityOnboardingCreateAPIView
+from entity.onboarding_views import (
+    EntityOnboardingCreateAPIView,
+    EntityOnboardingDetailAPIView,
+    EntityOnboardingMetaAPIView,
+    OnboardingCityOptionsAPIView,
+    OnboardingCountryOptionsAPIView,
+    OnboardingDistrictOptionsAPIView,
+    OnboardingGstLookupAPIView,
+    OnboardingStateOptionsAPIView,
+    RegisterAndEntityOnboardingCreateAPIView,
+)
 
 
 app_name = 'entity'
@@ -33,16 +43,19 @@ urlpatterns  = [
     path('me/entities',UserEntitiesV2View.as_view(), name = 'entity-context-v2'),
     path('userdetailsbyentity',views.userdetailsbyentity.as_view(), name = 'unittypeid'),
     path('userAddApiView',views.userAddApiView.as_view(), name = 'unittypeid'),
-    path('getentitybygst',views.getgstindetails.as_view(), name = 'unittypeid'),
     path('getyearsbyentity',views.EntityFinancialYearView.as_view(), name = 'unittypeid'),
-    path('entitymasterdetails',views.MasterDataView.as_view(), name = 'unittypeid'),
     path('bankaccounts/', views.BankAccountCreateView.as_view(), name='bankaccount-create'),
     path('bankaccounts/<int:pk>/', views.BankAccountDetailView.as_view(), name='bankaccount-detail'),
     path('bankaccounts/entity/<int:entity_id>/', views.BankAccountListByEntityView.as_view(), name='bankaccount-by-entity'),
-    path('entity/create/', views.EntityCreateUpdateAPIView.as_view(), name='entity-create'),
     path('onboarding/create/', EntityOnboardingCreateAPIView.as_view(), name='entity-onboarding-create'),
+    path('onboarding/entity/<int:pk>/', EntityOnboardingDetailAPIView.as_view(), name='entity-onboarding-detail'),
     path('onboarding/register/', RegisterAndEntityOnboardingCreateAPIView.as_view(), name='entity-onboarding-register'),
-    path('entity/update/<int:pk>/', views.EntityCreateUpdateAPIView.as_view(), name='entity-update'),
+    path('onboarding/meta/', EntityOnboardingMetaAPIView.as_view(), name='entity-onboarding-meta'),
+    path('onboarding/options/countries/', OnboardingCountryOptionsAPIView.as_view(), name='entity-onboarding-countries'),
+    path('onboarding/options/states/', OnboardingStateOptionsAPIView.as_view(), name='entity-onboarding-states'),
+    path('onboarding/options/districts/', OnboardingDistrictOptionsAPIView.as_view(), name='entity-onboarding-districts'),
+    path('onboarding/options/cities/', OnboardingCityOptionsAPIView.as_view(), name='entity-onboarding-cities'),
+    path('onboarding/gst-lookup/', OnboardingGstLookupAPIView.as_view(), name='entity-onboarding-gst-lookup'),
     path('entity/<int:id>/', views.EntityRetrieveAPIView.as_view(), name='entity-detail'),
     
 

@@ -1,10 +1,13 @@
 from django.db import transaction
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework.exceptions import PermissionDenied
 
 from Authentication.models import User
 from Authentication.services import AuthOTPService
-from entity.models import BankAccount, Entity, EntityConstitution, EntityDetail, EntityFinancialYear, SubEntity
+from entity.models import BankAccount, Entity, EntityConstitution, EntityDetail, EntityFinancialYear, SubEntity, UserRole
 from financial.seeding import FinancialSeedService
 from rbac.seeding import RBACSeedService
+from rbac.models import UserRoleAssignment
 
 
 class EntityOnboardingService:
@@ -29,6 +32,9 @@ class EntityOnboardingService:
         seed_options = dict(payload.get("seed_options") or {})
 
         entity = Entity.objects.create(createdby=actor, **entity_data)
+        if not entity.entity_code:
+            entity.entity_code = f"ENT{entity.id:05d}"
+            entity.save(update_fields=["entity_code"])
 
         detail = None
         if detail_data:
@@ -61,6 +67,9 @@ class EntityOnboardingService:
         if subentity_rows:
             for row in subentity_rows:
                 subentity = SubEntity.objects.create(entity=entity, **row)
+                if not subentity.subentity_code:
+                    subentity.subentity_code = f"BR{entity.id:03d}{subentity.id:03d}"
+                    subentity.save(update_fields=["subentity_code"])
                 subentity_ids.append(subentity.id)
         elif seed_options.get("seed_default_subentity", True):
             subentity = SubEntity.objects.create(
@@ -76,8 +85,12 @@ class EntityOnboardingService:
                 phoneresidence=entity.phoneresidence,
                 email=entity.email,
                 ismainentity=True,
+                is_head_office=True,
+                branch_type=SubEntity.BranchType.HEAD_OFFICE,
                 isactive=True,
             )
+            subentity.subentity_code = f"HO{entity.id:05d}"
+            subentity.save(update_fields=["subentity_code"])
             subentity_ids.append(subentity.id)
 
         constitution_ids = []
@@ -111,6 +124,134 @@ class EntityOnboardingService:
             "financial": financial_summary,
             "rbac": rbac_summary,
         }
+
+    @staticmethod
+    def can_manage_entity(*, user, entity) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if entity.createdby_id == user.id:
+            return True
+        if UserRole.objects.filter(entity=entity, user=user).exists():
+            return True
+        return UserRoleAssignment.objects.filter(entity=entity, user=user, isactive=True).exists()
+
+    @classmethod
+    def _get_entity_detail(cls, entity):
+        try:
+            return entity.entitydetail
+        except ObjectDoesNotExist:
+            return None
+
+    @classmethod
+    def build_entity_payload(cls, *, entity):
+        detail = cls._get_entity_detail(entity)
+        return {
+            "entity_id": entity.id,
+            "entity": entity,
+            "entity_detail": detail,
+            "financial_years": entity.fy.all().order_by("finstartyear", "id"),
+            "bank_accounts": entity.bank_accounts.all().order_by("id"),
+            "subentities": entity.subentity.all().order_by("id"),
+            "constitution_details": entity.constitution.all().order_by("id"),
+        }
+
+    @classmethod
+    def _upsert_nested(cls, *, model, parent_instance, related_name, parent_field, items, actor=None):
+        if items is None:
+            return
+
+        incoming = [dict(row) for row in items]
+        existing_qs = getattr(parent_instance, related_name).all()
+        existing_map = {obj.id: obj for obj in existing_qs}
+        keep_ids = set()
+
+        for row in incoming:
+            row.pop(parent_field, None)
+            row.pop(f"{parent_field}_id", None)
+            obj_id = int(row.pop("id", 0) or 0)
+
+            if obj_id and obj_id in existing_map:
+                obj = existing_map[obj_id]
+                for field, value in row.items():
+                    setattr(obj, field, value)
+                if hasattr(obj, "updatedby_id"):
+                    obj.updatedby = actor
+                obj.save()
+                keep_ids.add(obj_id)
+                continue
+
+            create_kwargs = {parent_field: parent_instance}
+            if actor is not None and hasattr(model, "createdby_id"):
+                create_kwargs["createdby"] = actor
+            obj = model.objects.create(**row, **create_kwargs)
+            keep_ids.add(obj.id)
+
+        for obj_id, obj in existing_map.items():
+            if obj_id not in keep_ids:
+                obj.delete()
+
+    @classmethod
+    @transaction.atomic
+    def update_entity(cls, *, actor, entity, payload):
+        if not cls.can_manage_entity(user=actor, entity=entity):
+            raise PermissionDenied("You are not allowed to update this entity.")
+
+        entity_data = payload.get("entity")
+        if entity_data is not None:
+            for field, value in dict(entity_data).items():
+                setattr(entity, field, value)
+            if hasattr(entity, "updatedby_id"):
+                entity.updatedby = actor
+            entity.save()
+
+        detail_data = payload.get("entity_detail")
+        if detail_data is not None:
+            detail_defaults = dict(detail_data)
+            detail_defaults.setdefault("gstno", entity.gstno)
+            detail_defaults.setdefault("gstintype", entity.gstintype)
+            EntityDetail.objects.update_or_create(entity=entity, defaults=detail_defaults)
+
+        fy_rows = payload.get("financial_years")
+        if fy_rows is not None:
+            fy_rows = [dict(row) for row in fy_rows]
+            if fy_rows and not any(row.get("isactive") for row in fy_rows):
+                fy_rows[0]["isactive"] = True
+            cls._upsert_nested(
+                model=EntityFinancialYear,
+                parent_instance=entity,
+                related_name="fy",
+                parent_field="entity",
+                items=fy_rows,
+                actor=actor,
+            )
+
+        cls._upsert_nested(
+            model=BankAccount,
+            parent_instance=entity,
+            related_name="bank_accounts",
+            parent_field="entity",
+            items=payload.get("bank_accounts"),
+            actor=actor,
+        )
+        cls._upsert_nested(
+            model=SubEntity,
+            parent_instance=entity,
+            related_name="subentity",
+            parent_field="entity",
+            items=payload.get("subentities"),
+            actor=actor,
+        )
+        cls._upsert_nested(
+            model=EntityConstitution,
+            parent_instance=entity,
+            related_name="constitution",
+            parent_field="entity",
+            items=payload.get("constitution_details"),
+            actor=actor,
+        )
+
+        entity.refresh_from_db()
+        return cls.build_entity_payload(entity=entity)
 
     @classmethod
     @transaction.atomic
