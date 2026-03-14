@@ -255,10 +255,10 @@ class SalesSettingsService:
     # Settings / Policy
     # ----------------------------
     @staticmethod
-    def get_settings(entity_id: int, subentity_id: Optional[int]) -> SalesSettings:
+    def get_settings(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None) -> SalesSettings:
         """
         Prefer entity+subentity row. Fallback to entity-only row (subentity NULL).
-        Auto-create default row if missing (same suggestion as Purchase).
+        If no row exists yet, create it with the current financial-year scope.
         """
         s = SalesSettings.objects.filter(entity_id=entity_id, subentity_id=subentity_id).first()
         if s:
@@ -268,11 +268,14 @@ class SalesSettingsService:
         if s:
             return s
 
-        return SalesSettings.objects.create(entity_id=entity_id, subentity_id=subentity_id)
+        if not entityfinid_id:
+            raise ValueError("entityfinid_id is required to create sales settings.")
+
+        return SalesSettings.objects.create(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
 
     @staticmethod
-    def get_policy(entity_id: int, subentity_id: Optional[int]) -> SalesPolicy:
-        return SalesPolicy(settings=SalesSettingsService.get_settings(entity_id, subentity_id))
+    def get_policy(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None) -> SalesPolicy:
+        return SalesPolicy(settings=SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id))
 
     # ----------------------------
     # Lock period enforcement

@@ -124,7 +124,7 @@ class SalesInvoiceService:
         Auto compliance hook controlled by SalesSettings.
         stage: "confirm" | "post"
         """
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
         from sales.services.sales_compliance_service import SalesComplianceService
 
         svc = SalesComplianceService(invoice=header, user=user)
@@ -215,7 +215,7 @@ class SalesInvoiceService:
             cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
             return
 
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
         is_credit_note = int(header.doc_type or 0) == int(SalesInvoiceHeader.DocType.CREDIT_NOTE)
         credit_note_policy = (getattr(settings_obj, "tcs_credit_note_policy", "REVERSE") or "REVERSE").upper()
 
@@ -548,7 +548,7 @@ class SalesInvoiceService:
             return
 
         # Default doc_code from settings if missing
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
 
         if not header.doc_code:
             if int(header.doc_type) == int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
@@ -584,14 +584,16 @@ class SalesInvoiceService:
             int(header.doc_type), header.doc_code, int(header.doc_no)
         )
     @staticmethod
-    def get_settings(entity_id: int, subentity_id: Optional[int]) -> SalesSettings:
+    def get_settings(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None) -> SalesSettings:
         obj = (
             SalesSettings.objects.filter(entity_id=entity_id, subentity_id=subentity_id).first()
             or SalesSettings.objects.filter(entity_id=entity_id, subentity__isnull=True).first()
         )
-        if not obj:
-            # fallback default object-like behavior
-            obj = SalesSettings(
+        if obj:
+            return obj
+
+        if not entityfinid_id:
+            return SalesSettings(
                 entity_id=entity_id,
                 subentity_id=subentity_id,
                 default_doc_code_invoice="SINV",
@@ -600,7 +602,17 @@ class SalesInvoiceService:
                 enable_round_off=True,
                 round_grand_total_to=2,
             )
-        return obj
+
+        return SalesSettings.objects.create(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            default_doc_code_invoice="SINV",
+            default_doc_code_cn="SCN",
+            default_doc_code_dn="SDN",
+            enable_round_off=True,
+            round_grand_total_to=2,
+        )
 
     @staticmethod
     def assert_not_locked(*, entity_id: int, subentity_id: Optional[int], bill_date):
@@ -817,7 +829,7 @@ class SalesInvoiceService:
         cls.compute_and_persist_totals(header, user=user)
         cls._derive_compliance_flags(
             header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
             user=user,
         )
         cls._validate_adjustment_caps(header=header)
@@ -931,7 +943,7 @@ class SalesInvoiceService:
         cls.compute_and_persist_totals(header, user=user)
         cls._derive_compliance_flags(
             header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
             user=user,
         )
         cls._validate_adjustment_caps(header=header)
@@ -1441,7 +1453,7 @@ class SalesInvoiceService:
     # -------------------------
     @classmethod
     def compute_and_persist_totals(cls, header: SalesInvoiceHeader, *, user):
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
 
         totals = Totals()
         for line in header.lines.all():
@@ -1531,7 +1543,7 @@ class SalesInvoiceService:
         cls.compute_and_persist_totals(header, user=user)
         cls._derive_compliance_flags(
             header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
             user=user,
         )
         cls._validate_b2b_gstin_requirements(header=header)
@@ -1606,7 +1618,7 @@ class SalesInvoiceService:
         cls.compute_and_persist_totals(header, user=user)
         cls._derive_compliance_flags(
             header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id),
+            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
             user=user,
         )
         cls._validate_b2b_gstin_requirements(header=header)
@@ -1829,7 +1841,7 @@ class SalesInvoiceService:
     def cancel(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
         if header.status == SalesInvoiceHeader.Status.CANCELLED:
             return header
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id)
+        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
         if bool(getattr(settings_obj, "enforce_statutory_cancel_before_business_cancel", True)):
             einv = getattr(header, "einvoice_artifact", None)
             ewb = getattr(header, "eway_artifact", None)
