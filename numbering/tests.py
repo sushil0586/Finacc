@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from numbering.models import DocumentNumberSeries, DocumentType
+from numbering.seeding import NumberingSeedService
 from numbering.services import ensure_document_type, ensure_series
 from numbering.services.document_number_service import DocumentNumberService
 
@@ -166,3 +167,26 @@ class NumberingTests(TestCase):
         )
         self.assertEqual(series.current_number, 5)
         self.assertEqual(series.prefix, "JV")
+
+    def test_numbering_seed_service_creates_document_type_and_series_together(self):
+        result = NumberingSeedService.seed_document(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            module="sales",
+            doc_key="SALES_CREDIT_NOTE",
+            name="Sales Credit Note",
+            default_code="SCN",
+            prefix="SCN",
+            start=7,
+            padding=4,
+            reset="yearly",
+        )
+
+        dt = DocumentType.objects.get(id=result["doc_type_id"])
+        series = DocumentNumberSeries.objects.get(id=result["series_id"])
+        self.assertEqual(dt.module, "sales")
+        self.assertEqual(dt.doc_key, "SALES_CREDIT_NOTE")
+        self.assertEqual(series.doc_code, "SCN")
+        self.assertEqual(series.current_number, 7)
+        self.assertEqual(series.subentity_id, self.subentity.id)
