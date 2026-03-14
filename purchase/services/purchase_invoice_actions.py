@@ -32,12 +32,6 @@ class ActionResult:
 
 
 class PurchaseInvoiceActions:
-    PURCHASE_DOC_CODE_TO_KEYS = {
-        "PINV": ("PURCHASE_TAX_INVOICE", "PURCHASE_INVOICE"),
-        "PCN": ("PURCHASE_CREDIT_NOTE", "PURCHASE_RETURN"),
-        "PDN": ("PURCHASE_DEBIT_NOTE",),
-    }
-
     @staticmethod
     def _assert_action_allowed_by_level(*, h: PurchaseInvoiceHeader, level_key: str, message: str) -> None:
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
@@ -70,20 +64,11 @@ class PurchaseInvoiceActions:
         """
         Resolve DocumentType for purchase module based on doc_code (PINV/PCN/PDN).
         """
-        normalized_code = (doc_code or "").strip().upper()
-        doc_keys = PurchaseInvoiceActions.PURCHASE_DOC_CODE_TO_KEYS.get(normalized_code, ())
-
         dt = DocumentType.objects.filter(
             module="purchase",
-            default_code=normalized_code,
+            default_code=doc_code,
             is_active=True,
         ).first()
-        if not dt and doc_keys:
-            dt = DocumentType.objects.filter(
-                module="purchase",
-                doc_key__in=doc_keys,
-                is_active=True,
-            ).order_by("id").first()
         if not dt:
             raise ValueError(f"DocumentType not found for module='purchase' and doc_code='{doc_code}'")
         return dt.id

@@ -119,12 +119,11 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 DATABASES = {
    'default': {
        'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'finacc',
-       'USER': 'finaccuser',
-       'PASSWORD': 'Ansh@1789',
+       'NAME': 'FA',
+       'USER': 'postgres',
+       'PASSWORD': 'ansh@1789',
        'HOST': 'localhost',
-       'PORT': '5432',
-
+       'PORT': '',
    }
 }
 # # Database
@@ -259,19 +258,14 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() in ('1', 'true', 'yes', 'on')
 EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'false').lower() in ('1', 'true', 'yes', 'on')
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'sushilbansal86@gmail.com')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'lysd kryc xrvz qilx')
-
-default_email_backend = 'django.core.mail.backends.smtp.EmailBackend'
-if DEBUG and not (EMAIL_HOST_USER and EMAIL_HOST_PASSWORD):
-    default_email_backend = 'django.core.mail.backends.console.EmailBackend'
-
-EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', default_email_backend)
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER or 'no-reply@finacc.local')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'hbmy qbrv jcmq knmb')  # Move to env in real deployments.
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
 EMAIL_TIMEOUT = int(os.getenv('EMAIL_TIMEOUT', '20'))
 AUTH_REQUIRE_EMAIL_VERIFIED = True
 
@@ -306,3 +300,4 @@ LOGGING = {
         },
     },
 }
+

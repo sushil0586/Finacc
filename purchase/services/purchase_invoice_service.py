@@ -338,25 +338,10 @@ class PurchaseInvoiceService:
         vendor_state = attrs.get("vendor_state") or (instance.vendor_state if instance else None)
         pos_state = attrs.get("place_of_supply_state") or (instance.place_of_supply_state if instance else None)
         supplier_state = attrs.get("supplier_state") or (instance.supplier_state if instance else None)
-        entity = attrs.get("entity") or (instance.entity if instance else None)
-        subentity = attrs.get("subentity") or (instance.subentity if instance else None)
-
-        entity_id = getattr(entity, "id", entity)
-        subentity_id = getattr(subentity, "id", subentity)
-        auto_derive = True
-        if entity_id:
-            policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
-            auto_derive = policy.auto_derive_tax_regime
 
         compare_state = pos_state or supplier_state
 
-        if (
-            auto_derive
-            and vendor_state
-            and compare_state
-            and getattr(vendor_state, "id", None)
-            and getattr(compare_state, "id", None)
-        ):
+        if vendor_state and compare_state and getattr(vendor_state, "id", None) and getattr(compare_state, "id", None):
             if vendor_state.id == compare_state.id:
                 return DerivedRegime(tax_regime=int(TaxRegime.INTRA), is_igst=False)
             return DerivedRegime(tax_regime=int(TaxRegime.INTER), is_igst=True)

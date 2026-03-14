@@ -168,40 +168,25 @@ class NumberingTests(TestCase):
         self.assertEqual(series.current_number, 5)
         self.assertEqual(series.prefix, "JV")
 
-    def test_seed_doc_sequences_command_supports_purchase_tax_invoice_codes(self):
-        call_command(
-            "seed_doc_sequences",
-            entity=self.entity.id,
-            entityfinid=self.entityfin.id,
-            doc_code="PINV",
-            start=7,
-            padding=4,
-        )
-        dt = DocumentType.objects.get(module="purchase", doc_key="PURCHASE_TAX_INVOICE")
-        series = DocumentNumberSeries.objects.get(
-            entity=self.entity,
-            entityfinid=self.entityfin,
-            subentity=None,
-            doc_type=dt,
-            doc_code="PINV",
-        )
-        self.assertEqual(dt.default_code, "PINV")
-        self.assertEqual(series.current_number, 7)
-
-    def test_numbering_seed_service_seeds_purchase_docs(self):
-        summary = NumberingSeedService.seed_purchase_numbering(
+    def test_numbering_seed_service_creates_document_type_and_series_together(self):
+        result = NumberingSeedService.seed_document(
             entity_id=self.entity.id,
             entityfinid_id=self.entityfin.id,
-            subentity_id=None,
+            subentity_id=self.subentity.id,
+            module="sales",
+            doc_key="SALES_CREDIT_NOTE",
+            name="Sales Credit Note",
+            default_code="SCN",
+            prefix="SCN",
+            start=7,
+            padding=4,
+            reset="yearly",
         )
 
-        self.assertEqual(summary["purchase_numbering_count"], 3)
-        self.assertTrue(DocumentType.objects.filter(module="purchase", doc_key="PURCHASE_TAX_INVOICE").exists())
-        self.assertTrue(
-            DocumentNumberSeries.objects.filter(
-                entity=self.entity,
-                entityfinid=self.entityfin,
-                subentity=None,
-                doc_code="PINV",
-            ).exists()
-        )
+        dt = DocumentType.objects.get(id=result["doc_type_id"])
+        series = DocumentNumberSeries.objects.get(id=result["series_id"])
+        self.assertEqual(dt.module, "sales")
+        self.assertEqual(dt.doc_key, "SALES_CREDIT_NOTE")
+        self.assertEqual(series.doc_code, "SCN")
+        self.assertEqual(series.current_number, 7)
+        self.assertEqual(series.subentity_id, self.subentity.id)
