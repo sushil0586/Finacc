@@ -6,6 +6,7 @@ from Authentication.models import User
 from Authentication.services import AuthOTPService
 from entity.models import BankAccount, Entity, EntityConstitution, EntityDetail, EntityFinancialYear, SubEntity, UserRole
 from financial.seeding import FinancialSeedService
+from numbering.seeding import NumberingSeedService
 from rbac.seeding import RBACSeedService
 from rbac.models import UserRoleAssignment
 
@@ -114,6 +115,14 @@ class EntityOnboardingService:
                 seed_default_roles=seed_options.get("seed_default_roles", True),
             )
 
+        numbering_summary = {}
+        if fy_ids:
+            numbering_summary = NumberingSeedService.seed_purchase_numbering(
+                entity_id=entity.id,
+                entityfinid_id=fy_ids[0],
+                subentity_id=subentity_ids[0] if subentity_ids else None,
+            )
+
         return {
             "entity": entity,
             "entity_detail": detail,
@@ -123,6 +132,7 @@ class EntityOnboardingService:
             "constitution_ids": constitution_ids,
             "financial": financial_summary,
             "rbac": rbac_summary,
+            "numbering": numbering_summary,
         }
 
     @staticmethod

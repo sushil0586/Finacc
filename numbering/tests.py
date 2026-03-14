@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from numbering.models import DocumentNumberSeries, DocumentType
+from numbering.seeding import NumberingSeedService
 from numbering.services import ensure_document_type, ensure_series
 from numbering.services.document_number_service import DocumentNumberService
 
@@ -166,3 +167,41 @@ class NumberingTests(TestCase):
         )
         self.assertEqual(series.current_number, 5)
         self.assertEqual(series.prefix, "JV")
+
+    def test_seed_doc_sequences_command_supports_purchase_tax_invoice_codes(self):
+        call_command(
+            "seed_doc_sequences",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            doc_code="PINV",
+            start=7,
+            padding=4,
+        )
+        dt = DocumentType.objects.get(module="purchase", doc_key="PURCHASE_TAX_INVOICE")
+        series = DocumentNumberSeries.objects.get(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=None,
+            doc_type=dt,
+            doc_code="PINV",
+        )
+        self.assertEqual(dt.default_code, "PINV")
+        self.assertEqual(series.current_number, 7)
+
+    def test_numbering_seed_service_seeds_purchase_docs(self):
+        summary = NumberingSeedService.seed_purchase_numbering(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=None,
+        )
+
+        self.assertEqual(summary["purchase_numbering_count"], 3)
+        self.assertTrue(DocumentType.objects.filter(module="purchase", doc_key="PURCHASE_TAX_INVOICE").exists())
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=None,
+                doc_code="PINV",
+            ).exists()
+        )

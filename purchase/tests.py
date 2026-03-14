@@ -205,6 +205,46 @@ class PurchaseGstTdsTests(SimpleTestCase):
         self.assertEqual(header.match_status, "warn")
 
 
+class PurchaseTaxRegimeDerivationTests(SimpleTestCase):
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_manual_inter_regime_is_preserved_when_auto_derive_is_off(self, mock_get_policy):
+        mock_get_policy.return_value = SimpleNamespace(auto_derive_tax_regime=False)
+
+        derived = PurchaseInvoiceService.derive_tax_regime(
+            {
+                "entity": 5,
+                "subentity": 3,
+                "vendor_state": SimpleNamespace(id=1),
+                "supplier_state": SimpleNamespace(id=1),
+                "place_of_supply_state": SimpleNamespace(id=1),
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTER,
+                "is_igst": True,
+            }
+        )
+
+        self.assertEqual(derived.tax_regime, int(PurchaseInvoiceHeader.TaxRegime.INTER))
+        self.assertTrue(derived.is_igst)
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_matching_states_force_intra_when_auto_derive_is_on(self, mock_get_policy):
+        mock_get_policy.return_value = SimpleNamespace(auto_derive_tax_regime=True)
+
+        derived = PurchaseInvoiceService.derive_tax_regime(
+            {
+                "entity": 5,
+                "subentity": 3,
+                "vendor_state": SimpleNamespace(id=1),
+                "supplier_state": SimpleNamespace(id=1),
+                "place_of_supply_state": SimpleNamespace(id=1),
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTER,
+                "is_igst": True,
+            }
+        )
+
+        self.assertEqual(derived.tax_regime, int(PurchaseInvoiceHeader.TaxRegime.INTRA))
+        self.assertFalse(derived.is_igst)
+
+
 class PurchaseApiSmokeTests(APITestCase):
     def setUp(self):
         user_model = get_user_model()

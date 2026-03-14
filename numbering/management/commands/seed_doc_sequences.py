@@ -3,18 +3,25 @@ from __future__ import annotations
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from numbering.seed_catalogs import NUMBERING_DOCUMENT_CATALOG
 from numbering.services import ensure_document_type, ensure_series
 
 
 DEFAULT_DOC_TYPES = {
     "SI": ("sales", "SALES_INVOICE", "Sales Invoice", "SI"),
     "SR": ("sales", "SALES_RETURN", "Sales Return", "SR"),
-    "PI": ("purchase", "PURCHASE_INVOICE", "Purchase Invoice", "PI"),
-    "PR": ("purchase", "PURCHASE_RETURN", "Purchase Return", "PR"),
     "RV": ("receipts", "RECEIPT_VOUCHER", "Receipt Voucher", "RV"),
     "PV": ("payments", "PAYMENT_VOUCHER", "Payment Voucher", "PPV"),
     "JV": ("vouchers", "JOURNAL_VOUCHER", "Journal Voucher", "JV"),
 }
+
+for purchase_spec in NUMBERING_DOCUMENT_CATALOG["purchase"]:
+    DEFAULT_DOC_TYPES[purchase_spec["default_code"]] = (
+        "purchase",
+        purchase_spec["doc_key"],
+        purchase_spec["name"],
+        purchase_spec["default_code"],
+    )
 
 
 class Command(BaseCommand):
