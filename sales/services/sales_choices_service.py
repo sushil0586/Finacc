@@ -10,16 +10,15 @@ def _enum_choices_to_payload(enum_cls) -> List[dict]:
     Converts Django IntegerChoices/TextChoices into:
       [{"value": 1, "key": "DOMESTIC_B2B", "label": "Domestic B2B", "enabled": true}, ...]
     """
-    out = []
-    for value, label in enum_cls.choices:
-        key = None
-        # Find matching key name
-        for k, v in enum_cls.__dict__.items():
-            if v == value:
-                key = k
-                break
-        out.append({"value": value, "key": key or str(value), "label": str(label), "enabled": True})
-    return out
+    return [
+        {"value": member.value, "key": key, "label": str(member.label), "enabled": True}
+        for key, member in enum_cls.__members__.items()
+        if not key.startswith("_")
+    ]
+
+
+def _static_choices_to_payload(rows: List[tuple[str, str]]) -> List[dict]:
+    return [{"value": key, "key": key, "label": label, "enabled": True} for key, label in rows]
 
 
 class SalesChoicesService:
@@ -33,6 +32,9 @@ class SalesChoicesService:
             "GstComplianceMode": _enum_choices_to_payload(SalesInvoiceHeader.GstComplianceMode),
             "Status": _enum_choices_to_payload(SalesInvoiceHeader.Status),
             "DiscountType": _enum_choices_to_payload(SalesInvoiceLine.DiscountType),
+            "EInvoiceApplicable": _static_choices_to_payload([("YES", "Yes"), ("NO", "No")]),
+            "EWayApplicable": _static_choices_to_payload([("YES", "Yes"), ("NO", "No")]),
+            "BillToShipTo": _static_choices_to_payload([("SAME", "Same"), ("DIFFERENT", "Different")]),
         }
 
         overrides = list(
