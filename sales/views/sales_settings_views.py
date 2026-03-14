@@ -317,7 +317,7 @@ class SalesSettingsAPIView(APIView):
         }
 
     def _payload(self, *, entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int]) -> dict:
-        settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id)
+        settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         choice_catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
         payload = {
             "seller": SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id),
@@ -375,7 +375,7 @@ class SalesSettingsAPIView(APIView):
         nested_settings = request.data.get("settings") if isinstance(request.data.get("settings"), dict) else None
         settings_updates = nested_settings if nested_settings is not None else request.data
 
-        settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id)
+        settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         for key, value in settings_updates.items():
             if key in EDITABLE_FIELDS:
                 setattr(settings_obj, key, value)

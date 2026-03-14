@@ -413,6 +413,23 @@ class ProductPriceSerializer(EntityScopedValidationMixin, serializers.ModelSeria
         )
         read_only_fields = ("product", "createdon", "modifiedon")
 
+    def _natural_key_instance(self, attrs):
+        product = self.context.get("product") or getattr(self.instance, "product", None)
+        pricelist = attrs.get("pricelist", getattr(self.instance, "pricelist", None))
+        uom = attrs.get("uom", getattr(self.instance, "uom", None))
+        effective_from = attrs.get("effective_from", getattr(self.instance, "effective_from", None))
+        if not all([product, pricelist, uom, effective_from]):
+            return None
+        qs = ProductPrice.objects.filter(
+            product=product,
+            pricelist=pricelist,
+            uom=uom,
+            effective_from=effective_from,
+        )
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        return qs.first()
+
     def validate(self, attrs):
         entity = self._target_entity(attrs)
         pricelist = attrs.get("pricelist", getattr(self.instance, "pricelist", None))
@@ -425,7 +442,41 @@ class ProductPriceSerializer(EntityScopedValidationMixin, serializers.ModelSeria
         if effective_from and effective_to and effective_to < effective_from:
             raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
 
+        duplicate = self._natural_key_instance(attrs)
+        if duplicate and self.instance and duplicate.pk != self.instance.pk:
+            raise serializers.ValidationError(
+                {"effective_from": "A price row already exists for this product, price list, UOM, and effective date."}
+            )
+
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        product = self.context.get("product")
+        if product is not None:
+            validated_data["product"] = product
+
+        existing = self._natural_key_instance(validated_data)
+        if existing:
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "A price row already exists for this product, price list, UOM, and effective from date. Use the existing price row to update it."
+                    ],
+                    "existing_price_id": existing.id,
+                }
+            )
+
+        return super().create(validated_data)
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        duplicate = self._natural_key_instance(validated_data)
+        if duplicate and duplicate.pk != instance.pk:
+            raise serializers.ValidationError(
+                {"effective_from": "A price row already exists for this product, price list, UOM, and effective date."}
+            )
+        return super().update(instance, validated_data)
 
 
 class ProductPlanningSerializer(serializers.ModelSerializer):
