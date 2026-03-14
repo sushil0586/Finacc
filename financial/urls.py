@@ -6,6 +6,11 @@ from .views_meta import (
     AccountingMastersMetaAPIView,
     LedgerFormMetaAPIView,
 )
+from .views_settings_hub import (
+    SettingsHubAPIView,
+    SettingsHubChoiceOverridesAPIView,
+    SettingsHubLockPeriodsAPIView,
+)
 from .views_ledger import (
     AccountHeadV2ListCreateAPIView,
     AccountHeadV2RetrieveUpdateDestroyAPIView,
@@ -39,6 +44,9 @@ urlpatterns = [
     path("meta/account-form/", AccountFormMetaAPIView.as_view(), name="meta-account-form"),
     path("meta/accounting-masters/", AccountingMastersMetaAPIView.as_view(), name="meta-accounting-masters"),
     path("meta/ledger-form/", LedgerFormMetaAPIView.as_view(), name="meta-ledger-form"),
+    path("settings-hub/", SettingsHubAPIView.as_view(), name="settings-hub"),
+    path("settings-hub/<str:module>/lock-periods/", SettingsHubLockPeriodsAPIView.as_view(), name="settings-hub-lock-periods"),
+    path("settings-hub/<str:module>/choice-overrides/", SettingsHubChoiceOverridesAPIView.as_view(), name="settings-hub-choice-overrides"),
     path("accounts/simplev2", SimpleAccountsV2APIView.as_view(), name="account-simple-v2"),
     path("accountListPostV2", AccountListPostV2APIView.as_view(), name="account-list-post-v2"),
     path("accounttypes-v2", AccountTypeV2ListCreateAPIView.as_view(), name="accounttype-v2-list-create"),

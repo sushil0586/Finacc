@@ -337,22 +337,87 @@ class RBACAuditService:
 
 
 class RoleTemplateService:
-    TEMPLATE_MODULES = ("sales", "purchase", "reports", "statutory")
+    TEMPLATE_DEFINITIONS = {
+        "admin": {
+            "name": "Admin",
+            "description": "Broad operational access for entity administrators.",
+            "modules": ["admin", "sales", "purchase", "inventory", "accounts", "compliance", "reports", "stock", "payment", "receipt", "production", "tds", "credit", "debit", "tcs", "payroll", "masters"],
+            "menu_code_prefixes": ["admin", "reports", "compliance", "accounts", "inventory", "sales", "purchase", "masters"],
+        },
+        "sales_user": {
+            "name": "Sales User",
+            "description": "Sales invoice and note operations.",
+            "modules": ["sales", "credit", "debit"],
+            "menu_code_prefixes": ["sales", "sales.transactions"],
+            "exclude_codes": ["sales.settings.update"],
+        },
+        "purchase_user": {
+            "name": "Purchase User",
+            "description": "Purchase invoice operations.",
+            "modules": ["purchase"],
+            "menu_code_prefixes": ["purchase", "purchase.transactions"],
+        },
+        "accounts_user": {
+            "name": "Accounts User",
+            "description": "Voucher operations for receipts, payments, and TDS.",
+            "modules": ["accounts", "payment", "receipt", "tds"],
+            "menu_code_prefixes": ["accounts", "accounts.vouchers", "compliance.tds"],
+        },
+        "report_viewer": {
+            "name": "Report Viewer",
+            "description": "Read-only reporting access.",
+            "modules": ["reports"],
+            "menu_code_prefixes": ["reports"],
+        },
+        "payroll_user": {
+            "name": "Payroll User",
+            "description": "Payroll and employee administration access.",
+            "modules": ["payroll"],
+            "menu_code_prefixes": ["admin.payroll"],
+        },
+        "compliance_user": {
+            "name": "Compliance User",
+            "description": "TCS and TDS compliance access.",
+            "modules": ["tcs", "tds", "compliance"],
+            "menu_code_prefixes": ["compliance", "reports.compliance"],
+        },
+    }
+
+    @staticmethod
+    def _permission_queryset_for_template(template_code):
+        config = RoleTemplateService.TEMPLATE_DEFINITIONS.get(template_code)
+        if not config:
+            return Permission.objects.none()
+
+        queryset = Permission.objects.filter(isactive=True)
+        clauses = Q()
+        for module in config.get("modules", []):
+            clauses |= Q(module=module)
+        for prefix in config.get("menu_code_prefixes", []):
+            clauses |= Q(metadata__menu_code__startswith=prefix)
+        for exact_code in config.get("exact_codes", []):
+            clauses |= Q(code=exact_code)
+        if clauses:
+            queryset = queryset.filter(clauses)
+        exclude_codes = config.get("exclude_codes", [])
+        if exclude_codes:
+            queryset = queryset.exclude(code__in=exclude_codes)
+        return queryset.distinct()
 
     @staticmethod
     def template_catalog():
         templates = []
-        for module in RoleTemplateService.TEMPLATE_MODULES:
+        for code, config in RoleTemplateService.TEMPLATE_DEFINITIONS.items():
             permissions = list(
-                Permission.objects.filter(isactive=True, module=module)
-                .order_by("resource", "action", "name")
-                .values("id", "code", "name", "resource", "action")
+                RoleTemplateService._permission_queryset_for_template(code)
+                .order_by("module", "resource", "action", "name")
+                .values("id", "code", "name", "module", "resource", "action")
             )
             templates.append(
                 {
-                    "code": module,
-                    "name": module.title(),
-                    "description": f"Suggested {module.title()} access template.",
+                    "code": code,
+                    "name": config["name"],
+                    "description": config["description"],
                     "permissions": permissions,
                 }
             )
@@ -361,18 +426,18 @@ class RoleTemplateService:
     @staticmethod
     @transaction.atomic
     def apply_template(role, template_code, permission_ids, actor=None):
-        selected_ids = set(permission_ids)
-        if not selected_ids:
-            selected_ids = set(
-                Permission.objects.filter(isactive=True, module=template_code).values_list("id", flat=True)
-            )
+        template_queryset = RoleTemplateService._permission_queryset_for_template(template_code)
+        template_permission_ids = set(template_queryset.values_list("id", flat=True))
+        if not template_permission_ids:
+            selected_ids = set(permission_ids)
+        else:
+            selected_ids = set(permission_ids) if permission_ids else set(template_permission_ids)
+            selected_ids &= template_permission_ids
 
-        RolePermission.objects.filter(role=role, permission__module=template_code).exclude(
+        RolePermission.objects.filter(role=role, permission_id__in=template_permission_ids).exclude(
             permission_id__in=selected_ids
         ).delete()
-        existing_ids = set(
-            RolePermission.objects.filter(role=role, permission_id__in=selected_ids).values_list("permission_id", flat=True)
-        )
+        existing_ids = set(RolePermission.objects.filter(role=role, permission_id__in=selected_ids).values_list("permission_id", flat=True))
         missing_ids = selected_ids - existing_ids
         RolePermission.objects.bulk_create(
             [
@@ -431,3 +496,4 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
+
