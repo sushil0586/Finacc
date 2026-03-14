@@ -3,8 +3,8 @@ from django.shortcuts import render
 from rest_framework.views import APIView
 
 from rest_framework.generics import CreateAPIView,ListAPIView,ListCreateAPIView,RetrieveUpdateDestroyAPIView,GenericAPIView,RetrieveAPIView
-from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,Constitution,SubEntity,RolePrivilege,Role,UserRole,MasterGstDetail,GstAccountDetail,GstRegistrationType,BankAccount
-from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,GstRegitrationTypesSerializer,BankAccountSerializer,EntityNewSerializer,UserEntityRoleSerializer,UserSerializerentities
+from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,Constitution,SubEntity,RolePrivilege,Role,UserRole,MasterGstDetail,GstRegistrationType,BankAccount
+from entity.serializers import entityDetailsSerializer,unitTypeSerializer,entityAddSerializer,EntityFinancialYearSerializer,entityfinancialyearListSerializer,ConstitutionSerializer,subentitySerializer,subentitySerializerbyentity,roleSerializer,RoleMainSerializer,userbyentitySerializer,useroleentitySerializer,EntityFinancialYearSerializerlist,BankAccountSerializer,EntityNewSerializer,UserEntityRoleSerializer,UserSerializerentities
 from rest_framework import permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from Authentication.models import User
@@ -17,7 +17,6 @@ import requests,json
 from django.db.models import Count
 from geography.models import Country,State,District,City
 from rest_framework import response,status,permissions
-from helpers.utils.gst_api import get_gst_details
 from django.shortcuts import get_object_or_404
 from rbac.services import LegacyMenuCompatibilityService
 
@@ -619,113 +618,6 @@ class userdetailsbyentity(ListAPIView):
     
 
 
-class getgstindetails(ListAPIView):
-
-
-  
-  #  filter_class = accountheadFilter
-    permission_classes = (permissions.IsAuthenticated,)
-
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = {'id':["in", "exact"]
-    
-    }
-    #filterset_fields = ['id']
-    def get(self, request, format=None):
-        entitygst = self.request.query_params.get('entitygst')
-
-       
-        if not entitygst:
-            return response.Response({"error": "Entity GST parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
-        gst_data = get_gst_details(entitygst)
-
-        # state_instance = State.objects.get(statecode=gst_data.get('StateCode'))
-
-
-        print(gst_data['Gstin'])
-        try:
-            state_instance, _ = State.objects.get_or_create(statecode=gst_data['StateCode'])
-            city_instance, _ = City.objects.get_or_create(pincode=gst_data['AddrPncd'])
-        except Exception as e:
-            return {"error": str(e)}
-
-        # Check if GSTIN already exists
-        if GstAccountDetail.objects.filter(gstin=gst_data['Gstin']).exists():
-            gstdetails = GstAccountDetail.objects.filter(gstin=gst_data['Gstin']).values()
-        else:
-            new_gst = GstAccountDetail.objects.create(
-                gstin=gst_data['Gstin'],
-                tradeName=gst_data['TradeName'],
-                legalName=gst_data['LegalName'],
-                addrFlno=gst_data['AddrFlno'],
-                addrBnm=gst_data['AddrBnm'],
-                addrBno=gst_data['AddrBno'],
-                addrSt=gst_data['AddrSt'],
-                addrLoc=city_instance,
-                stateCode=state_instance,
-                district=city_instance.distt,
-                country=state_instance.country,
-                addrPncd=gst_data['AddrPncd'],
-                txpType=gst_data['TxpType'],
-                status=gst_data['Status'],
-                blkStatus=gst_data['BlkStatus'],
-                dtReg=gst_data['DtReg'],
-                dtDReg=gst_data['DtDReg']
-            )
-            gstdetails = [new_gst]
-
-        # Transform data into the required format
-        result = [
-        {
-            'gstno': detail['gstin'],
-            'entityname': detail['tradeName'],
-            'legalname': detail['legalName'],
-            'address': detail['addrBnm'],
-            'address2': detail['addrBno'],
-            'addressfloorno': detail['addrFlno'],
-            'addressstreet': detail['addrSt'],
-            'stateid': detail['stateCode_id'],
-            'pincode': detail['addrPncd'],
-            'gstintype': detail['txpType'],
-            'dateofreg': detail['dtReg'],
-            'dateofdreg': detail['dtDReg'],
-            'cityid': detail['addrLoc_id'],
-            'countryid': detail['country_id'],
-            'disttid': detail['district_id'],
-        }
-        for detail in gstdetails
-    ]
-    
-
-        #return result
-
-    
-
-
-       
-        return response.Response(result)
-
-
-
-
-
-
-        
-
-
-  
-        
-        
-
-        
-  
-
-     
-        
-     
-        return  Response(df.T.to_dict().values())
-    
-
 class EntityFinancialYearView(ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = EntityFinancialYearSerializerlist
@@ -738,20 +630,6 @@ class EntityFinancialYearView(ListAPIView):
     
 
 
-
-class MasterDataView(ListAPIView):
-    def get(self, request):
-        unit_types = UnitType.objects.all()
-        gst_types = GstRegistrationType.objects.all()
-
-        unit_serializer = unitTypeSerializer(unit_types, many=True)
-        gst_serializer = GstRegitrationTypesSerializer(gst_types, many=True)
-
-        return Response({
-            'unitTypes': unit_serializer.data,
-            'gstRegistrationTypes': gst_serializer.data
-        }, status=status.HTTP_200_OK)
-    
 
 class BankAccountCreateView(APIView):
     def post(self, request):
@@ -788,51 +666,6 @@ class BankAccountListByEntityView(APIView):
         serializer = BankAccountSerializer(bank_accounts, many=True)
         return Response(serializer.data)
     
-
-class EntityCreateUpdateAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    @staticmethod
-    def _can_manage_entity(user, entity) -> bool:
-        if not user or not user.is_authenticated:
-            return False
-        if entity.createdby_id == user.id:
-            return True
-        return UserRole.objects.filter(entity=entity, user=user).exists()
-
-    def post(self, request, *args, **kwargs):
-        serializer = EntityNewSerializer(data=request.data)
-        if serializer.is_valid():
-            entity = serializer.save(createdby=request.user)
-            return Response(EntityNewSerializer(entity).data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def put(self, request, pk=None, *args, **kwargs):
-        try:
-            entity = Entity.objects.get(pk=pk)
-        except Entity.DoesNotExist:
-            return Response({"error": "Entity not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if not self._can_manage_entity(request.user, entity):
-            return Response({"detail": "You are not allowed to update this entity."}, status=status.HTTP_403_FORBIDDEN)
-
-        serializer = EntityNewSerializer(entity, data=request.data)
-        if serializer.is_valid():
-            entity = serializer.save(updatedby=request.user)
-            return Response(EntityNewSerializer(entity).data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class EntityListView(ListAPIView):
-    queryset = Entity.objects.all()
-    serializer_class = EntityNewSerializer
-    permission_classes = [permissions.IsAuthenticated]  # Optional: restrict access
-
-class EntityDetailView(RetrieveAPIView):
-    queryset = Entity.objects.all()
-    serializer_class = EntityNewSerializer
-    permission_classes = [permissions.IsAuthenticated] # Optional
-
 
 class EntityRetrieveAPIView(RetrieveAPIView):
     serializer_class = EntityNewSerializer

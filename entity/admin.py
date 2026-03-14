@@ -45,9 +45,10 @@ class SeedSeqActionForm(ActionForm):  # <-- subclass ActionForm, not forms.Form
 
 @admin.register(Entity)
 class EntityAdmin(admin.ModelAdmin):
-    list_display  = ['entityname', 'address']
-    search_fields = ['entityname', 'address']
+    list_display  = ['entityname', 'entity_code', 'legalname', 'gstno', 'panno', 'organization_status', 'business_type']
+    search_fields = ['entityname', 'entity_code', 'legalname', 'gstno', 'panno', 'email_primary', 'phoneoffice']
     ordering      = ['entityname']
+    list_filter   = ['organization_status', 'business_type', 'gst_registration_status', 'isactive']
     list_per_page = 50
 
     actions     = ['action_seed_sequences_quick', 'action_seed_sequences']
@@ -113,8 +114,9 @@ class EntityAdmin(admin.ModelAdmin):
     #     messages.info(request, f"Done. Total created={total_created}, skipped={total_skipped}.")
 
 class SubEntityAdmin(admin.ModelAdmin):
-    list_display = ['subentityname', 'address','entity']
-    search_fields = ['subentityname', 'address']
+    list_display = ['subentityname', 'subentity_code', 'entity', 'branch_type', 'gstno', 'is_head_office']
+    search_fields = ['subentityname', 'subentity_code', 'address', 'gstno']
+    list_filter = ['branch_type', 'is_head_office', 'can_sell', 'can_purchase', 'can_stock', 'isactive']
     list_per_page = 50
 
 
@@ -156,7 +158,13 @@ admin.site.register(UnitType, UnitTypeAdmin)
 admin.site.register(OwnerShipTypes, OwnerShipTypesAdmin)
 
 admin.site.register(EntityDetail)
-admin.site.register(EntityFinancialYear)
+@admin.register(EntityFinancialYear)
+class EntityFinancialYearAdmin(admin.ModelAdmin):
+    list_display = ['entity', 'desc', 'year_code', 'period_status', 'is_year_closed', 'isactive']
+    search_fields = ['entity__entityname', 'desc', 'year_code', 'assessment_year_label']
+    list_filter = ['period_status', 'is_year_closed', 'is_audit_closed', 'isactive']
+    list_per_page = 50
+
 admin.site.register(EntityOwnership)
 admin.site.register(Constitution)
 admin.site.register(SubEntity,SubEntityAdmin)
