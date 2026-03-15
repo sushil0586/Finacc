@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from django.test import override_settings
@@ -454,6 +454,36 @@ class BookReportAPITests(APITestCase):
         self.assertIn("entry_id", first)
         self.assertIn("txn_id", first)
         self.assertIn("drilldown_params", first)
+
+    def test_daybook_purchase_rows_use_purchase_invoice_drilldown(self):
+        purchase_entry = self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=46,
+            voucher_no="PI-PINV-1001",
+            posting_date=date(2025, 4, 6),
+            voucher_date=date(2025, 4, 6),
+            status=EntryStatus.POSTED,
+            narration="Purchase Invoice PI-PINV-1001",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "25.00", "description": "Purchase Dr"},
+                {"account": self.ap_account, "drcr": False, "amount": "25.00", "description": "Purchase Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["results"] if row["entry_id"] == purchase_entry.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown_target"], "purchase_invoice_detail")
+        self.assertEqual(rows[0]["drilldown_params"]["id"], 46)
+        self.assertEqual(rows[0]["txn_id"], 46)
 
     def test_cashbook_happy_path_running_balance_and_opening(self):
         response = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "cash_account": str(self.cash_account.id), "from_date": "2025-04-01", "to_date": "2025-04-30"})

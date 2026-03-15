@@ -118,14 +118,14 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = 'FA.wsgi.application'
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "finacc_db",
-        "USER": "finacc_user",
-        "PASSWORD": "Finacc@2026",
-        "HOST": "localhost",
-        "PORT": "5432",
-    }
+   'default': {
+       'ENGINE': 'django.db.backends.postgresql',
+       'NAME': 'FA',
+       'USER': 'postgres',
+       'PASSWORD': 'ansh@1789',
+       'HOST': 'localhost',
+       'PORT': '',
+   }
 }
 # # Database
 # # https://docs.djangoproject.com/en/3.2/ref/settings/#databases

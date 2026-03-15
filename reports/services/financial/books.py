@@ -72,6 +72,25 @@ def _txn_source(txn_type: str):
     return TXN_SOURCE_META.get(txn_type, ("posting", txn_type))
 
 
+def _drilldown_target_for_txn(txn_type: str) -> str:
+    mapping = {
+        TxnType.SALES: "sales_invoice_detail",
+        TxnType.SALES_CREDIT_NOTE: "sales_invoice_detail",
+        TxnType.SALES_DEBIT_NOTE: "sales_invoice_detail",
+        TxnType.SALES_RETURN: "sales_invoice_detail",
+        TxnType.PURCHASE: "purchase_invoice_detail",
+        TxnType.PURCHASE_CREDIT_NOTE: "purchase_invoice_detail",
+        TxnType.PURCHASE_DEBIT_NOTE: "purchase_invoice_detail",
+        TxnType.PURCHASE_RETURN: "purchase_invoice_detail",
+        TxnType.JOURNAL: "voucher_detail",
+        TxnType.JOURNAL_CASH: "voucher_detail",
+        TxnType.JOURNAL_BANK: "voucher_detail",
+        TxnType.RECEIPT: "receipt_voucher_detail",
+        TxnType.PAYMENT: "payment_voucher_detail",
+    }
+    return mapping.get(txn_type, "journal_entry_detail")
+
+
 def _cashbook_target_key(line):
     """Use ledger-first identity when available so balances stay tied to accounting identity."""
     return f"ledger:{line.resolved_ledger_id}" if line.resolved_ledger_id else f"account:{line.account_id}"
@@ -179,7 +198,7 @@ def _drilldown_payload(entry: Entry, *, entity_id, entityfin_id, subentity_id):
         "txn_type_name": entry.get_txn_type_display() if hasattr(entry, "get_txn_type_display") else entry.txn_type,
         "txn_id": entry.txn_id,
         "source_module": source_module,
-        "drilldown_target": "voucher_detail",
+        "drilldown_target": _drilldown_target_for_txn(entry.txn_type),
         "drilldown_params": {
             "id": entry.txn_id,
             "entry_id": entry.id,

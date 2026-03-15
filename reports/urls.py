@@ -40,6 +40,18 @@ from reports.api.receivables_views import (
     ReceivableAgingPDFAPIView,
     ReceivableAgingPrintAPIView,
 )
+from reports.api.payables_views import (
+    VendorOutstandingReportAPIView,
+    VendorOutstandingCSVAPIView,
+    VendorOutstandingExcelAPIView,
+    VendorOutstandingPDFAPIView,
+    VendorOutstandingPrintAPIView,
+    ApAgingReportAPIView,
+    ApAgingCSVAPIView,
+    ApAgingExcelAPIView,
+    ApAgingPDFAPIView,
+    ApAgingPrintAPIView,
+)
 
 
 app_name = "reports"
@@ -82,4 +94,14 @@ urlpatterns = [
     path("receivables/aging/pdf/", ReceivableAgingPDFAPIView.as_view(), name="receivable-aging-report-pdf"),
     path("receivables/aging/csv/", ReceivableAgingCSVAPIView.as_view(), name="receivable-aging-report-csv"),
     path("receivables/aging/print/", ReceivableAgingPrintAPIView.as_view(), name="receivable-aging-report-print"),
+    path("payables/vendor-outstanding/", VendorOutstandingReportAPIView.as_view(), name="vendor-outstanding-report"),
+    path("payables/vendor-outstanding/excel/", VendorOutstandingExcelAPIView.as_view(), name="vendor-outstanding-report-excel"),
+    path("payables/vendor-outstanding/pdf/", VendorOutstandingPDFAPIView.as_view(), name="vendor-outstanding-report-pdf"),
+    path("payables/vendor-outstanding/csv/", VendorOutstandingCSVAPIView.as_view(), name="vendor-outstanding-report-csv"),
+    path("payables/vendor-outstanding/print/", VendorOutstandingPrintAPIView.as_view(), name="vendor-outstanding-report-print"),
+    path("payables/aging/", ApAgingReportAPIView.as_view(), name="ap-aging-report"),
+    path("payables/aging/excel/", ApAgingExcelAPIView.as_view(), name="ap-aging-report-excel"),
+    path("payables/aging/pdf/", ApAgingPDFAPIView.as_view(), name="ap-aging-report-pdf"),
+    path("payables/aging/csv/", ApAgingCSVAPIView.as_view(), name="ap-aging-report-csv"),
+    path("payables/aging/print/", ApAgingPrintAPIView.as_view(), name="ap-aging-report-print"),
 ]

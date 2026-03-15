@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -116,7 +117,14 @@ class VoucherMetaBaseAPIView(APIView):
         )
         return [self._account_payload(row) for row in rows]
 
-    def _voucher_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
+    def _voucher_queryset(
+        self,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: int | None,
+        *,
+        allow_any_subentity: bool = False,
+    ):
         qs = (
             VoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
             .select_related(
@@ -132,6 +140,8 @@ class VoucherMetaBaseAPIView(APIView):
             .prefetch_related("lines__account", "lines__account__ledger", "lines__generated_from_line")
         )
         if subentity_id is None:
+            if allow_any_subentity:
+                return qs
             return qs.filter(subentity__isnull=True)
         return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
 
@@ -199,8 +209,17 @@ class VoucherDetailFormMetaAPIView(VoucherMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
         voucher_id = self._parse_int(request.query_params.get("voucher"), "voucher", required=True)
-        header = self._voucher_queryset(entity_id, entityfinid_id, subentity_id).get(pk=voucher_id)
-        payload = self._voucher_form_meta(entity_id, entityfinid_id, subentity_id)
+        header = get_object_or_404(
+            self._voucher_queryset(
+                entity_id,
+                entityfinid_id,
+                subentity_id,
+                allow_any_subentity=subentity_id is None,
+            ),
+            pk=voucher_id,
+        )
+        effective_subentity_id = header.subentity_id if subentity_id is None else subentity_id
+        payload = self._voucher_form_meta(entity_id, entityfinid_id, effective_subentity_id)
         payload.update(
             {
                 "voucher_id": voucher_id,
@@ -269,3 +288,4 @@ class VoucherSettingsMetaAPIView(VoucherMetaBaseAPIView):
                 "current_doc_numbers": current_doc_numbers,
             }
         )
+
