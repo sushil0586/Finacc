@@ -16,6 +16,7 @@ from sales.models.sales_ar import CustomerAdvanceBalance, CustomerSettlement
 from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_choices_service import SalesChoicesService
+from core.invoice_ui_contracts import sales_invoice_ui_contract
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
 from withholding.models import WithholdingSection, WithholdingTaxType
@@ -148,6 +149,7 @@ class SalesMetaBaseAPIView(APIView):
             "customers": self._customers(entity_id),
             "charge_types": self._charge_types(entity_id),
             "tcs_sections": self._tcs_sections(),
+            "ui_contract": sales_invoice_ui_contract(),
         }
 
     def _invoice_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):

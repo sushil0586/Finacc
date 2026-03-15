@@ -19,6 +19,7 @@ from purchase.models.purchase_statutory import PurchaseStatutoryChallan, Purchas
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.services.purchase_choice_service import PurchaseChoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from core.invoice_ui_contracts import purchase_invoice_ui_contract
 from withholding.models import EntityWithholdingConfig, WithholdingSection, WithholdingTaxType
 
 
@@ -161,6 +162,7 @@ class PurchaseMetaBaseAPIView(APIView):
             "vendors": self._vendors(entity_id),
             "charge_types": self._charge_types(entity_id),
             "tds_sections": self._tds_sections(),
+            "ui_contract": purchase_invoice_ui_contract(),
         }
 
     def _invoice_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):

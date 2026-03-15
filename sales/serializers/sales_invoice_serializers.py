@@ -70,6 +70,11 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "gstRateAmount",   # ✅ NEW
             "line_total",
         ]
+        extra_kwargs = {
+            "cess_amount": {
+                "help_text": "Provisional only. Backend recomputes when cess_percent > 0; manual cess survives only when cess_percent is 0."
+            }
+        }
 
     def get_gstRateAmount(self, obj) -> str:
         """
@@ -278,6 +283,18 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "eway_artifact",
             "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal",
         ]
+        extra_kwargs = {
+            "posting_date": {"help_text": "Derived by backend from bill date."},
+            "due_date": {"help_text": "Derived by backend from bill date + credit days."},
+            "tax_regime": {"help_text": "Derived by backend from seller state and place of supply."},
+            "is_igst": {"help_text": "Derived by backend from tax regime determination."},
+            "total_taxable_value": {"help_text": "Computed by backend from saved lines and charges."},
+            "total_cgst": {"help_text": "Computed by backend from saved lines and charges."},
+            "total_sgst": {"help_text": "Computed by backend from saved lines and charges."},
+            "total_igst": {"help_text": "Computed by backend from saved lines and charges."},
+            "total_cess": {"help_text": "Computed by backend from saved lines and charges."},
+            "grand_total": {"help_text": "Computed by backend from saved lines and charges."},
+        }
 
     def get_navigation(self, obj):
         return SalesInvoiceNavService.get_prev_next_for_instance(obj)

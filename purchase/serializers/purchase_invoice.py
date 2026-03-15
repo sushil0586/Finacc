@@ -95,6 +95,15 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "is_itc_eligible",
             "itc_block_reason",
         ]
+        extra_kwargs = {
+            "taxable_value": {"help_text": "Computed by backend from qty, rate, discount, taxability, and regime."},
+            "cgst_amount": {"help_text": "Computed by backend from tax regime and taxable value."},
+            "sgst_amount": {"help_text": "Computed by backend from tax regime and taxable value."},
+            "igst_amount": {"help_text": "Computed by backend from tax regime and taxable value."},
+            "cess_amount": {"help_text": "Computed by backend from cess percent and taxable value."},
+            "line_total": {"help_text": "Computed by backend from taxable value, GST, and cess."},
+            "itc_block_reason": {"help_text": "Backend may auto-fill when ITC is not eligible."},
+        }
 
     def validate(self, attrs):
         qty = q4(attrs.get("qty"))
@@ -322,6 +331,13 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         read_only_fields = ()
 
         extra_kwargs = {
+            "posting_date": {"help_text": "If blank, backend defaults to bill date and validates it against bill date."},
+            "due_date": {"help_text": "If blank, backend derives from bill date + credit days and validates it against bill date."},
+            "tax_regime": {"help_text": "Backend derives or validates GST regime from vendor/place-of-supply states."},
+            "is_igst": {"help_text": "Backend derives or validates IGST applicability from tax regime."},
+            "is_reverse_charge": {"help_text": "Editable, but backend suppresses GST amounts on lines when enabled."},
+            "is_itc_eligible": {"help_text": "Editable, but backend validates legal ITC eligibility."},
+            "itc_block_reason": {"help_text": "Backend may auto-fill when ITC is blocked or not eligible."},
             "status": {"read_only": True},
             "doc_no": {"required": False, "allow_null": True},
             "purchase_number": {"required": False, "allow_null": True},

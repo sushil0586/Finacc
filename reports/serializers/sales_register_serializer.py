@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from rest_framework import serializers
+
+
+class SalesRegisterRowSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    invoice_date = serializers.DateField(allow_null=True)
+    posting_date = serializers.DateField(allow_null=True)
+    doc_type = serializers.IntegerField()
+    doc_type_name = serializers.CharField()
+    invoice_type = serializers.IntegerField()
+    invoice_type_name = serializers.CharField()
+    doc_code = serializers.CharField(allow_blank=True, allow_null=True)
+    doc_no = serializers.IntegerField(allow_null=True)
+    sales_invoice_number = serializers.CharField(allow_blank=True, allow_null=True)
+    customer_name = serializers.CharField(allow_blank=True, allow_null=True)
+    customer_gstin = serializers.CharField(allow_blank=True, allow_null=True)
+    place_of_supply = serializers.CharField(allow_blank=True, allow_null=True)
+    supply_classification = serializers.IntegerField()
+    supply_classification_name = serializers.CharField(allow_blank=True, allow_null=True)
+    taxable_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    cgst_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    sgst_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    igst_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    cess_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    discount_total = serializers.DecimalField(max_digits=18, decimal_places=2)
+    roundoff_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    grand_total = serializers.DecimalField(max_digits=18, decimal_places=2)
+    e_invoice_no = serializers.CharField(allow_blank=True, allow_null=True)
+    e_invoice_date = serializers.DateTimeField(allow_null=True)
+    e_way_bill_no = serializers.CharField(allow_blank=True, allow_null=True)
+    e_way_bill_date = serializers.DateTimeField(allow_null=True)
+    linked_credit_debit_note_reference = serializers.CharField(allow_blank=True, allow_null=True)
+    status = serializers.IntegerField()
+    status_name = serializers.CharField()
+    affects_totals = serializers.BooleanField()
+    drilldown = serializers.DictField()
+
+
+class SalesRegisterTotalsSerializer(serializers.Serializer):
+    document_count = serializers.IntegerField()
+    taxable_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    cgst_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    sgst_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    igst_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    cess_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    discount_total = serializers.DecimalField(max_digits=18, decimal_places=2)
+    roundoff_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
+    grand_total = serializers.DecimalField(max_digits=18, decimal_places=2)

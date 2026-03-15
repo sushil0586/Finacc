@@ -101,6 +101,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RemoveIndex(
+            model_name='voucherline',
+            name='ix_voucher_line_ledger',
+        ),
         migrations.RenameField(
             model_name='voucherheader',
             old_name='primary_account',
@@ -167,6 +171,10 @@ class Migration(migrations.Migration):
             name='voucher_type',
             field=models.CharField(choices=[('JOURNAL', 'Journal'), ('CASH', 'Cash'), ('BANK', 'Bank')], db_index=True, default='JOURNAL', max_length=20),
         ),
+        migrations.RemoveConstraint(
+            model_name='voucherline',
+            name='ck_voucher_line_amt_nonneg',
+        ),
         migrations.RemoveField(
             model_name='voucherline',
             name='drcr',
@@ -190,28 +198,6 @@ class Migration(migrations.Migration):
         migrations.RemoveField(
             model_name='vouchersettings',
             name='default_doc_code_bank_receipt',
-        ),
-        migrations.SeparateDatabaseAndState(
-            database_operations=[
-                migrations.RunSQL(
-                    sql='DROP INDEX IF EXISTS ix_voucher_line_ledger;',
-                    reverse_sql='',
-                ),
-                migrations.RunSQL(
-                    sql='ALTER TABLE vouchers_voucherline DROP CONSTRAINT IF EXISTS ck_voucher_line_amt_nonneg;',
-                    reverse_sql='',
-                ),
-            ],
-            state_operations=[
-                migrations.RemoveIndex(
-                    model_name='voucherline',
-                    name='ix_voucher_line_ledger',
-                ),
-                migrations.RemoveConstraint(
-                    model_name='voucherline',
-                    name='ck_voucher_line_amt_nonneg',
-                ),
-            ],
         ),
         migrations.AddIndex(
             model_name='voucherline',
