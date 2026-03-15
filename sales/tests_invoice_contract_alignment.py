@@ -109,7 +109,7 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(contract["header_fields"]["tax_regime"]["ui_state"], "read_only")
         self.assertEqual(contract["line_fields"]["cess_amount"]["ui_state"], "provisional")
 
-    def test_sales_header_serializer_rejects_backend_controlled_fields(self):
+    def test_sales_header_serializer_ignores_selected_backend_derived_fields(self):
         serializer = SalesInvoiceHeaderSerializer(
             data={
                 "entity": self.entity.id,
@@ -130,6 +130,51 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
                 "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
                 "due_date": "2025-04-20",
                 "tax_regime": SalesInvoiceHeader.TaxRegime.INTER_STATE,
+                "total_other_charges": "25.00",
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "product": self.product.id,
+                        "uom": self.uom.id,
+                        "qty": "1.000",
+                        "free_qty": "0.000",
+                        "rate": "100.0000",
+                        "discount_type": 0,
+                        "discount_percent": "0.0000",
+                        "discount_amount": "0.00",
+                        "gst_rate": "18.00",
+                        "cess_percent": "0.00",
+                        "cess_amount": "0.00",
+                    }
+                ],
+            },
+            context={"request": type("Req", (), {"user": self.user, "data": {}})()},
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("due_date", serializer.errors)
+        self.assertNotIn("tax_regime", serializer.errors)
+        self.assertNotIn("total_other_charges", serializer.errors)
+
+    def test_sales_header_serializer_still_blocks_other_backend_controlled_fields(self):
+        serializer = SalesInvoiceHeaderSerializer(
+            data={
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "doc_type": SalesInvoiceHeader.DocType.TAX_INVOICE,
+                "bill_date": "2025-04-10",
+                "credit_days": 5,
+                "doc_code": "SINV",
+                "customer": self.customer.id,
+                "customer_name": "Alpha Retail",
+                "customer_gstin": "27ABCDE1234F1Z5",
+                "customer_state_code": "27",
+                "seller_gstin": "27AAAAA9999A1Z5",
+                "seller_state_code": "27",
+                "place_of_supply_state_code": "29",
+                "supply_category": SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+                "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
+                "due_date": "2025-04-20",
                 "is_igst": True,
                 "total_cgst": "10.00",
                 "lines": [
@@ -153,7 +198,6 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn("due_date", serializer.errors)
-        self.assertIn("tax_regime", serializer.errors)
         self.assertIn("is_igst", serializer.errors)
         self.assertIn("total_cgst", serializer.errors)
 
