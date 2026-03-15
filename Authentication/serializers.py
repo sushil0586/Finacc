@@ -3,6 +3,7 @@ from django.db import models
 from rest_framework import serializers
 from Authentication.models import User,MainMenu,Submenu
 from entity.models import UserRole
+from subscriptions.services import SubscriptionService
 #from entity.models import enti
 #from entity.serializers import entityUserSerializer
 
@@ -44,6 +45,12 @@ class Registerserializers(serializers.ModelSerializer):
 
     
 class RegisterSerializer(serializers.ModelSerializer):
+    intent = serializers.ChoiceField(
+        choices=(SubscriptionService.INTENT_STANDARD, SubscriptionService.INTENT_TRIAL),
+        required=False,
+        write_only=True,
+        default=SubscriptionService.INTENT_STANDARD,
+    )
     password = serializers.CharField(
         max_length=128,
         min_length=6,
@@ -52,12 +59,13 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('username', 'first_name', 'last_name', 'email', 'password')
-        # Removed `queryset` as it's not valid in `Meta` for serializers
+        fields = ('username', 'first_name', 'last_name', 'email', 'password', 'intent')
 
     def create(self, validated_data):
-        # Create a new user instance and hash the password
+        intent = validated_data.pop('intent', SubscriptionService.INTENT_STANDARD)
         user = User.objects.create_user(**validated_data)
+        SubscriptionService.handle_signup(user=user, intent=intent)
+        user._signup_intent = intent
         return user
 
 class UserSerializer(serializers.ModelSerializer):

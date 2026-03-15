@@ -10,6 +10,7 @@ INSTALLED_APPS = [
     "entity",
     "geography",
     "rbac",
+    "subscriptions",
 ]
 
 MIDDLEWARE = [
@@ -40,4 +41,3 @@ REST_FRAMEWORK = {
     **REST_FRAMEWORK,  # noqa: F405
     "EXCEPTION_HANDLER": "rest_framework.views.exception_handler",
 }
-

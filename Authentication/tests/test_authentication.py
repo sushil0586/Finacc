@@ -6,6 +6,7 @@ from rest_framework.test import APIClient, APIRequestFactory
 
 from Authentication.models import AuthAuditLog, AuthOTP, AuthSession
 from Authentication.jwt import JwtAuthentication
+from subscriptions.models import CustomerAccount, CustomerSubscription
 
 
 User = get_user_model()
@@ -168,3 +169,42 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.data["code"], "email_not_verified")
         self.assertEqual(resp.data["next_action"], "verify_email")
         self.assertEqual(resp.data["email"], self.user.email)
+
+    def test_register_creates_customer_account_and_subscription(self):
+        resp = self.client.post(
+            "/api/auth/register",
+            {
+                "username": "new_user@example.com",
+                "email": "new_user@example.com",
+                "password": "pass@12345",
+                "first_name": "New",
+                "last_name": "User",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["intent"], "standard")
+        self.assertIn("subscription", resp.data)
+        user = User.objects.get(email="new_user@example.com")
+        self.assertTrue(CustomerAccount.objects.filter(primary_user=user).exists())
+        self.assertTrue(CustomerSubscription.objects.filter(customer_account__primary_user=user).exists())
+
+    def test_register_accepts_trial_intent_and_returns_subscription_snapshot(self):
+        resp = self.client.post(
+            "/api/auth/register",
+            {
+                "username": "trial_user@example.com",
+                "email": "trial_user@example.com",
+                "password": "pass@12345",
+                "first_name": "Trial",
+                "last_name": "User",
+                "intent": "trial",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["intent"], "trial")
+        self.assertTrue(resp.data["trial_started"])
+        self.assertEqual(resp.data["subscription"]["subscription"]["status"], "trial")

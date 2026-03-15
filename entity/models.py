@@ -211,6 +211,13 @@ class Entity(TrackingModel):
     dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
     const =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True)
     parent_entity = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="child_entities")
+    customer_account = models.ForeignKey(
+        "subscriptions.CustomerAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="entities",
+    )
     metadata = models.JSONField(default=dict, blank=True)
     createdby =  models.ForeignKey(User, on_delete=models.CASCADE,null= True)
     #createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,default=1,blank=True)

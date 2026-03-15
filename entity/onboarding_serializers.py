@@ -304,6 +304,7 @@ class OnboardingUserPayloadSerializer(serializers.Serializer):
 
 
 class RegisterAndOnboardSerializer(serializers.Serializer):
+    intent = serializers.ChoiceField(choices=('standard', 'trial'), required=False, allow_null=True)
     user = OnboardingUserPayloadSerializer()
     onboarding = EntityOnboardingCreateSerializer()
 
@@ -345,12 +346,15 @@ class EntityOnboardingResponseSerializer(serializers.Serializer):
     constitution_ids = serializers.ListField(child=serializers.IntegerField())
     financial = serializers.DictField()
     rbac = serializers.DictField()
+    subscription = serializers.DictField(required=False)
 
 
 class RegisterAndOnboardResponseSerializer(serializers.Serializer):
     user = serializers.DictField()
     onboarding = EntityOnboardingResponseSerializer()
     verification = serializers.DictField()
+    subscription = serializers.DictField(required=False)
+    intent = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class OnboardingSimpleOptionSerializer(serializers.Serializer):

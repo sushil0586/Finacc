@@ -9,6 +9,7 @@ INSTALLED_APPS = [
     "Authentication",
     "entity",
     "geography",
+    "subscriptions",
 ]
 
 MIDDLEWARE = [

@@ -286,7 +286,6 @@ class entityAddSerializer(serializers.ModelSerializer):
         users = validated_data.pop("user")
         fydata = validated_data.pop("fy", [])
         constitutiondata = validated_data.pop("constitution")
-
         # Create the main entity
         newentity = Entity.objects.create(**validated_data)
 
