@@ -21,6 +21,7 @@ from entity.onboarding_serializers import (
 from entity.onboarding_services import EntityOnboardingService
 from geography.models import City, Country, District, State
 from helpers.utils.gst_api import get_gst_details
+from subscriptions.services import SubscriptionService
 
 
 class EntityOnboardingCreateAPIView(APIView):
@@ -42,6 +43,7 @@ class EntityOnboardingCreateAPIView(APIView):
             "constitution_ids": result["constitution_ids"],
             "financial": result["financial"],
             "rbac": result["rbac"],
+            "subscription": SubscriptionService.build_subscription_snapshot(entity=entity),
         }
         output = EntityOnboardingResponseSerializer(response_payload)
         return Response(output.data, status=status.HTTP_201_CREATED)
@@ -102,6 +104,7 @@ class RegisterAndEntityOnboardingCreateAPIView(APIView):
             "constitution_ids": result["onboarding"]["constitution_ids"],
             "financial": result["onboarding"]["financial"],
             "rbac": result["onboarding"]["rbac"],
+            "subscription": result["subscription"],
         }
         response_payload = {
             "user": {
@@ -111,8 +114,10 @@ class RegisterAndEntityOnboardingCreateAPIView(APIView):
                 "first_name": result["user"].first_name,
                 "last_name": result["user"].last_name,
             },
+            "intent": result.get("intent"),
             "onboarding": onboarding_payload,
             "verification": result["verification"],
+            "subscription": result["subscription"],
         }
         output = RegisterAndOnboardResponseSerializer(response_payload)
         return Response(output.data, status=status.HTTP_201_CREATED)

@@ -15,6 +15,7 @@ from Authentication.models import User,MainMenu,Submenu
 from rest_framework.response import Response
 from rest_framework.exceptions import AuthenticationFailed
 from Authentication.services import AuthAuditService, AuthOTPService, AuthSettings, AuthTokenService, LoginRateLimitService
+from subscriptions.services import SubscriptionService
 
 
 
@@ -50,23 +51,29 @@ class AuthMeView(GenericAPIView):
 
 
 class RegisterApiView(ListCreateAPIView):
-
-
     permission_classes = (permissions.AllowAny,)
     authentication_classes = []
     serializer_class = RegisterSerializer
 
-
-    def perform_create(self, serializer):
-        return serializer.save()
-
-    # def post(self,request):
-    #     serializer = self.serializer_class(data = request.data)
-
-    #     if serializer.is_valid():
-    #         serializer.save()
-    #         return response.Response(serializer.data,status = status.HTTP_200_OK)
-    #     return response.Response(serializer.errors,status = status.HTTP_400_BAD_REQUEST)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        intent = getattr(user, '_signup_intent', SubscriptionService.INTENT_STANDARD)
+        subscription = SubscriptionService.build_subscription_snapshot(user=user)
+        payload = {
+            'id': user.id,
+            'username': user.username,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'email': user.email,
+            'intent': intent,
+            'trial_started': subscription['subscription']['is_trial'],
+            'message': 'Your free trial has started.' if subscription['subscription']['is_trial'] else 'Account created successfully.',
+            'subscription': subscription,
+        }
+        headers = self.get_success_headers(serializer.data)
+        return Response(payload, status=status.HTTP_201_CREATED, headers=headers)
 
 from django.shortcuts import get_object_or_404
 import logging

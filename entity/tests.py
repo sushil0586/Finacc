@@ -10,6 +10,7 @@ from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
 from rbac.backfill import LegacyRBACBackfillService
+from subscriptions.models import CustomerAccount, CustomerSubscription, UserEntityAccess
 
 
 class EntityContextV2Tests(TestCase):
@@ -173,6 +174,9 @@ class EntityOnboardingTests(TestCase):
         self.assertTrue(Ledger.objects.filter(entity=entity, ledger_code=4000).exists())
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=self.user).exists())
         self.assertTrue(RbacRole.objects.filter(entity=entity, code="entity.super_admin").exists())
+        self.assertIsNotNone(entity.customer_account_id)
+        self.assertTrue(CustomerSubscription.objects.filter(customer_account=entity.customer_account).exists())
+        self.assertTrue(UserEntityAccess.objects.filter(entity=entity, user=self.user, is_owner=True).exists())
 
     def test_onboarding_meta_returns_bootstrap_dropdowns(self):
         response = self.client.get("/api/entity/onboarding/meta/")
@@ -444,6 +448,9 @@ class RegisterAndEntityOnboardingTests(TestCase):
         response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
 
         self.assertEqual(response.status_code, 201)
+        self.assertIn("subscription", response.data)
+        self.assertIn("subscription", response.data["onboarding"])
+        self.assertEqual(response.data["intent"], "standard")
         self.assertFalse(response.data["verification"]["email_verified"])
         self.assertTrue(response.data["verification"]["verification_required"])
         self.assertEqual(len(mail.outbox), 1)
@@ -452,6 +459,54 @@ class RegisterAndEntityOnboardingTests(TestCase):
         entity = Entity.objects.get(id=response.data["onboarding"]["entity_id"])
         self.assertEqual(entity.createdby, user)
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=user).exists())
+        self.assertTrue(CustomerAccount.objects.filter(primary_user=user).exists())
+        self.assertTrue(UserEntityAccess.objects.filter(entity=entity, user=user, is_owner=True).exists())
+
+    def test_register_and_onboard_accepts_trial_intent(self):
+        payload = {
+            "intent": "trial",
+            "user": {
+                "email": "trialfounder@example.com",
+                "username": "trialfounder@example.com",
+                "first_name": "Trial",
+                "last_name": "Founder",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Trial Entity",
+                    "legalname": "Trial Entity Pvt Ltd",
+                    "unitType": self.unit_type.id,
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "trialfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["intent"], "trial")
+        self.assertEqual(response.data["subscription"]["subscription"]["status"], "trial")
 
     def test_register_and_onboard_accepts_flat_public_payload_shape(self):
         payload = {

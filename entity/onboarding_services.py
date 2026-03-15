@@ -8,6 +8,8 @@ from entity.models import BankAccount, Entity, EntityConstitution, EntityDetail,
 from financial.seeding import FinancialSeedService
 from rbac.seeding import RBACSeedService
 from rbac.models import UserRoleAssignment
+from subscriptions.models import UserEntityAccess
+from subscriptions.services import SubscriptionService
 
 
 class EntityOnboardingService:
@@ -23,6 +25,7 @@ class EntityOnboardingService:
     @classmethod
     @transaction.atomic
     def create_entity(cls, *, actor, payload):
+        customer_account = SubscriptionService.assert_can_create_entity(user=actor)
         entity_data = dict(payload["entity"])
         detail_data = dict(payload.get("entity_detail") or {})
         fy_rows = [dict(row) for row in payload.get("financial_years", [])]
@@ -31,7 +34,7 @@ class EntityOnboardingService:
         constitution_rows = [dict(row) for row in payload.get("constitution_details", [])]
         seed_options = dict(payload.get("seed_options") or {})
 
-        entity = Entity.objects.create(createdby=actor, **entity_data)
+        entity = Entity.objects.create(createdby=actor, customer_account=customer_account, **entity_data)
         if not entity.entity_code:
             entity.entity_code = f"ENT{entity.id:05d}"
             entity.save(update_fields=["entity_code"])
@@ -113,6 +116,12 @@ class EntityOnboardingService:
                 actor=actor,
                 seed_default_roles=seed_options.get("seed_default_roles", True),
             )
+
+        SubscriptionService.register_entity_creation(
+            entity=entity,
+            owner=actor,
+            source=UserEntityAccess.SOURCE_ENTITY_CREATE,
+        )
 
         return {
             "entity": entity,
@@ -258,6 +267,7 @@ class EntityOnboardingService:
     def register_user_and_create_entity(cls, *, payload, user_agent="", ip_address=None):
         user_data = dict(payload["user"])
         onboarding_payload = dict(payload["onboarding"])
+        intent = payload.get("intent") or SubscriptionService.INTENT_STANDARD
 
         email = user_data["email"].strip().lower()
         username = (user_data.get("username") or email).strip() or email
@@ -273,12 +283,14 @@ class EntityOnboardingService:
             last_name=last_name,
             email_verified=False,
         )
+        SubscriptionService.handle_signup(user=user, intent=intent)
 
         onboarding_result = cls.create_entity(actor=user, payload=onboarding_payload)
         otp = AuthOTPService.create_otp(user=user, email=email, purpose="email_verification")
 
         return {
             "user": user,
+            "intent": intent,
             "onboarding": onboarding_result,
             "verification": {
                 "email": user.email,
@@ -286,4 +298,5 @@ class EntityOnboardingService:
                 "otp_generated": bool(otp),
                 "verification_required": True,
             },
+            "subscription": SubscriptionService.build_subscription_snapshot(entity=onboarding_result["entity"]),
         }
