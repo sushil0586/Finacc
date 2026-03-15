@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from rest_framework import serializers
+
+
+class PurchaseRegisterRowSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    bill_date = serializers.DateField(allow_null=True)
+    posting_date = serializers.DateField(allow_null=True)
+    doc_type = serializers.IntegerField()
+    doc_type_name = serializers.CharField()
+    doc_code = serializers.CharField(allow_blank=True, allow_null=True)
+    doc_no = serializers.IntegerField(allow_null=True)
+    purchase_number = serializers.CharField(allow_blank=True, allow_null=True)
+    supplier_name = serializers.CharField(allow_blank=True, allow_null=True)
+    supplier_gstin = serializers.CharField(allow_blank=True, allow_null=True)
+    supplier_invoice_number = serializers.CharField(allow_blank=True, allow_null=True)
+    supplier_invoice_date = serializers.DateField(allow_null=True)
+    place_of_supply = serializers.CharField(allow_blank=True, allow_null=True)
+    supply_type = serializers.IntegerField()
+    supply_type_name = serializers.CharField()
+    reverse_charge = serializers.BooleanField()
+    taxable_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    cgst_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    sgst_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    igst_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    cess_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    discount_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    roundoff_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    grand_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    itc_eligibility = serializers.BooleanField()
+    itc_claim_status = serializers.IntegerField()
+    itc_claim_status_name = serializers.CharField()
+    blocked_itc = serializers.BooleanField()
+    gstr2b_match_status = serializers.IntegerField()
+    gstr2b_match_status_name = serializers.CharField()
+    status = serializers.IntegerField()
+    status_name = serializers.CharField()
+    affects_totals = serializers.BooleanField()
+    drilldown = serializers.DictField()
+
+
+class PurchaseRegisterTotalsSerializer(serializers.Serializer):
+    document_count = serializers.IntegerField()
+    taxable_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    cgst_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    sgst_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    igst_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    cess_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    discount_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    roundoff_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    grand_total = serializers.DecimalField(max_digits=14, decimal_places=2)

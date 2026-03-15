@@ -25,6 +25,9 @@ from reports.api.assets_views import (
     FixedAssetRegisterPDFAPIView,
     FixedAssetRegisterPrintAPIView,
 )
+from reports.api.book_views import CashbookAPIView, DaybookAPIView, DaybookEntryDetailAPIView
+from reports.api.purchase_register_view import PurchaseRegisterAPIView
+from reports.api.sales_register_view import SalesRegisterAPIView
 from reports.api.receivables_views import (
     CustomerOutstandingReportAPIView,
     CustomerOutstandingCSVAPIView,
@@ -44,6 +47,11 @@ app_name = "reports"
 
 urlpatterns = [
     path("financial/meta/", FinancialReportsMetaAPIView.as_view(), name="financial-meta"),
+    path("financial/daybook/", DaybookAPIView.as_view(), name="financial-daybook"),
+    path("financial/daybook/<int:entry_id>/", DaybookEntryDetailAPIView.as_view(), name="financial-daybook-detail"),
+    path("financial/cashbook/", CashbookAPIView.as_view(), name="financial-cashbook"),
+    path("purchases/register/", PurchaseRegisterAPIView.as_view(), name="purchase-register"),
+    path("sales/register/", SalesRegisterAPIView.as_view(), name="sales-register"),
     path("financial/trial-balance/", TrialBalanceAPIView.as_view(), name="financial-trial-balance"),
     path("financial/ledger-book/", LedgerBookAPIView.as_view(), name="financial-ledger-book"),
     path("financial/profit-loss/", ProfitAndLossAPIView.as_view(), name="financial-profit-loss"),
