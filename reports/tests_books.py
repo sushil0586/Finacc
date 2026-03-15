@@ -344,6 +344,50 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["results"][1]["voucher_number"], "CV-001")
         self.assertEqual([row["voucher_number"] for row in data["results"][:3]], ["RV-001", "CV-001", "BV-001"])
 
+    def test_financial_meta_includes_daybook_cashbook_filter_support(self):
+        response = self.client.get(reverse("reports_api:financial-meta"), {"entity": self.entity.id})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertIn("voucher_types", data)
+        self.assertIn("daybook_voucher_types", data)
+        self.assertIn("cashbook_voucher_types", data)
+        self.assertIn("daybook_statuses", data)
+        self.assertIn("all_accounts", data)
+        self.assertIn("cash_accounts", data)
+        self.assertIn("bank_accounts", data)
+
+        voucher_types = {row["code"]: row["name"] for row in data["voucher_types"]}
+        self.assertEqual(voucher_types[TxnType.PAYMENT], "Payment Voucher")
+        self.assertEqual(voucher_types[TxnType.RECEIPT], "Receipt Voucher")
+        self.assertNotIn(TxnType.FIXED_ASSET_CAPITALIZATION, voucher_types)
+
+        daybook_voucher_types = {row["code"] for row in data["daybook_voucher_types"]}
+        cashbook_voucher_types = {row["code"] for row in data["cashbook_voucher_types"]}
+        self.assertIn(TxnType.JOURNAL, daybook_voucher_types)
+        self.assertIn(TxnType.PAYMENT, daybook_voucher_types)
+        self.assertNotIn(TxnType.FIXED_ASSET_DISPOSAL, daybook_voucher_types)
+        self.assertEqual(
+            cashbook_voucher_types,
+            {TxnType.JOURNAL_CASH, TxnType.JOURNAL_BANK, TxnType.RECEIPT, TxnType.PAYMENT},
+        )
+
+        statuses = {row["value"]: row["label"] for row in data["daybook_statuses"]}
+        self.assertEqual(statuses, {"draft": "Draft", "posted": "Posted", "reversed": "Reversed"})
+
+        all_accounts = {row["id"]: row for row in data["all_accounts"]}
+        self.assertEqual(all_accounts[self.cash_account.id]["account_type"], "cash")
+        self.assertEqual(all_accounts[self.bank_account.id]["account_type"], "bank")
+        self.assertEqual(all_accounts[self.expense_account.id]["account_type"], "ledger")
+        self.assertEqual(all_accounts[self.cash_account.id]["code"], self.cash_ledger.ledger_code)
+
+        cash_ids = {row["id"] for row in data["cash_accounts"]}
+        bank_ids = {row["id"] for row in data["bank_accounts"]}
+        all_ids = {row["id"] for row in data["all_accounts"]}
+        self.assertIn(self.cash_account.id, cash_ids)
+        self.assertIn(self.bank_account.id, bank_ids)
+        self.assertNotIn(self.other_cash_account.id, all_ids)
+
     def test_daybook_filters_voucher_type_status_posted_and_search(self):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "voucher_type": f"{TxnType.JOURNAL_BANK},{TxnType.PAYMENT}", "status": "posted", "posted": True, "search": "REF-BANK-001"})
         self.assertEqual(response.status_code, 200)

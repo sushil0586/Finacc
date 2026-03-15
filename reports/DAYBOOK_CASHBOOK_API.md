@@ -2,6 +2,9 @@
 
 ## Endpoints
 
+- `GET /api/reports/financial/meta/?entity=<id>`
+  - Shared metadata for financial report filters, including Daybook/Cashbook voucher types,
+    statuses, financial years, subentities, and scoped account option lists.
 - `GET /api/reports/financial/daybook/`
   - Chronological Daybook listing from accounting entries.
 - `GET /api/reports/financial/daybook/<entry_id>/`
@@ -44,6 +47,12 @@
 - `page_size`: page size, default `100`, max `500`
 
 ## Example Requests
+
+### Financial metadata
+
+```text
+GET /api/reports/financial/meta/?entity=1
+```
 
 ### Daybook
 
@@ -170,6 +179,15 @@ Notes:
 
 ## Frontend Integration Notes
 
+- Do not use the deleted legacy route `GET /api/reports/transaction-types/`.
+- Frontend should use `GET /api/reports/financial/meta/?entity=<id>` for:
+  - `daybook_voucher_types`
+  - `cashbook_voucher_types`
+  - legacy-compatible `voucher_types` alias for Daybook
+  - `daybook_statuses`
+  - `all_accounts`
+  - `cash_accounts`
+  - `bank_accounts`
 - Monetary fields are strings with 2 decimals
 - `running_balance` may be `null` by design
 - Cashbook `opening_balance` and `closing_balance` are accounting-scope balances, not visible-row totals
