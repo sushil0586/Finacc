@@ -19,6 +19,7 @@ from entity.models import (
 from geography.models import City, Country, District, State
 from rbac.models import Menu, Permission, Role, RolePermission, UserRoleAssignment
 from rbac.backfill import LegacyRBACBackfillService
+from rbac.seeding import PayrollRBACSeedService
 from rbac.services import LegacyMenuCompatibilityService
 
 
@@ -88,17 +89,17 @@ class RBACModelTests(TestCase):
         )
 
     def test_menu_supports_multi_level_hierarchy(self):
-        root = Menu.objects.create(name="Sales", code="sales", menu_type=Menu.TYPE_GROUP)
-        child = Menu.objects.create(name="Invoices", code="sales.invoices", parent=root)
-        grandchild = Menu.objects.create(name="Credit Notes", code="sales.invoices.credit-notes", parent=child)
+        root = Menu.objects.create(name="Sales", code="test.sales", menu_type=Menu.TYPE_GROUP)
+        child = Menu.objects.create(name="Invoices", code="test.sales.invoices", parent=root)
+        grandchild = Menu.objects.create(name="Credit Notes", code="test.sales.invoices.credit-notes", parent=child)
 
         self.assertEqual(root.depth, 0)
         self.assertEqual(child.depth, 1)
         self.assertEqual(grandchild.depth, 2)
 
     def test_menu_cycle_validation(self):
-        root = Menu.objects.create(name="Sales", code="sales")
-        child = Menu.objects.create(name="Invoices", code="sales.invoices", parent=root)
+        root = Menu.objects.create(name="Sales", code="test.cycle.sales")
+        child = Menu.objects.create(name="Invoices", code="test.cycle.sales.invoices", parent=root)
         root.parent = child
 
         with self.assertRaises(ValidationError):
@@ -107,7 +108,7 @@ class RBACModelTests(TestCase):
     def test_role_permission_unique(self):
         role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
         permission = Permission.objects.create(
-            code="sales.invoice.view",
+            code="test.sales.invoice.view",
             name="View Sales Invoice",
             module="sales",
             resource="invoice",
@@ -148,8 +149,9 @@ class RBACModelTests(TestCase):
             role_id=legacy_role.id,
         )
 
-        self.assertEqual(response[0]["mainmenu"], "Sales")
-        self.assertEqual(response[0]["submenu"][0]["submenu"], "Invoices")
+        sales_row = next(item for item in response if item["mainmenu"] == "Sales")
+        self.assertEqual(sales_row["mainmenu"], "Sales")
+        self.assertEqual(sales_row["submenu"][0]["submenu"], "Invoices")
 
     def test_assignment_effective_window_property(self):
         role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
@@ -160,3 +162,30 @@ class RBACModelTests(TestCase):
             effective_from=timezone.now() + timezone.timedelta(days=1),
         )
         self.assertFalse(future_assignment.is_currently_effective)
+
+    def test_payroll_rbac_seed_service_is_idempotent(self):
+        first = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)
+        second = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)
+
+        self.assertEqual(first["permission_count"], 33)
+        self.assertEqual(first["menu_count"], 10)
+        self.assertEqual(second["permission_count"], 33)
+        self.assertEqual(second["menu_count"], 10)
+
+        self.assertTrue(Permission.objects.filter(code="payroll.run.post", isactive=True).exists())
+        self.assertTrue(Menu.objects.filter(code="payroll.runs", route_path="/payroll/runs", isactive=True).exists())
+
+        operator_role = Role.objects.get(entity=self.entity, code="payroll_operator")
+        finance_role = Role.objects.get(entity=self.entity, code="payroll_finance_manager")
+        readonly_role = Role.objects.get(entity=self.entity, code="payroll_read_only_reviewer")
+        admin_role = Role.objects.get(entity=self.entity, code="admin")
+
+        self.assertTrue(RolePermission.objects.filter(role=operator_role, permission__code="payroll.run.calculate", isactive=True).exists())
+        self.assertFalse(RolePermission.objects.filter(role=operator_role, permission__code="payroll.run.approve", isactive=True).exists())
+        self.assertTrue(RolePermission.objects.filter(role=finance_role, permission__code="payments.payroll.reconcile", isactive=True).exists())
+        self.assertTrue(RolePermission.objects.filter(role=readonly_role, permission__code="payroll.component.view", isactive=True).exists())
+        self.assertFalse(RolePermission.objects.filter(role=readonly_role, permission__code="reports.payroll.export", isactive=True).exists())
+        self.assertEqual(
+            RolePermission.objects.filter(role=admin_role, permission__module__in=["payroll", "reports", "payments"], isactive=True).count(),
+            33,
+        )

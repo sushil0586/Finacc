@@ -10,6 +10,7 @@ from payroll.services.payroll_reversal_service import PayrollReversalService
 from payroll.services.payroll_rollout_validation_service import PayrollRolloutValidationService
 from payroll.services.payroll_run_service import PayrollRunService
 from payroll.services.payroll_run_hardening_service import PayrollRunHardeningService
+from payroll.services.payroll_seed_service import PayrollSeedService
 from payroll.services.payroll_shadow_run_service import PayrollShadowRunService
 from payroll.services.payroll_setup_service import PayrollSetupService
 from payroll.services.payroll_traceability_service import PayrollTraceabilityService
@@ -28,6 +29,7 @@ __all__ = [
     "PayrollRolloutValidationService",
     "PayrollRunService",
     "PayrollRunHardeningService",
+    "PayrollSeedService",
     "PayrollShadowRunService",
     "PayrollSetupService",
     "PayrollTraceabilityService",
