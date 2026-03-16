@@ -105,7 +105,7 @@ class SalaryStructureLineSerializer(serializers.ModelSerializer):
 
 class SalaryStructureSerializer(serializers.ModelSerializer):
     lines = SalaryStructureLineSerializer(many=True, write_only=True, required=False)
-    current_version_id = serializers.IntegerField(source="current_version_id", read_only=True)
+    current_version_id = serializers.IntegerField(read_only=True)
     current_version = serializers.SerializerMethodField()
 
     class Meta:
