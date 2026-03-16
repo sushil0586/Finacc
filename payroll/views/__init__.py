@@ -11,6 +11,21 @@ from payroll.views.payroll_run_views import (
     PayrollRunRetrieveAPIView,
     PayrollRunSummaryAPIView,
 )
+from payroll.views.payroll_setup_views import (
+    PayrollAdjustmentListCreateAPIView,
+    PayrollAdjustmentRetrieveUpdateAPIView,
+    PayrollComponentListCreateAPIView,
+    PayrollComponentRetrieveUpdateAPIView,
+    PayrollDashboardSummaryAPIView,
+    PayrollPeriodActionAPIView,
+    PayrollPeriodListCreateAPIView,
+    PayrollPeriodRetrieveUpdateAPIView,
+    PayrollProfileListCreateAPIView,
+    PayrollProfileRetrieveUpdateAPIView,
+    PayrollReadinessAPIView,
+    SalaryStructureListCreateAPIView,
+    SalaryStructureRetrieveUpdateAPIView,
+)
 
 __all__ = [
     "PayrollRunApproveAPIView",
@@ -24,4 +39,17 @@ __all__ = [
     "PayrollRunRetrieveAPIView",
     "PayrollRunSubmitAPIView",
     "PayrollRunSummaryAPIView",
+    "PayrollAdjustmentListCreateAPIView",
+    "PayrollAdjustmentRetrieveUpdateAPIView",
+    "PayrollComponentListCreateAPIView",
+    "PayrollComponentRetrieveUpdateAPIView",
+    "PayrollDashboardSummaryAPIView",
+    "PayrollPeriodActionAPIView",
+    "PayrollPeriodListCreateAPIView",
+    "PayrollPeriodRetrieveUpdateAPIView",
+    "PayrollProfileListCreateAPIView",
+    "PayrollProfileRetrieveUpdateAPIView",
+    "PayrollReadinessAPIView",
+    "SalaryStructureListCreateAPIView",
+    "SalaryStructureRetrieveUpdateAPIView",
 ]

@@ -1,6 +1,17 @@
 from django.urls import path
 
 from payroll.views import (
+    PayrollAdjustmentListCreateAPIView,
+    PayrollAdjustmentRetrieveUpdateAPIView,
+    PayrollComponentListCreateAPIView,
+    PayrollComponentRetrieveUpdateAPIView,
+    PayrollDashboardSummaryAPIView,
+    PayrollPeriodActionAPIView,
+    PayrollPeriodListCreateAPIView,
+    PayrollPeriodRetrieveUpdateAPIView,
+    PayrollProfileListCreateAPIView,
+    PayrollProfileRetrieveUpdateAPIView,
+    PayrollReadinessAPIView,
     PayrollRunApproveAPIView,
     PayrollRunCalculateAPIView,
     PayrollRunListCreateAPIView,
@@ -12,11 +23,28 @@ from payroll.views import (
     PayrollRunRetrieveAPIView,
     PayrollRunSubmitAPIView,
     PayrollRunSummaryAPIView,
+    SalaryStructureListCreateAPIView,
+    SalaryStructureRetrieveUpdateAPIView,
 )
 
 app_name = "payroll"
 
 urlpatterns = [
+    path("periods/", PayrollPeriodListCreateAPIView.as_view(), name="payroll-period-list-create"),
+    path("periods/<int:pk>/", PayrollPeriodRetrieveUpdateAPIView.as_view(), name="payroll-period-detail"),
+    path("periods/<int:pk>/open/", PayrollPeriodActionAPIView.as_view(), {"action": "open"}, name="payroll-period-open"),
+    path("periods/<int:pk>/close/", PayrollPeriodActionAPIView.as_view(), {"action": "close"}, name="payroll-period-close"),
+    path("periods/<int:pk>/lock/", PayrollPeriodActionAPIView.as_view(), {"action": "lock"}, name="payroll-period-lock"),
+    path("components/", PayrollComponentListCreateAPIView.as_view(), name="payroll-component-list-create"),
+    path("components/<int:pk>/", PayrollComponentRetrieveUpdateAPIView.as_view(), name="payroll-component-detail"),
+    path("structures/", SalaryStructureListCreateAPIView.as_view(), name="payroll-structure-list-create"),
+    path("structures/<int:pk>/", SalaryStructureRetrieveUpdateAPIView.as_view(), name="payroll-structure-detail"),
+    path("profiles/", PayrollProfileListCreateAPIView.as_view(), name="payroll-profile-list-create"),
+    path("profiles/<int:pk>/", PayrollProfileRetrieveUpdateAPIView.as_view(), name="payroll-profile-detail"),
+    path("adjustments/", PayrollAdjustmentListCreateAPIView.as_view(), name="payroll-adjustment-list-create"),
+    path("adjustments/<int:pk>/", PayrollAdjustmentRetrieveUpdateAPIView.as_view(), name="payroll-adjustment-detail"),
+    path("dashboard/summary/", PayrollDashboardSummaryAPIView.as_view(), name="payroll-dashboard-summary"),
+    path("readiness/", PayrollReadinessAPIView.as_view(), name="payroll-readiness"),
     path("runs/", PayrollRunListCreateAPIView.as_view(), name="payroll-run-list-create"),
     path("runs/<int:pk>/", PayrollRunRetrieveAPIView.as_view(), name="payroll-run-detail"),
     path("runs/<int:pk>/calculate/", PayrollRunCalculateAPIView.as_view(), name="payroll-run-calculate"),

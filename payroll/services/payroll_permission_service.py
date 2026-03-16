@@ -35,6 +35,27 @@ class PayrollPermissionService:
         "reverse": "reverse payroll runs",
     }
 
+    @staticmethod
+    def has_named_access(*, user, groups: set[str] | None = None, permissions: set[str] | None = None) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        groups = groups or set()
+        permissions = permissions or set()
+        if groups and user.groups.filter(name__in=groups).exists():
+            return True
+        for perm in permissions:
+            if user.has_perm(perm):
+                return True
+        return False
+
+    @classmethod
+    def assert_named_access(cls, *, user, groups: set[str] | None = None, permissions: set[str] | None = None, label: str) -> None:
+        if cls.has_named_access(user=user, groups=groups, permissions=permissions):
+            return
+        raise PermissionError(f"You do not have permission to {label}.")
+
     @classmethod
     def has_action_access(cls, *, user, action: str) -> bool:
         if not user or not user.is_authenticated:
