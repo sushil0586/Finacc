@@ -19,6 +19,8 @@ from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 from django.conf import settings
 from django.conf.urls.static import static
+payroll_enabled = 'payroll' in settings.INSTALLED_APPS
+
 schema_view = get_schema_view(
    openapi.Info(
       title="Snippets API",
@@ -39,7 +41,7 @@ urlpatterns = [
     path('api/entity/',include('entity.urls',namespace = 'entity_api')),
     path('api/geography/',include('geography.urls',namespace = 'geography_api')),
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
-    path('api/payroll/',include('payroll.urls',namespace = 'payroll_api')),
+    *( [path('api/payroll/', include('payroll.urls', namespace='payroll_api'))] if payroll_enabled else []),
     path("api/catalog/", include("catalog.urls")),
     path("api/localization/", include("localization.urls")),
     path("api/purchase/", include("purchase.urls")),

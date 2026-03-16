@@ -10,7 +10,6 @@ from django.db.models import (
     DecimalField,
     Exists,
     F,
-    IntegerField,
     OuterRef,
     Q,
     Subquery,
@@ -22,21 +21,16 @@ from django.db.models.functions import Coalesce
 from rest_framework.exceptions import ValidationError
 
 from financial.models import account
+from purchase.models.purchase_ap import VendorBillOpenItem
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from reports.filters.purchase_register_filter import PurchaseRegisterFilter
+from reports.services.payables_config import build_payables_drilldown
 
 ZERO = Decimal("0.00")
 
 
 class PurchaseRegisterService:
-    """
-    Purchase Register service.
-
-    The register is intentionally header-wise and uses `PurchaseInvoiceHeader` as
-    the source of truth because the header already persists statutory totals.
-    This avoids duplicate rows and keeps reporting aligned with the posted
-    commercial document rather than rebuilding totals from joined line items.
-    """
+    """Purchase register service with optional payables enrichments."""
 
     default_statuses = (
         PurchaseInvoiceHeader.Status.CONFIRMED,
@@ -44,7 +38,6 @@ class PurchaseRegisterService:
     )
 
     def get_base_queryset(self):
-        """Return the document-level base queryset with only safe `select_related` joins."""
         return PurchaseInvoiceHeader.objects.select_related(
             "vendor",
             "vendor_ledger",
@@ -55,7 +48,6 @@ class PurchaseRegisterService:
         )
 
     def apply_filters(self, queryset, params):
-        """Apply reusable django-filter rules and normalize validation errors."""
         filterset = PurchaseRegisterFilter(data=params, queryset=queryset)
         if not filterset.is_valid():
             raise ValidationError(filterset.errors)
@@ -72,25 +64,11 @@ class PurchaseRegisterService:
         return queryset, cleaned
 
     def apply_default_status_rules(self, queryset, *, cleaned_data, raw_params):
-        """
-        Default to business-valid documents only.
-
-        Draft and cancelled documents are excluded unless `status` is explicitly
-        supplied. Cancelled documents can still be requested, but their monetary
-        impact is zeroed later so they never affect totals.
-        """
         if raw_params.get("status") not in (None, ""):
             return queryset
         return queryset.filter(status__in=self.default_statuses)
 
-    def annotate_register_fields(self, queryset):
-        """
-        Add signed register columns without joining line tables into the rowset.
-
-        Credit-note style documents are negative, debit-note style documents are
-        positive, and cancelled documents are forced to zero so report totals
-        remain mathematically consistent even if cancelled rows are included.
-        """
+    def annotate_register_fields(self, queryset, *, include_outstanding=False):
         discount_totals = (
             PurchaseInvoiceLine.objects.filter(header_id=OuterRef("pk"))
             .values("header_id")
@@ -120,7 +98,7 @@ class PurchaseRegisterService:
             output_field=BooleanField(),
         )
 
-        return queryset.annotate(
+        queryset = queryset.annotate(
             supplier_name=Coalesce(F("vendor_name"), F("vendor__accountname"), Value(""), output_field=CharField()),
             supplier_gstin=Coalesce(F("vendor_gstin"), F("vendor__gstno"), Value(""), output_field=CharField()),
             place_of_supply=Coalesce(F("place_of_supply_state__statename"), Value(""), output_field=CharField()),
@@ -183,9 +161,22 @@ class PurchaseRegisterService:
             reverse_charge=F("is_reverse_charge"),
         )
 
-    def calculate_totals(self, queryset):
-        """Aggregate totals from the full filtered dataset, not the paginated slice."""
-        raw_totals = queryset.aggregate(
+        if include_outstanding:
+            outstanding_subquery = (
+                VendorBillOpenItem.objects.filter(header_id=OuterRef("pk"))
+                .values("header_id")
+                .values("outstanding_amount")[:1]
+            )
+            queryset = queryset.annotate(
+                outstanding_amount=Coalesce(
+                    Subquery(outstanding_subquery, output_field=DecimalField(max_digits=14, decimal_places=2)),
+                    ZERO,
+                )
+            )
+        return queryset
+
+    def calculate_totals(self, queryset, *, include_outstanding=False):
+        aggregate_kwargs = dict(
             document_count=Count("id"),
             taxable_amount_total=Coalesce(Sum("taxable_amount"), ZERO),
             cgst_amount_total=Coalesce(Sum("cgst_amount"), ZERO),
@@ -196,6 +187,9 @@ class PurchaseRegisterService:
             roundoff_amount_total=Coalesce(Sum("roundoff_amount"), ZERO),
             grand_total_total=Coalesce(Sum("signed_grand_total"), ZERO),
         )
+        if include_outstanding:
+            aggregate_kwargs["outstanding_amount_total"] = Coalesce(Sum("outstanding_amount"), ZERO)
+        raw_totals = queryset.aggregate(**aggregate_kwargs)
         return {
             "document_count": raw_totals["document_count"],
             "taxable_amount": raw_totals["taxable_amount_total"],
@@ -206,10 +200,20 @@ class PurchaseRegisterService:
             "discount_total": raw_totals["discount_total_total"],
             "roundoff_amount": raw_totals["roundoff_amount_total"],
             "grand_total": raw_totals["grand_total_total"],
+            "outstanding_amount": raw_totals.get("outstanding_amount_total", ZERO) if include_outstanding else ZERO,
+        }
+
+    def calculate_posting_summary(self, queryset):
+        posted_count = queryset.filter(status=PurchaseInvoiceHeader.Status.POSTED).count()
+        unposted_qs = queryset.exclude(status=PurchaseInvoiceHeader.Status.POSTED)
+        return {
+            "posted_count": posted_count,
+            "unposted_count": unposted_qs.count(),
+            "posted_total": queryset.filter(status=PurchaseInvoiceHeader.Status.POSTED).aggregate(total=Coalesce(Sum("signed_grand_total"), ZERO))["total"],
+            "unposted_total": unposted_qs.aggregate(total=Coalesce(Sum("signed_grand_total"), ZERO))["total"],
         }
 
     def get_grouped_summary(self, queryset, *, group_field="doc_type", label_field=None):
-        """Optional grouped helper that can later power supplier/doc-type summary blocks."""
         label_field = label_field or f"{group_field}_name"
         return list(
             queryset.values(group_field, label_field)
@@ -222,12 +226,34 @@ class PurchaseRegisterService:
         )
 
     def build_drilldown(self, row):
-        """Return stable frontend identifiers for opening the purchase document detail."""
         return {
             "target": "purchase_document_detail",
             "id": row.id,
             "doc_type": row.doc_type,
             "purchase_number": row.purchase_number,
+        }
+
+    def build_payables_drilldown(self, row, *, entity_id, entityfin_id=None, subentity_id=None, as_of_date=None):
+        return {
+            "document": build_payables_drilldown(
+                "purchase_document_detail",
+                label="Purchase Document",
+                path="/api/purchase/invoices/",
+                params={"id": row.id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+            ),
+            "vendor_outstanding": build_payables_drilldown(
+                "vendor_outstanding",
+                params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "to_date": as_of_date or row.bill_date, "vendor": row.vendor_id},
+            ),
+            "ap_aging": build_payables_drilldown(
+                "ap_aging",
+                params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "as_of_date": as_of_date or row.bill_date, "vendor": row.vendor_id, "view": "invoice"},
+            ),
+            "vendor_ledger_statement": build_payables_drilldown(
+                "vendor_ledger_statement",
+                label="Vendor Ledger",
+                params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": row.vendor_id, "from_date": row.bill_date, "to_date": as_of_date or row.bill_date},
+            ),
         }
 
     @staticmethod

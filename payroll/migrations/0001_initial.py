@@ -468,7 +468,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='payrollperiod',
-            constraint=models.CheckConstraint(condition=models.Q(('period_end__gte', models.F('period_start'))), name='ck_payroll_period_dates'),
+            constraint=models.CheckConstraint(check=models.Q(('period_end__gte', models.F('period_start'))), name='ck_payroll_period_dates'),
         ),
         migrations.AddIndex(
             model_name='payrollrun',

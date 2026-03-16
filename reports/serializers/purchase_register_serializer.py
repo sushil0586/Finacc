@@ -28,6 +28,7 @@ class PurchaseRegisterRowSerializer(serializers.Serializer):
     discount_total = serializers.DecimalField(max_digits=14, decimal_places=2)
     roundoff_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     grand_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    outstanding_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     itc_eligibility = serializers.BooleanField()
     itc_claim_status = serializers.IntegerField()
     itc_claim_status_name = serializers.CharField()
@@ -38,6 +39,8 @@ class PurchaseRegisterRowSerializer(serializers.Serializer):
     status_name = serializers.CharField()
     affects_totals = serializers.BooleanField()
     drilldown = serializers.DictField()
+    drilldown_targets = serializers.ListField(child=serializers.CharField(), required=False)
+    _meta = serializers.DictField(required=False)
 
 
 class PurchaseRegisterTotalsSerializer(serializers.Serializer):
@@ -50,3 +53,11 @@ class PurchaseRegisterTotalsSerializer(serializers.Serializer):
     discount_total = serializers.DecimalField(max_digits=14, decimal_places=2)
     roundoff_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     grand_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    outstanding_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+
+
+class PurchaseRegisterPostingSummarySerializer(serializers.Serializer):
+    posted_count = serializers.IntegerField()
+    unposted_count = serializers.IntegerField()
+    posted_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    unposted_total = serializers.DecimalField(max_digits=14, decimal_places=2)

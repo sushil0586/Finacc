@@ -12,6 +12,7 @@ def build_report_envelope(
     payload["report_code"] = report_code
     payload["report_name"] = report_name
     payload["filters"] = filters
+    payload["applied_filters"] = filters
     payload["display"] = {
         "decimal_places": defaults["decimal_places"],
         "show_zero_balances_default": defaults["show_zero_balances_default"],
@@ -24,4 +25,9 @@ def build_report_envelope(
         "can_export_csv": True,
         "can_drilldown": defaults["enable_drilldown"],
     }
+    meta = payload.get("_meta") or {}
+    if meta.get("available_exports") and "available_exports" not in payload:
+        payload["available_exports"] = list(meta["available_exports"])
+    if meta.get("available_drilldowns") and "available_drilldowns" not in payload:
+        payload["available_drilldowns"] = list(meta["available_drilldowns"])
     return payload

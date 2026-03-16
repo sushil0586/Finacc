@@ -1,24 +1,46 @@
 from django.db import migrations
 
 
+def _constraint_exists(cursor, name):
+    cursor.execute("SELECT 1 FROM pg_constraint WHERE conname = %s", [name])
+    return cursor.fetchone() is not None
+
+
 def repoint_entity_foreign_keys(apps, schema_editor):
     if schema_editor.connection.vendor != "postgresql":
         return
 
-    statements = [
+    drops = [
         "ALTER TABLE rbac_role DROP CONSTRAINT IF EXISTS rbac_role_entity_id_08a85b57_fk_organization_entity_id;",
-        "ALTER TABLE rbac_role ADD CONSTRAINT rbac_role_entity_id_08a85b57_fk_entity_entity_id FOREIGN KEY (entity_id) REFERENCES entity_entity(id) DEFERRABLE INITIALLY DEFERRED;",
         "ALTER TABLE rbac_userroleassignment DROP CONSTRAINT IF EXISTS rbac_userroleassignm_entity_id_679ee746_fk_organizat;",
-        "ALTER TABLE rbac_userroleassignment ADD CONSTRAINT rbac_userroleassignment_entity_id_fk_entity_entity FOREIGN KEY (entity_id) REFERENCES entity_entity(id) DEFERRABLE INITIALLY DEFERRED;",
         "ALTER TABLE rbac_userroleassignment DROP CONSTRAINT IF EXISTS rbac_userroleassignm_subentity_id_b3605565_fk_organizat;",
-        "ALTER TABLE rbac_userroleassignment ADD CONSTRAINT rbac_userroleassignment_subentity_id_fk_entity_subentity FOREIGN KEY (subentity_id) REFERENCES entity_subentity(id) DEFERRABLE INITIALLY DEFERRED;",
         "ALTER TABLE rbac_dataaccesspolicy DROP CONSTRAINT IF EXISTS rbac_dataaccesspolic_entity_id_6a815bc1_fk_organizat;",
-        "ALTER TABLE rbac_dataaccesspolicy ADD CONSTRAINT rbac_dataaccesspolicy_entity_id_fk_entity_entity FOREIGN KEY (entity_id) REFERENCES entity_entity(id) DEFERRABLE INITIALLY DEFERRED;",
+    ]
+    adds = [
+        (
+            "rbac_role_entity_id_08a85b57_fk_entity_entity_id",
+            "ALTER TABLE rbac_role ADD CONSTRAINT rbac_role_entity_id_08a85b57_fk_entity_entity_id FOREIGN KEY (entity_id) REFERENCES entity_entity(id) DEFERRABLE INITIALLY DEFERRED;",
+        ),
+        (
+            "rbac_userroleassignment_entity_id_fk_entity_entity",
+            "ALTER TABLE rbac_userroleassignment ADD CONSTRAINT rbac_userroleassignment_entity_id_fk_entity_entity FOREIGN KEY (entity_id) REFERENCES entity_entity(id) DEFERRABLE INITIALLY DEFERRED;",
+        ),
+        (
+            "rbac_userroleassignment_subentity_id_fk_entity_subentity",
+            "ALTER TABLE rbac_userroleassignment ADD CONSTRAINT rbac_userroleassignment_subentity_id_fk_entity_subentity FOREIGN KEY (subentity_id) REFERENCES entity_subentity(id) DEFERRABLE INITIALLY DEFERRED;",
+        ),
+        (
+            "rbac_dataaccesspolicy_entity_id_fk_entity_entity",
+            "ALTER TABLE rbac_dataaccesspolicy ADD CONSTRAINT rbac_dataaccesspolicy_entity_id_fk_entity_entity FOREIGN KEY (entity_id) REFERENCES entity_entity(id) DEFERRABLE INITIALLY DEFERRED;",
+        ),
     ]
 
     with schema_editor.connection.cursor() as cursor:
-        for statement in statements:
+        for statement in drops:
             cursor.execute(statement)
+        for constraint_name, statement in adds:
+            if not _constraint_exists(cursor, constraint_name):
+                cursor.execute(statement)
 
 
 class Migration(migrations.Migration):
@@ -30,4 +52,3 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(repoint_entity_foreign_keys, migrations.RunPython.noop),
     ]
-
