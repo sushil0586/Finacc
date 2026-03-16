@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -13,6 +14,34 @@ from payroll.base import TimeStampedModel
 
 ZERO2 = Decimal("0.00")
 User = settings.AUTH_USER_MODEL
+
+
+def _load_original(instance):
+    if not instance.pk:
+        return None
+    return instance.__class__.objects.get(pk=instance.pk)
+
+
+def _changed_fields(instance, *, original=None):
+    original = original or _load_original(instance)
+    if not original:
+        return set()
+    changed = set()
+    for field in instance._meta.concrete_fields:
+        if field.name in {"created_at", "updated_at"}:
+            continue
+        if getattr(instance, field.attname) != getattr(original, field.attname):
+            changed.add(field.name)
+    return changed
+
+
+def _enforce_allowed_changes(instance, *, allowed_fields: set[str], message: str):
+    original = _load_original(instance)
+    if not original:
+        return
+    changed = _changed_fields(instance, original=original)
+    if changed and not changed.issubset(allowed_fields):
+        raise ValidationError(message)
 
 
 class PayrollComponent(TimeStampedModel):
@@ -719,6 +748,70 @@ class PayrollRun(TimeStampedModel):
     def __str__(self) -> str:
         return self.run_number or f"{self.doc_code}-{self.doc_no or self.id}"
 
+    def clean(self):
+        super().clean()
+        original = _load_original(self)
+        if not original:
+            return
+        protected = (
+            original.is_immutable
+            or original.status in {self.Status.POSTED, self.Status.REVERSED}
+            or original.payment_status in {
+                self.PaymentStatus.HANDED_OFF,
+                self.PaymentStatus.PARTIALLY_DISBURSED,
+                self.PaymentStatus.DISBURSED,
+                self.PaymentStatus.FAILED,
+                self.PaymentStatus.RECONCILED,
+            }
+        )
+        if not protected:
+            return
+        allowed_fields = {
+            "status",
+            "payment_status",
+            "status_reason_code",
+            "status_comment",
+            "approval_note",
+            "post_reference",
+            "posted_entry_id",
+            "posted_by",
+            "posted_at",
+            "payment_batch_ref",
+            "payment_handoff_payload",
+            "payment_handed_off_at",
+            "payment_reconciled_at",
+            "reversal_reason",
+            "reversal_posting_entry_id",
+            "reversed_by",
+            "reversed_at",
+            "updated_at",
+        }
+        changed = _changed_fields(self, original=original)
+        if changed and not changed.issubset(allowed_fields):
+            raise ValidationError(
+                "This payroll run is operationally locked. Historical payroll data cannot be modified directly."
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        protected = (
+            self.is_immutable
+            or self.status in {self.Status.APPROVED, self.Status.POSTED, self.Status.CANCELLED, self.Status.REVERSED}
+            or self.payment_status in {
+                self.PaymentStatus.HANDED_OFF,
+                self.PaymentStatus.PARTIALLY_DISBURSED,
+                self.PaymentStatus.DISBURSED,
+                self.PaymentStatus.FAILED,
+                self.PaymentStatus.RECONCILED,
+            }
+        )
+        if protected:
+            raise ValidationError("Finalized payroll runs cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
 
 class PayrollRunEmployee(TimeStampedModel):
     class Status(models.TextChoices):
@@ -781,6 +874,32 @@ class PayrollRunEmployee(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.payroll_run_id}:{self.employee_profile.employee_code}"
 
+    def clean(self):
+        super().clean()
+        original = _load_original(self)
+        if not original:
+            return
+        run = getattr(original, "payroll_run", None) or self.payroll_run
+        protected = original.is_frozen or run.is_immutable or run.status in {run.Status.POSTED, run.Status.REVERSED}
+        if not protected:
+            return
+        allowed_fields = {"remarks", "payment_status", "updated_at"}
+        changed = _changed_fields(self, original=original)
+        if changed and not changed.issubset(allowed_fields):
+            raise ValidationError(
+                "Payroll employee rows are frozen for this run and cannot be modified directly."
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        run = self.payroll_run
+        if self.is_frozen or run.is_immutable or run.status in {run.Status.APPROVED, run.Status.POSTED, run.Status.REVERSED}:
+            raise ValidationError("Finalized payroll employee rows cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
 
 class PayrollRunEmployeeComponent(TimeStampedModel):
     payroll_run_employee = models.ForeignKey(
@@ -832,6 +951,29 @@ class PayrollRunEmployeeComponent(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.payroll_run_employee_id}:{self.component_code}"
 
+    def clean(self):
+        super().clean()
+        original = _load_original(self)
+        if not original:
+            return
+        row = getattr(original, "payroll_run_employee", None) or self.payroll_run_employee
+        protected = original.is_frozen or row.is_frozen or row.payroll_run.is_immutable
+        if not protected:
+            return
+        raise ValidationError(
+            "Payroll component snapshots are immutable after approval and cannot be edited directly."
+        )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        row = self.payroll_run_employee
+        if self.is_frozen or row.is_frozen or row.payroll_run.is_immutable:
+            raise ValidationError("Finalized payroll component snapshots cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
 
 class Payslip(TimeStampedModel):
     payroll_run_employee = models.OneToOneField(
@@ -864,6 +1006,37 @@ class Payslip(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.payslip_number
+
+    def clean(self):
+        super().clean()
+        original = _load_original(self)
+        if not original:
+            return
+        row = getattr(original, "payroll_run_employee", None) or self.payroll_run_employee
+        protected = row.is_frozen or row.payroll_run.is_immutable or row.payroll_run.status in {
+            row.payroll_run.Status.POSTED,
+            row.payroll_run.Status.REVERSED,
+        }
+        if not protected:
+            return
+        allowed_fields = {"published_at", "published_by", "voided_at", "void_reason", "updated_at"}
+        changed = _changed_fields(self, original=original)
+        if changed and not changed.issubset(allowed_fields):
+            raise ValidationError("Payslip payload and historical payroll document data are immutable once frozen.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        row = self.payroll_run_employee
+        if row.is_frozen or row.payroll_run.is_immutable or row.payroll_run.status in {
+            row.payroll_run.Status.APPROVED,
+            row.payroll_run.Status.POSTED,
+            row.payroll_run.Status.REVERSED,
+        }:
+            raise ValidationError("Finalized payslips cannot be deleted.")
+        return super().delete(*args, **kwargs)
 
 
 class PayrollRunActionLog(TimeStampedModel):
@@ -902,3 +1075,16 @@ class PayrollRunActionLog(TimeStampedModel):
             models.Index(fields=["payroll_run", "action"], name="ix_payrun_action"),
         ]
         ordering = ["created_at", "id"]
+
+    def clean(self):
+        super().clean()
+        if self.pk:
+            raise ValidationError("Payroll audit logs are immutable and cannot be edited.")
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Payroll audit logs are immutable and cannot be edited.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Payroll audit logs are immutable and cannot be deleted.")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, permissions
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -15,7 +15,7 @@ from payroll.serializers import (
     PayrollRunSummarySerializer,
     PayslipSerializer,
 )
-from payroll.services import PayrollRunService
+from payroll.services import PayrollPermissionService, PayrollRunService
 from payroll.services.payroll_reversal_service import PayrollReversalService
 from payroll.services.payroll_run_hardening_service import PayrollRunHardeningService
 
@@ -25,6 +25,13 @@ def _raise_value_error(err: ValueError):
     if isinstance(payload, dict):
         raise ValidationError(payload)
     raise ValidationError({"detail": str(payload)})
+
+
+def _assert_action_permission(request, action: str) -> None:
+    try:
+        PayrollPermissionService.assert_action_access(user=request.user, action=action)
+    except PermissionError as err:
+        raise PermissionDenied(detail=str(err))
 
 
 class PayrollRunListCreateAPIView(generics.ListCreateAPIView):
@@ -48,6 +55,7 @@ class PayrollRunListCreateAPIView(generics.ListCreateAPIView):
         return PayrollRunListSerializer
 
     def create(self, request, *args, **kwargs):
+        _assert_action_permission(request, "create")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -84,15 +92,30 @@ class PayrollRunRetrieveAPIView(generics.RetrieveAPIView):
             "subentity",
             "payroll_period",
             "created_by",
+            "submitted_by",
             "approved_by",
+            "locked_by",
             "posted_by",
-        ).prefetch_related("employee_runs__components")
+            "reversed_by",
+            "reversed_run",
+            "ledger_policy_version",
+        ).prefetch_related(
+            "action_logs__acted_by",
+            "reversal_runs",
+            "employee_runs__employee_profile__employee_user",
+            "employee_runs__salary_structure",
+            "employee_runs__salary_structure_version",
+            "employee_runs__components",
+            "employee_runs__components__component",
+            "employee_runs__payslip",
+        )
 
 
 class PayrollRunCalculateAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "calculate")
         serializer = PayrollRunActionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         run = PayrollRun.objects.select_related("payroll_period").get(pk=pk)
@@ -107,6 +130,7 @@ class PayrollRunApproveAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "approve")
         serializer = PayrollRunActionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         run = PayrollRun.objects.get(pk=pk)
@@ -125,6 +149,7 @@ class PayrollRunSubmitAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "submit")
         serializer = PayrollRunActionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         run = PayrollRun.objects.get(pk=pk)
@@ -144,6 +169,7 @@ class PayrollRunPostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "post")
         run = PayrollRun.objects.select_related("payroll_period").get(pk=pk)
         try:
             result = PayrollRunService.post_run(run, posted_by_id=request.user.id)
@@ -156,6 +182,7 @@ class PayrollRunPaymentHandoffAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "payment_handoff")
         serializer = PayrollRunActionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         run = PayrollRun.objects.get(pk=pk)
@@ -175,6 +202,7 @@ class PayrollRunPaymentReconcileAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "payment_reconcile")
         serializer = PayrollRunActionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         run = PayrollRun.objects.get(pk=pk)
@@ -197,6 +225,7 @@ class PayrollRunReverseAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_action_permission(request, "reverse")
         serializer = PayrollRunActionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         run = PayrollRun.objects.get(pk=pk)
@@ -215,7 +244,32 @@ class PayrollRunSummaryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk: int):
-        run = PayrollRun.objects.get(pk=pk)
+        run = (
+            PayrollRun.objects.select_related(
+                "entity",
+                "entityfinid",
+                "subentity",
+                "payroll_period",
+                "created_by",
+                "submitted_by",
+                "approved_by",
+                "posted_by",
+                "reversed_by",
+                "reversed_run",
+                "ledger_policy_version",
+            )
+            .prefetch_related(
+                "action_logs__acted_by",
+                "reversal_runs",
+                "employee_runs__employee_profile__employee_user",
+                "employee_runs__salary_structure",
+                "employee_runs__salary_structure_version",
+                "employee_runs__components",
+                "employee_runs__components__component",
+                "employee_runs__payslip",
+            )
+            .get(pk=pk)
+        )
         summary = PayrollRunService.summary(run)
         return Response(PayrollRunSummarySerializer(summary).data)
 
@@ -229,4 +283,7 @@ class PayrollRunPayslipAPIView(generics.RetrieveAPIView):
         return Payslip.objects.select_related(
             "payroll_run_employee",
             "payroll_run_employee__employee_profile",
+            "payroll_run_employee__salary_structure",
+        ).prefetch_related(
+            "payroll_run_employee__components",
         ).filter(payroll_run_employee__payroll_run_id=self.kwargs["pk"])

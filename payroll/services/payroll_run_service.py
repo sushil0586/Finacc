@@ -24,6 +24,7 @@ from payroll.models import (
 from payroll.services.payroll_config_resolver import PayrollConfigResolver
 from payroll.services.payroll_posting_service import PayrollPostingService
 from payroll.services.payroll_run_hardening_service import PayrollRunHardeningService
+from payroll.services.payroll_traceability_service import PayrollTraceabilityService
 
 ZERO2 = Decimal("0.00")
 Q2 = Decimal("0.01")
@@ -252,6 +253,28 @@ class PayrollRunService:
                     amount=amount,
                     taxable_amount=amount if line.component.is_taxable else ZERO2,
                     is_employer_cost=line.component.component_type == line.component.ComponentType.EMPLOYER_CONTRIBUTION,
+                    metadata={
+                        "component_snapshot": {
+                            "component_id": line.component_id,
+                            "code": line.component.code,
+                            "name": line.component.name,
+                            "component_type": line.component.component_type,
+                            "posting_behavior": line.component.posting_behavior,
+                            "is_taxable": line.component.is_taxable,
+                            "affects_net_pay": line.component.affects_net_pay,
+                        },
+                        "posting_snapshot": (
+                            {
+                                "posting_id": component_posting.id,
+                                "version_no": component_posting.version_no,
+                                "expense_account_id": component_posting.expense_account_id,
+                                "liability_account_id": component_posting.liability_account_id,
+                                "payable_account_id": component_posting.payable_account_id,
+                            }
+                            if component_posting
+                            else {}
+                        ),
+                    },
                     calculation_basis_snapshot={
                         "basis": line.calculation_basis,
                         "rate": str(line.rate),
@@ -319,6 +342,22 @@ class PayrollRunService:
                 "structure_code": structure.code,
                 "structure_version": structure_version.version_no,
                 "period_code": run.payroll_period.code,
+                "salary_structure_snapshot": {
+                    "salary_structure_id": structure.id,
+                    "code": structure.code,
+                    "name": structure.name,
+                    "version_no": structure_version.version_no,
+                },
+                "payroll_profile_snapshot": {
+                    "employee_profile_id": profile.id,
+                    "employee_code": profile.employee_code,
+                    "full_name": profile.full_name,
+                    "tax_regime": profile.tax_regime,
+                    "pay_frequency": profile.pay_frequency,
+                },
+                "attendance_snapshot": profile.extra_data.get("attendance_snapshot", {}),
+                "payable_days_snapshot": profile.extra_data.get("payable_days_snapshot", {}),
+                "tax_projection_snapshot": profile.extra_data.get("tax_projection_snapshot", {}),
             }
             run_employee.calculation_assumptions = {
                 "ctc_annual": str(profile.ctc_annual),
@@ -359,6 +398,14 @@ class PayrollRunService:
         run.config_snapshot = {
             "ledger_policy_id": ledger_policy.id,
             "ledger_policy_version": ledger_policy.version_no,
+            "ledger_policy_snapshot": {
+                "salary_payable_account_id": ledger_policy.salary_payable_account_id,
+                "payroll_clearing_account_id": ledger_policy.payroll_clearing_account_id,
+                "reimbursement_payable_account_id": ledger_policy.reimbursement_payable_account_id,
+                "employer_contribution_payable_account_id": ledger_policy.employer_contribution_payable_account_id,
+                "effective_from": str(ledger_policy.effective_from),
+                "effective_to": str(ledger_policy.effective_to) if ledger_policy.effective_to else None,
+            },
             "structure_versions": [
                 {
                     "employee_profile_id": row.employee_profile_id,
@@ -471,6 +518,7 @@ class PayrollRunService:
             reimbursement_amount=Sum("reimbursement_amount"),
             payable_amount=Sum("payable_amount"),
         )
+        traceability = PayrollTraceabilityService.build_traceability(run=run)
         return {
             "run_id": run.id,
             "employee_count": run.employee_count,
@@ -480,4 +528,11 @@ class PayrollRunService:
             "reimbursement_amount": q2(rows.get("reimbursement_amount")),
             "payable_amount": q2(rows.get("payable_amount")),
             "status": run.status,
+            "actors": PayrollTraceabilityService.build_actor_summary(run=run),
+            "traceability": traceability,
+            "timeline": PayrollTraceabilityService.build_timeline(run=run),
+            "employee_rows": PayrollTraceabilityService.build_employee_rows(run=run),
+            "component_totals": PayrollTraceabilityService.build_component_totals(run=run),
+            "posting_verification_issues": traceability["posting"]["verification_issues"],
+            "payment_verification_issues": traceability["payment"]["verification_issues"],
         }

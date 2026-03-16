@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
@@ -12,7 +13,7 @@ class PayrollModelTests(TestCase):
         self.setup = PayrollFactory.full_payroll_setup()
 
     def test_salary_structure_version_unique_per_structure(self):
-        with self.assertRaises(IntegrityError):
+        with self.assertRaises((IntegrityError, ValidationError)):
             SalaryStructureVersion.objects.create(
                 salary_structure=self.setup["structure"],
                 version_no=1,
@@ -33,7 +34,7 @@ class PayrollModelTests(TestCase):
             payroll_period=self.setup["period"],
             correction_of_run=parent_run,
         )
-        with self.assertRaises(IntegrityError):
+        with self.assertRaises((IntegrityError, ValidationError)):
             PayrollFactory.payroll_run(
                 entity=self.setup["entity"],
                 entityfinid=self.setup["entityfinid"],

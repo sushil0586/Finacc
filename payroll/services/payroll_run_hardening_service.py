@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.utils import timezone
+from django.contrib.auth import get_user_model
 
 from payroll.models import PayrollRun, PayrollRunActionLog
+
+User = get_user_model()
 
 
 class PayrollRunHardeningService:
@@ -30,6 +33,32 @@ class PayrollRunHardeningService:
         comment: str = "",
         payload: dict | None = None,
     ) -> None:
+        actor = User.objects.filter(id=user_id).only("id", "username", "email", "first_name", "last_name").first() if user_id else None
+        actor_name = (
+            actor.get_full_name() if actor and hasattr(actor, "get_full_name") and actor.get_full_name()
+            else getattr(actor, "username", "")
+            or getattr(actor, "email", "")
+        ) if actor else ""
+        audit_payload = {
+            "run_id": run.id,
+            "run_reference": run.run_number or f"{run.doc_code}-{run.doc_no or run.id}",
+            "entity_id": run.entity_id,
+            "entityfinid_id": run.entityfinid_id,
+            "subentity_id": run.subentity_id,
+            "actor_id": user_id,
+            "actor_name": actor_name or None,
+            "logged_at": timezone.now().isoformat(),
+        }
+        if run.post_reference:
+            audit_payload["posting_reference"] = run.post_reference
+        if run.posted_entry_id:
+            audit_payload["posting_entry_id"] = run.posted_entry_id
+        if run.payment_batch_ref:
+            audit_payload["payment_batch_ref"] = run.payment_batch_ref
+        if run.reversal_reason:
+            audit_payload["reversal_reason"] = run.reversal_reason
+        if payload:
+            audit_payload.update(payload)
         PayrollRunActionLog.objects.create(
             payroll_run=run,
             action=action,
@@ -40,7 +69,7 @@ class PayrollRunHardeningService:
             acted_by_id=user_id,
             reason_code=reason_code,
             comment=comment,
-            payload=payload or {},
+            payload=audit_payload,
         )
 
     @classmethod
