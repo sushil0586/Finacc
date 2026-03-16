@@ -19,6 +19,10 @@ class Command(BaseCommand):
 
         if entity_id and all_entities:
             raise CommandError("Use either --entity-id or --all-entities, not both.")
+        if catalog_only and (entity_id or all_entities):
+            raise CommandError("Use --catalog-only by itself, or use --entity-id/--all-entities to seed entity roles.")
+        if not any([entity_id, all_entities, catalog_only]):
+            raise CommandError("Provide --entity-id, --all-entities, or --catalog-only.")
 
         catalog = PayrollRBACSeedService.seed_global_catalog()
         self.stdout.write(
@@ -36,8 +40,6 @@ class Command(BaseCommand):
                 raise CommandError(f"Active entity not found for entity_id={entity_id}.")
         elif all_entities:
             entities = Entity.objects.filter(isactive=True).order_by("id")
-        else:
-            raise CommandError("Provide --entity-id, --all-entities, or --catalog-only.")
 
         for entity in entities:
             result = PayrollRBACSeedService.seed_entity_roles(entity=entity, actor=getattr(entity, "createdby", None))

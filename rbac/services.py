@@ -342,7 +342,7 @@ class RoleTemplateService:
             "name": "Admin",
             "description": "Broad operational access for entity administrators.",
             "modules": ["admin", "sales", "purchase", "inventory", "accounts", "compliance", "reports", "stock", "payment", "receipt", "production", "tds", "credit", "debit", "tcs", "payroll", "masters"],
-            "menu_code_prefixes": ["admin", "reports", "compliance", "accounts", "inventory", "sales", "purchase", "masters"],
+            "menu_code_prefixes": ["admin", "reports", "compliance", "accounts", "inventory", "sales", "purchase", "masters", "payroll"],
         },
         "sales_user": {
             "name": "Sales User",
@@ -373,7 +373,7 @@ class RoleTemplateService:
             "name": "Payroll User",
             "description": "Payroll and employee administration access.",
             "modules": ["payroll"],
-            "menu_code_prefixes": ["admin.payroll"],
+            "menu_code_prefixes": ["payroll"],
         },
         "compliance_user": {
             "name": "Compliance User",
@@ -496,4 +496,5 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
+
 

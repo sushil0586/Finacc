@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.core.management.color import no_style
+from django.db import connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -183,6 +184,8 @@ class PayrollSeedService:
             result.notes.append("No user exists to attribute PaymentMode.createdby; payment mode seeding skipped.")
             return result.as_dict()
 
+        cls._repair_pk_sequence(PaymentMode)
+
         for row in cls.PAYMENT_MODE_SPECS:
             mode = PaymentMode.objects.filter(paymentmodecode=row["paymentmodecode"]).first()
             if not mode:
@@ -216,10 +219,11 @@ class PayrollSeedService:
             for spec in cls.COMPONENT_SPECS:
                 component = PayrollComponent.objects.filter(entity=entity, code=spec["code"]).first()
                 if not component:
+                    create_kwargs = dict(spec)
+                    create_kwargs["description"] = cls._seed_text(spec["description"])
                     PayrollComponent.objects.create(
                         entity=entity,
-                        **spec,
-                        description=cls._seed_text(spec["description"]),
+                        **create_kwargs,
                     )
                     result.created += 1
                     continue
@@ -526,3 +530,19 @@ class PayrollSeedService:
     @classmethod
     def _is_seeded_policy(cls, payload: dict | None) -> bool:
         return (payload or {}).get("seed") == cls.SEED_MARKER
+
+    @classmethod
+    def _repair_pk_sequence(cls, model):
+        """Bring a Postgres sequence back in sync with the table's max primary key.
+
+        Some older environments were populated through manual inserts or legacy
+        migration flows, which can leave the underlying sequence behind the
+        current max(id). Running Django's sequence reset SQL here keeps seeders
+        idempotent without requiring manual DBA cleanup first.
+        """
+        statements = connection.ops.sequence_reset_sql(no_style(), [model])
+        if not statements:
+            return
+        with connection.cursor() as cursor:
+            for statement in statements:
+                cursor.execute(statement)

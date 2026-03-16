@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 from django.test import override_settings
 from django.urls import reverse
@@ -13,15 +15,17 @@ from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubE
 from financial.models import Ledger, account, accountHead, accounttype
 from geography.models import City, Country, District, State
 from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine
+from purchase.models.purchase_ap import VendorBillOpenItem
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
 class PurchaseRegisterAPITests(APITestCase):
     def setUp(self):
         self.client = APIClient()
+        suffix = uuid4().hex[:8]
         self.user = User.objects.create_user(
-            username="purchase-report-user",
-            email="purchase-report@example.com",
+            username=f"purchase-report-user-{suffix}",
+            email=f"purchase-report-{suffix}@example.com",
             password="pass123",
         )
         self.client.force_authenticate(user=self.user)
@@ -250,6 +254,28 @@ class PurchaseRegisterAPITests(APITestCase):
                 line_total=Decimal("10.00"),
             )
         return header
+
+    def _create_open_item(self, header, *, amount=None):
+        amount = Decimal(amount or header.grand_total)
+        return VendorBillOpenItem.objects.create(
+            header=header,
+            entity=header.entity,
+            entityfinid=header.entityfinid,
+            subentity=header.subentity,
+            vendor=header.vendor,
+            vendor_ledger=header.vendor_ledger,
+            doc_type=header.doc_type,
+            bill_date=header.bill_date,
+            due_date=header.due_date,
+            purchase_number=header.purchase_number,
+            supplier_invoice_number=header.supplier_invoice_number,
+            original_amount=amount,
+            gross_amount=amount,
+            net_payable_amount=amount,
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=amount,
+            is_open=True,
+        )
 
     def _get(self, **params):
         query = {**self.base_params, **params}
@@ -511,3 +537,105 @@ class PurchaseRegisterAPITests(APITestCase):
         self.assertEqual(response.data["results"][0]["purchase_number"], header.purchase_number)
         self.assertEqual(self._money(response.data["results"][0]["discount_total"]), Decimal("25.00"))
         self.assertEqual(self._money(response.data["totals"]["discount_total"]), Decimal("25.00"))
+
+
+    def test_outstanding_amount_is_optional_and_derived_from_open_item(self):
+        header = self._create_purchase_document(purchase_number="OPEN-ITEM-001", grand_total="118.00")
+        self._create_open_item(header, amount="55.00")
+
+        response = self._get(search="OPEN-ITEM-001")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("outstanding_amount", response.data["results"][0])
+
+        response = self._get(search="OPEN-ITEM-001", include_outstanding="true")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._money(response.data["results"][0]["outstanding_amount"]), Decimal("55.00"))
+        self.assertEqual(self._money(response.data["totals"]["outstanding_amount"]), Decimal("55.00"))
+
+    def test_posting_summary_block_is_optional(self):
+        self._create_purchase_document(status=PurchaseInvoiceHeader.Status.POSTED, purchase_number="POSTSUM-001", grand_total="100.00")
+        self._create_purchase_document(status=PurchaseInvoiceHeader.Status.CONFIRMED, purchase_number="POSTSUM-002", grand_total="75.00")
+
+        response = self._get(include_posting_summary="true")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["posting_summary"]["posted_count"], 1)
+        self.assertEqual(response.data["posting_summary"]["unposted_count"], 1)
+
+    def test_purchase_register_exports_return_expected_formats(self):
+        header = self._create_purchase_document(purchase_number="EXP-001")
+        self._create_open_item(header, amount="25.00")
+        params = {**self.base_params, "include_outstanding": "true"}
+        checks = [
+            ("reports_api:purchase-register-csv", "text/csv", b"Bill Date"),
+            ("reports_api:purchase-register-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", b"PK"),
+            ("reports_api:purchase-register-pdf", "application/pdf", b"%PDF"),
+            ("reports_api:purchase-register-print", "application/pdf", b"%PDF"),
+        ]
+        for route_name, content_type, prefix in checks:
+            with self.subTest(route_name=route_name):
+                response = self.client.get(reverse(route_name), params)
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response["Content-Type"].startswith(content_type))
+                self.assertTrue(bytes(response.content).startswith(prefix))
+
+    def test_purchase_register_meta_is_config_driven(self):
+        header = self._create_purchase_document(purchase_number="META-001")
+        self._create_open_item(header, amount="42.00")
+
+        response = self._get(
+            search="META-001",
+            include_outstanding="true",
+            include_posting_summary="true",
+            include_payables_drilldowns="true",
+        )
+        self.assertEqual(response.status_code, 200)
+        meta = response.data["_meta"]
+        self.assertTrue(meta["configuration_driven"])
+        self.assertIn("outstanding_amount", meta["effective_columns"])
+        self.assertIn("posting_summary", meta["enabled_summary_blocks"])
+        self.assertIn("purchase_document_detail", {row["target"] for row in meta["drilldown_targets"]})
+        related_codes = {row["code"] for row in meta["related_reports"]}
+        self.assertIn("vendor_ledger_statement", related_codes)
+        self.assertIn("payables_close_pack", related_codes)
+
+    def test_purchase_register_csv_header_tracks_optional_outstanding_column(self):
+        header = self._create_purchase_document(purchase_number="CSVHDR-001")
+        self._create_open_item(header, amount="33.00")
+
+        response = self.client.get(reverse("reports_api:purchase-register-csv"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Outstanding Amount", response.content.decode("utf-8").splitlines()[0])
+
+        response = self.client.get(
+            reverse("reports_api:purchase-register-csv"),
+            {**self.base_params, "include_outstanding": "true"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Outstanding Amount", response.content.decode("utf-8").splitlines()[0])
+
+
+    def test_purchase_register_supports_date_aliases_and_standardized_response_fields(self):
+        header = self._create_purchase_document(purchase_number="ALIAS-001")
+        self._create_open_item(header, amount="55.00")
+        response = self.client.get(
+            reverse("reports_api:purchase-register"),
+            {**self.base_params, "date_from": "2025-04-01", "date_to": "2025-04-30"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.data
+        self.assertEqual(payload["applied_filters"]["from_date"], date(2025, 4, 1))
+        self.assertEqual(payload["applied_filters"]["to_date"], date(2025, 4, 30))
+        self.assertIn("rows", payload)
+        self.assertIn("pagination", payload)
+        self.assertIn("available_exports", payload)
+        self.assertIn("available_drilldowns", payload)
+
+    def test_purchase_register_meta_is_frontend_complete(self):
+        response = self._get(include_outstanding="true")
+        self.assertEqual(response.status_code, 200)
+        meta = response.data["_meta"]
+        self.assertIn("supported_filters", meta)
+        self.assertIn("pagination_mode", meta)
+        self.assertIn("available_exports", meta)
+        self.assertIn("available_drilldowns", meta)
+        self.assertIn("endpoint", meta)

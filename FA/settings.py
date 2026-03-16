@@ -8,6 +8,7 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 from pathlib import Path
 import os
+import sys
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
@@ -24,6 +25,8 @@ SECRET_KEY = 'django-insecure-(zyb)qx!o_p@$vjqscb=p+)8&-(tj(v*ne_=qc(r@7f(%%a5ey
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 RBAC_DEV_ALLOW_ALL_ACCESS = DEBUG
+RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == 'test'
+ENABLE_PAYROLL_IN_TESTS = os.getenv('ENABLE_PAYROLL_IN_TESTS', '').lower() in ('1', 'true', 'yes', 'on')
 
 ALLOWED_HOSTS = ['*']
 
@@ -81,6 +84,9 @@ INSTALLED_APPS = [
 ]
 
 INSTALLED_APPS += ['auditlogger']
+
+if RUNNING_TESTS and not ENABLE_PAYROLL_IN_TESTS:
+    INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'payroll']
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -120,12 +126,11 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 DATABASES = {
    'default': {
        'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'finacc',
-       'USER': 'finaccuser',
-       'PASSWORD': 'Ansh@1789',
+       'NAME': 'FA',
+       'USER': 'postgres',
+       'PASSWORD': 'ansh@1789',
        'HOST': 'localhost',
-       'PORT': '5432',
-
+       'PORT': '',
    }
 }
 # # Database

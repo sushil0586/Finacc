@@ -1,23 +1,35 @@
 from __future__ import annotations
 
+"""HTTP and export views for AP outstanding and aging reports."""
+
 from django.http import HttpResponse
 from rest_framework import permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from reports.api.receivables_views import _write_csv, _write_excel, _write_pdf
 from reports.schemas.common import build_report_envelope
 from reports.schemas.payables_reports import PayableAgingScopeSerializer, PayableReportScopeSerializer
-from reports.services.payables import build_ap_aging_report, build_vendor_outstanding_report
+from reports.services.payables import build_ap_aging_report, build_payables_dashboard_summary, build_vendor_outstanding_report
+from reports.services.payables_config import PAYABLE_REPORT_DEFAULTS, resolve_report_columns
+from reports.services.payables_meta import build_payables_report_meta
+from rbac.services import EffectivePermissionService
 
 
-PAYABLE_DEFAULTS = {
-    "default_page_size": 100,
-    "decimal_places": 2,
-    "show_zero_balances_default": False,
-    "show_opening_balance_default": True,
-    "enable_drilldown": True,
-}
+PAYABLE_DEFAULTS = PAYABLE_REPORT_DEFAULTS
+
+
+def _export_headers(report_code, *, view=None, feature_state=None):
+    return [
+        column["label"]
+        for column in resolve_report_columns(
+            report_code,
+            view=view,
+            enabled_features=feature_state,
+            export=True,
+        )
+    ]
 
 
 def _payable_scope_filters(scope):
@@ -35,12 +47,18 @@ def _payable_scope_filters(scope):
         "overdue_only": scope.get("overdue_only", False),
         "credit_limit_exceeded": scope.get("credit_limit_exceeded", False),
         "outstanding_gt": scope.get("outstanding_gt"),
+        "reconcile_gl": scope.get("reconcile_gl", False),
         "search": scope.get("search"),
         "sort_by": scope.get("sort_by"),
         "sort_order": scope.get("sort_order", "desc"),
         "page": scope.get("page", 1),
         "page_size": scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
         "view": scope.get("view"),
+        "settlement_type": scope.get("settlement_type"),
+        "include_unapplied": scope.get("include_unapplied"),
+        "note_type": scope.get("note_type"),
+        "status": scope.get("status"),
+        "include_trace": scope.get("include_trace", True),
     }
 
 
@@ -65,6 +83,7 @@ def _attach_payable_actions(payload, request, *, export_base_path):
         "csv": f"{export_base_path}csv/?{query}",
         "print": f"{export_base_path}print/?{query}",
     }
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
     return payload
 
 
@@ -75,7 +94,11 @@ class _BasePayableAPIView(APIView):
     def get_scope(self, request):
         serializer = self.serializer_class(data=request.query_params)
         serializer.is_valid(raise_exception=True)
-        return serializer.validated_data
+        scope = serializer.validated_data
+        entity = EffectivePermissionService.entity_for_user(request.user, scope["entity"])
+        if not entity:
+            raise PermissionDenied("You do not have access to this entity.")
+        return scope
 
     def build_envelope(self, *, report_code, report_name, payload, scope, request, export_base_path):
         response = build_report_envelope(
@@ -112,6 +135,8 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
             sort_order=scope.get("sort_order", "desc"),
             page=scope.get("page", 1),
             page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
+            reconcile_gl=scope.get("reconcile_gl", False),
+            include_trace=scope.get("include_trace", True),
         )
         return Response(
             self.build_envelope(
@@ -147,6 +172,7 @@ class ApAgingReportAPIView(_BasePayableAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
             view=scope.get("view") or "summary",
+            include_trace=scope.get("include_trace", True),
         )
         return Response(
             self.build_envelope(
@@ -158,6 +184,54 @@ class ApAgingReportAPIView(_BasePayableAPIView):
                 export_base_path="/api/reports/payables/aging/",
             )
         )
+
+
+class PayablesReportsMetaAPIView(_BasePayableAPIView):
+    serializer_class = PayableReportScopeSerializer
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        return Response(
+            build_payables_report_meta(
+                entity_id=scope["entity"],
+                entityfinid_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+            )
+        )
+
+
+class PayablesDashboardSummaryAPIView(_BasePayableAPIView):
+    serializer_class = PayableReportScopeSerializer
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        payload = build_payables_dashboard_summary(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            as_of_date=scope.get("as_of_date") or scope.get("to_date"),
+            vendor_id=scope.get("vendor"),
+            vendor_group=scope.get("vendor_group"),
+            region_id=scope.get("region"),
+            currency=scope.get("currency"),
+            search=scope.get("search"),
+        )
+        response = build_report_envelope(
+            report_code="payables_dashboard_summary",
+            report_name="Payables Dashboard Summary",
+            payload=payload,
+            filters=_payable_scope_filters(scope),
+            defaults=PAYABLE_DEFAULTS,
+        )
+        response["actions"].update(
+            {
+                "can_export_excel": False,
+                "can_export_pdf": False,
+                "can_export_csv": False,
+                "can_print": False,
+            }
+        )
+        return Response(response)
 
 
 class _BasePayableExportAPIView(_BasePayableAPIView):
@@ -195,24 +269,9 @@ class _VendorOutstandingExportMixin(_BasePayableExportAPIView):
             sort_order=scope.get("sort_order", "desc"),
             page=1,
             page_size=100000,
+            reconcile_gl=scope.get("reconcile_gl", False),
+            include_trace=scope.get("include_trace", True),
         )
-        headers = [
-            "Vendor Name",
-            "Vendor Code",
-            "Opening Balance",
-            "Bill Amount",
-            "Payment Amount",
-            "Credit Note",
-            "Net Outstanding",
-            "Overdue Amount",
-            "Unapplied Advance",
-            "Credit Limit",
-            "Credit Days",
-            "Last Bill Date",
-            "Last Payment Date",
-            "Currency",
-            "GSTIN",
-        ]
         rows = [
             [
                 row["vendor_name"],
@@ -234,6 +293,7 @@ class _VendorOutstandingExportMixin(_BasePayableExportAPIView):
             for row in data["rows"]
         ]
         subtitle = f"Entity: {scope['entity']} | As of: {scope.get('as_of_date') or scope.get('to_date')}"
+        headers = _export_headers("vendor_outstanding")
         return scope, data, headers, rows, subtitle
 
 
@@ -296,25 +356,9 @@ class _ApAgingExportMixin(_BasePayableExportAPIView):
             page=1,
             page_size=100000,
             view=scope.get("view") or "summary",
+            include_trace=scope.get("include_trace", True),
         )
         if (scope.get("view") or "summary") == "invoice":
-            headers = [
-                "Vendor",
-                "Vendor Code",
-                "Bill Number",
-                "Bill Date",
-                "Due Date",
-                "Credit Days",
-                "Bill Amount",
-                "Paid Amount",
-                "Balance",
-                "Current",
-                "1-30",
-                "31-60",
-                "61-90",
-                "90+",
-                "Currency",
-            ]
             rows = [
                 [
                     row["vendor_name"],
@@ -336,24 +380,9 @@ class _ApAgingExportMixin(_BasePayableExportAPIView):
                 for row in data["rows"]
             ]
             title = "AP Aging Invoice Report"
+            headers = _export_headers("ap_aging", view="invoice", feature_state={"view": "invoice"})
             numeric_columns = set(range(6, 15))
         else:
-            headers = [
-                "Vendor",
-                "Vendor Code",
-                "Outstanding",
-                "Overdue Amount",
-                "Current",
-                "1-30",
-                "31-60",
-                "61-90",
-                "90+",
-                "Unapplied Advance",
-                "Credit Limit",
-                "Credit Days",
-                "Last Payment Date",
-                "Currency",
-            ]
             rows = [
                 [
                     row["vendor_name"],
@@ -374,6 +403,7 @@ class _ApAgingExportMixin(_BasePayableExportAPIView):
                 for row in data["rows"]
             ]
             title = "AP Aging Summary Report"
+            headers = _export_headers("ap_aging", view="summary", feature_state={"view": "summary"})
             numeric_columns = set(range(3, 12))
         subtitle = f"Entity: {scope['entity']} | As of: {scope.get('as_of_date') or scope.get('to_date')} | View: {scope.get('view') or 'summary'}"
         return scope, headers, rows, subtitle, title, numeric_columns
