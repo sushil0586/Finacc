@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
@@ -19,6 +19,11 @@ Q2 = Decimal("0.01")
 
 def q2(x) -> Decimal:
     return Decimal(x or 0).quantize(Q2, rounding=ROUND_HALF_UP)
+
+
+def _default_doc_code(voucher_type: str, entity_id: int, subentity_id: Optional[int]) -> str:
+    settings = VoucherSettingsService.get_settings(entity_id, subentity_id)
+    return VoucherSettingsService.default_doc_code_for_type(settings, voucher_type)
 
 
 @dataclass(frozen=True)
@@ -262,6 +267,8 @@ class VoucherService:
         payload_lines = data.pop("lines", [])
         header = VoucherHeader(**data)
         policy = VoucherSettingsService.get_policy(header.entity_id, header.subentity_id)
+        # ensure doc_code matches voucher type
+        header.doc_code = header.doc_code or _default_doc_code(header.voucher_type, header.entity_id, header.subentity_id)
         if header.voucher_type == VoucherHeader.VoucherType.JOURNAL:
             header.cash_bank_account_id = None
             header.cash_bank_ledger_id = None
@@ -298,8 +305,11 @@ class VoucherService:
         if state.get("status") == "SUBMITTED" and str(policy.controls.get("allow_edit_after_submit", "on")).lower() == "off":
             raise ValueError("Submitted voucher is locked for edit by policy.")
         payload_lines = data.pop("lines", [])
+        original_voucher_type = instance.voucher_type
         for key, value in data.items():
             setattr(instance, key, value)
+        if not instance.doc_code or original_voucher_type != instance.voucher_type:
+            instance.doc_code = _default_doc_code(instance.voucher_type, instance.entity_id, instance.subentity_id)
         if instance.voucher_type == VoucherHeader.VoucherType.JOURNAL:
             instance.cash_bank_account_id = None
             instance.cash_bank_ledger_id = None
@@ -326,6 +336,7 @@ class VoucherService:
         header = VoucherHeader.objects.select_for_update().get(pk=voucher_id)
         if int(header.status) != int(VoucherHeader.Status.DRAFT):
             raise ValueError("Only draft vouchers can be confirmed.")
+        header.doc_code = header.doc_code or _default_doc_code(header.voucher_type, header.entity_id, header.subentity_id)
         if not header.doc_no:
             doc_type_id = cls._doc_type_id(header.voucher_type, header.doc_code)
             res = DocumentNumberService.allocate_final(
@@ -347,6 +358,8 @@ class VoucherService:
     @transaction.atomic
     def submit_voucher(cls, voucher_id: int, *, submitted_by_id: int, remarks: Optional[str] = None) -> VoucherResult:
         header = VoucherHeader.objects.select_for_update().get(pk=voucher_id)
+        if int(header.status) != int(VoucherHeader.Status.DRAFT):
+            raise ValueError("Only draft vouchers can be submitted.")
         state = cls._workflow_state(header.workflow_payload)
         state.update({"status": "SUBMITTED", "submitted_by": submitted_by_id, "submitted_at": timezone.now().isoformat(), "remarks": remarks})
         payload = cls._set_workflow_state(header.workflow_payload, state)
@@ -359,6 +372,8 @@ class VoucherService:
     @transaction.atomic
     def approve_voucher(cls, voucher_id: int, *, approved_by_id: int, remarks: Optional[str] = None) -> VoucherResult:
         header = VoucherHeader.objects.select_for_update().get(pk=voucher_id)
+        if int(header.status) in {VoucherHeader.Status.POSTED, VoucherHeader.Status.CANCELLED}:
+            raise ValueError("Posted/cancelled vouchers cannot be approved.")
         policy = VoucherSettingsService.get_policy(header.entity_id, header.subentity_id)
         state = cls._workflow_state(header.workflow_payload)
         if str(policy.controls.get("require_submit_before_approve", "off")).lower() == "on" and state.get("status") != "SUBMITTED":
@@ -378,6 +393,8 @@ class VoucherService:
     @transaction.atomic
     def reject_voucher(cls, voucher_id: int, *, rejected_by_id: int, remarks: Optional[str] = None) -> VoucherResult:
         header = VoucherHeader.objects.select_for_update().get(pk=voucher_id)
+        if int(header.status) in {VoucherHeader.Status.POSTED, VoucherHeader.Status.CANCELLED}:
+            raise ValueError("Posted/cancelled vouchers cannot be rejected.")
         state = cls._workflow_state(header.workflow_payload)
         state.update({"status": "REJECTED", "rejected_by": rejected_by_id, "rejected_at": timezone.now().isoformat(), "remarks": remarks})
         payload = cls._set_workflow_state(header.workflow_payload, state)

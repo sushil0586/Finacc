@@ -126,9 +126,6 @@ def build_payables_report_meta(*, entity_id: int, entityfinid_id: int | None = N
     subentities = _subentities(entity_id)
     vendors = _vendors(entity_id)
     return {
-        "entity_id": entity_id,
-        "entityfinid_id": entityfinid_id,
-        "subentity_id": subentity_id,
         "generated_at": timezone.now().isoformat(),
         "documentation": {
             "path": "reports/PAYABLES_REPORTING_API.md",
