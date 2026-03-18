@@ -2,13 +2,32 @@ from __future__ import annotations
 
 from django.db.models import Prefetch
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherDetailSerializer, VoucherListSerializer, VoucherWriteSerializer
+from rbac.services import EffectivePermissionService
 from vouchers.services.voucher_service import VoucherService
+
+
+
+def _perm_code(voucher_type: str, action: str) -> str:
+    vt = (voucher_type or "").upper()
+    suffix = {"CASH": "cashvoucher", "BANK": "bankvoucher", "JOURNAL": "journalvoucher"}.get(vt)
+    if not suffix:
+        return ""
+    return f"voucher.{suffix}.{action}"
+
+
+def _assert_permission(user, *, entity_id: int, voucher_type: str, action: str):
+    code = _perm_code(voucher_type, action)
+    if not code:
+        raise PermissionDenied({"detail": "Unknown voucher type for permission check."})
+    codes = EffectivePermissionService.permission_codes_for_user(user, entity_id)
+    if code not in codes:
+        raise PermissionDenied({"detail": f"Missing permission: {code}"})
 
 
 def _raise_validation_error(err: ValueError) -> None:
@@ -45,6 +64,19 @@ class _VoucherScopeMixin:
         return qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
 
 
+class _VoucherScopedActionMixin(_VoucherScopeMixin):
+    """
+    For state-changing actions enforce entity/entityfinid/subentity scoping
+    to avoid cross-tenant access.
+    """
+
+    def _get_header(self, pk: int) -> VoucherHeader:
+        return self._scoped_queryset().get(pk=pk)
+
+    def _require(self, header: VoucherHeader, action: str):
+        _assert_permission(self.request.user, entity_id=header.entity_id, voucher_type=header.voucher_type, action=action)
+
+
 class VoucherListCreateAPIView(_VoucherScopeMixin, generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -56,11 +88,17 @@ class VoucherListCreateAPIView(_VoucherScopeMixin, generics.ListCreateAPIView):
         voucher_type = self.request.query_params.get("voucher_type")
         if voucher_type:
             qs = qs.filter(voucher_type=voucher_type)
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
         return qs
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        entity_id, _, _ = self._scope_ids(required=True)
+        voucher_type = serializer.validated_data.get("voucher_type") or VoucherHeader.VoucherType.JOURNAL
+        _assert_permission(request.user, entity_id=entity_id, voucher_type=voucher_type, action="create")
         instance = serializer.save()
         return Response(VoucherDetailSerializer(instance, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
@@ -77,6 +115,7 @@ class VoucherRetrieveUpdateDestroyAPIView(_VoucherScopeMixin, generics.RetrieveU
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
+        _assert_permission(request.user, entity_id=instance.entity_id, voucher_type=instance.voucher_type, action="update")
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -85,44 +124,53 @@ class VoucherRetrieveUpdateDestroyAPIView(_VoucherScopeMixin, generics.RetrieveU
     def perform_destroy(self, instance):
         if int(instance.status) != int(VoucherHeader.Status.DRAFT):
             raise ValidationError({"detail": "Only draft vouchers can be deleted. Use cancel flow."})
+        _assert_permission(self.request.user, entity_id=instance.entity_id, voucher_type=instance.voucher_type, action="delete")
         super().perform_destroy(instance)
 
 
-class VoucherConfirmAPIView(APIView):
+class VoucherConfirmAPIView(_VoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = self._get_header(pk)
+        self._require(header, "confirm")
         try:
-            result = VoucherService.confirm_voucher(pk, confirmed_by_id=request.user.id)
+            result = VoucherService.confirm_voucher(header.id, confirmed_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data})
 
 
-class VoucherPostAPIView(APIView):
+class VoucherPostAPIView(_VoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = self._get_header(pk)
+        self._require(header, "post")
         try:
-            result = VoucherService.post_voucher(pk, posted_by_id=request.user.id)
+            result = VoucherService.post_voucher(header.id, posted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data})
 
 
-class VoucherApprovalAPIView(APIView):
+class VoucherApprovalAPIView(_VoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = self._get_header(pk)
         action = (request.data.get("action") or "").strip().lower()
         remarks = (request.data.get("remarks") or "").strip() or None
         try:
             if action == "submit":
-                result = VoucherService.submit_voucher(pk, submitted_by_id=request.user.id, remarks=remarks)
+                self._require(header, "submit")
+                result = VoucherService.submit_voucher(header.id, submitted_by_id=request.user.id, remarks=remarks)
             elif action == "approve":
-                result = VoucherService.approve_voucher(pk, approved_by_id=request.user.id, remarks=remarks)
+                self._require(header, "approve")
+                result = VoucherService.approve_voucher(header.id, approved_by_id=request.user.id, remarks=remarks)
             elif action == "reject":
-                result = VoucherService.reject_voucher(pk, rejected_by_id=request.user.id, remarks=remarks)
+                self._require(header, "reject")
+                result = VoucherService.reject_voucher(header.id, rejected_by_id=request.user.id, remarks=remarks)
             else:
                 raise ValidationError({"detail": "action must be submit|approve|reject"})
         except ValueError as e:
@@ -131,24 +179,28 @@ class VoucherApprovalAPIView(APIView):
         return Response({"message": result.message, "approval_status": out.get("approval_status", "DRAFT"), "approval_status_name": out.get("approval_status_name", "Draft"), "data": out})
 
 
-class VoucherUnpostAPIView(APIView):
+class VoucherUnpostAPIView(_VoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = self._get_header(pk)
+        self._require(header, "unpost")
         try:
-            result = VoucherService.unpost_voucher(pk, unposted_by_id=request.user.id)
+            result = VoucherService.unpost_voucher(header.id, unposted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data})
 
 
-class VoucherCancelAPIView(APIView):
+class VoucherCancelAPIView(_VoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = self._get_header(pk)
+        self._require(header, "cancel")
         reason = (request.data.get("reason") or "").strip() or None
         try:
-            result = VoucherService.cancel_voucher(pk, cancelled_by_id=request.user.id, reason=reason)
+            result = VoucherService.cancel_voucher(header.id, cancelled_by_id=request.user.id, reason=reason)
         except ValueError as e:
             _raise_validation_error(e)
         return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data}, status=status.HTTP_200_OK)
@@ -214,3 +266,4 @@ class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
                 "action_flags": self._action_flags(voucher),
             }
         )
+

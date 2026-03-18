@@ -21,7 +21,10 @@ def _approval_state(obj: VoucherHeader) -> dict[str, Any]:
 class VoucherWriteLineSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False)
     line_no = serializers.IntegerField(required=False)
-    account = serializers.PrimaryKeyRelatedField(queryset=VoucherLine._meta.get_field("account").remote_field.model.objects.all())
+    ledger_account = serializers.PrimaryKeyRelatedField(
+        source="account",
+        queryset=VoucherLine._meta.get_field("account").remote_field.model.objects.all(),
+    )
     narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     dr_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     cr_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
@@ -32,7 +35,7 @@ class VoucherWriteLineSerializer(serializers.Serializer):
 class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="account.effective_accounting_name", read_only=True)
     accountcode = serializers.IntegerField(source="account.effective_accounting_code", read_only=True)
-    ledger_id = serializers.IntegerField(source="ledger_id", read_only=True)
+    ledger_id = serializers.IntegerField(read_only=True)
     partytype = serializers.CharField(source="account.partytype", read_only=True)
 
     class Meta:
@@ -56,7 +59,7 @@ class VoucherJournalLineReadSerializer(serializers.ModelSerializer):
 class VoucherEditableLineReadSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="account.effective_accounting_name", read_only=True)
     accountcode = serializers.IntegerField(source="account.effective_accounting_code", read_only=True)
-    ledger_id = serializers.IntegerField(source="ledger_id", read_only=True)
+    ledger_id = serializers.IntegerField(read_only=True)
     partytype = serializers.CharField(source="account.partytype", read_only=True)
     entry_type = serializers.SerializerMethodField()
     amount = serializers.SerializerMethodField()
@@ -89,7 +92,7 @@ class VoucherListSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     cash_bank_account_name = serializers.CharField(source="cash_bank_account.effective_accounting_name", read_only=True)
     cash_bank_accountcode = serializers.IntegerField(source="cash_bank_account.effective_accounting_code", read_only=True)
-    cash_bank_ledger_id = serializers.IntegerField(source="cash_bank_ledger_id", read_only=True)
+    cash_bank_ledger_id = serializers.IntegerField(read_only=True)
     cash_bank_partytype = serializers.CharField(source="cash_bank_account.partytype", read_only=True)
     approval_status = serializers.SerializerMethodField()
     approval_status_name = serializers.SerializerMethodField()
@@ -121,7 +124,16 @@ class VoucherListSerializer(serializers.ModelSerializer):
         )
 
     def get_approval_status(self, obj):
-        return _approval_state(obj).get("status") or "DRAFT"
+        status = _approval_state(obj).get("status")
+        if status:
+            return status
+        if int(obj.status) == int(VoucherHeader.Status.CONFIRMED):
+            return "CONFIRMED"
+        if int(obj.status) == int(VoucherHeader.Status.POSTED):
+            return "POSTED"
+        if int(obj.status) == int(VoucherHeader.Status.CANCELLED):
+            return "CANCELLED"
+        return "DRAFT"
 
     def get_approval_status_name(self, obj):
         return str(self.get_approval_status(obj)).replace("_", " ").title()
@@ -135,7 +147,7 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     cash_bank_account_name = serializers.CharField(source="cash_bank_account.effective_accounting_name", read_only=True)
     cash_bank_accountcode = serializers.IntegerField(source="cash_bank_account.effective_accounting_code", read_only=True)
-    cash_bank_ledger_id = serializers.IntegerField(source="cash_bank_ledger_id", read_only=True)
+    cash_bank_ledger_id = serializers.IntegerField(read_only=True)
     cash_bank_partytype = serializers.CharField(source="cash_bank_account.partytype", read_only=True)
     approval_status = serializers.SerializerMethodField()
     approval_status_name = serializers.SerializerMethodField()
@@ -197,7 +209,16 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
         return _approval_state(obj)
 
     def get_approval_status(self, obj):
-        return _approval_state(obj).get("status") or "DRAFT"
+        status = _approval_state(obj).get("status")
+        if status:
+            return status
+        if int(obj.status) == int(VoucherHeader.Status.CONFIRMED):
+            return "CONFIRMED"
+        if int(obj.status) == int(VoucherHeader.Status.POSTED):
+            return "POSTED"
+        if int(obj.status) == int(VoucherHeader.Status.CANCELLED):
+            return "CANCELLED"
+        return "DRAFT"
 
     def get_approval_status_name(self, obj):
         return str(self.get_approval_status(obj)).replace("_", " ").title()

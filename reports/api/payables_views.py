@@ -34,7 +34,6 @@ def _export_headers(report_code, *, view=None, feature_state=None):
 
 def _payable_scope_filters(scope):
     return {
-        "entity": scope["entity"],
         "entityfinid": scope.get("entityfinid"),
         "subentity": scope.get("subentity"),
         "from_date": scope.get("from_date"),

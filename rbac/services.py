@@ -341,7 +341,7 @@ class RoleTemplateService:
         "admin": {
             "name": "Admin",
             "description": "Broad operational access for entity administrators.",
-            "modules": ["admin", "sales", "purchase", "inventory", "accounts", "compliance", "reports", "stock", "payment", "receipt", "production", "tds", "credit", "debit", "tcs", "payroll", "masters"],
+            "modules": ["admin", "sales", "purchase", "inventory", "accounts", "compliance", "reports", "stock", "payment", "receipt", "production", "tds", "credit", "debit", "tcs", "payroll", "masters", "voucher"],
             "menu_code_prefixes": ["admin", "reports", "compliance", "accounts", "inventory", "sales", "purchase", "masters", "payroll"],
         },
         "sales_user": {
