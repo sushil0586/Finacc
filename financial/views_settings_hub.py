@@ -103,11 +103,14 @@ class SettingsHubAPIView(APIView):
         return entity_id, entityfinid_id, subentity_id
 
     def _subentity_options(self, entity_id: int):
-        return list(
+        rows = list(
             SubEntity.objects.filter(entity_id=entity_id, isactive=True)
-            .order_by("-ismainentity", "subentityname", "id")
-            .values("id", "subentityname", "ismainentity")
+            .order_by("-is_head_office", "subentityname", "id")
+            .values("id", "subentityname", "is_head_office")
         )
+        for row in rows:
+            row["ismainentity"] = row["is_head_office"]
+        return rows
 
     def _settings_payload(self, module_title: str, *, settings: dict, schema: list[dict], scope_subentity: bool, capabilities: dict, current_doc_numbers=None, policy_control_schema=None, lock_periods=None, lock_period_schema=None, choice_overrides=None, choice_override_catalog=None):
         payload = {
