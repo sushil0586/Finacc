@@ -20,6 +20,7 @@ from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.compliance_audit_service import ComplianceAuditService
 from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails, account
+from financial.profile_access import account_gstno, account_partytype
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
@@ -92,7 +93,7 @@ class SalesInvoiceService:
             return None
         customer = (
             account.objects.filter(id=customer_id)
-            .only("id", "isactive", "partytype", "ledger_id")
+            .only("id", "isactive", "ledger_id")
             .first()
         )
         if not customer:
@@ -375,7 +376,7 @@ class SalesInvoiceService:
             if not (header.customer_name or "").strip():
                 header.customer_name = (getattr(cust, "legalname", None) or getattr(cust, "accountname", None) or "").strip()
             if not cls._is_valid_gstin(header.customer_gstin):
-                header.customer_gstin = cls._normalize_gstin(getattr(cust, "gstno", None))
+                header.customer_gstin = cls._normalize_gstin(account_gstno(cust))
             if not (header.customer_state_code or "").strip():
                 header.customer_state_code = cls._state_code_from_state_obj(getattr(cust, "state", None))
 

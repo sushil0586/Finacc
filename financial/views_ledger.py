@@ -1,11 +1,11 @@
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from rest_framework import permissions, status
 from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import EntityFinancialYear
-from financial.models import ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
+from financial.models import AccountAddress, ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
 from financial.serializers_ledger import (
     AccountProfileV2ReadSerializer,
@@ -23,7 +23,7 @@ from financial.serializers import (
     ShippingDetailsListSerializer,
     ShippingDetailsSerializer,
 )
-from financial.services import build_ledger_balance_rows
+from financial.services import build_ledger_balance_rows, create_account_with_synced_ledger
 
 
 def _include_inactive(request):
@@ -34,6 +34,29 @@ def _linked_account_id(ledger):
     if not hasattr(ledger, "account_profile"):
         return None
     return ledger.account_profile.id
+
+
+_LEGACY_ENDPOINT_ALIASES = {
+    "/baseaccountlistv2": "/base-account-list-v2",
+    "/accounts/simplev2": "/accounts/simple-v2",
+    "/accountListPostV2": "/account-list-post-v2",
+}
+
+
+def _replacement_path_for_legacy_alias(request):
+    normalized_path = request.path_info.rstrip("/")
+    for legacy_suffix, canonical_suffix in _LEGACY_ENDPOINT_ALIASES.items():
+        if normalized_path.endswith(legacy_suffix):
+            return f"{normalized_path[:-len(legacy_suffix)]}{canonical_suffix}"
+    return None
+
+
+def _attach_deprecation_headers(request, response):
+    replacement = _replacement_path_for_legacy_alias(request)
+    if replacement:
+        response["X-API-Deprecated"] = "true"
+        response["X-API-Replacement"] = replacement
+    return response
 
 
 class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
@@ -241,6 +264,7 @@ class LedgerListCreateAPIView(ListCreateAPIView):
             "contra_ledger",
             "accounttype",
             "account_profile",
+            "account_profile__compliance_profile",
         )
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
@@ -260,21 +284,23 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         ledger = serializer.save(createdby=self.request.user)
         # Auto-create a linked account profile for non-system ledgers.
         if not ledger.is_system and not getattr(ledger, "account_profile_id", None):
-            account.objects.create(
-                ledger=ledger,
-                entity=ledger.entity,
-                accountname=ledger.name,
-                legalname=ledger.legal_name,
-                accountcode=ledger.ledger_code,
-                accounthead=ledger.accounthead,
-                creditaccounthead=ledger.creditaccounthead,
-                contraaccount=ledger.contra_ledger.account_profile if ledger.contra_ledger_id else None,
-                accounttype=ledger.accounttype,
-                openingbcr=ledger.openingbcr,
-                openingbdr=ledger.openingbdr,
-                canbedeleted=ledger.canbedeleted,
-                isactive=ledger.isactive,
-                createdby=self.request.user,
+            create_account_with_synced_ledger(
+                account_data={
+                    "ledger": ledger,
+                    "entity": ledger.entity,
+                    "accountname": ledger.name,
+                    "legalname": ledger.legal_name,
+                    "accountcode": ledger.ledger_code,
+                    "accounthead": ledger.accounthead,
+                    "creditaccounthead": ledger.creditaccounthead,
+                    "contraaccount": ledger.contra_ledger.account_profile if ledger.contra_ledger_id else None,
+                    "accounttype": ledger.accounttype,
+                    "openingbcr": ledger.openingbcr,
+                    "openingbdr": ledger.openingbdr,
+                    "canbedeleted": ledger.canbedeleted,
+                    "isactive": ledger.isactive,
+                    "createdby": self.request.user,
+                }
             )
 
 
@@ -290,6 +316,7 @@ class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView)
             "contra_ledger",
             "accounttype",
             "account_profile",
+            "account_profile__compliance_profile",
         )
 
     def update(self, request, *args, **kwargs):
@@ -411,7 +438,7 @@ class BaseAccountListV2APIView(APIView):
         accounthead_codes = [int(a) for a in accounthead_codes_raw.split(",") if a.isdigit()] if accounthead_codes_raw else []
 
         if not entity_ids:
-            return Response([], status=status.HTTP_200_OK)
+            return _attach_deprecation_headers(request, Response([], status=status.HTTP_200_OK))
 
         ledger_qs = Ledger.objects.filter(entity_id__in=entity_ids, account_profile__isnull=False, isactive=True).select_related(
             "account_profile"
@@ -429,7 +456,7 @@ class BaseAccountListV2APIView(APIView):
             for ledger in ledger_qs
         }
         if not ledger_map:
-            return Response([], status=status.HTTP_200_OK)
+            return _attach_deprecation_headers(request, Response([], status=status.HTTP_200_OK))
 
         fy_map = {
             fy.entity_id: (fy.finstartyear, fy.finendyear)
@@ -459,7 +486,7 @@ class BaseAccountListV2APIView(APIView):
                 )
 
         serializer = BaseAccountListV2RowSerializer(rows, many=True)
-        return Response(serializer.data)
+        return _attach_deprecation_headers(request, Response(serializer.data))
 
 
 class SimpleAccountsV2APIView(ListAPIView):
@@ -478,6 +505,7 @@ class SimpleAccountsV2APIView(ListAPIView):
         ).select_related(
             "accounthead",
             "account_profile",
+            "account_profile__compliance_profile",
             "account_profile__state",
             "account_profile__district",
             "account_profile__city",
@@ -489,6 +517,10 @@ class SimpleAccountsV2APIView(ListAPIView):
             qs = qs.filter(accounthead__code__in=codes)
 
         return qs.order_by("name")
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        return _attach_deprecation_headers(request, response)
 
 
 class AccountListPostV2APIView(APIView):
@@ -504,12 +536,18 @@ class AccountListPostV2APIView(APIView):
         top_n = request.data.get("top_n")
 
         if not entity:
-            return Response({"error": "Entity is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return _attach_deprecation_headers(
+                request,
+                Response({"error": "Entity is required"}, status=status.HTTP_400_BAD_REQUEST),
+            )
 
         try:
             fy = EntityFinancialYear.objects.get(entity=entity, isactive=1)
         except EntityFinancialYear.DoesNotExist:
-            return Response({"error": "Financial year not found for the entity"}, status=status.HTTP_404_NOT_FOUND)
+            return _attach_deprecation_headers(
+                request,
+                Response({"error": "Financial year not found for the entity"}, status=status.HTTP_404_NOT_FOUND),
+            )
 
         if not ledger_ids and account_ids:
             ledger_ids = list(
@@ -558,23 +596,28 @@ class AccountListPostV2APIView(APIView):
                 pass
 
         serializer = AccountListPostV2RowSerializer(final_rows, many=True)
-        return Response(serializer.data)
+        return _attach_deprecation_headers(request, Response(serializer.data))
 
 
 class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True)
         entity_id = self.request.query_params.get("entity")
         q = (self.request.query_params.get("q") or "").strip()
         qs = account.objects.select_related(
             "ledger",
             "ledger__accounthead",
             "ledger__creditaccounthead",
+            "compliance_profile",
+            "commercial_profile",
             "country",
             "state",
             "district",
             "city",
+        ).prefetch_related(
+            Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses")
         )
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
@@ -584,8 +627,8 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
             filters = (
                 Q(accountname__icontains=q) |
                 Q(legalname__icontains=q) |
-                Q(gstno__icontains=q) |
-                Q(pan__icontains=q) |
+                Q(compliance_profile__gstno__icontains=q) |
+                Q(compliance_profile__pan__icontains=q) |
                 Q(emailid__icontains=q)
             )
             if q.isdigit():
@@ -609,14 +652,19 @@ class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestr
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True)
         return account.objects.select_related(
             "ledger",
             "ledger__accounthead",
             "ledger__creditaccounthead",
+            "compliance_profile",
+            "commercial_profile",
             "country",
             "state",
             "district",
             "city",
+        ).prefetch_related(
+            Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses")
         )
 
     def get_serializer_class(self):

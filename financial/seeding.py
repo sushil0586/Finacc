@@ -1,11 +1,14 @@
 from decimal import Decimal
 
 from django.db import transaction
-
 from entity.models import EntityConstitutionV2
 from financial.models import Credit, Debit, FinancialSettings, account, accountHead, accounttype
 from financial.seed_catalogs import FINANCIAL_TEMPLATES
-from financial.services import get_or_create_financial_settings, sync_ledger_for_account
+from financial.services import (
+    apply_normalized_profile_payload,
+    get_or_create_financial_settings,
+    sync_ledger_for_account,
+)
 
 
 class FinancialSeedService:
@@ -116,8 +119,6 @@ class FinancialSeedService:
                     "accounthead": head,
                     "creditaccounthead": credit_head,
                     "accounttype": head.accounttype,
-                    "partytype": row.get("party_type") or "Other",
-                    "approved": True,
                     "isactive": True,
                     "canbedeleted": False,
                     "createdby": actor,
@@ -130,8 +131,6 @@ class FinancialSeedService:
             acc.accounthead = head
             acc.creditaccounthead = credit_head
             acc.accounttype = head.accounttype
-            acc.partytype = row.get("party_type") or acc.partytype or "Other"
-            acc.approved = True
             acc.isactive = True
             acc.canbedeleted = False
             if actor and not acc.createdby_id:
@@ -141,6 +140,14 @@ class FinancialSeedService:
             if acc.openingbdr is None:
                 acc.openingbdr = Decimal("0.00")
             acc.save()
+            apply_normalized_profile_payload(
+                acc,
+                commercial_data={
+                    "partytype": row.get("party_type") or "Other",
+                    "approved": True,
+                },
+                createdby=actor,
+            )
             sync_ledger_for_account(acc, ledger_overrides={"is_system": True, "is_party": row.get("party_type") in {"Customer", "Vendor", "Bank", "Government"}})
             created_or_updated.append(acc.id)
         return created_or_updated
@@ -172,7 +179,7 @@ class FinancialSeedService:
                 entity=entity,
                 accounthead=head,
                 accountname=detail.shareholder,
-                pan=detail.pan,
+                compliance_profile__pan=detail.pan,
             ).first()
             if existing:
                 acc = existing
@@ -186,16 +193,9 @@ class FinancialSeedService:
                     accounttype=head.accounttype,
                     accountname=detail.shareholder,
                     legalname=detail.shareholder,
-                    pan=detail.pan,
                     sharepercentage=detail.share_percentage,
-                    country=(primary_address.country if primary_address else None),
-                    state=(primary_address.state if primary_address else None),
-                    district=(primary_address.district if primary_address else None),
-                    city=(primary_address.city if primary_address else None),
                     emailid=(primary_contact.email if primary_contact else None),
                     accountdate=cls._first_fin_start_date(entity),
-                    partytype="Other",
-                    approved=True,
                     isactive=True,
                     canbedeleted=False,
                     createdby=actor,
@@ -207,21 +207,31 @@ class FinancialSeedService:
             acc.accounttype = head.accounttype
             acc.accountname = detail.shareholder
             acc.legalname = detail.shareholder
-            acc.pan = detail.pan
             acc.sharepercentage = detail.share_percentage
-            acc.country = primary_address.country if primary_address else None
-            acc.state = primary_address.state if primary_address else None
-            acc.district = primary_address.district if primary_address else None
-            acc.city = primary_address.city if primary_address else None
             acc.emailid = primary_contact.email if primary_contact else None
             acc.accountdate = cls._first_fin_start_date(entity)
-            acc.partytype = "Other"
-            acc.approved = True
             acc.isactive = True
             acc.canbedeleted = False
             if actor and not acc.createdby_id:
                 acc.createdby = actor
             acc.save()
+            apply_normalized_profile_payload(
+                acc,
+                compliance_data={
+                    "pan": detail.pan,
+                },
+                commercial_data={
+                    "partytype": "Other",
+                    "approved": True,
+                },
+                primary_address_data={
+                    "country_id": primary_address.country_id if primary_address else None,
+                    "state_id": primary_address.state_id if primary_address else None,
+                    "district_id": primary_address.district_id if primary_address else None,
+                    "city_id": primary_address.city_id if primary_address else None,
+                },
+                createdby=actor,
+            )
             sync_ledger_for_account(acc, ledger_overrides={"is_system": False, "is_party": True})
             count += 1
         return count

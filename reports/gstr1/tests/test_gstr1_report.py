@@ -11,7 +11,9 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from financial.profile_access import account_gstno
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.services import apply_normalized_profile_payload
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 
@@ -47,16 +49,9 @@ class Gstr1ReportAPITests(APITestCase):
             legalname="Finacc Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address",
-            phoneoffice="9999999999",
-            phoneresidence="9999999998",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch", address="Main Branch")
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch")
 
         fy_start = timezone.make_aware(datetime(2025, 4, 1))
         fy_end = timezone.make_aware(datetime(2026, 3, 31))
@@ -128,16 +123,21 @@ class Gstr1ReportAPITests(APITestCase):
             accounthead=self.customer_head,
             createdby=self.user,
         )
-        return account.objects.create(
+        customer = account.objects.create(
             entity=self.entity,
             ledger=ledger,
             accounthead=self.customer_head,
             accountname=name,
             accountcode=accountcode,
-            gstno=gstin,
-            partytype="Customer",
             createdby=self.user,
         )
+        apply_normalized_profile_payload(
+            customer,
+            compliance_data={"gstno": gstin},
+            commercial_data={"partytype": "Customer"},
+            createdby=self.user,
+        )
+        return customer
 
     def _create_sales_document(
         self,
@@ -179,7 +179,7 @@ class Gstr1ReportAPITests(APITestCase):
             subentity=self.subentity,
             customer=customer,
             customer_name=customer.accountname,
-            customer_gstin=customer_gstin if customer_gstin is not None else customer.gstno,
+            customer_gstin=customer_gstin if customer_gstin is not None else account_gstno(customer),
             customer_state_code=customer_gstin and "27" or "",
             seller_gstin="27AAAAA1111A1Z1",
             seller_state_code="27",

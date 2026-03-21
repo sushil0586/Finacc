@@ -10,6 +10,7 @@ from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherDetailSerializer, VoucherListSerializer, VoucherWriteSerializer
 from rbac.services import EffectivePermissionService
 from vouchers.services.voucher_service import VoucherService
+from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
 
@@ -234,9 +235,9 @@ class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
             "display_name": getattr(acct, "effective_accounting_name", None),
             "accountcode": getattr(acct, "effective_accounting_code", None),
             "ledger_id": voucher.cash_bank_ledger_id or getattr(acct, "ledger_id", None),
-            "partytype": getattr(acct, "partytype", None),
-            "gstno": getattr(acct, "gstno", None),
-            "pan": getattr(acct, "pan", None),
+            "partytype": account_partytype(acct),
+            "gstno": account_gstno(acct),
+            "pan": account_pan(acct),
         }
 
     def get(self, request, pk: int):

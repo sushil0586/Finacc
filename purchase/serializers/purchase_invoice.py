@@ -165,7 +165,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
     vendor_ledger_id = serializers.SerializerMethodField()
-    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
+    vendor_partytype = serializers.CharField(source="vendor.commercial_profile.partytype", read_only=True)
 
     tds_section = serializers.PrimaryKeyRelatedField(
         queryset=WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TDS, is_active=True),
@@ -745,7 +745,7 @@ class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
     vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
     vendor_ledger_id = serializers.SerializerMethodField()
-    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
+    vendor_partytype = serializers.CharField(source="vendor.commercial_profile.partytype", read_only=True)
 
     def get_vendor_ledger_id(self, obj):
         return getattr(obj, "vendor_ledger_id", None) or getattr(obj.vendor, "ledger_id", None)
@@ -804,7 +804,7 @@ class PurchaseInvoiceListSerializer(serializers.ModelSerializer):
     vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
     vendor_ledger_id = serializers.SerializerMethodField()
-    vendor_partytype = serializers.CharField(source="vendor.partytype", read_only=True)
+    vendor_partytype = serializers.CharField(source="vendor.commercial_profile.partytype", read_only=True)
 
     def get_vendor_ledger_id(self, obj):
         return getattr(obj, "vendor_ledger_id", None) or getattr(obj.vendor, "ledger_id", None)

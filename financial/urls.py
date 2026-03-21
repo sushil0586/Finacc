@@ -38,7 +38,10 @@ app_name = "financial"
 
 
 urlpatterns = [
-    path("baseaccountlist/", BaseAccountListV2APIView.as_view(), name="account-list"),
+    # Canonical v2 endpoints (preferred)
+    path("base-account-list-v2/", BaseAccountListV2APIView.as_view(), name="account-list-v2-canonical"),
+    path("accounts/simple-v2", SimpleAccountsV2APIView.as_view(), name="account-simple-v2-canonical"),
+    path("account-list-post-v2", AccountListPostV2APIView.as_view(), name="account-list-post-v2-canonical"),
     path("baseaccountlistv2/", BaseAccountListV2APIView.as_view(), name="account-list-v2"),
     path("meta/account-choices/", AccountChoicesAPIView.as_view(), name="meta-account-choices"),
     path("meta/account-form/", AccountFormMetaAPIView.as_view(), name="meta-account-form"),

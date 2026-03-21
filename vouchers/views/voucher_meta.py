@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import account
+from financial.profile_access import account_gstno, account_pan, account_partytype
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherDetailSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
@@ -63,9 +64,9 @@ class VoucherMetaBaseAPIView(APIView):
             "accountname": row["accountname"],
             "display_name": row["ledger__name"] or row["accountname"],
             "accountcode": row["ledger__ledger_code"],
-            "gstno": row["gstno"],
-            "pan": row["pan"],
-            "partytype": row["partytype"],
+            "gstno": row["compliance_profile__gstno"],
+            "pan": row["compliance_profile__pan"],
+            "partytype": row["commercial_profile__partytype"],
             "state": row["state_id"],
             "statecode": row["state__statecode"],
             "statename": row["state__statename"],
@@ -77,8 +78,8 @@ class VoucherMetaBaseAPIView(APIView):
     def _cash_bank_accounts(self, entity_id: int):
         rows = list(
             account.objects.filter(entity_id=entity_id, isactive=True, ledger__isnull=False)
-            .exclude(partytype__in=["Customer", "Vendor", "Both"])
-            .select_related("ledger", "state", "city")
+            .exclude(commercial_profile__partytype__in=["Customer", "Vendor", "Both"])
+            .select_related("ledger", "state", "city", "compliance_profile", "commercial_profile")
             .order_by("accountname", "id")
             .values(
                 "id",
@@ -101,14 +102,14 @@ class VoucherMetaBaseAPIView(APIView):
     def _line_accounts(self, entity_id: int):
         rows = list(
             account.objects.filter(entity_id=entity_id, isactive=True, ledger__isnull=False)
-            .select_related("ledger", "state", "city")
+            .select_related("ledger", "state", "city", "compliance_profile", "commercial_profile")
             .order_by("accountname", "id")
             .values(
                 "id",
                 "accountname",
-                "gstno",
-                "pan",
-                "partytype",
+                "compliance_profile__gstno",
+                "compliance_profile__pan",
+                "commercial_profile__partytype",
                 "state_id",
                 "state__statecode",
                 "state__statename",
@@ -175,9 +176,9 @@ class VoucherMetaBaseAPIView(APIView):
             "display_name": getattr(acct, "effective_accounting_name", None),
             "accountcode": getattr(acct, "effective_accounting_code", None),
             "ledger_id": stored_ledger_id or getattr(acct, "ledger_id", None),
-            "partytype": getattr(acct, "partytype", None),
-            "gstno": getattr(acct, "gstno", None),
-            "pan": getattr(acct, "pan", None),
+            "partytype": account_partytype(acct),
+            "gstno": account_gstno(acct),
+            "pan": account_pan(acct),
         }
 
     def _voucher_form_meta(self, entity_id: int, entityfinid_id: int | None, subentity_id: int | None):

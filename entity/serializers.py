@@ -5,7 +5,8 @@ from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,Entit
 
 from Authentication.models import User
 from financial.models import accountHead,account
-from financial.serializers import AccountHeadSerializer,AccountSerializer,accountHeadSerializer2,accounttypeserializer,AccountTypeJsonSerializer
+from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
+from financial.serializers_ledger import AccountProfileV2WriteSerializer
 import os
 import json
 import collections
@@ -154,10 +155,9 @@ class entityAddSerializer(serializers.ModelSerializer):
 
    # entity_accountheads = accountHeadSerializer(many=True)
 
-    serializer = AccountHeadSerializer
-    accounthead = accountHeadSerializer2
-
-    acounttype = AccountTypeJsonSerializer
+    serializer = AccountHeadV2Serializer
+    accounthead = AccountHeadV2Serializer
+    acounttype = AccountTypeV2Serializer
 
     def process_json_file(self, newentity, users, accountdate1):
         # Load JSON data once
@@ -446,10 +446,9 @@ class EntityNewSerializer(serializers.ModelSerializer):
         read_only_fields = ("id",)  # important
 
     # mapping for account.json seeding
-    serializer = AccountHeadSerializer
-    accounthead = accountHeadSerializer2
-
-    acounttype = AccountTypeJsonSerializer
+    serializer = AccountHeadV2Serializer
+    accounthead = AccountHeadV2Serializer
+    acounttype = AccountTypeV2Serializer
 
     # -------------------------
     # seed masters (account.json)

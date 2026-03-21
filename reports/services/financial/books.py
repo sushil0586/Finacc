@@ -9,6 +9,7 @@ from django.db.models import Case, CharField, DecimalField, F, OuterRef, Q, Subq
 from django.db.models.functions import Coalesce
 
 from financial.models import account
+from financial.profile_access import account_partytype
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, StaticAccount, TxnType
 from receipts.models.receipt_core import ReceiptVoucherHeader
@@ -396,7 +397,7 @@ def _infer_account_kind(row, *, static_kind_by_account):
     explicit_kind = static_kind_by_account.get(row.id)
     if explicit_kind:
         return explicit_kind
-    if str(getattr(row, "partytype", "")).lower() == "bank":
+    if str(account_partytype(row) or "").lower() == "bank":
         return "bank"
     label = f"{getattr(row, 'accountname', '')} {getattr(getattr(row, 'ledger', None), 'name', '')}".lower()
     if "bank" in label:

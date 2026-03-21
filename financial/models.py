@@ -382,6 +382,48 @@ class account(TrackingModel):
     # - GST/PAN/TDS/TCS/compliance fields
     # - party/contact/commercial profile fields
     # - credit terms / payment terms
+    #
+    # NOTE:
+    # New writes for compliance/commercial/address profile data must go to:
+    # - AccountComplianceProfile
+    # - AccountCommercialProfile
+    # - AccountAddress
+    # Legacy columns are retained for historical rows/backfill only.
+    LEGACY_PROFILE_FIELDS = (
+        "gstno",
+        "pan",
+        "gstintype",
+        "gstregtype",
+        "is_sez",
+        "cin",
+        "msme",
+        "gsttdsno",
+        "tdsno",
+        "tdsrate",
+        "tdssection",
+        "tds_threshold",
+        "istcsapplicable",
+        "tcscode",
+        "partytype",
+        "creditlimit",
+        "creditdays",
+        "paymentterms",
+        "currency",
+        "blockstatus",
+        "blockedreason",
+        "approved",
+        "agent",
+        "reminders",
+        "address1",
+        "address2",
+        "addressfloorno",
+        "addressstreet",
+        "country_id",
+        "state_id",
+        "district_id",
+        "city_id",
+        "pincode",
+    )
     ledger = models.OneToOneField(
         "financial.Ledger",
         null=True,
@@ -414,7 +456,7 @@ class account(TrackingModel):
         db_index=True,
     )
 
-    accountcode = models.IntegerField(verbose_name=_("Account Code"), null=True, blank=True, default=1000, db_index=True)
+    accountcode = models.IntegerField(verbose_name=_("Account Code"), null=True, blank=True, db_index=True)
 
     gstno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Gst No"), db_index=True)
 
@@ -440,10 +482,10 @@ class account(TrackingModel):
     dateofreg = models.DateTimeField(verbose_name="Date of Registration", null=True, blank=True)
     dateofdreg = models.DateTimeField(verbose_name="Date of De Regitration", null=True, blank=True)
 
-    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.CASCADE)
-    state = models.ForeignKey(to=State, on_delete=models.CASCADE, null=True, blank=True)
-    district = models.ForeignKey(to=District, on_delete=models.CASCADE, null=True, blank=True)
-    city = models.ForeignKey(to=City, on_delete=models.CASCADE, null=True, blank=True)
+    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.PROTECT)
+    state = models.ForeignKey(to=State, on_delete=models.PROTECT, null=True, blank=True)
+    district = models.ForeignKey(to=District, on_delete=models.PROTECT, null=True, blank=True)
+    city = models.ForeignKey(to=City, on_delete=models.PROTECT, null=True, blank=True)
 
     openingbcr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Opening Balance Cr"))
     openingbdr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Opening Balance Dr"))
@@ -510,7 +552,44 @@ class account(TrackingModel):
     tcscode = models.CharField(max_length=20, null=True, blank=True, verbose_name=_("TCS Code"))
 
     def __str__(self):
-        return f"{self.accountname} , {self.gstno}"
+        return f"{self.accountname}"
+
+    @staticmethod
+    def _has_value(value):
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value is True
+        if isinstance(value, str):
+            return value.strip() != ""
+        if isinstance(value, (int, float)):
+            return value != 0
+        return True
+
+    def _assert_no_new_legacy_profile_writes(self):
+        fields = self.LEGACY_PROFILE_FIELDS
+
+        if self._state.adding:
+            touched = [field for field in fields if self._has_value(getattr(self, field, None))]
+        else:
+            previous = type(self).objects.filter(pk=self.pk).values(*fields).first() or {}
+            touched = []
+            for field in fields:
+                previous_value = previous.get(field)
+                current_value = getattr(self, field, None)
+                if previous_value != current_value and self._has_value(current_value):
+                    touched.append(field)
+
+        if touched:
+            raise ValidationError(
+                {
+                    "non_field_errors": [
+                        "Legacy account profile columns are read-only. "
+                        "Use AccountComplianceProfile / AccountCommercialProfile / AccountAddress."
+                    ],
+                    "legacy_fields": touched,
+                }
+            )
 
     # Ledger-first helper accessors. These allow downstream code to start
     # reading accounting identity from Ledger without breaking current callers
@@ -558,6 +637,9 @@ class account(TrackingModel):
             if self.accounthead.accounttype_id and self.accounthead.accounttype_id != self.accounttype_id:
                 raise ValidationError(_("Account.accounttype must match AccountHead.accounttype (or leave one of them blank)."))
 
+        if self.ledger_id and self.entity_id and self.ledger.entity_id != self.entity_id:
+            raise ValidationError({"ledger": _("Selected ledger belongs to a different entity.")})
+
         if self.creditdays is not None and self.creditdays < 0:
             raise ValidationError({"creditdays": _("Credit Days cannot be negative.")})
         if self.creditlimit is not None and self.creditlimit < 0:
@@ -568,6 +650,10 @@ class account(TrackingModel):
             raise ValidationError(f"Cannot delete account '{self.accountname}' because canbedeleted is False.")
         _protect_if_referenced(self, "account", self.accountname or str(self.pk))
         super().delete(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        self._assert_no_new_legacy_profile_writes()
+        return super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = _("Account")
@@ -611,10 +697,10 @@ class ShippingDetails(models.Model):
     address1 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_("Address Line 1"))
     address2 = models.CharField(max_length=255, null=True, blank=True, verbose_name=_("Address Line 2"))
 
-    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.CASCADE)
-    state = models.ForeignKey(State, null=True, blank=True, on_delete=models.CASCADE)
-    district = models.ForeignKey(District, null=True, blank=True, on_delete=models.CASCADE)
-    city = models.ForeignKey(City, null=True, blank=True, on_delete=models.CASCADE)
+    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.PROTECT)
+    state = models.ForeignKey(State, null=True, blank=True, on_delete=models.PROTECT)
+    district = models.ForeignKey(District, null=True, blank=True, on_delete=models.PROTECT)
+    city = models.ForeignKey(City, null=True, blank=True, on_delete=models.PROTECT)
 
     isprimary = models.BooleanField(verbose_name=_("Is Primary"), default=False, db_index=True)
 
@@ -652,10 +738,10 @@ class ContactDetails(models.Model):
 
     designation = models.CharField(max_length=255, null=True, blank=True, verbose_name=_("designation"))
 
-    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.CASCADE)
-    state = models.ForeignKey(State, null=True, blank=True, on_delete=models.CASCADE)
-    district = models.ForeignKey(District, null=True, blank=True, on_delete=models.CASCADE)
-    city = models.ForeignKey(City, null=True, blank=True, on_delete=models.CASCADE)
+    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.PROTECT)
+    state = models.ForeignKey(State, null=True, blank=True, on_delete=models.PROTECT)
+    district = models.ForeignKey(District, null=True, blank=True, on_delete=models.PROTECT)
+    city = models.ForeignKey(City, null=True, blank=True, on_delete=models.PROTECT)
 
     pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Pincode"))
     phoneno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Phone No"))
@@ -669,6 +755,13 @@ class ContactDetails(models.Model):
         return f"{self.full_name} - {self.account.accountname}"
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account"],
+                condition=Q(isprimary=True),
+                name="uq_contactdetails_one_primary_per_account",
+            )
+        ]
         indexes = [
             models.Index(fields=["account"], name="ix_contact_account"),
             models.Index(fields=["entity", "account"], name="ix_contact_entity_account"),
@@ -691,11 +784,109 @@ class AccountBankDetails(TrackingModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["account"],
-                condition=Q(isprimary=True),
+                condition=Q(isprimary=True, isactive=True),
                 name="uq_bankdetails_one_primary_per_account",
             )
         ]
         indexes = [
             models.Index(fields=["account", "isprimary"], name="ix_bank_account_primary"),
             models.Index(fields=["entity", "account"], name="ix_bank_entity_account"),
+        ]
+
+
+class AccountAddress(TrackingModel):
+    class AddressType(models.TextChoices):
+        REGISTERED = "registered", _("Registered")
+        BILLING = "billing", _("Billing")
+        SHIPPING = "shipping", _("Shipping")
+        CORRESPONDENCE = "correspondence", _("Correspondence")
+
+    account = models.ForeignKey(account, on_delete=models.CASCADE, related_name="addresses")
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    address_type = models.CharField(max_length=20, choices=AddressType.choices, default=AddressType.BILLING)
+    line1 = models.CharField(max_length=255, null=True, blank=True)
+    line2 = models.CharField(max_length=255, null=True, blank=True)
+    floor_no = models.CharField(max_length=255, null=True, blank=True)
+    street = models.CharField(max_length=255, null=True, blank=True)
+    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.PROTECT)
+    state = models.ForeignKey(State, null=True, blank=True, on_delete=models.PROTECT)
+    district = models.ForeignKey(District, null=True, blank=True, on_delete=models.PROTECT)
+    city = models.ForeignKey(City, null=True, blank=True, on_delete=models.PROTECT)
+    pincode = models.CharField(max_length=50, null=True, blank=True)
+    isprimary = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account"],
+                condition=Q(isprimary=True, isactive=True),
+                name="uq_accaddr_primary",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["entity", "account"], name="ix_accaddr_ent_acc"),
+            models.Index(fields=["account", "address_type"], name="ix_accaddr_acc_type"),
+        ]
+
+
+class AccountComplianceProfile(TrackingModel):
+    account = models.OneToOneField(account, on_delete=models.CASCADE, related_name="compliance_profile")
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    gstno = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+    pan = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+    gstintype = models.CharField(max_length=255, null=True, blank=True, choices=GSTIN_TYPE_CHOICES)
+    gstregtype = models.CharField(max_length=30, null=True, blank=True, choices=GST_REG_TYPE_CHOICES)
+    is_sez = models.BooleanField(default=False)
+
+    cin = models.CharField(max_length=50, null=True, blank=True)
+    msme = models.CharField(max_length=50, null=True, blank=True)
+    gsttdsno = models.CharField(max_length=50, null=True, blank=True)
+    tdsno = models.CharField(max_length=50, null=True, blank=True)
+    tdsrate = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    tdssection = models.CharField(max_length=20, null=True, blank=True)
+    tds_threshold = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    istcsapplicable = models.BooleanField(default=False)
+    tcscode = models.CharField(max_length=20, null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "gstno"], name="ix_acccomp_ent_gst"),
+            models.Index(fields=["entity", "pan"], name="ix_acccomp_ent_pan"),
+        ]
+
+
+class AccountCommercialProfile(TrackingModel):
+    account = models.OneToOneField(account, on_delete=models.CASCADE, related_name="commercial_profile")
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    partytype = models.CharField(max_length=20, null=True, blank=True, choices=PARTY_TYPE_CHOICES)
+    creditlimit = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    creditdays = models.IntegerField(null=True, blank=True)
+    paymentterms = models.CharField(max_length=100, null=True, blank=True, choices=PAYMENT_TERMS_CHOICES)
+    currency = models.CharField(max_length=10, null=True, blank=True, choices=CURRENCY_CHOICES)
+    blockstatus = models.CharField(max_length=10, null=True, blank=True, choices=BLOCK_STATUS_CHOICES)
+    blockedreason = models.CharField(max_length=255, null=True, blank=True)
+    approved = models.BooleanField(default=False)
+    agent = models.CharField(max_length=50, null=True, blank=True)
+    reminders = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(creditdays__gte=0) | Q(creditdays__isnull=True),
+                name="ck_acccom_crdays_nn",
+            ),
+            models.CheckConstraint(
+                check=Q(creditlimit__gte=0) | Q(creditlimit__isnull=True),
+                name="ck_acccom_crlimit_nn",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "partytype"], name="ix_acccom_ent_party"),
+            models.Index(fields=["entity", "currency"], name="ix_acccom_ent_curr"),
         ]

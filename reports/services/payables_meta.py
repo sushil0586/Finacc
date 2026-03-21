@@ -8,6 +8,15 @@ from datetime import timedelta
 from django.utils import timezone
 
 from entity.models import EntityFinancialYear, SubEntity
+from financial.profile_access import (
+    account_agent,
+    account_creditdays,
+    account_creditlimit,
+    account_currency,
+    account_gstno,
+    account_region_state,
+    account_region_state_id,
+)
 from reports.selectors.payables import vendor_queryset
 from reports.services.payables_config import (
     PAYABLE_DRILLDOWN_TARGETS,
@@ -45,14 +54,14 @@ def _vendors(entity_id: int) -> list[dict]:
                 "id": vendor.id,
                 "name": vendor.effective_accounting_name,
                 "code": vendor.effective_accounting_code,
-                "gstin": vendor.gstno,
-                "currency": vendor.currency or "INR",
-                "vendor_group": vendor.agent,
-                "region_id": getattr(vendor, "state_id", None),
-                "region_name": getattr(getattr(vendor, "state", None), "statename", None),
-                "region_code": getattr(getattr(vendor, "state", None), "statecode", None),
-                "credit_days": vendor.creditdays,
-                "credit_limit": str(vendor.creditlimit) if vendor.creditlimit is not None else None,
+                "gstin": account_gstno(vendor),
+                "currency": account_currency(vendor) or "INR",
+                "vendor_group": account_agent(vendor),
+                "region_id": account_region_state_id(vendor),
+                "region_name": getattr(account_region_state(vendor), "statename", None),
+                "region_code": getattr(account_region_state(vendor), "statecode", None),
+                "credit_days": account_creditdays(vendor),
+                "credit_limit": str(account_creditlimit(vendor)) if account_creditlimit(vendor) is not None else None,
             }
         )
     return payload

@@ -13,6 +13,8 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.profile_access import account_gstno
+from financial.services import apply_normalized_profile_payload
 from geography.models import City, Country, District, State
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement, VendorSettlementLine
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
@@ -40,16 +42,9 @@ class PayableReportAPITests(APITestCase):
             legalname="Payable Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address",
-            phoneoffice="9999999999",
-            phoneresidence="9999999998",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", address="Branch Address")
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A")
         self.entityfin = EntityFinancialYear.objects.create(
             entity=self.entity,
             desc="FY 2025-26",
@@ -109,15 +104,19 @@ class PayableReportAPITests(APITestCase):
             accounthead=self.vendor_head,
             accountname="ABC Traders",
             accountcode=5001,
-            gstno="03ABCDE1234F1Z5",
-            partytype="Vendor",
-            state=self.state,
-            city=self.city,
-            currency="INR",
-            agent="Wholesale",
-            creditdays=30,
-            creditlimit=Decimal("1000.00"),
             createdby=self.user,
+        )
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={"gstno": "03ABCDE1234F1Z5"},
+            commercial_data={
+                "partytype": "Vendor",
+                "currency": "INR",
+                "agent": "Wholesale",
+                "creditdays": 30,
+                "creditlimit": Decimal("1000.00"),
+            },
+            primary_address_data={"state": self.state, "city": self.city},
         )
         self.other_vendor = self._create_vendor("Idle Vendor", 5002)
 
@@ -211,13 +210,18 @@ class PayableReportAPITests(APITestCase):
             accounthead=self.vendor_head,
             accountname=name,
             accountcode=ledger_code,
-            partytype="Vendor",
-            state=self.state,
-            city=self.city,
-            currency="INR",
-            creditdays=creditdays,
-            creditlimit=creditlimit,
             createdby=self.user,
+        )
+        apply_normalized_profile_payload(
+            vendor,
+            compliance_data={},
+            commercial_data={
+                "partytype": "Vendor",
+                "currency": "INR",
+                "creditdays": creditdays,
+                "creditlimit": creditlimit,
+            },
+            primary_address_data={"state": self.state, "city": self.city},
         )
         return vendor
 
@@ -251,7 +255,7 @@ class PayableReportAPITests(APITestCase):
             vendor=vendor,
             vendor_ledger=vendor_ledger,
             vendor_name=vendor.accountname,
-            vendor_gstin=vendor.gstno or "",
+            vendor_gstin=account_gstno(vendor) or "",
             status=PurchaseInvoiceHeader.Status.POSTED,
             grand_total=amount,
             created_by=self.user,
@@ -585,7 +589,6 @@ class PayableReportAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["entity_id"], self.entity.id)
         self.assertIn("vendors", payload)
         self.assertIn("subentities", payload)
         self.assertIn("financial_years", payload)

@@ -12,6 +12,7 @@ from purchase.serializers.purchase_ap import (
     VendorSettlementSerializer,
 )
 from purchase.services.purchase_ap_service import PurchaseApService
+from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
 class PaymentVendorBillOpenItemListAPIView(generics.ListAPIView):
@@ -172,9 +173,9 @@ class PaymentVendorStatementAPIView(APIView):
                 "display_name": getattr(vendor_obj, "effective_accounting_name", None),
                 "accountcode": getattr(vendor_obj, "effective_accounting_code", None),
                 "ledger_id": getattr(vendor_obj, "ledger_id", None),
-                "partytype": getattr(vendor_obj, "partytype", None),
-                "gstno": getattr(vendor_obj, "gstno", None),
-                "pan": getattr(vendor_obj, "pan", None),
+                "partytype": account_partytype(vendor_obj),
+                "gstno": account_gstno(vendor_obj),
+                "pan": account_pan(vendor_obj),
             },
             "totals": data["totals"],
             "open_items": VendorBillOpenItemSerializer(data["open_items"], many=True).data,

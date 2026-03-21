@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 import re
+from financial.profile_access import account_gstno
 
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 
@@ -119,7 +120,7 @@ def buyer_from_account(acct, pos_state=None) -> Dict[str, Any]:
     stcd = _state_gst_code(acct.state) if getattr(acct, "state", None) else "00"
     pos = _state_gst_code(pos_state) if pos_state else stcd
 
-    gstin = (getattr(acct, "gstno", None) or "").strip()
+    gstin = (account_gstno(acct) or "").strip()
     if not gstin:
         gstin = "URP"
     gstin = _normalize_gstin(gstin, allow_urp=True)

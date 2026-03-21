@@ -12,6 +12,7 @@ from payments.serializers.payment_voucher import (
     PaymentVoucherListSerializer,
 )
 from payments.services.payment_voucher_service import PaymentVoucherService
+from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
 def _raise_validation_error(err: ValueError) -> None:
@@ -227,9 +228,9 @@ class PaymentVoucherSettlementSummaryAPIView(APIView):
             "display_name": getattr(acct, "effective_accounting_name", None),
             "accountcode": getattr(acct, "effective_accounting_code", None),
             "ledger_id": stored_ledger_id or getattr(acct, "ledger_id", None),
-            "partytype": getattr(acct, "partytype", None),
-            "gstno": getattr(acct, "gstno", None),
-            "pan": getattr(acct, "pan", None),
+            "partytype": account_partytype(acct),
+            "gstno": account_gstno(acct),
+            "pan": account_pan(acct),
         }
 
     @staticmethod

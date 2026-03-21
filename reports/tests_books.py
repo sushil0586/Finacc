@@ -11,6 +11,7 @@ from rest_framework.test import APITestCase, APIClient
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.services import apply_normalized_profile_payload
 from geography.models import City, Country, District, State
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, PostingBatch, JournalLine, StaticAccount, EntityStaticAccountMap, TxnType
@@ -36,17 +37,10 @@ class BookReportAPITests(APITestCase):
             legalname="Finacc Test Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address",
-            phoneoffice="9999999999",
-            phoneresidence="9999999998",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", address="Branch Address")
-        self.other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch B", address="Branch B Address")
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A")
+        self.other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch B")
         fy_start = timezone.make_aware(datetime(2025, 4, 1))
         fy_end = timezone.make_aware(datetime(2026, 3, 31))
         self.entityfin = EntityFinancialYear.objects.create(
@@ -61,13 +55,6 @@ class BookReportAPITests(APITestCase):
             legalname="Other Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Other Address",
-            phoneoffice="8888888888",
-            phoneresidence="8888888887",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
         self.other_entityfin = EntityFinancialYear.objects.create(
@@ -120,9 +107,24 @@ class BookReportAPITests(APITestCase):
         self.expense_ledger = Ledger.objects.create(entity=self.entity, ledger_code=2001, name="Office Expense", accounthead=self.head_expense, createdby=self.user)
         self.income_ledger = Ledger.objects.create(entity=self.entity, ledger_code=3001, name="Sales Income", accounthead=self.head_income, createdby=self.user)
         self.cash_account = account.objects.create(entity=self.entity, ledger=self.cash_ledger, accounthead=self.head_cash, accountname="Cash In Hand", accountcode=1001, createdby=self.user)
-        self.bank_account = account.objects.create(entity=self.entity, ledger=self.bank_ledger, accounthead=self.head_bank, accountname="Main Bank", accountcode=1002, partytype="Bank", createdby=self.user)
+        self.bank_account = account.objects.create(
+            entity=self.entity,
+            ledger=self.bank_ledger,
+            accounthead=self.head_bank,
+            accountname="Main Bank",
+            accountcode=1002,
+            createdby=self.user,
+        )
+        apply_normalized_profile_payload(
+            self.bank_account,
+            compliance_data={},
+            commercial_data={"partytype": "Bank"},
+            primary_address_data={},
+        )
         self.expense_account = account.objects.create(entity=self.entity, ledger=self.expense_ledger, accounthead=self.head_expense, accountname="Office Expense", accountcode=2001, createdby=self.user)
         self.income_account = account.objects.create(entity=self.entity, ledger=self.income_ledger, accounthead=self.head_income, accountname="Sales Income", accountcode=3001, createdby=self.user)
+        self.ap_ledger = Ledger.objects.create(entity=self.entity, ledger_code=4001, name="Sundry Creditors", accounthead=self.head_bank, createdby=self.user)
+        self.ap_account = account.objects.create(entity=self.entity, ledger=self.ap_ledger, accounthead=self.head_bank, accountname="Sundry Creditors", accountcode=4001, createdby=self.user)
         self.other_cash_ledger = Ledger.objects.create(entity=self.other_entity, ledger_code=9001, name="Other Cash", accounthead=self.head_cash, createdby=self.user)
         self.other_cash_account = account.objects.create(entity=self.other_entity, ledger=self.other_cash_ledger, accounthead=self.head_cash, accountname="Other Cash", accountcode=9001, createdby=self.user)
 
@@ -307,7 +309,15 @@ class BookReportAPITests(APITestCase):
             posting_batch=batch,
             created_by=self.user,
         )
-        for idx, (acct, ledger, drcr, amount, description) in enumerate(lines, start=1):
+        for idx, line in enumerate(lines, start=1):
+            if isinstance(line, dict):
+                acct = line["account"]
+                ledger = getattr(acct, "ledger", None)
+                drcr = line["drcr"]
+                amount = line["amount"]
+                description = line.get("description")
+            else:
+                acct, ledger, drcr, amount, description = line
             JournalLine.objects.create(
                 entry=entry,
                 posting_batch=batch,

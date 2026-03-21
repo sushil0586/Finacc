@@ -14,6 +14,15 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from financial.profile_access import (
+    account_agent,
+    account_creditdays,
+    account_creditlimit,
+    account_currency,
+    account_gstno,
+    account_region_state,
+)
+
 from reports.selectors.financial import normalize_scope_ids
 from reports.selectors.payables import (
     advance_vendor_summary,
@@ -125,14 +134,14 @@ def _vendor_meta(vendor, *, subentity_name=None):
         "vendor_id": vendor.id,
         "vendor_name": vendor.effective_accounting_name,
         "vendor_code": vendor.effective_accounting_code,
-        "credit_limit": f"{q2(vendor.creditlimit or ZERO):.2f}" if vendor.creditlimit is not None else None,
-        "credit_days": vendor.creditdays,
-        "currency": vendor.currency or "INR",
+        "credit_limit": f"{q2(account_creditlimit(vendor) or ZERO):.2f}" if account_creditlimit(vendor) is not None else None,
+        "credit_days": account_creditdays(vendor),
+        "currency": account_currency(vendor) or "INR",
         "branch": None,
         "subentity_name": subentity_name,
-        "gstin": vendor.gstno,
-        "vendor_group": vendor.agent,
-        "region": getattr(getattr(vendor, "state", None), "statename", None) or getattr(getattr(vendor, "state", None), "state", None),
+        "gstin": account_gstno(vendor),
+        "vendor_group": account_agent(vendor),
+        "region": getattr(account_region_state(vendor), "statename", None) or getattr(account_region_state(vendor), "state", None),
     }
 
 
@@ -414,7 +423,8 @@ def build_vendor_outstanding_report(
             continue
         if outstanding_gt is not None and net_outstanding <= q2(outstanding_gt):
             continue
-        if credit_limit_exceeded and vendor.creditlimit is not None and net_outstanding <= q2(vendor.creditlimit):
+        vendor_credit_limit = account_creditlimit(vendor)
+        if credit_limit_exceeded and vendor_credit_limit is not None and net_outstanding <= q2(vendor_credit_limit):
             continue
 
         drilldown = {
@@ -673,9 +683,9 @@ def build_ap_aging_report(
                         "paid_amount": q2(paid_amount),
                         "residual_before_credit": q2(outstanding),
                         "branch": getattr(item.subentity, "subentityname", None),
-                        "currency": getattr(getattr(item, "header", None), "currency_code", None) or item.vendor.currency or "INR",
-                        "gstin": item.vendor.gstno,
-                        "credit_limit": q2(item.vendor.creditlimit or ZERO) if item.vendor.creditlimit is not None else None,
+                        "currency": getattr(getattr(item, "header", None), "currency_code", None) or account_currency(item.vendor) or "INR",
+                        "gstin": account_gstno(item.vendor),
+                        "credit_limit": q2(account_creditlimit(item.vendor) or ZERO) if account_creditlimit(item.vendor) is not None else None,
                         "last_payment_date": last_payment_map.get(item.vendor_id),
                     },
                     drilldown=drilldown,
@@ -733,7 +743,8 @@ def build_ap_aging_report(
                 }
                 invoice_rows.append(detail)
 
-        credit_limit = q2(vendor.creditlimit or ZERO) if vendor.creditlimit is not None else None
+        vendor_credit_limit = account_creditlimit(vendor)
+        credit_limit = q2(vendor_credit_limit or ZERO) if vendor_credit_limit is not None else None
         if outstanding_total == ZERO and residual_credit == ZERO:
             continue
         if overdue_only and overdue_total <= ZERO:

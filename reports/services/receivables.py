@@ -6,6 +6,15 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db.models import Max, Q, Sum
 
+from financial.profile_access import (
+    account_agent,
+    account_creditdays,
+    account_creditlimit,
+    account_currency,
+    account_gstno,
+    account_region_state,
+)
+
 from financial.models import account
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
 from sales.models.sales_core import SalesInvoiceHeader
@@ -45,24 +54,28 @@ def _resolve_scope_dates(entityfin_id=None, from_date=None, to_date=None, as_of_
 
 def _customer_queryset(*, entity_id, customer_id=None, customer_group=None, region_id=None, currency=None, search=None):
     qs = account.objects.filter(entity_id=entity_id)
-    qs = qs.filter(Q(partytype__in=["Customer", "Both", "Bank"]) | Q(partytype__isnull=True) | Q(partytype=""))
+    qs = qs.filter(
+        Q(commercial_profile__partytype__in=["Customer", "Both", "Bank"])
+        | Q(commercial_profile__partytype__isnull=True)
+        | Q(commercial_profile__partytype="")
+    )
     if customer_id:
         qs = qs.filter(id=customer_id)
     if customer_group:
-        qs = qs.filter(agent__iexact=customer_group)
+        qs = qs.filter(commercial_profile__agent__iexact=customer_group)
     if region_id:
         qs = qs.filter(state_id=region_id)
     if currency:
-        qs = qs.filter(currency__iexact=currency)
+        qs = qs.filter(commercial_profile__currency__iexact=currency)
     if search:
         token = str(search).strip()
         qs = qs.filter(
             Q(accountname__icontains=token)
             | Q(legalname__icontains=token)
             | Q(accountcode__icontains=token)
-            | Q(gstno__icontains=token)
+            | Q(compliance_profile__gstno__icontains=token)
         )
-    return qs.select_related("ledger", "state").order_by("accountname", "id")
+    return qs.select_related("ledger", "state", "commercial_profile", "compliance_profile").order_by("accountname", "id")
 
 
 def _scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
@@ -111,7 +124,7 @@ def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date
         upto_date=upto_date,
     )
     qs = _scope_filter(
-        CustomerBillOpenItem.objects.select_related("customer", "customer__ledger", "subentity", "header"),
+        CustomerBillOpenItem.objects.select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "header"),
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -132,7 +145,7 @@ def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date):
         upto_date=upto_date,
     )
     qs = _scope_filter(
-        CustomerAdvanceBalance.objects.select_related("customer", "customer__ledger", "subentity", "receipt_voucher"),
+        CustomerAdvanceBalance.objects.select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "receipt_voucher"),
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -237,14 +250,14 @@ def _customer_meta(cust, *, subentity_name=None):
         "customer_id": cust.id,
         "customer_name": cust.effective_accounting_name,
         "customer_code": cust.effective_accounting_code,
-        "credit_limit": f"{q2(cust.creditlimit or ZERO):.2f}" if cust.creditlimit is not None else None,
-        "credit_days": cust.creditdays,
-        "currency": cust.currency or "INR",
+        "credit_limit": f"{q2(account_creditlimit(cust) or ZERO):.2f}" if account_creditlimit(cust) is not None else None,
+        "credit_days": account_creditdays(cust),
+        "currency": account_currency(cust) or "INR",
         "branch": None,
         "subentity_name": subentity_name,
-        "gstin": cust.gstno,
-        "customer_group": cust.agent,
-        "region": getattr(getattr(cust, "state", None), "statename", None) or getattr(getattr(cust, "state", None), "state", None),
+        "gstin": account_gstno(cust),
+        "customer_group": account_agent(cust),
+        "region": getattr(account_region_state(cust), "statename", None) or getattr(account_region_state(cust), "state", None),
         "salesperson": None,
     }
 
@@ -411,7 +424,8 @@ def build_customer_outstanding_report(
             continue
         if outstanding_gt is not None and net_outstanding <= q2(outstanding_gt):
             continue
-        if credit_limit_exceeded and cust.creditlimit is not None and net_outstanding <= q2(cust.creditlimit):
+        customer_credit_limit = account_creditlimit(cust)
+        if credit_limit_exceeded and customer_credit_limit is not None and net_outstanding <= q2(customer_credit_limit):
             continue
 
         drilldown = {
@@ -596,9 +610,9 @@ def build_receivable_aging_report(
                         "residual_before_credit": q2(outstanding),
                         "salesperson": None,
                         "branch": getattr(item.subentity, "subentityname", None),
-                        "currency": item.customer.currency or "INR",
-                        "gstin": item.customer.gstno,
-                        "credit_limit": q2(item.customer.creditlimit or ZERO) if item.customer.creditlimit is not None else None,
+                        "currency": account_currency(item.customer) or "INR",
+                        "gstin": account_gstno(item.customer),
+                        "credit_limit": q2(account_creditlimit(item.customer) or ZERO) if account_creditlimit(item.customer) is not None else None,
                         "last_payment_date": last_payment_map.get(item.customer_id),
                     },
                     drilldown=drilldown,
@@ -644,7 +658,8 @@ def build_receivable_aging_report(
                 }
                 invoice_rows.append(detail)
 
-        credit_limit = q2(cust.creditlimit or ZERO) if cust.creditlimit is not None else None
+        customer_credit_limit = account_creditlimit(cust)
+        credit_limit = q2(customer_credit_limit or ZERO) if customer_credit_limit is not None else None
         if outstanding_total == ZERO and residual_credit == ZERO:
             continue
         if overdue_only and overdue_total <= ZERO:

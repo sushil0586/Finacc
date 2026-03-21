@@ -147,7 +147,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
     customer_ledger_id = serializers.IntegerField(read_only=True)
-    customer_partytype = serializers.CharField(source="customer.partytype", read_only=True)
+    customer_partytype = serializers.CharField(source="customer.commercial_profile.partytype", read_only=True)
 
     class Meta:
         model = SalesInvoiceHeader

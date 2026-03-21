@@ -34,8 +34,8 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from entity.models import Entity, SubEntity
-from financial.models import account
-from financial.serializers import SimpleAccountSerializer
+from financial.models import Ledger
+from financial.serializers_ledger import SimpleAccountV2Serializer
 
 from .models import (
     ProductCategory,
@@ -382,9 +382,9 @@ class ProductPageBootstrapAPIView(APIView):
         pricelists = PriceList.objects.filter(entity_id=entity_id_int, isactive=True)
         product_attributes = ProductAttribute.objects.filter(entity_id=entity_id_int, isactive=True).order_by("name")
         accounts = (
-            account.objects.filter(entity_id=entity_id_int)
-            .select_related("state", "ledger", "ledger__accounthead")
-            .order_by("accountname", "id")
+            Ledger.objects.filter(entity_id=entity_id_int, account_profile__isnull=False, isactive=True)
+            .select_related("account_profile", "account_profile__state", "account_profile__district", "account_profile__city", "accounthead")
+            .order_by("name", "id")
         )
         locations = SubEntity.objects.filter(entity_id=entity_id_int).order_by("subentityname", "id")
 
@@ -400,7 +400,7 @@ class ProductPageBootstrapAPIView(APIView):
             "hsn_sac": HsnSacSerializer(hsn_sac, many=True).data,
             "pricelists": PriceListSerializer(pricelists, many=True).data,
             "product_attributes": ProductAttributeSerializer(product_attributes, many=True).data,
-            "accounts": SimpleAccountSerializer(accounts, many=True).data,
+            "accounts": SimpleAccountV2Serializer(accounts, many=True).data,
             "locations": SubentityLiteSerializer(locations, many=True).data,
         }
         return Response(data)
