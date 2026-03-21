@@ -1,38 +1,52 @@
 from django.contrib import admin
-from geography.models import Country,State,District,City
 from import_export.admin import ImportExportMixin
 
-# Register your models here.
+from geography.models import City, Country, District, State
 
 
-class countryAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['countrycode','countryname']
+class StateInline(admin.TabularInline):
+    model = State
+    extra = 0
+    fields = ("statecode", "statename")
 
 
+@admin.register(Country)
+class CountryAdmin(ImportExportMixin, admin.ModelAdmin):
+    list_display = ("countrycode", "countryname")
+    search_fields = ("countrycode", "countryname")
+    inlines = [StateInline]
 
-class stateAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['statecode','statename']
 
-class districtAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['districtname','districtcode','state']
-    search_fields = ['districtname']
-    list_filter = (
-        ('state', admin.RelatedOnlyFieldListFilter),
-    )
+class DistrictInline(admin.TabularInline):
+    model = District
+    extra = 0
+    fields = ("districtcode", "districtname")
 
-class cityAdmin(ImportExportMixin,admin.ModelAdmin):
-    list_display = ['cityname','citycode','distt','pincode']
-    search_fields = ['cityname','pincode']
-    list_filter = (
-        ('distt', admin.RelatedOnlyFieldListFilter),
-    )
-   
-    
 
-admin.site.register(Country,countryAdmin)
+@admin.register(State)
+class StateAdmin(ImportExportMixin, admin.ModelAdmin):
+    list_display = ("statecode", "statename", "country")
+    search_fields = ("statecode", "statename", "country__countryname")
+    list_filter = (("country", admin.RelatedOnlyFieldListFilter),)
+    inlines = [DistrictInline]
 
-admin.site.register(State,stateAdmin)
 
-admin.site.register(District,districtAdmin)
+class CityInline(admin.TabularInline):
+    model = City
+    extra = 0
+    fields = ("citycode", "cityname", "pincode")
 
-admin.site.register(City,cityAdmin)
+
+@admin.register(District)
+class DistrictAdmin(ImportExportMixin, admin.ModelAdmin):
+    list_display = ("districtname", "districtcode", "state")
+    search_fields = ("districtname", "districtcode", "state__statename")
+    list_filter = (("state", admin.RelatedOnlyFieldListFilter),)
+    inlines = [CityInline]
+
+
+@admin.register(City)
+class CityAdmin(ImportExportMixin, admin.ModelAdmin):
+    list_display = ("cityname", "citycode", "distt", "pincode")
+    search_fields = ("cityname", "citycode", "pincode")
+    list_filter = (("distt", admin.RelatedOnlyFieldListFilter),)

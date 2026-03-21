@@ -98,22 +98,29 @@ class SalesSettingsService:
 
     @staticmethod
     def get_seller_profile(*, entity_id: int, subentity_id: int | None) -> dict:
-        entity = (
-            Entity.objects
+        entity = Entity.objects.get(id=entity_id)
+        entity_addr = (
+            entity.addresses.filter(isactive=True, is_primary=True)
             .select_related("state", "country", "district", "city")
-            .get(id=entity_id)
+            .first()
         )
+        entity_contact = entity.contacts.filter(isactive=True, is_primary=True).first()
+        entity_gst = entity.gst_registrations.filter(isactive=True, is_primary=True).first()
 
         se = None
+        se_addr = None
+        se_contact = None
         if subentity_id:
-            se = (
-                SubEntity.objects
+            se = SubEntity.objects.get(id=subentity_id, entity_id=entity_id)
+            se_addr = (
+                se.addresses.filter(isactive=True, is_primary=True)
                 .select_related("state", "country", "district", "city")
-                .get(id=subentity_id, entity_id=entity_id)
+                .first()
             )
+            se_contact = se.contacts.filter(isactive=True, is_primary=True).first()
 
-        # ✅ state preference: SubEntity.state > Entity.state
-        seller_state = (se.state if se and se.state else entity.state)
+        # state preference: SubEntity primary state > Entity primary state
+        seller_state = (se_addr.state if se_addr and se_addr.state else (entity_addr.state if entity_addr else None))
         seller_state_id = seller_state.id if seller_state else None
         seller_statecode = seller_state.statecode if seller_state else None
 
@@ -122,7 +129,7 @@ class SalesSettingsService:
             "subentity_id": se.id if se else None,
 
             # GST always from Entity
-            "gstno": entity.gstno,
+            "gstno": (entity_gst.gstin if entity_gst else None),
 
             "state_id": seller_state_id,
             "statecode": seller_statecode,  # ✅ ADDED
@@ -130,16 +137,16 @@ class SalesSettingsService:
             # optional info for print/einvoice payloads
             "entityname": entity.entityname,
             "legalname": entity.legalname,
-            "address": (se.address if se and se.address else entity.address),
-            "address2": (getattr(se, "address2", None) if se else entity.address2),
-            "pincode": (se.pincode if se and se.pincode else entity.pincode),
+            "address": (se_addr.line1 if se_addr and se_addr.line1 else (entity_addr.line1 if entity_addr else None)),
+            "address2": (se_addr.line2 if se_addr and se_addr.line2 else (entity_addr.line2 if entity_addr else None)),
+            "pincode": (se_addr.pincode if se_addr and se_addr.pincode else (entity_addr.pincode if entity_addr else None)),
 
-            "country_id": (se.country_id if se and se.country_id else entity.country_id),
-            "district_id": (se.district_id if se and se.district_id else entity.district_id),
-            "city_id": (se.city_id if se and se.city_id else entity.city_id),
+            "country_id": (se_addr.country_id if se_addr and se_addr.country_id else (entity_addr.country_id if entity_addr else None)),
+            "district_id": (se_addr.district_id if se_addr and se_addr.district_id else (entity_addr.district_id if entity_addr else None)),
+            "city_id": (se_addr.city_id if se_addr and se_addr.city_id else (entity_addr.city_id if entity_addr else None)),
 
-            "phoneoffice": (se.phoneoffice if se and se.phoneoffice else entity.phoneoffice),
-            "email": (se.email if se and se.email else entity.email),
+            "phoneoffice": (se_contact.mobile if se_contact and se_contact.mobile else (entity_contact.mobile if entity_contact else None)),
+            "email": (se_contact.email if se_contact and se_contact.email else (entity_contact.email if entity_contact else None)),
         }
 
     @staticmethod

@@ -12,7 +12,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from entity.models import UserRole
 from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
 from .serializers import (
     EffectiveMenuTreeSerializer,
@@ -256,11 +255,7 @@ class RBACAdminBootstrapView(RBACEntityAccessMixin, APIView):
             .order_by("user__first_name", "user__email", "role__priority", "role__name")
         )
 
-        user_ids = set(
-            UserRoleAssignment.objects.filter(entity=entity).values_list("user_id", flat=True)
-        ) | set(
-            UserRole.objects.filter(entity=entity, user__isnull=False).values_list("user_id", flat=True)
-        )
+        user_ids = set(UserRoleAssignment.objects.filter(entity=entity).values_list("user_id", flat=True))
         users = list(User.objects.filter(id__in=user_ids, is_active=True).order_by("first_name", "email"))
 
         payload = {
@@ -650,11 +645,7 @@ class EntityUserOptionsView(RBACEntityAccessMixin, APIView):
         if error_response:
             return error_response
 
-        user_ids = set(
-            UserRoleAssignment.objects.filter(entity=entity).values_list("user_id", flat=True)
-        ) | set(
-            UserRole.objects.filter(entity=entity, user__isnull=False).values_list("user_id", flat=True)
-        )
+        user_ids = set(UserRoleAssignment.objects.filter(entity=entity).values_list("user_id", flat=True))
         users = User.objects.filter(id__in=user_ids, is_active=True).order_by("first_name", "email")
         serializer = UserOptionSerializer(users, many=True)
         return Response(serializer.data)
@@ -823,3 +814,5 @@ class AuditLogListView(RBACEntityAccessMixin, ListAPIView):
         if action:
             queryset = queryset.filter(action=action)
         return queryset.order_by("-created_at")
+
+

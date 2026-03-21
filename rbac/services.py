@@ -3,7 +3,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from entity.models import Entity, RolePrivilege, UserRole
+from entity.models import Entity
 
 from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
 
@@ -18,28 +18,6 @@ class RBACDevelopmentAccess:
     @staticmethod
     def allow_all():
         return bool(getattr(settings, "RBAC_DEV_ALLOW_ALL_ACCESS", False))
-
-
-class LegacyRBACCodes:
-    @staticmethod
-    def role_code(legacy_role_id):
-        return f"legacy_role_{legacy_role_id}"
-
-    @staticmethod
-    def main_menu_code(legacy_main_menu_id):
-        return f"legacy.mainmenu.{legacy_main_menu_id}"
-
-    @staticmethod
-    def sub_menu_code(legacy_submenu_id):
-        return f"legacy.submenu.{legacy_submenu_id}"
-
-    @staticmethod
-    def main_menu_permission_code(legacy_main_menu_id):
-        return f"legacy.mainmenu.{legacy_main_menu_id}.access"
-
-    @staticmethod
-    def sub_menu_permission_code(legacy_submenu_id):
-        return f"legacy.submenu.{legacy_submenu_id}.access"
 
 
 class EffectivePermissionService:
@@ -88,24 +66,7 @@ class EffectivePermissionService:
                 for assignment in assignments
             ]
 
-        legacy_role = (
-            UserRole.objects.filter(user=user, entity_id=entity_id)
-            .select_related("role")
-            .order_by("id")
-            .first()
-        )
-        if not legacy_role or not legacy_role.role_id:
-            return []
-        return [
-            {
-                "id": legacy_role.role_id,
-                "name": legacy_role.role.rolename,
-                "code": LegacyRBACCodes.role_code(legacy_role.role_id),
-                "description": legacy_role.role.roledesc or "",
-                "source": "legacy",
-                "is_primary": True,
-            }
-        ]
+        return []
 
     @staticmethod
     def permission_codes_for_user(user, entity_id, role_id=None):
@@ -116,7 +77,7 @@ class EffectivePermissionService:
 
         assignments = EffectivePermissionService.active_assignments_queryset(user, entity_id).select_related("role")
         if role_id is not None:
-            assignments = assignments.filter(Q(role_id=role_id) | Q(role__code=LegacyRBACCodes.role_code(role_id)))
+            assignments = assignments.filter(role_id=role_id)
 
         role_ids = list(assignments.values_list("role_id", flat=True))
         if not role_ids:
@@ -145,12 +106,11 @@ class EffectivePermissionService:
         if RBACDevelopmentAccess.allow_all():
             return Entity.objects.filter(id=entity_id).first()
 
-        return (
-            Entity.objects.filter(id=entity_id)
-            .filter(Q(userrole__user=user) | Q(user_role_assignments__user=user))
-            .distinct()
-            .first()
-        )
+        active_assignment_entity_ids = EffectivePermissionService.active_assignments_queryset(
+            user,
+            entity_id,
+        ).values_list("entity_id", flat=True)
+        return Entity.objects.filter(id__in=active_assignment_entity_ids).distinct().first()
 
 
 class EffectiveMenuService:
@@ -275,51 +235,8 @@ class LegacyMenuCompatibilityService:
         return final_rows
 
     @staticmethod
-    def _legacy_response(entity_id, role_id):
-        rows = RolePrivilege.objects.filter(entity_id=entity_id, role_id=role_id).values(
-            "submenu__mainmenu__id",
-            "submenu__mainmenu__mainmenu",
-            "submenu__mainmenu__menuurl",
-            "submenu__mainmenu__menucode",
-            "submenu__mainmenu__order",
-            "submenu__id",
-            "submenu__submenu",
-            "submenu__subMenuurl",
-            "submenu__submenucode",
-            "submenu__order",
-        ).order_by("submenu__mainmenu__order", "submenu__order", "submenu__id")
-
-        grouped = {}
-        for row in rows:
-            key = row["submenu__mainmenu__id"]
-            if key not in grouped:
-                grouped[key] = {
-                    "mainmenu": row["submenu__mainmenu__mainmenu"],
-                    "menuurl": row["submenu__mainmenu__menuurl"],
-                    "menucode": row["submenu__mainmenu__menucode"],
-                    "submenu": [],
-                }
-            grouped[key]["submenu"].append(
-                {
-                    "submenu": row["submenu__submenu"],
-                    "subMenuurl": row["submenu__subMenuurl"],
-                    "submenucode": row["submenu__submenucode"],
-                }
-            )
-        return list(grouped.values())
-
-    @staticmethod
     def legacy_shape_for_user(user, entity_id, role_id=None):
-        rbac_rows = LegacyMenuCompatibilityService._rbac_response(user, entity_id, role_id=role_id)
-        if rbac_rows:
-            return rbac_rows
-
-        if role_id is None:
-            user_role = UserRole.objects.filter(user=user, entity_id=entity_id).values_list("role_id", flat=True).first()
-            role_id = user_role
-        if role_id is None:
-            return []
-        return LegacyMenuCompatibilityService._legacy_response(entity_id, role_id)
+        return LegacyMenuCompatibilityService._rbac_response(user, entity_id, role_id=role_id)
 
 
 class RBACAuditService:
@@ -496,5 +413,9 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
+
+
+
+
 
 

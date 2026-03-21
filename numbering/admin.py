@@ -7,6 +7,21 @@ from django.utils import timezone
 from .models import DocumentNumberSeries, DocumentType
 
 
+class DocumentNumberSeriesInline(admin.TabularInline):
+    model = DocumentNumberSeries
+    extra = 0
+    fields = (
+        "entity",
+        "entityfinid",
+        "subentity",
+        "doc_code",
+        "current_number",
+        "is_active",
+    )
+    autocomplete_fields = ("entity", "entityfinid", "subentity")
+    show_change_link = True
+
+
 @admin.register(DocumentType)
 class DocumentTypeAdmin(admin.ModelAdmin):
     list_display = ("module", "name", "doc_key", "default_code", "is_active", "created_at", "updated_at")
@@ -15,6 +30,7 @@ class DocumentTypeAdmin(admin.ModelAdmin):
     ordering = ("module", "doc_key")
     readonly_fields = ("created_at", "updated_at")
     list_per_page = 50
+    inlines = (DocumentNumberSeriesInline,)
 
     fieldsets = (
         ("Document", {"fields": ("module", "name", "doc_key", "default_code")}),

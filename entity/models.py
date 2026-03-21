@@ -2,7 +2,7 @@ from django.core.validators import MinLengthValidator, RegexValidator
 from django.db import models
 from django.db.models import Q
 from helpers.models import TrackingModel
-from Authentication.models import User,MainMenu,Submenu
+from Authentication.models import User
 from geography.models import Country,State,District,City
 from django.utils.dateformat import DateFormat
 #from Authentication.models import User 
@@ -61,19 +61,6 @@ class GstRegistrationType(models.Model):
     def __str__(self):
         return f'{self.Name}'
     
-class OwnerShipTypes(models.Model):
-    Name =           models.CharField(max_length= 100)
-    Description =    models.CharField(max_length= 255)
-    #createdby = models.ForeignKey(to= 'Authentication.User', on_delete= models.CASCADE,null=True,default=1,blank=True)
-
-
-    def __str__(self):
-        return f'{self.Name}'
-    
-
-    
-
-
 class Constitution(models.Model):
     constitutionname =    models.CharField(max_length= 255)
     constitutiondesc =    models.TextField()
@@ -157,59 +144,6 @@ class Entity(TrackingModel):
         default=GstStatus.REGISTERED,
     )
     website = models.URLField(blank=True, null=True)
-    address =     models.CharField(max_length= 100)
-    address2 =     models.CharField(max_length= 100,null= True,blank = True)
-    addressfloorno =     models.CharField(max_length= 50,null= True,blank = True)
-    addressstreet =     models.CharField(max_length= 100,null= True,blank = True)
-    ownername =   models.CharField(max_length= 100,null= True)
-    country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
-    state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
-    district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
-    city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
-    registered_address_same_as_principal = models.BooleanField(default=True)
-    bank =        models.ForeignKey(BankDetail, on_delete=models.CASCADE,null= True)
-    bankacno =    models.CharField(max_length= 50,null= True)
-    ifsccode     =    models.CharField(max_length= 50,null= True)
-    pincode =    models.CharField(max_length= 50,null= True, validators=[pincode_validator])
-    phoneoffice = models.CharField(max_length= 20, validators=[phone_validator])
-    phoneresidence = models.CharField(max_length= 20, validators=[phone_validator])
-    contact_person_name = models.CharField(max_length=100, null=True, blank=True)
-    contact_person_designation = models.CharField(max_length=100, null=True, blank=True)
-    mobile_primary = models.CharField(max_length=20, null=True, blank=True, validators=[phone_validator])
-    mobile_secondary = models.CharField(max_length=20, null=True, blank=True, validators=[phone_validator])
-    panno =        models.CharField(max_length= 20,null= True, validators=[pan_validator])
-    tds =           models.CharField(max_length= 20,null= True, validators=[tan_validator])
-    tdscircle =        models.CharField(max_length= 20,null= True)
-    tan_no = models.CharField(max_length=20, null=True, blank=True, validators=[tan_validator])
-    cin_no = models.CharField(max_length=21, null=True, blank=True, validators=[cin_validator])
-    llpin_no = models.CharField(max_length=8, null=True, blank=True, validators=[llpin_validator])
-    udyam_no = models.CharField(max_length=30, null=True, blank=True)
-    iec_code = models.CharField(max_length=10, null=True, blank=True, validators=[iec_validator])
-    email =    models.CharField(max_length= 50,null= True)
-    email_primary = models.EmailField(max_length=100, null=True, blank=True)
-    email_secondary = models.EmailField(max_length=100, null=True, blank=True)
-    support_email = models.EmailField(max_length=100, null=True, blank=True)
-    accounts_email = models.EmailField(max_length=100, null=True, blank=True)
-    tcs206c1honsale  = models.BooleanField(blank =True,null = True)
-    is_tds_applicable = models.BooleanField(default=False)
-    is_tcs_applicable = models.BooleanField(default=False)
-    is_einvoice_applicable = models.BooleanField(default=False)
-    is_ewaybill_applicable = models.BooleanField(default=False)
-    is_msme_registered = models.BooleanField(default=False)
-    msme_category = models.CharField(max_length=20, choices=MsmeCategory.choices, null=True, blank=True)
-   # tds194qonsale  = models.BooleanField(blank =True,null = True)
-    gstno =        models.CharField(max_length= 20,null= True, validators=[gstin_validator])
-    gstintype =        models.CharField(max_length= 20,null= True)
-    gst_effective_from = models.DateField(null=True, blank=True)
-    gst_cancelled_from = models.DateField(null=True, blank=True)
-    gst_username = models.CharField(max_length=100, null=True, blank=True)
-    nature_of_business = models.CharField(max_length=150, null=True, blank=True)
-    incorporation_date = models.DateField(null=True, blank=True)
-    business_commencement_date = models.DateField(null=True, blank=True)
-    blockstatus = models.CharField(max_length= 10,null= True,verbose_name='Block Status')
-    dateofreg = models.DateTimeField(verbose_name='Date of Registration',null = True)
-    dateofdreg = models.DateTimeField(verbose_name='Date of De Regitration',null = True)
-    const =    models.ForeignKey(to= Constitution, on_delete= models.CASCADE,null=True)
     parent_entity = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="child_entities")
     customer_account = models.ForeignKey(
         "subscriptions.CustomerAccount",
@@ -238,8 +172,6 @@ class Entity(TrackingModel):
         indexes = [
             models.Index(fields=["entityname"]),
             models.Index(fields=["legalname"]),
-            models.Index(fields=["gstno"]),
-            models.Index(fields=["panno"]),
             models.Index(fields=["organization_status"]),
         ]
 
@@ -247,57 +179,230 @@ class Entity(TrackingModel):
         self.entity_code = (self.entity_code or "").strip().upper() or None
         self.trade_name = (self.trade_name or "").strip() or None
         self.short_name = (self.short_name or "").strip() or None
-        self.contact_person_name = (self.contact_person_name or self.ownername or "").strip() or None
-        self.mobile_primary = (self.mobile_primary or self.phoneoffice or "").strip() or None
-        self.mobile_secondary = (self.mobile_secondary or self.phoneresidence or "").strip() or None
-        self.email_primary = (self.email_primary or self.email or "").strip().lower() or None
-        self.tan_no = (self.tan_no or self.tds or "").strip().upper() or None
-        self.gstno = (self.gstno or "").strip().upper() or None
-        self.panno = (self.panno or "").strip().upper() or None
-        self.tds = (self.tds or "").strip().upper() or None
-        self.cin_no = (self.cin_no or "").strip().upper() or None
-        self.llpin_no = (self.llpin_no or "").strip().upper() or None
-        self.iec_code = (self.iec_code or "").strip().upper() or None
-        self.udyam_no = (self.udyam_no or "").strip().upper() or None
         super().save(*args, **kwargs)
     
 
 
     
 
-class BankAccount(models.Model):
-    entity = models.ForeignKey(to= 'Entity', on_delete=models.CASCADE, related_name='bank_accounts')
-    bank_name = models.CharField(max_length=100)
-    branch = models.CharField(max_length=100)
-    account_number = models.CharField(max_length=20)
-    ifsc_code = models.CharField(max_length=11)
-    account_type = models.CharField(max_length=20, choices=[('current', 'Current'), ('savings', 'Savings')])
+
+
+class EntityAddress(TrackingModel):
+    class AddressType(models.TextChoices):
+        REGISTERED = "registered", "Registered"
+        PRINCIPAL = "principal", "Principal Place"
+        CORRESPONDENCE = "correspondence", "Correspondence"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="addresses")
+    address_type = models.CharField(max_length=20, choices=AddressType.choices, default=AddressType.REGISTERED)
+    line1 = models.CharField(max_length=255)
+    line2 = models.CharField(max_length=255, null=True, blank=True)
+    floor_no = models.CharField(max_length=50, null=True, blank=True)
+    street = models.CharField(max_length=100, null=True, blank=True)
+    country = models.ForeignKey(Country, on_delete=models.PROTECT, null=True, blank=True)
+    state = models.ForeignKey(State, on_delete=models.PROTECT, null=True, blank=True)
+    district = models.ForeignKey(District, on_delete=models.PROTECT, null=True, blank=True)
+    city = models.ForeignKey(City, on_delete=models.PROTECT, null=True, blank=True)
+    pincode = models.CharField(max_length=10, null=True, blank=True, validators=[pincode_validator])
     is_primary = models.BooleanField(default=False)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
-    def __str__(self):
-        return f"{self.bank_name} - {self.account_number}"
-    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "address_type"],
+                condition=Q(isactive=True, is_primary=True),
+                name="uq_entity_address_primary_type",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "address_type", "isactive"])]
 
-class GstAccountDetail(TrackingModel):
-    gstin = models.CharField(max_length= 25,null= True)
-    tradeName = models.CharField(max_length= 255,null= True)
-    legalName = models.CharField(max_length= 255,null= True)
-    addrBnm = models.CharField(max_length= 255,null= True)
-    addrBno = models.CharField(max_length= 255,null= True)
-    addrFlno = models.CharField(max_length= 255,null= True)
-    addrSt = models.CharField(max_length= 255,null= True)
-    addrLoc =  models.ForeignKey(City, on_delete=models.CASCADE,null= True)
-    stateCode = models.ForeignKey(State, on_delete=models.CASCADE,null= True)
-    district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
-    country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
-    addrPncd = models.CharField(max_length= 10,null= True)
-    txpType = models.CharField(max_length= 25,null= True)
-    status = models.CharField(max_length= 25,null= True)
-    blkStatus = models.CharField(max_length= 10,null= True)
-    dtReg = models.DateTimeField(verbose_name='Date of registration',null = True)
-    dtDReg = models.DateTimeField(verbose_name='Date of De registration',null = True)
+    def save(self, *args, **kwargs):
+        self.line1 = (self.line1 or "").strip()
+        self.line2 = (self.line2 or "").strip() or None
+        self.floor_no = (self.floor_no or "").strip() or None
+        self.street = (self.street or "").strip() or None
+        self.pincode = (self.pincode or "").strip() or None
+        super().save(*args, **kwargs)
 
-    
+
+class EntityContact(TrackingModel):
+    class ContactType(models.TextChoices):
+        OWNER = "owner", "Owner"
+        ACCOUNTS = "accounts", "Accounts"
+        SUPPORT = "support", "Support"
+        COMPLIANCE = "compliance", "Compliance"
+        OTHER = "other", "Other"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="contacts")
+    contact_type = models.CharField(max_length=20, choices=ContactType.choices, default=ContactType.OTHER)
+    name = models.CharField(max_length=100)
+    designation = models.CharField(max_length=100, null=True, blank=True)
+    mobile = models.CharField(max_length=20, null=True, blank=True, validators=[phone_validator])
+    email = models.EmailField(max_length=100, null=True, blank=True)
+    is_primary = models.BooleanField(default=False)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "contact_type", "isactive"]),
+            models.Index(fields=["entity", "email"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or "").strip()
+        self.designation = (self.designation or "").strip() or None
+        self.mobile = (self.mobile or "").strip() or None
+        self.email = (self.email or "").strip().lower() or None
+        super().save(*args, **kwargs)
+
+
+class EntityTaxProfile(TrackingModel):
+    entity = models.OneToOneField("Entity", on_delete=models.CASCADE, related_name="tax_profile")
+    pan = models.CharField(max_length=10, null=True, blank=True, validators=[pan_validator], db_index=True)
+    tan = models.CharField(max_length=10, null=True, blank=True, validators=[tan_validator], db_index=True)
+    cin_no = models.CharField(max_length=21, null=True, blank=True, validators=[cin_validator])
+    llpin_no = models.CharField(max_length=8, null=True, blank=True, validators=[llpin_validator])
+    iec_code = models.CharField(max_length=10, null=True, blank=True, validators=[iec_validator])
+    udyam_no = models.CharField(max_length=30, null=True, blank=True)
+    incorporation_date = models.DateField(null=True, blank=True)
+    business_commencement_date = models.DateField(null=True, blank=True)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    def save(self, *args, **kwargs):
+        self.pan = (self.pan or "").strip().upper() or None
+        self.tan = (self.tan or "").strip().upper() or None
+        self.cin_no = (self.cin_no or "").strip().upper() or None
+        self.llpin_no = (self.llpin_no or "").strip().upper() or None
+        self.iec_code = (self.iec_code or "").strip().upper() or None
+        self.udyam_no = (self.udyam_no or "").strip().upper() or None
+        super().save(*args, **kwargs)
+
+
+class EntityGstRegistration(TrackingModel):
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="gst_registrations")
+    gstin = models.CharField(max_length=15, validators=[gstin_validator], db_index=True)
+    registration_type = models.ForeignKey(GstRegistrationType, on_delete=models.SET_NULL, null=True, blank=True)
+    gst_status = models.CharField(max_length=20, choices=Entity.GstStatus.choices, default=Entity.GstStatus.REGISTERED)
+    state = models.ForeignKey(State, on_delete=models.PROTECT, null=True, blank=True)
+    nature_of_business = models.CharField(max_length=150, null=True, blank=True)
+    gst_effective_from = models.DateField(null=True, blank=True)
+    gst_cancelled_from = models.DateField(null=True, blank=True)
+    credential_ref = models.CharField(max_length=255, null=True, blank=True)
+    is_primary = models.BooleanField(default=False)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["gstin"], condition=Q(isactive=True), name="uq_entity_gst_registration_active_gstin"),
+            models.UniqueConstraint(fields=["entity"], condition=Q(isactive=True, is_primary=True), name="uq_entity_gst_registration_primary"),
+        ]
+        indexes = [models.Index(fields=["entity", "is_primary", "isactive"])]
+
+    def save(self, *args, **kwargs):
+        self.gstin = (self.gstin or "").strip().upper()
+        self.credential_ref = (self.credential_ref or "").strip() or None
+        super().save(*args, **kwargs)
+
+
+class EntityBankAccountV2(TrackingModel):
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="bank_accounts_v2")
+    bank_name = models.CharField(max_length=100)
+    branch = models.CharField(max_length=100, null=True, blank=True)
+    account_number = models.CharField(max_length=32)
+    ifsc_code = models.CharField(max_length=11)
+    account_type = models.CharField(max_length=20, choices=[("current", "Current"), ("savings", "Savings")], default="current")
+    is_primary = models.BooleanField(default=False)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["entity"], condition=Q(isactive=True, is_primary=True), name="uq_entity_bank_account_v2_primary"),
+        ]
+        indexes = [models.Index(fields=["entity", "ifsc_code", "isactive"])]
+
+    def save(self, *args, **kwargs):
+        self.bank_name = (self.bank_name or "").strip()
+        self.branch = (self.branch or "").strip() or None
+        self.account_number = (self.account_number or "").strip()
+        self.ifsc_code = (self.ifsc_code or "").strip().upper()
+        super().save(*args, **kwargs)
+
+
+class EntityComplianceProfile(TrackingModel):
+    entity = models.OneToOneField("Entity", on_delete=models.CASCADE, related_name="compliance_profile")
+    is_tds_applicable = models.BooleanField(default=False)
+    is_tcs_applicable = models.BooleanField(default=False)
+    is_einvoice_applicable = models.BooleanField(default=False)
+    is_ewaybill_applicable = models.BooleanField(default=False)
+    is_msme_registered = models.BooleanField(default=False)
+    msme_category = models.CharField(max_length=20, choices=Entity.MsmeCategory.choices, null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+
+class EntityOwnershipV2(TrackingModel):
+    class OwnershipType(models.TextChoices):
+        PROPRIETOR = "proprietor", "Proprietor"
+        PARTNER = "partner", "Partner"
+        DIRECTOR = "director", "Director"
+        SHAREHOLDER = "shareholder", "Shareholder"
+        TRUSTEE = "trustee", "Trustee"
+        OTHER = "other", "Other"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="ownerships_v2")
+    ownership_type = models.CharField(max_length=20, choices=OwnershipType.choices, default=OwnershipType.OTHER)
+    name = models.CharField(max_length=100)
+    email = models.EmailField(blank=True, null=True)
+    mobile = models.CharField(max_length=20, blank=True, null=True, validators=[phone_validator])
+    pan_number = models.CharField(max_length=10, blank=True, null=True, validators=[pan_validator])
+    share_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    capital_contribution = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    is_primary = models.BooleanField(default=False)
+    designation = models.CharField(max_length=100, blank=True, null=True)
+    remarks = models.TextField(blank=True, null=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        indexes = [models.Index(fields=["entity", "ownership_type", "isactive"])]
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or "").strip()
+        self.email = (self.email or "").strip().lower() or None
+        self.mobile = (self.mobile or "").strip() or None
+        self.pan_number = (self.pan_number or "").strip().upper() or None
+        self.designation = (self.designation or "").strip() or None
+        super().save(*args, **kwargs)
+
+
+class EntityConstitutionV2(TrackingModel):
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="constitutions_v2")
+    constitution_code = models.CharField(max_length=20)
+    constitution_name = models.CharField(max_length=255)
+    shareholder = models.CharField(max_length=255, null=True, blank=True)
+    pan = models.CharField(max_length=10, null=True, blank=True, validators=[pan_validator])
+    share_percentage = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        indexes = [models.Index(fields=["entity", "constitution_code", "isactive"])]
+
+    def save(self, *args, **kwargs):
+        self.constitution_code = (self.constitution_code or "").strip().upper()
+        self.constitution_name = (self.constitution_name or "").strip()
+        self.shareholder = (self.shareholder or "").strip() or None
+        self.pan = (self.pan or "").strip().upper() or None
+        super().save(*args, **kwargs)
+
 
 class SubEntity(TrackingModel):
     class BranchType(models.TextChoices):
@@ -312,31 +417,7 @@ class SubEntity(TrackingModel):
     subentityname =  models.CharField(max_length= 255)
     subentity_code = models.CharField(max_length=30, null=True, blank=True)
     branch_type = models.CharField(max_length=20, choices=BranchType.choices, default=BranchType.BRANCH)
-    address =     models.CharField(max_length= 255)
-    address2 =     models.CharField(max_length= 255,null= True,blank = True)
-    addressfloorno =     models.CharField(max_length= 50,null= True,blank = True)
-    addressstreet =     models.CharField(max_length= 100,null= True,blank = True)
-    country =     models.ForeignKey(Country, on_delete=models.CASCADE,null= True)
-    state =       models.ForeignKey(State, on_delete=models.CASCADE,null= True)
-    district =    models.ForeignKey(District, on_delete=models.CASCADE,null= True)
-    city =        models.ForeignKey(City, on_delete=models.CASCADE,null= True)
-    pincode =    models.CharField(max_length= 255,null= True, validators=[pincode_validator])
-    phoneoffice = models.CharField(max_length= 255,null= True, validators=[phone_validator])
-    phoneresidence = models.CharField(max_length= 255,null= True, validators=[phone_validator])
-    email =    models.CharField(max_length= 255,null= True)
-    email_primary = models.EmailField(max_length=100, null=True, blank=True)
-    mobile_primary = models.CharField(max_length=20, null=True, blank=True, validators=[phone_validator])
-    mobile_secondary = models.CharField(max_length=20, null=True, blank=True, validators=[phone_validator])
-    contact_person_name = models.CharField(max_length=100, null=True, blank=True)
-    contact_person_designation = models.CharField(max_length=100, null=True, blank=True)
-    gstno = models.CharField(max_length=20, null=True, blank=True, validators=[gstin_validator])
-    GstRegitrationType = models.ForeignKey(GstRegistrationType, on_delete=models.SET_NULL, null=True, blank=True)
-    ismainentity  = models.BooleanField(blank =True,null = True)
     is_head_office = models.BooleanField(default=False)
-    can_sell = models.BooleanField(default=True)
-    can_purchase = models.BooleanField(default=True)
-    can_stock = models.BooleanField(default=True)
-    can_bank = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=100)
     metadata = models.JSONField(default=dict, blank=True)
     entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True,related_name='subentity',)
@@ -359,20 +440,96 @@ class SubEntity(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "subentityname"]),
             models.Index(fields=["entity", "subentity_code"]),
-            models.Index(fields=["gstno"]),
         ]
 
     def save(self, *args, **kwargs):
         self.subentity_code = (self.subentity_code or "").strip().upper() or None
-        self.email_primary = (self.email_primary or self.email or "").strip().lower() or None
-        self.mobile_primary = (self.mobile_primary or self.phoneoffice or "").strip() or None
-        self.mobile_secondary = (self.mobile_secondary or self.phoneresidence or "").strip() or None
-        self.gstno = (self.gstno or "").strip().upper() or None
-        self.is_head_office = bool(self.is_head_office or self.ismainentity)
+        self.is_head_office = bool(self.is_head_office)
         if self.is_head_office:
             self.branch_type = self.BranchType.HEAD_OFFICE
         super().save(*args, **kwargs)
     
+
+
+
+
+class SubEntityAddress(TrackingModel):
+    class AddressType(models.TextChoices):
+        OPERATIONS = "operations", "Operations"
+        REGISTERED = "registered", "Registered"
+        BILLING = "billing", "Billing"
+
+    subentity = models.ForeignKey("SubEntity", on_delete=models.CASCADE, related_name="addresses")
+    address_type = models.CharField(max_length=20, choices=AddressType.choices, default=AddressType.OPERATIONS)
+    line1 = models.CharField(max_length=255)
+    line2 = models.CharField(max_length=255, null=True, blank=True)
+    floor_no = models.CharField(max_length=50, null=True, blank=True)
+    street = models.CharField(max_length=100, null=True, blank=True)
+    country = models.ForeignKey(Country, on_delete=models.PROTECT, null=True, blank=True)
+    state = models.ForeignKey(State, on_delete=models.PROTECT, null=True, blank=True)
+    district = models.ForeignKey(District, on_delete=models.PROTECT, null=True, blank=True)
+    city = models.ForeignKey(City, on_delete=models.PROTECT, null=True, blank=True)
+    pincode = models.CharField(max_length=10, null=True, blank=True, validators=[pincode_validator])
+    is_primary = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [models.Index(fields=["subentity", "address_type", "isactive"])]
+
+
+class SubEntityContact(TrackingModel):
+    subentity = models.ForeignKey("SubEntity", on_delete=models.CASCADE, related_name="contacts")
+    name = models.CharField(max_length=100)
+    designation = models.CharField(max_length=100, null=True, blank=True)
+    mobile = models.CharField(max_length=20, null=True, blank=True, validators=[phone_validator])
+    email = models.EmailField(max_length=100, null=True, blank=True)
+    is_primary = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [models.Index(fields=["subentity", "is_primary", "isactive"])]
+
+
+class SubEntityGstRegistration(TrackingModel):
+    subentity = models.ForeignKey("SubEntity", on_delete=models.CASCADE, related_name="gst_registrations")
+    gstin = models.CharField(max_length=15, validators=[gstin_validator], db_index=True)
+    registration_type = models.ForeignKey(GstRegistrationType, on_delete=models.SET_NULL, null=True, blank=True)
+    gst_status = models.CharField(max_length=20, choices=Entity.GstStatus.choices, default=Entity.GstStatus.REGISTERED)
+    gst_effective_from = models.DateField(null=True, blank=True)
+    gst_cancelled_from = models.DateField(null=True, blank=True)
+    is_primary = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["gstin"], condition=Q(isactive=True), name="uq_subentity_gst_registration_active_gstin"),
+        ]
+        indexes = [models.Index(fields=["subentity", "is_primary", "isactive"])]
+
+    def save(self, *args, **kwargs):
+        self.gstin = (self.gstin or "").strip().upper()
+        super().save(*args, **kwargs)
+
+
+class SubEntityCapability(TrackingModel):
+    subentity = models.OneToOneField("SubEntity", on_delete=models.CASCADE, related_name="capability")
+    can_sell = models.BooleanField(default=True)
+    can_purchase = models.BooleanField(default=True)
+    can_stock = models.BooleanField(default=True)
+    can_bank = models.BooleanField(default=True)
+
+
+class UserEntityContext(TrackingModel):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="entity_contexts")
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="user_contexts")
+    entityfinid = models.ForeignKey("EntityFinancialYear", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    subentity = models.ForeignKey("SubEntity", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "entity"], name="uq_user_entity_context"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "entity"]),
+        ]
 
 
 class EntityFinancialYear(TrackingModel):
@@ -427,138 +584,6 @@ class EntityFinancialYear(TrackingModel):
         super().save(*args, **kwargs)
     
 
-class EntityConstitution(TrackingModel):
-    entity =    models.ForeignKey(to= Entity, on_delete=models.CASCADE,null=True,related_name='constitution',)
-    shareholder =      models.CharField(max_length= 255,null= True,verbose_name='shareholder')
-    pan =      models.CharField(max_length= 25,null= True,verbose_name='pan')
-    sharepercentage = models.DecimalField(max_digits=10, decimal_places=2,null=True,blank=True,verbose_name='Share Percentage')
-    createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,null=True,)
-
-
-    def __str__(self):
-        return f'{self.entity}'
-    
-class EntityOwnership(models.Model):
-    # OWNERSHIP_TYPE_CHOICES = [
-    #     ('owner', 'Owner'),
-    #     ('partner', 'Partner'),
-    #     ('shareholder', 'Shareholder'),
-    #     ('trustee', 'Trustee'),
-    #     ('board_member', 'Board Member'),
-    #     ('official', 'Government Official'),
-    # ]
-    OwnerShipType = models.ForeignKey(OwnerShipTypes, on_delete=models.CASCADE, related_name='ownerships')
-    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name='ownerships')
-    name = models.CharField(max_length=100)
-    email = models.EmailField(blank=True, null=True)
-    mobile = models.CharField(max_length=15, blank=True, null=True)
-    pan_number = models.CharField(max_length=10, blank=True, null=True)
-    aadhaar_number = models.CharField(max_length=12, blank=True, null=True)
-    share_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
-    capital_contribution = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-    is_primary = models.BooleanField(default=False)
-    designation = models.CharField(max_length=100, blank=True, null=True)
-    remarks = models.TextField(blank=True)
-
-    def __str__(self):
-        return f"{self.name} - {self.ownership_type}"
-    
-
-
-
-
-
-
-
-
-class EntityDetail(models.Model): 
-    entity = models.OneToOneField(Entity,
-        on_delete=models.CASCADE,
-        primary_key=True,)
-    style =        models.CharField(max_length= 255,null= True)
-    commodity =        models.CharField(max_length= 255,null= True)
-    weightDecimal =        models.CharField(max_length= 255,null= True)
-    email =        models.EmailField(max_length= 24,null= True)
-    registrationno =        models.CharField(max_length= 255,null= True)
-    division =        models.CharField(max_length= 255,null= True)
-    collectorate =        models.CharField(max_length= 255,null= True)
-    range =        models.CharField(max_length= 255,null= True)
-    adhaarudyog =        models.CharField(max_length= 255,null= True)
-    cinno =        models.CharField(max_length= 255,null= True)
-    jobwork =        models.CharField(max_length= 255,null= True)
-    gstno =        models.CharField(max_length= 255,null= True)
-    gstintype =        models.CharField(max_length= 255,null= True)
-    esino =        models.CharField(max_length= 255,null= True)
-
-# class entity_user(TrackingModel):
-#     entity = models.ForeignKey(entity,related_name='entityUser',
-#         on_delete=models.CASCADE)
-#     user = models.ForeignKey(to= User,related_name='userentity', on_delete= models.CASCADE)
-#     createdby = models.ForeignKey(to= User, on_delete= models.CASCADE,related_name='%(class)s_requests_created',default=1)
-
-#     class Meta:
-#         constraints = [
-#         models.UniqueConstraint(fields=['entity', 'user'], name='unique entity_user')
-#     ]
-    
-
-class Role(TrackingModel):
-    rolename = models.CharField(max_length=150)
-    roledesc = models.CharField(max_length=150)
-    rolelevel = models.IntegerField()
-    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
-
-    def __str__(self):
-        return f'{self.rolename} - {self.entity}'
-
-    
-
-class RolePrivilege(TrackingModel):
-    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='submenudetails')
-    submenu =     models.ForeignKey(Submenu,null= True,on_delete= models.CASCADE)
-    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
- 
-
-
-    class Meta:
-        verbose_name = ('Role Priveledge')
-        verbose_name_plural = ('Role Priveledges')
-
-
-    
-    def __str__(self):
-        return f'{self.submenu} - {self.role} - {self.entity}'
-    
-
-
-class UserRole(TrackingModel):
-    role =     models.ForeignKey(Role,null= True,on_delete= models.CASCADE,related_name='userrole')
-    user =     models.ForeignKey(User,null= True,on_delete= models.CASCADE)
-    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["entity", "user"], name="uq_entity_user_role_once"),
-        ]
-
-    def __str__(self):
-        return f'{self.role}'
-    
-
-
-class MasterGstDetail(TrackingModel):
-    email = models.CharField(max_length=100, null=True,verbose_name='email')
-    username = models.CharField(max_length=100, null=True,verbose_name='username')
-    password = models.CharField(max_length=100, null=True,verbose_name='password')
-    client_id = models.CharField(max_length=200, null=True,verbose_name='clientid')
-    client_secret = models.CharField(max_length=200, null=True,verbose_name='client_secret')
-    gstin = models.CharField(max_length=20, null=True,verbose_name='gstin')
-    entity =    models.ForeignKey(to= Entity, on_delete= models.CASCADE,null=True)
-
-    def __str__(self):
-         return f'{self.username}'
-    
-
 class Godown(models.Model):
     name = models.CharField(max_length=150)
     code = models.CharField(max_length=50, unique=True)
@@ -578,9 +603,6 @@ class Godown(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.code})"
-
-
-
 
 
 

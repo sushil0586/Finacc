@@ -1,6 +1,6 @@
 from django.db import transaction
 
-from entity.models import Constitution, GstRegistrationType, OwnerShipTypes, UnitType
+from entity.models import Constitution, GstRegistrationType, UnitType
 from entity.seed_catalogs import ENTITY_MASTER_CATALOG
 
 
@@ -18,21 +18,17 @@ class EntitySeedService:
         unit_types = cls._seed_unit_types(actor=actor)
         gst_types = cls._seed_gst_registration_types(actor=actor)
         constitutions = cls._seed_constitutions(actor=actor)
-        ownership_types = cls._seed_ownership_types(actor=actor)
-
         if not include_inactive:
             cls._reactivate_seeded_rows(
                 unit_types=unit_types,
                 gst_types=gst_types,
                 constitutions=constitutions,
-                ownership_types=ownership_types,
             )
 
         return {
             "unit_type_count": len(unit_types),
             "gst_registration_type_count": len(gst_types),
             "constitution_count": len(constitutions),
-            "ownership_type_count": len(ownership_types),
         }
 
     @staticmethod
@@ -84,21 +80,8 @@ class EntitySeedService:
         return rows
 
     @staticmethod
-    def _seed_ownership_types(*, actor=None):
-        rows = []
-        for spec in ENTITY_MASTER_CATALOG["ownership_types"]:
-            obj, _ = OwnerShipTypes.objects.get_or_create(
-                Name=spec["name"],
-                defaults={"Description": spec["description"]},
-            )
-            obj.Description = spec["description"]
-            obj.save(update_fields=["Description"])
-            rows.append(obj)
-        return rows
-
-    @staticmethod
-    def _reactivate_seeded_rows(*, unit_types, gst_types, constitutions, ownership_types):
-        for row in [*unit_types, *gst_types, *constitutions, *ownership_types]:
+    def _reactivate_seeded_rows(*, unit_types, gst_types, constitutions):
+        for row in [*unit_types, *gst_types, *constitutions]:
             if hasattr(row, "isactive") and not row.isactive:
                 row.isactive = True
                 row.save(update_fields=["isactive"])

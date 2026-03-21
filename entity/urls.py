@@ -1,6 +1,11 @@
 from django.urls import path
-from entity import views
-from entity.context_views import UserEntitiesV2View
+from entity.context_views import (
+    UserEntitiesV2View,
+    UserEntityContextGetView,
+    UserEntityContextPatchView,
+    UserEntityFinancialYearsView,
+    UserEntitySubentitiesView,
+)
 from entity.onboarding_views import (
     EntityOnboardingCreateAPIView,
     EntityOnboardingDetailAPIView,
@@ -14,70 +19,21 @@ from entity.onboarding_views import (
 )
 
 
-app_name = 'entity'
+app_name = "entity"
 
-urlpatterns  = [
-
-    path('entityadd',views.entityAddApiView.as_view(),name = 'entityadd'),
-    path('entity',views.userroleApiView.as_view(),name = 'entity'),
-    path('entitylist',views.userroleApiView.as_view(),name = 'entitylist'),
-    path('entity/<int:id>',views.userroleupdatedel.as_view(), name = 'entity1'),
-    #path('album/<int:id>',views.Albumupdatedel.as_view(), name = 'Album2'),
-    path('entityDetails', views.entityDetailsApiView.as_view() ,name = 'entityDetails'),
-    path('entityDetails/<int:id>',views.entityDetailsApiView.as_view(), name = 'entityDetails1'),
-    path('unittype', views.unitTypeApiView.as_view() ,name = 'unittype'),
-    path('constitution', views.ConstitutionApiView.as_view() ,name = 'unittype'),
-    path('role', views.roleApiView.as_view() ,name = 'unittype'),
-    path('unittype/<int:id>',views.unitTypeApiView.as_view(), name = 'unittypeid'),
-  #  path('user',views.AuthApiView.as_view(), name = 'user'),
-    path('entityfy',views.EntityFinancialYearApiView.as_view(), name = 'user'),
-    path('entityfylist',views.entityfinancialyeaListView.as_view(), name = 'user'),
-    path('subentity',views.subentityApiView.as_view(),name = 'entityadd'),
-    path('subentity/<int:id>',views.subentityupdatedelview.as_view(), name = 'unittypeid'),
-    path('rolelatest',views.rolenewApiView.as_view(),name = 'entityadd'),
-    path('rolelatest/<int:id>',views.rolenewupdatedelview.as_view(), name = 'unittypeid'),
-    path('subentitybyentity/',views.subentitybyentityApiView.as_view(), name = 'unittypeid'),
-    path('menudetails',views.menudetails.as_view(), name = 'unittypeid'),
-    path('roledetailsbyroleid',views.roledetails.as_view(), name = 'unittypeid'),
-    path('entitydetailsbyuser',views.UserEntitiesView.as_view(), name = 'unittypeid'),
-    path('me/entities',UserEntitiesV2View.as_view(), name = 'entity-context-v2'),
-    path('userdetailsbyentity',views.userdetailsbyentity.as_view(), name = 'unittypeid'),
-    path('userAddApiView',views.userAddApiView.as_view(), name = 'unittypeid'),
-    path('getyearsbyentity',views.EntityFinancialYearView.as_view(), name = 'unittypeid'),
-    path('bankaccounts/', views.BankAccountCreateView.as_view(), name='bankaccount-create'),
-    path('bankaccounts/<int:pk>/', views.BankAccountDetailView.as_view(), name='bankaccount-detail'),
-    path('bankaccounts/entity/<int:entity_id>/', views.BankAccountListByEntityView.as_view(), name='bankaccount-by-entity'),
-    path('onboarding/create/', EntityOnboardingCreateAPIView.as_view(), name='entity-onboarding-create'),
-    path('onboarding/entity/<int:pk>/', EntityOnboardingDetailAPIView.as_view(), name='entity-onboarding-detail'),
-    path('onboarding/register/', RegisterAndEntityOnboardingCreateAPIView.as_view(), name='entity-onboarding-register'),
-    path('onboarding/meta/', EntityOnboardingMetaAPIView.as_view(), name='entity-onboarding-meta'),
-    path('onboarding/options/countries/', OnboardingCountryOptionsAPIView.as_view(), name='entity-onboarding-countries'),
-    path('onboarding/options/states/', OnboardingStateOptionsAPIView.as_view(), name='entity-onboarding-states'),
-    path('onboarding/options/districts/', OnboardingDistrictOptionsAPIView.as_view(), name='entity-onboarding-districts'),
-    path('onboarding/options/cities/', OnboardingCityOptionsAPIView.as_view(), name='entity-onboarding-cities'),
-    path('onboarding/gst-lookup/', OnboardingGstLookupAPIView.as_view(), name='entity-onboarding-gst-lookup'),
-    path('entity/<int:id>/', views.EntityRetrieveAPIView.as_view(), name='entity-detail'),
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    # path('entityuser', views.entityUserApiView.as_view() ,name = 'unittype'),
-    # path('entityuser/<int:id>',views.entityUserApiView.as_view(), name = 'unittypeid'),
-    # path('entityuseradd', views.entityUseraddApiView .as_view() ,name = 'unittype'),
-   
-   
-    
-   
-] 
+urlpatterns = [
+    path("me/entities", UserEntitiesV2View.as_view(), name="entity-context-v2"),
+    path("me/entities/<int:entity_id>/financial-years", UserEntityFinancialYearsView.as_view(), name="entity-context-financial-years"),
+    path("me/entities/<int:entity_id>/subentities", UserEntitySubentitiesView.as_view(), name="entity-context-subentities"),
+    path("me/entities/<int:entity_id>/context", UserEntityContextPatchView.as_view(), name="entity-context-patch"),
+    path("me/context", UserEntityContextGetView.as_view(), name="entity-context-get"),
+    path("onboarding/create/", EntityOnboardingCreateAPIView.as_view(), name="entity-onboarding-create"),
+    path("onboarding/entity/<int:pk>/", EntityOnboardingDetailAPIView.as_view(), name="entity-onboarding-detail"),
+    path("onboarding/register/", RegisterAndEntityOnboardingCreateAPIView.as_view(), name="entity-onboarding-register"),
+    path("onboarding/meta/", EntityOnboardingMetaAPIView.as_view(), name="entity-onboarding-meta"),
+    path("onboarding/options/countries/", OnboardingCountryOptionsAPIView.as_view(), name="entity-onboarding-countries"),
+    path("onboarding/options/states/", OnboardingStateOptionsAPIView.as_view(), name="entity-onboarding-states"),
+    path("onboarding/options/districts/", OnboardingDistrictOptionsAPIView.as_view(), name="entity-onboarding-districts"),
+    path("onboarding/options/cities/", OnboardingCityOptionsAPIView.as_view(), name="entity-onboarding-cities"),
+    path("onboarding/gst-lookup/", OnboardingGstLookupAPIView.as_view(), name="entity-onboarding-gst-lookup"),
+]

@@ -5,7 +5,7 @@ from entity.seeding import EntitySeedService
 
 
 class Command(BaseCommand):
-    help = "Seed entity-domain master data like constitutions, GST registration types, ownership types, and unit types."
+    help = "Seed entity-domain master data like constitutions, GST registration types, and unit types."
 
     def add_arguments(self, parser):
         parser.add_argument("--actor-id", type=int, required=False)

@@ -2,14 +2,13 @@ from django.core import mail
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from Authentication.models import MainMenu, Submenu, User
-from entity.models import BankDetail, BankAccount, Constitution, Entity, EntityConstitution, EntityFinancialYear, EntityDetail, GstRegistrationType, Role, RolePrivilege, SubEntity, UnitType, UserRole
+from Authentication.models import User
+from entity.models import BankDetail, BankAccount, Constitution, Entity, EntityConstitution, EntityFinancialYear, EntityDetail, GstRegistrationType, SubEntity, UnitType
 from entity.seeding import EntitySeedService
 from financial.models import FinancialSettings, Ledger, account, accountHead
 from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
-from rbac.backfill import LegacyRBACBackfillService
 from subscriptions.models import CustomerAccount, CustomerSubscription, UserEntityAccess
 
 
@@ -52,23 +51,17 @@ class EntityContextV2Tests(TestCase):
             const=self.constitution,
             createdby=self.user,
         )
-        main_menu = MainMenu.objects.create(mainmenu="Sales", menuurl="/sales", menucode="sales", order=1)
-        submenu = Submenu.objects.create(
-            mainmenu=main_menu,
-            submenu="Invoices",
-            submenucode="sales.invoices",
-            subMenuurl="/sales/invoices",
-            order=1,
-        )
-        self.legacy_role = Role.objects.create(
-            rolename="Sales User",
-            roledesc="Sales",
-            rolelevel=1,
+        self.rbac_role = RbacRole.objects.create(
             entity=self.entity,
+            name="Sales User",
+            code="sales_user",
         )
-        UserRole.objects.create(user=self.user, entity=self.entity, role=self.legacy_role)
-        RolePrivilege.objects.create(role=self.legacy_role, submenu=submenu, entity=self.entity)
-        LegacyRBACBackfillService.run()
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=self.rbac_role,
+            is_primary=True,
+        )
         self.client.force_authenticate(user=self.user)
 
     def test_me_entities_returns_role_context(self):
@@ -99,15 +92,6 @@ class EntityOnboardingTests(TestCase):
             constcode="01",
             createdby=self.user,
         )
-        main_menu = MainMenu.objects.create(mainmenu="Admin", menuurl="/admin", menucode="admin", order=1)
-        Submenu.objects.create(
-            mainmenu=main_menu,
-            submenu="Role",
-            submenucode="role",
-            subMenuurl="/role",
-            order=1,
-        )
-        LegacyRBACBackfillService.run()
         self.client.force_authenticate(user=self.user)
 
     def test_new_onboarding_creates_entity_financial_and_rbac_defaults(self):
@@ -388,15 +372,6 @@ class RegisterAndEntityOnboardingTests(TestCase):
             constcode="01",
             createdby=self.seed_user,
         )
-        main_menu = MainMenu.objects.create(mainmenu="Admin", menuurl="/admin", menucode="admin", order=1)
-        Submenu.objects.create(
-            mainmenu=main_menu,
-            submenu="Role",
-            submenucode="role",
-            subMenuurl="/role",
-            order=1,
-        )
-        LegacyRBACBackfillService.run()
 
     def test_register_and_onboard_creates_user_entity_tokens_and_rbac(self):
         payload = {

@@ -1,7 +1,16 @@
 from rest_framework import serializers
 
 from Authentication.models import User
-from entity.models import BankAccount, Constitution, Entity, EntityConstitution, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import (
+    Constitution,
+    Entity,
+    EntityBankAccountV2,
+    EntityConstitutionV2,
+    EntityFinancialYear,
+    GstRegistrationType,
+    SubEntity,
+    UnitType,
+)
 from geography.models import City, Country, District, State
 
 
@@ -25,10 +34,10 @@ class OnboardingEntityPayloadSerializer(serializers.Serializer):
     ownername = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     contact_person_name = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     contact_person_designation = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
-    country = serializers.PrimaryKeyRelatedField(queryset=Entity._meta.get_field("country").remote_field.model.objects.all(), allow_null=True)
-    state = serializers.PrimaryKeyRelatedField(queryset=Entity._meta.get_field("state").remote_field.model.objects.all(), allow_null=True)
-    district = serializers.PrimaryKeyRelatedField(queryset=Entity._meta.get_field("district").remote_field.model.objects.all(), allow_null=True)
-    city = serializers.PrimaryKeyRelatedField(queryset=Entity._meta.get_field("city").remote_field.model.objects.all(), allow_null=True)
+    country = serializers.PrimaryKeyRelatedField(queryset=Country.objects.all(), allow_null=True)
+    state = serializers.PrimaryKeyRelatedField(queryset=State.objects.all(), allow_null=True)
+    district = serializers.PrimaryKeyRelatedField(queryset=District.objects.all(), allow_null=True)
+    city = serializers.PrimaryKeyRelatedField(queryset=City.objects.all(), allow_null=True)
     pincode = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     phoneoffice = serializers.CharField(max_length=20)
     phoneresidence = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
@@ -117,23 +126,6 @@ class OnboardingEntityPayloadSerializer(serializers.Serializer):
         return super().to_internal_value(mutable)
 
 
-class OnboardingEntityDetailPayloadSerializer(serializers.Serializer):
-    style = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    commodity = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    weightDecimal = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True, max_length=24)
-    registrationno = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    division = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    collectorate = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    range = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    adhaarudyog = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    cinno = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    jobwork = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    gstno = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    gstintype = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    esino = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-
-
 class OnboardingFinancialYearSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
@@ -168,48 +160,53 @@ class OnboardingBankAccountSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
     class Meta:
-        model = BankAccount
-        fields = ("id", "bank_name", "branch", "account_number", "ifsc_code", "account_type", "is_primary")
-
-
-class OnboardingSubEntitySerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(required=False)
-
-    class Meta:
-        model = SubEntity
+        model = EntityBankAccountV2
         fields = (
             "id",
-            "subentityname",
-            "subentity_code",
-            "branch_type",
-            "address",
-            "address2",
-            "addressfloorno",
-            "addressstreet",
-            "country",
-            "state",
-            "district",
-            "city",
-            "pincode",
-            "phoneoffice",
-            "phoneresidence",
-            "email",
-            "email_primary",
-            "mobile_primary",
-            "mobile_secondary",
-            "contact_person_name",
-            "contact_person_designation",
-            "gstno",
-            "GstRegitrationType",
-            "ismainentity",
-            "is_head_office",
-            "can_sell",
-            "can_purchase",
-            "can_stock",
-            "can_bank",
-            "sort_order",
-            "metadata",
+            "bank_name",
+            "branch",
+            "account_number",
+            "ifsc_code",
+            "account_type",
+            "is_primary",
+            "effective_from",
+            "effective_to",
+            "isactive",
         )
+
+
+class OnboardingSubEntitySerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False)
+    subentityname = serializers.CharField(max_length=255)
+    subentity_code = serializers.CharField(max_length=30, required=False, allow_blank=True, allow_null=True)
+    branch_type = serializers.ChoiceField(choices=SubEntity.BranchType.choices, required=False, allow_blank=True, allow_null=True)
+    address = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    address2 = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    addressfloorno = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
+    addressstreet = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    country = serializers.PrimaryKeyRelatedField(queryset=Country.objects.all(), required=False, allow_null=True)
+    state = serializers.PrimaryKeyRelatedField(queryset=State.objects.all(), required=False, allow_null=True)
+    district = serializers.PrimaryKeyRelatedField(queryset=District.objects.all(), required=False, allow_null=True)
+    city = serializers.PrimaryKeyRelatedField(queryset=City.objects.all(), required=False, allow_null=True)
+    pincode = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    phoneoffice = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    phoneresidence = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+    email_primary = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+    mobile_primary = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    mobile_secondary = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    contact_person_name = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    contact_person_designation = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    gstno = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    GstRegitrationType = serializers.PrimaryKeyRelatedField(queryset=GstRegistrationType.objects.all(), required=False, allow_null=True)
+    ismainentity = serializers.BooleanField(required=False, allow_null=True)
+    is_head_office = serializers.BooleanField(required=False)
+    can_sell = serializers.BooleanField(required=False)
+    can_purchase = serializers.BooleanField(required=False)
+    can_stock = serializers.BooleanField(required=False)
+    can_bank = serializers.BooleanField(required=False)
+    sort_order = serializers.IntegerField(required=False)
+    metadata = serializers.JSONField(required=False)
 
     def to_internal_value(self, data):
         mutable = dict(data)
@@ -222,18 +219,49 @@ class OnboardingSubEntitySerializer(serializers.ModelSerializer):
         return super().to_internal_value(mutable)
 
 
-class OnboardingConstitutionSerializer(serializers.ModelSerializer):
+class OnboardingConstitutionSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False)
-
-    class Meta:
-        model = EntityConstitution
-        fields = ("id", "shareholder", "pan", "sharepercentage")
+    constitution_code = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    constitution_name = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    shareholder = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    pan = serializers.CharField(max_length=10, required=False, allow_blank=True, allow_null=True)
+    share_percentage = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    sharepercentage = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True)
+    effective_from = serializers.DateField(required=False, allow_null=True)
+    effective_to = serializers.DateField(required=False, allow_null=True)
+    isactive = serializers.BooleanField(required=False)
 
     def to_internal_value(self, data):
         mutable = dict(data)
         if mutable.get("pan") not in (None, ""):
             mutable["pan"] = str(mutable["pan"]).strip().upper()
+        if mutable.get("share_percentage") in (None, "") and mutable.get("sharepercentage") not in (None, ""):
+            mutable["share_percentage"] = mutable.get("sharepercentage")
+        if mutable.get("constitution_code") in (None, ""):
+            mutable["constitution_code"] = "OWNER"
+        if mutable.get("constitution_name") in (None, ""):
+            mutable["constitution_name"] = "Ownership"
         return super().to_internal_value(mutable)
+
+    def to_representation(self, instance):
+        if isinstance(instance, EntityConstitutionV2):
+            payload = {
+                "id": instance.id,
+                "constitution_code": instance.constitution_code,
+                "constitution_name": instance.constitution_name,
+                "shareholder": instance.shareholder,
+                "pan": instance.pan,
+                "share_percentage": instance.share_percentage,
+                "sharepercentage": instance.share_percentage,
+                "effective_from": instance.effective_from,
+                "effective_to": instance.effective_to,
+                "isactive": instance.isactive,
+            }
+            return payload
+        payload = super().to_representation(instance)
+        if "share_percentage" in payload:
+            payload["sharepercentage"] = payload["share_percentage"]
+        return payload
 
 
 class OnboardingSeedOptionsSerializer(serializers.Serializer):
@@ -246,7 +274,6 @@ class OnboardingSeedOptionsSerializer(serializers.Serializer):
 
 class EntityOnboardingCreateSerializer(serializers.Serializer):
     entity = OnboardingEntityPayloadSerializer()
-    entity_detail = OnboardingEntityDetailPayloadSerializer(required=False)
     financial_years = OnboardingFinancialYearSerializer(many=True)
     bank_accounts = OnboardingBankAccountSerializer(many=True, required=False)
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
@@ -264,7 +291,6 @@ class EntityOnboardingCreateSerializer(serializers.Serializer):
 
 class EntityOnboardingUpdateSerializer(serializers.Serializer):
     entity = OnboardingEntityPayloadSerializer(required=False)
-    entity_detail = OnboardingEntityDetailPayloadSerializer(required=False)
     financial_years = OnboardingFinancialYearSerializer(many=True, required=False)
     bank_accounts = OnboardingBankAccountSerializer(many=True, required=False)
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
@@ -281,11 +307,10 @@ class EntityOnboardingUpdateSerializer(serializers.Serializer):
 
 class EntityOnboardingDetailResponseSerializer(serializers.Serializer):
     entity_id = serializers.IntegerField()
-    entity = OnboardingEntityPayloadSerializer()
-    entity_detail = OnboardingEntityDetailPayloadSerializer(required=False)
+    entity = serializers.DictField()
     financial_years = OnboardingFinancialYearSerializer(many=True)
     bank_accounts = OnboardingBankAccountSerializer(many=True)
-    subentities = OnboardingSubEntitySerializer(many=True)
+    subentities = serializers.ListField(child=serializers.DictField())
     constitution_details = OnboardingConstitutionSerializer(many=True)
 
 
@@ -324,7 +349,6 @@ class RegisterAndOnboardSerializer(serializers.Serializer):
             entity_payload = dict(mutable.get("entity") or {})
             onboarding_payload = {
                 "entity": {},
-                "entity_detail": mutable.get("entity_detail"),
                 "financial_years": entity_payload.pop("financial_years", mutable.get("financial_years")),
                 "bank_accounts": entity_payload.pop("bank_accounts", mutable.get("bank_accounts")),
                 "subentities": entity_payload.pop("subentities", mutable.get("subentities")),
@@ -365,11 +389,16 @@ class OnboardingSimpleOptionSerializer(serializers.Serializer):
 
 
 class OnboardingMetaResponseSerializer(serializers.Serializer):
+    version = serializers.CharField(required=False)
     defaults = serializers.DictField()
+    required_fields = serializers.DictField(required=False)
+    payload_contract = serializers.DictField(required=False)
+    ui_hints = serializers.DictField(required=False)
     dropdowns = serializers.DictField()
     geography_filters = serializers.DictField()
     endpoints = serializers.DictField()
     field_choices = serializers.DictField(required=False)
+    deprecated_endpoints = serializers.ListField(child=serializers.CharField(), required=False)
 
 
 class CountryOptionSerializer(serializers.ModelSerializer):

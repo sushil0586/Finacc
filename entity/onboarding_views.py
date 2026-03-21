@@ -24,6 +24,11 @@ from helpers.utils.gst_api import get_gst_details
 from subscriptions.services import SubscriptionService
 
 
+def _entity_primary_gst(entity):
+    row = entity.gst_registrations.filter(isactive=True, is_primary=True).first()
+    return row.gstin if row else None
+
+
 class EntityOnboardingCreateAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -36,7 +41,7 @@ class EntityOnboardingCreateAPIView(APIView):
         response_payload = {
             "entity_id": entity.id,
             "entity_name": entity.entityname,
-            "gstno": entity.gstno,
+            "gstno": _entity_primary_gst(entity),
             "financial_year_ids": result["financial_year_ids"],
             "bank_account_ids": result["bank_account_ids"],
             "subentity_ids": result["subentity_ids"],
@@ -97,7 +102,7 @@ class RegisterAndEntityOnboardingCreateAPIView(APIView):
         onboarding_payload = {
             "entity_id": entity.id,
             "entity_name": entity.entityname,
-            "gstno": entity.gstno,
+            "gstno": _entity_primary_gst(entity),
             "financial_year_ids": result["onboarding"]["financial_year_ids"],
             "bank_account_ids": result["onboarding"]["bank_account_ids"],
             "subentity_ids": result["onboarding"]["subentity_ids"],
@@ -129,6 +134,7 @@ class EntityOnboardingMetaAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         payload = {
+            "version": "v2",
             "defaults": {
                 "seed_options": {
                     "template_code": "standard_trading",
@@ -141,6 +147,34 @@ class EntityOnboardingMetaAPIView(APIView):
                     {"value": "current", "label": "Current"},
                     {"value": "savings", "label": "Savings"},
                 ],
+            },
+            "required_fields": {
+                "entity": ["entityname", "address", "phoneoffice"],
+                "financial_years": ["finstartyear", "finendyear"],
+            },
+            "payload_contract": {
+                "root_keys": [
+                    "entity",
+                    "financial_years",
+                    "bank_accounts",
+                    "subentities",
+                    "constitution_details",
+                    "seed_options",
+                ],
+                "arrays_allow_empty": [
+                    "bank_accounts",
+                    "subentities",
+                    "constitution_details",
+                ],
+                "arrays_required_non_empty": [
+                    "financial_years",
+                ],
+            },
+            "ui_hints": {
+                "financial_years_min_items": 1,
+                "seed_default_subentity_note": "If subentities is empty and seed_default_subentity=true, backend creates one default HO subentity.",
+                "enum_source": "field_choices",
+                "date_format": "Use ISO date/date-time strings.",
             },
             "dropdowns": {
                 "unit_types": [
@@ -195,6 +229,21 @@ class EntityOnboardingMetaAPIView(APIView):
                 "cities": "/api/entity/onboarding/options/cities/?district_id=<id>",
                 "gst_lookup": "/api/entity/onboarding/gst-lookup/?gstno=<gstin>",
             },
+            "deprecated_endpoints": [
+                "/api/entity/entityDetails",
+                "/api/entity/unittype",
+                "/api/entity/constitution",
+                "/api/entity/entityfy",
+                "/api/entity/entityfylist",
+                "/api/entity/subentity",
+                "/api/entity/subentity/<id>",
+                "/api/entity/subentitybyentity/",
+                "/api/entity/getyearsbyentity",
+                "/api/entity/bankaccounts/",
+                "/api/entity/bankaccounts/<pk>/",
+                "/api/entity/bankaccounts/entity/<entity_id>/",
+                "/api/entity/entity/<id>/",
+            ],
         }
         output = OnboardingMetaResponseSerializer(payload)
         return Response(output.data, status=status.HTTP_200_OK)

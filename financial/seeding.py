@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from entity.models import EntityConstitution
+from entity.models import EntityConstitutionV2
 from financial.models import Credit, Debit, FinancialSettings, account, accountHead, accounttype
 from financial.seed_catalogs import FINANCIAL_TEMPLATES
 from financial.services import get_or_create_financial_settings, sync_ledger_for_account
@@ -147,7 +147,8 @@ class FinancialSeedService:
 
     @classmethod
     def _seed_constitution_accounts(cls, *, entity, actor, head_map):
-        const_code = getattr(entity.const, "constcode", None)
+        constitution_v2 = entity.constitutions_v2.filter(isactive=True).order_by("id").first()
+        const_code = (getattr(constitution_v2, "constitution_code", None) or "").strip()
         if const_code == "01":
             head_code = 6200
         elif const_code == "02":
@@ -159,8 +160,14 @@ class FinancialSeedService:
         if not head:
             return 0
 
+        primary_address = (
+            entity.addresses.filter(isactive=True, is_primary=True)
+            .select_related("country", "state", "district", "city")
+            .first()
+        )
+        primary_contact = entity.contacts.filter(isactive=True, is_primary=True).first()
         count = 0
-        for detail in EntityConstitution.objects.filter(entity=entity).order_by("id"):
+        for detail in EntityConstitutionV2.objects.filter(entity=entity, isactive=True).order_by("id"):
             existing = account.objects.filter(
                 entity=entity,
                 accounthead=head,
@@ -180,12 +187,12 @@ class FinancialSeedService:
                     accountname=detail.shareholder,
                     legalname=detail.shareholder,
                     pan=detail.pan,
-                    sharepercentage=detail.sharepercentage,
-                    country=entity.country,
-                    state=entity.state,
-                    district=entity.district,
-                    city=entity.city,
-                    emailid=entity.email,
+                    sharepercentage=detail.share_percentage,
+                    country=(primary_address.country if primary_address else None),
+                    state=(primary_address.state if primary_address else None),
+                    district=(primary_address.district if primary_address else None),
+                    city=(primary_address.city if primary_address else None),
+                    emailid=(primary_contact.email if primary_contact else None),
                     accountdate=cls._first_fin_start_date(entity),
                     partytype="Other",
                     approved=True,
@@ -201,12 +208,12 @@ class FinancialSeedService:
             acc.accountname = detail.shareholder
             acc.legalname = detail.shareholder
             acc.pan = detail.pan
-            acc.sharepercentage = detail.sharepercentage
-            acc.country = entity.country
-            acc.state = entity.state
-            acc.district = entity.district
-            acc.city = entity.city
-            acc.emailid = entity.email
+            acc.sharepercentage = detail.share_percentage
+            acc.country = primary_address.country if primary_address else None
+            acc.state = primary_address.state if primary_address else None
+            acc.district = primary_address.district if primary_address else None
+            acc.city = primary_address.city if primary_address else None
+            acc.emailid = primary_contact.email if primary_contact else None
             acc.accountdate = cls._first_fin_start_date(entity)
             acc.partytype = "Other"
             acc.approved = True

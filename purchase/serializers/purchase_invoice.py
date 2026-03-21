@@ -677,6 +677,9 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     # ----------------------------
 
     def create(self, validated_data):
+        # Number fields are system-managed and must not be client-controlled.
+        validated_data.pop("doc_no", None)
+        validated_data.pop("purchase_number", None)
         try:
             header = PurchaseInvoiceService.create_with_lines(validated_data)
         except ValueError as e:
@@ -699,6 +702,9 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         return header
 
     def update(self, instance, validated_data):
+        # Keep allocated numbering immutable through normal edit/update calls.
+        validated_data.pop("doc_no", None)
+        validated_data.pop("purchase_number", None)
         try:
             updated = PurchaseInvoiceService.update_with_lines(instance, validated_data)
         except ValueError as e:
