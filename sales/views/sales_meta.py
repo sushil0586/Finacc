@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import account
+from financial.profile_access import account_gstno, account_pan, account_partytype
 from sales.models import SalesChargeType, SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerSettlement
 from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
@@ -80,15 +81,19 @@ class SalesMetaBaseAPIView(APIView):
     def _customers(self, entity_id: int):
         rows = list(
             account.objects.filter(entity_id=entity_id, isactive=True)
-            .filter(Q(partytype__in=["Customer", "Both", "Bank"]) | Q(partytype__isnull=True) | Q(partytype=""))
-            .select_related("ledger", "state", "city")
+            .filter(
+                Q(commercial_profile__partytype__in=["Customer", "Both", "Bank"])
+                | Q(commercial_profile__partytype__isnull=True)
+                | Q(commercial_profile__partytype="")
+            )
+            .select_related("ledger", "state", "city", "compliance_profile", "commercial_profile")
             .order_by("accountname", "id")
             .values(
                 "id",
                 "accountname",
-                "gstno",
-                "pan",
-                "partytype",
+                "compliance_profile__gstno",
+                "compliance_profile__pan",
+                "commercial_profile__partytype",
                 "state_id",
                 "state__statecode",
                 "state__statename",
@@ -105,9 +110,9 @@ class SalesMetaBaseAPIView(APIView):
                 "accountname": row["accountname"],
                 "display_name": row["ledger__name"] or row["accountname"],
                 "accountcode": row["ledger__ledger_code"],
-                "gstno": row["gstno"],
-                "pan": row["pan"],
-                "partytype": row["partytype"] or "Customer",
+                "gstno": row["compliance_profile__gstno"],
+                "pan": row["compliance_profile__pan"],
+                "partytype": row["commercial_profile__partytype"] or "Customer",
                 "state": row["state_id"],
                 "statecode": row["state__statecode"],
                 "statename": row["state__statename"],
@@ -208,9 +213,9 @@ class SalesMetaBaseAPIView(APIView):
             "display_name": getattr(customer, "effective_accounting_name", None),
             "accountcode": getattr(customer, "effective_accounting_code", None),
             "ledger_id": getattr(header, "customer_ledger_id", None) or getattr(customer, "ledger_id", None),
-            "partytype": getattr(customer, "partytype", None),
-            "gstno": getattr(customer, "gstno", None),
-            "pan": getattr(customer, "pan", None),
+            "partytype": account_partytype(customer),
+            "gstno": account_gstno(customer),
+            "pan": account_pan(customer),
         }
 
 

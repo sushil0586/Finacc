@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from django.db import transaction
 from django.db.models import Max, Q
 from django.utils import timezone
+from financial.profile_access import account_gstno, account_partytype
 
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -294,7 +295,7 @@ class PurchaseInvoiceService:
         if not vendor:
             return
 
-        partytype = (getattr(vendor, "partytype", None) or "").strip()
+        partytype = (account_partytype(vendor) or "").strip()
         allowed_partytypes = {"", "Vendor", "Both", "Bank"}
         if partytype not in allowed_partytypes:
             raise ValueError("Selected vendor account is not marked as Vendor/Both/Bank.")
@@ -321,7 +322,7 @@ class PurchaseInvoiceService:
             attrs["vendor_name"] = (getattr(vendor, "effective_accounting_name", None) or getattr(vendor, "accountname", None) or str(vendor)).strip()[:200]
 
         if not (attrs.get("vendor_gstin") or (instance.vendor_gstin if instance else None)):
-            gstno = getattr(vendor, "gstno", None)
+            gstno = account_gstno(vendor)
             if gstno:
                 attrs["vendor_gstin"] = str(gstno).strip()[:15]
 

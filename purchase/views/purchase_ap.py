@@ -13,6 +13,7 @@ from purchase.serializers.purchase_ap import (
     VendorSettlementCreateInputSerializer,
 )
 from purchase.services.purchase_ap_service import PurchaseApService
+from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
 def _parse_scope(request):
@@ -190,9 +191,9 @@ class VendorStatementAPIView(APIView):
                 "display_name": getattr(vendor, "effective_accounting_name", None),
                 "accountcode": getattr(vendor, "effective_accounting_code", None),
                 "ledger_id": getattr(vendor, "ledger_id", None),
-                "partytype": getattr(vendor, "partytype", None),
-                "gstno": getattr(vendor, "gstno", None),
-                "pan": getattr(vendor, "pan", None),
+                "partytype": account_partytype(vendor),
+                "gstno": account_gstno(vendor),
+                "pan": account_pan(vendor),
             },
             "totals": data["totals"],
             "open_items": VendorBillOpenItemSerializer(data["open_items"], many=True).data,

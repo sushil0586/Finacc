@@ -12,6 +12,8 @@ from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.profile_access import account_gstno
+from financial.services import apply_normalized_profile_payload
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 
@@ -41,17 +43,10 @@ class SalesRegisterAPITests(APITestCase):
             legalname="Finacc Sales Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address",
-            phoneoffice="9999999999",
-            phoneresidence="9999999998",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch", address="Main Branch")
-        self.other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Other Branch", address="Other Branch")
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch")
+        self.other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Other Branch")
 
         fy_start = timezone.make_aware(datetime(2025, 4, 1))
         fy_end = timezone.make_aware(datetime(2026, 3, 31))
@@ -68,13 +63,6 @@ class SalesRegisterAPITests(APITestCase):
             legalname="Other Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address 2",
-            phoneoffice="8888888888",
-            phoneresidence="8888888887",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
         self.other_entityfin = EntityFinancialYear.objects.create(
@@ -87,7 +75,6 @@ class SalesRegisterAPITests(APITestCase):
         self.other_entity_subentity = SubEntity.objects.create(
             entity=self.other_entity,
             subentityname="Other Entity Branch",
-            address="Other",
         )
 
         self.acc_type = accounttype.objects.create(
@@ -168,16 +155,21 @@ class SalesRegisterAPITests(APITestCase):
             accounthead=account_head,
             createdby=self.user,
         )
-        return account.objects.create(
+        row = account.objects.create(
             entity=entity,
             ledger=ledger,
             accounthead=account_head,
             accountname=name,
             accountcode=accountcode,
-            gstno=gstin,
-            partytype="Customer",
             createdby=self.user,
         )
+        apply_normalized_profile_payload(
+            row,
+            compliance_data={"gstno": gstin},
+            commercial_data={"partytype": "Customer"},
+            primary_address_data={},
+        )
+        return row
 
     def _create_sales_document(
         self,
@@ -233,7 +225,7 @@ class SalesRegisterAPITests(APITestCase):
             customer=customer,
             customer_ledger=customer.ledger,
             customer_name=customer_name or customer.accountname,
-            customer_gstin=customer_gstin or customer.gstno,
+            customer_gstin=customer_gstin or account_gstno(customer),
             customer_state_code=self.state.statecode,
             seller_gstin="27AAAAA9999A1Z5",
             seller_state_code=self.state.statecode,

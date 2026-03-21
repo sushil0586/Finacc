@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from django.db import transaction
 from django.db.models import Sum, Q
 from django.utils import timezone
+from financial.profile_access import account_gstno, account_pan
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -52,8 +53,7 @@ class PurchaseStatutoryService:
     def _vendor_pan(header: PurchaseInvoiceHeader) -> Optional[str]:
         try:
             vendor = getattr(header, "vendor", None)
-            profile = getattr(vendor, "tax_profile", None) if vendor is not None else None
-            return (getattr(profile, "pan", None) or "").strip() or None
+            return (account_pan(vendor) or "").strip() or None
         except Exception:
             return None
 
@@ -82,10 +82,13 @@ class PurchaseStatutoryService:
             if vendor is None:
                 return None
             # Priority for non-resident tax-id style fields.
-            for f in ("tdsno", "cin", "adhaarno", "pan"):
+            for f in ("tdsno", "cin", "adhaarno"):
                 val = (getattr(vendor, f, None) or "").strip()
                 if val:
                     return val
+            pan_val = (account_pan(vendor) or "").strip()
+            if pan_val:
+                return pan_val
             return None
         except Exception:
             return None
@@ -108,7 +111,7 @@ class PurchaseStatutoryService:
             "deductee_tax_id_snapshot": PurchaseStatutoryService._vendor_tax_id(header),
             "deductee_pan_snapshot": PurchaseStatutoryService._vendor_pan(header),
             "deductee_gstin_snapshot": (
-                PurchaseStatutoryService._clean_text(getattr(getattr(header, "vendor", None), "gstno", None))
+                PurchaseStatutoryService._clean_text(account_gstno(getattr(header, "vendor", None)))
                 or PurchaseStatutoryService._clean_text(getattr(header, "vendor_gstin", None))
             ),
         }

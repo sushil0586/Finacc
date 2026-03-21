@@ -226,7 +226,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "bill_date", "posting_date", "credit_days", "due_date",
                 "supplier_invoice_number", "supplier_invoice_date", "po_reference_no", "grn_reference_no",
                 "vendor_id", "vendor_name", "vendor_gstin", "vendor_state_id",
-                "vendor__partytype", "vendor_ledger_id", "vendor_ledger__ledger_code", "vendor_ledger__name",
+                "vendor__commercial_profile__partytype", "vendor_ledger_id", "vendor_ledger__ledger_code", "vendor_ledger__name",
                 "supply_category", "default_taxability", "tax_regime",
                 "is_igst", "is_reverse_charge", "is_itc_eligible",
                 "gstr2b_match_status", "itc_claim_status", "itc_claim_period", "itc_block_reason",

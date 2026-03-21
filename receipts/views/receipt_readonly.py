@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from financial.models import account
+from financial.profile_access import account_gstno, account_pan, account_partytype
 from receipts.serializers.receipt_readonly import ReceiptOpenAdvanceSerializer
 from sales.models.sales_ar import CustomerSettlement
 from sales.serializers.sales_ar import CustomerBillOpenItemSerializer, CustomerSettlementSerializer
@@ -166,7 +167,7 @@ class ReceiptCustomerStatementAPIView(APIView):
         customer_obj = (
             account.objects.filter(id=customer_id)
             .select_related("ledger")
-            .only("id", "accountname", "partytype", "gstno", "pan", "ledger_id", "ledger__ledger_code", "ledger__name")
+            .select_related("ledger", "compliance_profile", "commercial_profile").only("id", "accountname", "ledger_id", "ledger__ledger_code", "ledger__name")
             .first()
         )
         customer_block = None
@@ -177,9 +178,9 @@ class ReceiptCustomerStatementAPIView(APIView):
                 "display_name": customer_obj.effective_accounting_name,
                 "accountcode": customer_obj.effective_accounting_code,
                 "ledger_id": customer_obj.ledger_id,
-                "partytype": customer_obj.partytype,
-                "gstno": customer_obj.gstno,
-                "pan": customer_obj.pan,
+                "partytype": account_partytype(customer_obj),
+                "gstno": account_gstno(customer_obj),
+                "pan": account_pan(customer_obj),
             }
         return Response(
             {

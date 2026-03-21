@@ -1,3 +1,297 @@
+from django.core.exceptions import ValidationError
 from django.test import TestCase
+from rest_framework.test import APIClient
 
-# Create your tests here.
+from Authentication.models import User
+from entity.models import Entity
+from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, account, accountHead
+from financial.serializers_ledger import AccountProfileV2ReadSerializer, AccountProfileV2WriteSerializer
+from financial.services import (
+    apply_normalized_profile_payload,
+    create_account_with_synced_ledger,
+    sync_account_profiles_for_account,
+    sync_ledger_for_account,
+)
+
+
+class FinancialLedgerSyncTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="fin-tests@example.com",
+            username="fin-tests@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity_a = Entity.objects.create(entityname="Entity A", createdby=self.user)
+        self.entity_b = Entity.objects.create(entityname="Entity B", createdby=self.user)
+
+    def test_create_account_with_synced_ledger_allocates_codes_and_links(self):
+        a1 = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Cash Account",
+                "createdby": self.user,
+            }
+        )
+        a2 = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Bank Account",
+                "createdby": self.user,
+            }
+        )
+
+        self.assertIsNotNone(a1.ledger_id)
+        self.assertIsNotNone(a2.ledger_id)
+        self.assertEqual(a1.entity_id, a1.ledger.entity_id)
+        self.assertEqual(a2.entity_id, a2.ledger.entity_id)
+        self.assertEqual(a1.accountcode, a1.ledger.ledger_code)
+        self.assertEqual(a2.accountcode, a2.ledger.ledger_code)
+        self.assertGreater(a2.accountcode, a1.accountcode)
+
+    def test_create_account_with_cross_entity_ledger_rolls_back(self):
+        foreign_ledger = Ledger.objects.create(
+            entity=self.entity_b,
+            ledger_code=1200,
+            name="Foreign Ledger",
+            createdby=self.user,
+        )
+
+        with self.assertRaises(ValidationError):
+            create_account_with_synced_ledger(
+                account_data={
+                    "entity": self.entity_a,
+                    "ledger": foreign_ledger,
+                    "accountname": "Invalid Link",
+                    "createdby": self.user,
+                    "accountcode": 1200,
+                }
+            )
+
+        self.assertFalse(account.objects.filter(accountname="Invalid Link").exists())
+
+    def test_sync_ledger_for_account_rejects_cross_entity_existing_link(self):
+        foreign_ledger = Ledger.objects.create(
+            entity=self.entity_b,
+            ledger_code=1300,
+            name="Cross Linked",
+            createdby=self.user,
+        )
+        acc = account.objects.create(
+            entity=self.entity_a,
+            ledger=foreign_ledger,
+            accountname="Bad Existing Link",
+            accountcode=1300,
+            createdby=self.user,
+        )
+
+        with self.assertRaises(ValidationError):
+            sync_ledger_for_account(acc)
+
+    def test_create_account_also_creates_normalized_profiles(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Vendor One",
+                "createdby": self.user,
+            }
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            commercial_data={"partytype": "Vendor", "creditdays": 30},
+            createdby=self.user,
+        )
+        comp = AccountComplianceProfile.objects.get(account=acc)
+        comm = AccountCommercialProfile.objects.get(account=acc)
+        self.assertEqual(comp.gstno, "29ABCDE1234F1Z5")
+        self.assertEqual(comp.pan, "ABCDE1234F")
+        self.assertEqual(comm.partytype, "Vendor")
+        self.assertEqual(comm.creditdays, 30)
+
+    def test_create_account_initializes_blank_normalized_profiles_without_legacy_copy(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Normalized Blank Init",
+                "createdby": self.user,
+            }
+        )
+        comp = AccountComplianceProfile.objects.get(account=acc)
+        comm = AccountCommercialProfile.objects.get(account=acc)
+        self.assertIsNone(comp.gstno)
+        self.assertIsNone(comp.pan)
+        self.assertIsNone(comm.partytype)
+        self.assertIsNone(comm.creditdays)
+
+    def test_profile_sync_updates_normalized_rows_after_account_change(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Customer One",
+                "createdby": self.user,
+            }
+        )
+        account.objects.filter(pk=acc.pk).update(
+            partytype="Both",
+            creditdays=45,
+            gstno="27ABCDE1234F1Z5",
+            pan="ABCDE1234F",
+        )
+        acc.refresh_from_db()
+        sync_account_profiles_for_account(acc)
+
+        comp = AccountComplianceProfile.objects.get(account=acc)
+        comm = AccountCommercialProfile.objects.get(account=acc)
+        self.assertEqual(comp.gstno, "27ABCDE1234F1Z5")
+        self.assertEqual(comp.pan, "ABCDE1234F")
+        self.assertEqual(comm.partytype, "Both")
+        self.assertEqual(comm.creditdays, 45)
+
+    def test_account_read_serializer_uses_normalized_profiles_only(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Serializer Check",
+                "createdby": self.user,
+            }
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            commercial_data={"partytype": "Vendor", "creditdays": 30},
+            primary_address_data={"line1": "Profile Address 1"},
+            createdby=self.user,
+        )
+
+        account.objects.filter(pk=acc.pk).update(
+            gstno=None,
+            pan=None,
+            partytype=None,
+            creditdays=None,
+            address1=None,
+        )
+        acc.refresh_from_db()
+
+        data = AccountProfileV2ReadSerializer(acc).data
+        self.assertEqual(data["gstno"], "29ABCDE1234F1Z5")
+        self.assertEqual(data["pan"], "ABCDE1234F")
+        self.assertEqual(data["partytype"], "Vendor")
+        self.assertEqual(data["creditdays"], 30)
+        self.assertEqual(data["address1"], "Profile Address 1")
+
+    def test_account_write_serializer_persists_profile_data_without_legacy_columns(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="Sundry Creditors",
+            code=2001,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity_a.id,
+                "accountname": "Normalized Writer",
+                "accounthead": head.id,
+                "compliance_profile": {
+                    "gstno": "29ABCDE1234F1Z5",
+                    "pan": "ABCDE1234F",
+                },
+                "commercial_profile": {
+                    "partytype": "Vendor",
+                    "creditdays": 45,
+                },
+                "primary_address": {
+                    "line1": "Profile Address",
+                    "pincode": "560001",
+                },
+            },
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        acc = serializer.save()
+
+        acc.refresh_from_db()
+        self.assertIsNone(acc.gstno)
+        self.assertIsNone(acc.pan)
+        self.assertIsNone(acc.partytype)
+        self.assertIsNone(acc.address1)
+
+        comp = AccountComplianceProfile.objects.get(account=acc)
+        comm = AccountCommercialProfile.objects.get(account=acc)
+        address = acc.addresses.filter(isprimary=True, isactive=True).first()
+        self.assertEqual(comp.gstno, "29ABCDE1234F1Z5")
+        self.assertEqual(comp.pan, "ABCDE1234F")
+        self.assertEqual(comm.partytype, "Vendor")
+        self.assertEqual(comm.creditdays, 45)
+        self.assertIsNotNone(address)
+        self.assertEqual(address.line1, "Profile Address")
+        self.assertEqual(address.pincode, "560001")
+
+    def test_account_write_serializer_rejects_legacy_profile_input_fields(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="Sundry Debtors",
+            code=2002,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity_a.id,
+                "accountname": "Legacy Payload Rejected",
+                "accounthead": head.id,
+                "gstno": "29ABCDE1234F1Z5",
+                "partytype": "Customer",
+                "address1": "Old Flat Address",
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("gstno", serializer.errors)
+        self.assertIn("partytype", serializer.errors)
+        self.assertIn("address1", serializer.errors)
+
+    def test_account_model_blocks_new_legacy_profile_writes(self):
+        with self.assertRaises(ValidationError):
+            account.objects.create(
+                entity=self.entity_a,
+                accountname="Blocked Legacy Write",
+                gstno="29ABCDE1234F1Z5",
+                createdby=self.user,
+            )
+
+
+class FinancialEndpointAliasTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="fin-alias@example.com",
+            username="fin-alias@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity = Entity.objects.create(entityname="Alias Entity", createdby=self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_legacy_base_account_list_alias_sets_deprecation_headers(self):
+        response = self.client.get(f"/api/financial/baseaccountlistv2/?entity={self.entity.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-API-Deprecated"), "true")
+        self.assertEqual(response.headers.get("X-API-Replacement"), "/api/financial/base-account-list-v2")
+
+    def test_legacy_simple_accounts_alias_sets_deprecation_headers(self):
+        response = self.client.get(f"/api/financial/accounts/simplev2?entity={self.entity.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-API-Deprecated"), "true")
+        self.assertEqual(response.headers.get("X-API-Replacement"), "/api/financial/accounts/simple-v2")
+
+    def test_legacy_account_list_post_alias_sets_deprecation_headers_even_on_error(self):
+        response = self.client.post("/api/financial/accountListPostV2", data={}, content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.headers.get("X-API-Deprecated"), "true")
+        self.assertEqual(response.headers.get("X-API-Replacement"), "/api/financial/account-list-post-v2")
+
+    def test_canonical_endpoint_has_no_deprecation_header(self):
+        response = self.client.get(f"/api/financial/base-account-list-v2/?entity={self.entity.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.headers.get("X-API-Deprecated"))

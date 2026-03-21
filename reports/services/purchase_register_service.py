@@ -40,6 +40,7 @@ class PurchaseRegisterService:
     def get_base_queryset(self):
         return PurchaseInvoiceHeader.objects.select_related(
             "vendor",
+            "vendor__compliance_profile",
             "vendor_ledger",
             "place_of_supply_state",
             "entity",
@@ -100,7 +101,7 @@ class PurchaseRegisterService:
 
         queryset = queryset.annotate(
             supplier_name=Coalesce(F("vendor_name"), F("vendor__accountname"), Value(""), output_field=CharField()),
-            supplier_gstin=Coalesce(F("vendor_gstin"), F("vendor__gstno"), Value(""), output_field=CharField()),
+            supplier_gstin=Coalesce(F("vendor_gstin"), F("vendor__compliance_profile__gstno"), Value(""), output_field=CharField()),
             place_of_supply=Coalesce(F("place_of_supply_state__statename"), Value(""), output_field=CharField()),
             supply_type=F("supply_category"),
             supply_type_name=Case(

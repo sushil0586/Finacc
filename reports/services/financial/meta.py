@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from financial.models import account
+from financial.profile_access import account_partytype
 from entity.models import EntityFinancialYear, SubEntity
 from posting.models import EntryStatus, EntityStaticAccountMap, TxnType
 
@@ -83,7 +84,7 @@ def _infer_account_kind(row, *, static_kind_by_account: dict[int, str]) -> str:
     explicit_kind = static_kind_by_account.get(row.id)
     if explicit_kind:
         return explicit_kind
-    if str(getattr(row, "partytype", "")).lower() == "bank":
+    if str(account_partytype(row) or "").lower() == "bank":
         return "bank"
     label = f"{getattr(row, 'accountname', '')} {getattr(getattr(row, 'ledger', None), 'name', '')}".lower()
     if "cash" in label:

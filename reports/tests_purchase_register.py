@@ -13,6 +13,8 @@ from rest_framework.test import APITestCase, APIClient
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.profile_access import account_gstno
+from financial.services import apply_normalized_profile_payload
 from geography.models import City, Country, District, State
 from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.models.purchase_ap import VendorBillOpenItem
@@ -44,17 +46,10 @@ class PurchaseRegisterAPITests(APITestCase):
             legalname="Finacc Purchase Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address",
-            phoneoffice="9999999999",
-            phoneresidence="9999999998",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch", address="Main Branch")
-        self.other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Other Branch", address="Other Branch")
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch")
+        self.other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Other Branch")
 
         fy_start = timezone.make_aware(datetime(2025, 4, 1))
         fy_end = timezone.make_aware(datetime(2026, 3, 31))
@@ -71,13 +66,6 @@ class PurchaseRegisterAPITests(APITestCase):
             legalname="Other Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address 2",
-            phoneoffice="8888888888",
-            phoneresidence="8888888887",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             createdby=self.user,
         )
         self.other_entityfin = EntityFinancialYear.objects.create(
@@ -90,7 +78,6 @@ class PurchaseRegisterAPITests(APITestCase):
         self.other_entity_subentity = SubEntity.objects.create(
             entity=self.other_entity,
             subentityname="Other Entity Branch",
-            address="Other",
         )
 
         self.acc_type = accounttype.objects.create(
@@ -159,16 +146,21 @@ class PurchaseRegisterAPITests(APITestCase):
             accounthead=account_head,
             createdby=self.user,
         )
-        return account.objects.create(
+        row = account.objects.create(
             entity=entity,
             ledger=ledger,
             accounthead=account_head,
             accountname=name,
             accountcode=accountcode,
-            gstno=gstin,
-            partytype="Vendor",
             createdby=self.user,
         )
+        apply_normalized_profile_payload(
+            row,
+            compliance_data={"gstno": gstin},
+            commercial_data={"partytype": "Vendor"},
+            primary_address_data={},
+        )
+        return row
 
     def _create_purchase_document(
         self,
@@ -227,7 +219,7 @@ class PurchaseRegisterAPITests(APITestCase):
             vendor=vendor,
             vendor_ledger=vendor.ledger,
             vendor_name=vendor_name or vendor.accountname,
-            vendor_gstin=vendor_gstin or vendor.gstno,
+            vendor_gstin=vendor_gstin or account_gstno(vendor),
             place_of_supply_state=self.state,
             supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
             is_reverse_charge=reverse_charge,

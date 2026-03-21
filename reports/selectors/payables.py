@@ -75,24 +75,28 @@ def resolve_scope_dates(entityfin_id=None, from_date=None, to_date=None, as_of_d
 def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=None, currency=None, search=None):
     """Return vendor masters eligible for AP reports within the entity scope."""
     qs = account.objects.filter(entity_id=entity_id)
-    qs = qs.filter(Q(partytype__in=["Vendor", "Both"]) | Q(partytype__isnull=True) | Q(partytype=""))
+    qs = qs.filter(
+        Q(commercial_profile__partytype__in=["Vendor", "Both"])
+        | Q(commercial_profile__partytype__isnull=True)
+        | Q(commercial_profile__partytype="")
+    )
     if vendor_id:
         qs = qs.filter(id=vendor_id)
     if vendor_group:
-        qs = qs.filter(agent__iexact=vendor_group)
+        qs = qs.filter(commercial_profile__agent__iexact=vendor_group)
     if region_id:
         qs = qs.filter(state_id=region_id)
     if currency:
-        qs = qs.filter(currency__iexact=currency)
+        qs = qs.filter(commercial_profile__currency__iexact=currency)
     if search:
         token = str(search).strip()
         qs = qs.filter(
             Q(accountname__icontains=token)
             | Q(legalname__icontains=token)
             | Q(accountcode__icontains=token)
-            | Q(gstno__icontains=token)
+            | Q(compliance_profile__gstno__icontains=token)
         )
-    return qs.select_related("ledger", "state").only(
+    return qs.select_related("ledger", "state", "commercial_profile", "compliance_profile").only(
         "id",
         "entity_id",
         "ledger_id",
@@ -103,12 +107,12 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
         "accountname",
         "legalname",
         "accountcode",
-        "gstno",
-        "partytype",
-        "currency",
-        "agent",
-        "creditdays",
-        "creditlimit",
+        "commercial_profile__partytype",
+        "commercial_profile__currency",
+        "commercial_profile__agent",
+        "commercial_profile__creditdays",
+        "commercial_profile__creditlimit",
+        "compliance_profile__gstno",
         "state_id",
         "state__statename",
         "state__statecode",
@@ -171,7 +175,7 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
     ).values("total")[:1]
 
     qs = scope_filter(
-        VendorBillOpenItem.objects.select_related("vendor", "vendor__ledger", "subentity", "header"),
+        VendorBillOpenItem.objects.select_related("vendor", "vendor__ledger", "vendor__commercial_profile", "vendor__compliance_profile", "subentity", "header"),
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -187,11 +191,11 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
         "vendor__accountname",
         "vendor__legalname",
         "vendor__accountcode",
-        "vendor__creditlimit",
-        "vendor__creditdays",
-        "vendor__currency",
-        "vendor__gstno",
-        "vendor__agent",
+        "vendor__commercial_profile__creditlimit",
+        "vendor__commercial_profile__creditdays",
+        "vendor__commercial_profile__currency",
+        "vendor__compliance_profile__gstno",
+        "vendor__commercial_profile__agent",
         "vendor__state_id",
         "vendor__state__statename",
         "vendor__state__statecode",
