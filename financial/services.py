@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Prefetch
 
 from financial.models import (
     AccountAddress,
@@ -79,25 +80,12 @@ def sync_ledger_for_account(acc, ledger_overrides=None):
 
 
 def sync_account_profiles_for_account(acc):
-    """
-    Keep normalized account profile tables in sync with the legacy account row.
-
-    This is a transitional compatibility layer while APIs still write legacy
-    account columns. New services can rely on these profile tables as the
-    normalized source without forcing an immediate endpoint contract change.
-    """
-    ensure_normalized_profiles_for_account(acc, use_legacy_fallback=True)
+    """Backward-compatible wrapper; normalized profiles are now source of truth."""
+    ensure_normalized_profiles_for_account(acc)
 
 
-def ensure_normalized_profiles_for_account(acc, *, use_legacy_fallback=False):
-    """
-    Ensure normalized profile rows exist for an account.
-
-    - When `use_legacy_fallback=False`, create/update only structural defaults.
-      This is the preferred behavior for new account-centric API flows.
-    - When `use_legacy_fallback=True`, also hydrate normalized rows from legacy
-      account columns (transitional/backfill behavior).
-    """
+def ensure_normalized_profiles_for_account(acc):
+    """Ensure normalized profile rows exist for an account with structural defaults."""
     compliance_defaults = {
         "entity": acc.entity,
         "createdby": acc.createdby,
@@ -109,82 +97,8 @@ def ensure_normalized_profiles_for_account(acc, *, use_legacy_fallback=False):
         "isactive": bool(acc.isactive),
     }
 
-    if use_legacy_fallback:
-        compliance_defaults.update(
-            {
-                "gstno": acc.gstno,
-                "pan": acc.pan,
-                "gstintype": acc.gstintype,
-                "gstregtype": acc.gstregtype,
-                "is_sez": bool(acc.is_sez),
-                "cin": acc.cin,
-                "msme": acc.msme,
-                "gsttdsno": acc.gsttdsno,
-                "tdsno": acc.tdsno,
-                "tdsrate": acc.tdsrate,
-                "tdssection": acc.tdssection,
-                "tds_threshold": acc.tds_threshold,
-                "istcsapplicable": bool(acc.istcsapplicable),
-                "tcscode": acc.tcscode,
-            }
-        )
-        commercial_defaults.update(
-            {
-                "partytype": acc.partytype,
-                "creditlimit": acc.creditlimit,
-                "creditdays": acc.creditdays,
-                "paymentterms": acc.paymentterms,
-                "currency": acc.currency,
-                "blockstatus": acc.blockstatus,
-                "blockedreason": acc.blockedreason,
-                "approved": bool(acc.approved),
-                "agent": acc.agent,
-                "reminders": acc.reminders,
-            }
-        )
-
     AccountComplianceProfile.objects.update_or_create(account=acc, defaults=compliance_defaults)
     AccountCommercialProfile.objects.update_or_create(account=acc, defaults=commercial_defaults)
-
-    if not use_legacy_fallback:
-        return
-
-    has_any_address = any(
-        [
-            acc.address1,
-            acc.address2,
-            acc.addressfloorno,
-            acc.addressstreet,
-            acc.country_id,
-            acc.state_id,
-            acc.district_id,
-            acc.city_id,
-            acc.pincode,
-        ]
-    )
-    if not has_any_address:
-        return
-
-    address = (
-        AccountAddress.objects.filter(account=acc, isprimary=True, isactive=True)
-        .order_by("-id")
-        .first()
-    )
-    if address is None:
-        address = AccountAddress(account=acc, address_type=AccountAddress.AddressType.BILLING, isprimary=True)
-    address.entity = acc.entity
-    address.createdby = acc.createdby
-    address.line1 = acc.address1
-    address.line2 = acc.address2
-    address.floor_no = acc.addressfloorno
-    address.street = acc.addressstreet
-    address.country_id = acc.country_id
-    address.state_id = acc.state_id
-    address.district_id = acc.district_id
-    address.city_id = acc.city_id
-    address.pincode = acc.pincode
-    address.isactive = bool(acc.isactive)
-    address.save()
 
 
 @transaction.atomic
@@ -202,7 +116,7 @@ def create_account_with_synced_ledger(*, account_data, ledger_overrides=None):
 
     acc = account.objects.create(**data)
     sync_ledger_for_account(acc, ledger_overrides=ledger_overrides)
-    ensure_normalized_profiles_for_account(acc, use_legacy_fallback=False)
+    ensure_normalized_profiles_for_account(acc)
     return acc
 
 
@@ -232,7 +146,7 @@ def bootstrap_financial_settings_for_all_entities(entity_model, createdby=None):
     return created_count
 
 
-def resync_ledgers(entity_id=None, *, sync_legacy_profiles=False):
+def resync_ledgers(entity_id=None):
     from financial.models import account
 
     qs = account.objects.select_related("ledger", "contraaccount", "contraaccount__ledger")
@@ -242,8 +156,7 @@ def resync_ledgers(entity_id=None, *, sync_legacy_profiles=False):
     synced = 0
     for acc in qs.iterator():
         sync_ledger_for_account(acc)
-        if sync_legacy_profiles:
-            ensure_normalized_profiles_for_account(acc, use_legacy_fallback=True)
+        ensure_normalized_profiles_for_account(acc)
         synced += 1
     return synced
 
@@ -253,8 +166,7 @@ def backfill_missing_account_profiles(entity_id=None, dry_run=False):
     """
     One-time repair utility for legacy accounts that missed normalized profile rows.
 
-    Creates missing AccountComplianceProfile / AccountCommercialProfile and
-    primary AccountAddress (when legacy address fields exist).
+    Creates missing AccountComplianceProfile / AccountCommercialProfile rows.
     """
     qs = account.objects.all()
     if entity_id is not None:
@@ -276,13 +188,6 @@ def backfill_missing_account_profiles(entity_id=None, dry_run=False):
     commercial_ids = set(
         AccountCommercialProfile.objects.filter(account_id__in=account_ids).values_list("account_id", flat=True)
     )
-    primary_address_ids = set(
-        AccountAddress.objects.filter(account_id__in=account_ids, isprimary=True, isactive=True).values_list(
-            "account_id",
-            flat=True,
-        )
-    )
-
     missing_compliance = 0
     missing_commercial = 0
     missing_primary_address = 0
@@ -291,20 +196,7 @@ def backfill_missing_account_profiles(entity_id=None, dry_run=False):
     for acc in qs.iterator():
         needs_compliance = acc.id not in compliance_ids
         needs_commercial = acc.id not in commercial_ids
-        has_legacy_address = any(
-            [
-                acc.address1,
-                acc.address2,
-                acc.addressfloorno,
-                acc.addressstreet,
-                acc.country_id,
-                acc.state_id,
-                acc.district_id,
-                acc.city_id,
-                acc.pincode,
-            ]
-        )
-        needs_primary_address = has_legacy_address and acc.id not in primary_address_ids
+        needs_primary_address = False
 
         if needs_compliance:
             missing_compliance += 1
@@ -314,7 +206,7 @@ def backfill_missing_account_profiles(entity_id=None, dry_run=False):
             missing_primary_address += 1
 
         if not dry_run and (needs_compliance or needs_commercial or needs_primary_address):
-            ensure_normalized_profiles_for_account(acc, use_legacy_fallback=True)
+            ensure_normalized_profiles_for_account(acc)
             accounts_updated += 1
 
     return {
@@ -343,12 +235,14 @@ def apply_normalized_profile_payload(
     if compliance_data is not None:
         defaults = {"entity": acc.entity, "createdby": actor}
         defaults.update(compliance_data)
-        AccountComplianceProfile.objects.update_or_create(account=acc, defaults=defaults)
+        compliance_profile, _ = AccountComplianceProfile.objects.update_or_create(account=acc, defaults=defaults)
+        acc.compliance_profile = compliance_profile
 
     if commercial_data is not None:
         defaults = {"entity": acc.entity, "createdby": actor}
         defaults.update(commercial_data)
-        AccountCommercialProfile.objects.update_or_create(account=acc, defaults=defaults)
+        commercial_profile, _ = AccountCommercialProfile.objects.update_or_create(account=acc, defaults=defaults)
+        acc.commercial_profile = commercial_profile
 
     if primary_address_data is not None:
         address = (
@@ -371,6 +265,7 @@ def apply_normalized_profile_payload(
 
 
 def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, accounthead_ids=None):
+    primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("city")
     qs = (
         Ledger.objects.filter(entity_id=entity_id, isactive=True)
         .select_related(
@@ -378,7 +273,13 @@ def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, ac
             "creditaccounthead",
             "account_profile",
             "account_profile__compliance_profile",
-            "account_profile__city",
+        )
+        .prefetch_related(
+            Prefetch(
+                "account_profile__addresses",
+                queryset=primary_address_qs,
+                to_attr="prefetched_primary_addresses",
+            )
         )
         .order_by("name")
     )
@@ -400,6 +301,11 @@ def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, ac
     for ledger in qs:
         account_profile = getattr(ledger, "account_profile", None)
         compliance = getattr(account_profile, "compliance_profile", None)
+        primary_address = None
+        if account_profile is not None:
+            prefetched_primary = getattr(account_profile, "prefetched_primary_addresses", None)
+            if prefetched_primary:
+                primary_address = prefetched_primary[0]
         ledger_balance = balance_map.get(ledger.id, {"balance": 0, "debit": 0, "credit": 0})
         balance = ledger_balance["balance"]
         rows.append(
@@ -411,7 +317,7 @@ def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, ac
                 "accountname": getattr(account_profile, "accountname", None) or ledger.name,
                 "accgst": getattr(compliance, "gstno", None),
                 "accpan": getattr(compliance, "pan", None),
-                "cityname": getattr(getattr(account_profile, "city", None), "cityname", None),
+                "cityname": getattr(getattr(primary_address, "city", None), "cityname", None),
                 "accounthead_id": ledger.accounthead_id,
                 "accounthead_name": getattr(ledger.accounthead, "name", None),
                 "creditaccounthead_id": ledger.creditaccounthead_id,

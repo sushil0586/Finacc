@@ -384,46 +384,11 @@ class account(TrackingModel):
     # - credit terms / payment terms
     #
     # NOTE:
-    # New writes for compliance/commercial/address profile data must go to:
+    # New writes for compliance/commercial/address profile data should go to:
     # - AccountComplianceProfile
     # - AccountCommercialProfile
     # - AccountAddress
-    # Legacy columns are retained for historical rows/backfill only.
-    LEGACY_PROFILE_FIELDS = (
-        "gstno",
-        "pan",
-        "gstintype",
-        "gstregtype",
-        "is_sez",
-        "cin",
-        "msme",
-        "gsttdsno",
-        "tdsno",
-        "tdsrate",
-        "tdssection",
-        "tds_threshold",
-        "istcsapplicable",
-        "tcscode",
-        "partytype",
-        "creditlimit",
-        "creditdays",
-        "paymentterms",
-        "currency",
-        "blockstatus",
-        "blockedreason",
-        "approved",
-        "agent",
-        "reminders",
-        "address1",
-        "address2",
-        "addressfloorno",
-        "addressstreet",
-        "country_id",
-        "state_id",
-        "district_id",
-        "city_id",
-        "pincode",
-    )
+    # Legacy columns are retained temporarily for controlled schema cutover.
     ledger = models.OneToOneField(
         "financial.Ledger",
         null=True,
@@ -437,7 +402,6 @@ class account(TrackingModel):
     iscompany = models.BooleanField(verbose_name=_("IsCompany"), default=False)
 
     website = models.URLField(max_length=255, null=True, blank=True, verbose_name=_("Website"))
-    reminders = models.IntegerField(verbose_name=_("Reminders"), null=True, blank=True)
 
     accounthead = models.ForeignKey(
         to=accountHead,
@@ -458,8 +422,6 @@ class account(TrackingModel):
 
     accountcode = models.IntegerField(verbose_name=_("Account Code"), null=True, blank=True, db_index=True)
 
-    gstno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Gst No"), db_index=True)
-
     accountname = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Account Name"), db_index=True)
     legalname = models.CharField(max_length=255, null=True, blank=True)
 
@@ -471,21 +433,8 @@ class account(TrackingModel):
         verbose_name=_("conta account"),
     )
 
-    address1 = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Address Line 1"))
-    address2 = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Address Line 2"))
-    addressfloorno = models.CharField(max_length=255, null=True, blank=True)
-    addressstreet = models.CharField(max_length=255, null=True, blank=True)
-
-    gstintype = models.CharField(max_length=255, null=True, blank=True, choices=GSTIN_TYPE_CHOICES)
-    blockstatus = models.CharField(max_length=10, null=True, blank=True, verbose_name="Block Status", choices=BLOCK_STATUS_CHOICES)
-
     dateofreg = models.DateTimeField(verbose_name="Date of Registration", null=True, blank=True)
     dateofdreg = models.DateTimeField(verbose_name="Date of De Regitration", null=True, blank=True)
-
-    country = models.ForeignKey(Country, null=True, blank=True, on_delete=models.PROTECT)
-    state = models.ForeignKey(to=State, on_delete=models.PROTECT, null=True, blank=True)
-    district = models.ForeignKey(to=District, on_delete=models.PROTECT, null=True, blank=True)
-    city = models.ForeignKey(to=City, on_delete=models.PROTECT, null=True, blank=True)
 
     openingbcr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Opening Balance Cr"))
     openingbdr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Opening Balance Dr"))
@@ -493,21 +442,10 @@ class account(TrackingModel):
     contactno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Contact no"))
     contactno2 = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Contact no2"))
 
-    pincode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Pincode"))
-    cin = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("cin"))
-    msme = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("msme"))
-    gsttdsno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("gsttdsno"))
-
     emailid = models.EmailField(max_length=254, null=True, blank=True, verbose_name=_("Email id"))
-
-    agent = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Agent/Group"))
-    pan = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("PAN"), db_index=True)
 
     tobel10cr = models.BooleanField(verbose_name=_("Turnover below 10 lac"), default=False)
     isaddsameasbillinf = models.BooleanField(verbose_name=_("isaddsameasbillinf"), default=False)
-    approved = models.BooleanField(verbose_name=_("Wheather aproved"), default=False)
-
-    tdsno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Tds A/c No"))
 
     entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE, db_index=True)
 
@@ -518,7 +456,6 @@ class account(TrackingModel):
     contactperson = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Contact Person"))
 
     deprate = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Depreciaion Rate"))
-    tdsrate = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("TDS Rate"))
     gstshare = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Adhaar No"))
 
     quanity1 = models.IntegerField(verbose_name=_("Quanity 1"), null=True, blank=True)
@@ -536,60 +473,10 @@ class account(TrackingModel):
 
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
-    # Add-only fields to support broader ERP use cases
-    partytype = models.CharField(max_length=20, null=True, blank=True, choices=PARTY_TYPE_CHOICES, verbose_name=_("Party Type"))
-    creditlimit = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Credit Limit"))
-    creditdays = models.IntegerField(null=True, blank=True, verbose_name=_("Credit Days"))
-    currency = models.CharField(max_length=10, null=True, blank=True, choices=CURRENCY_CHOICES, verbose_name=_("Currency"))
-    paymentterms = models.CharField(max_length=100, null=True, blank=True, choices=PAYMENT_TERMS_CHOICES, verbose_name=_("Payment Terms"))
     isactive = models.BooleanField(default=True, verbose_name=_("Is Active"))
-    blockedreason = models.CharField(max_length=255, null=True, blank=True, verbose_name=_("Blocked Reason"))
-    gstregtype = models.CharField(max_length=30, null=True, blank=True, choices=GST_REG_TYPE_CHOICES, verbose_name=_("GST Reg Type"))
-    is_sez = models.BooleanField(default=False, verbose_name=_("Is SEZ"))
-    tdssection = models.CharField(max_length=20, null=True, blank=True, verbose_name=_("TDS Section"))
-    tds_threshold = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("TDS Threshold"))
-    istcsapplicable = models.BooleanField(default=False, verbose_name=_("Is TCS Applicable"))
-    tcscode = models.CharField(max_length=20, null=True, blank=True, verbose_name=_("TCS Code"))
 
     def __str__(self):
         return f"{self.accountname}"
-
-    @staticmethod
-    def _has_value(value):
-        if value is None:
-            return False
-        if isinstance(value, bool):
-            return value is True
-        if isinstance(value, str):
-            return value.strip() != ""
-        if isinstance(value, (int, float)):
-            return value != 0
-        return True
-
-    def _assert_no_new_legacy_profile_writes(self):
-        fields = self.LEGACY_PROFILE_FIELDS
-
-        if self._state.adding:
-            touched = [field for field in fields if self._has_value(getattr(self, field, None))]
-        else:
-            previous = type(self).objects.filter(pk=self.pk).values(*fields).first() or {}
-            touched = []
-            for field in fields:
-                previous_value = previous.get(field)
-                current_value = getattr(self, field, None)
-                if previous_value != current_value and self._has_value(current_value):
-                    touched.append(field)
-
-        if touched:
-            raise ValidationError(
-                {
-                    "non_field_errors": [
-                        "Legacy account profile columns are read-only. "
-                        "Use AccountComplianceProfile / AccountCommercialProfile / AccountAddress."
-                    ],
-                    "legacy_fields": touched,
-                }
-            )
 
     # Ledger-first helper accessors. These allow downstream code to start
     # reading accounting identity from Ledger without breaking current callers
@@ -628,11 +515,6 @@ class account(TrackingModel):
         if cr and dr:
             raise ValidationError(_("Only one of Opening Balance Cr or Opening Balance Dr can be non-zero."))
 
-        if self.pincode:
-            pin = str(self.pincode).strip()
-            if pin and (not pin.isdigit()):
-                raise ValidationError({"pincode": _("Pincode must be numeric.")})
-
         if self.accounthead_id and self.accounttype_id:
             if self.accounthead.accounttype_id and self.accounthead.accounttype_id != self.accounttype_id:
                 raise ValidationError(_("Account.accounttype must match AccountHead.accounttype (or leave one of them blank)."))
@@ -640,10 +522,6 @@ class account(TrackingModel):
         if self.ledger_id and self.entity_id and self.ledger.entity_id != self.entity_id:
             raise ValidationError({"ledger": _("Selected ledger belongs to a different entity.")})
 
-        if self.creditdays is not None and self.creditdays < 0:
-            raise ValidationError({"creditdays": _("Credit Days cannot be negative.")})
-        if self.creditlimit is not None and self.creditlimit < 0:
-            raise ValidationError({"creditlimit": _("Credit Limit cannot be negative.")})
 
     def delete(self, *args, **kwargs):
         if self.canbedeleted is False:
@@ -651,19 +529,10 @@ class account(TrackingModel):
         _protect_if_referenced(self, "account", self.accountname or str(self.pk))
         super().delete(*args, **kwargs)
 
-    def save(self, *args, **kwargs):
-        self._assert_no_new_legacy_profile_writes()
-        return super().save(*args, **kwargs)
-
     class Meta:
         verbose_name = _("Account")
         verbose_name_plural = _("Accounts")
         constraints = [
-            models.UniqueConstraint(
-                fields=["entity", "gstno"],
-                condition=Q(gstno__isnull=False) & ~Q(gstno=""),
-                name="uq_account_entity_gstno_present",
-            ),
             models.UniqueConstraint(
                 fields=["entity", "accountcode"],
                 condition=Q(accountcode__isnull=False),
@@ -672,15 +541,10 @@ class account(TrackingModel):
             models.CheckConstraint(check=Q(openingbcr__gte=0) | Q(openingbcr__isnull=True), name="ck_account_openingbcr_nonneg"),
             models.CheckConstraint(check=Q(openingbdr__gte=0) | Q(openingbdr__isnull=True), name="ck_account_openingbdr_nonneg"),
             models.CheckConstraint(check=Q(accountcode__gt=0) | Q(accountcode__isnull=True), name="ck_account_accountcode_positive"),
-            models.CheckConstraint(check=Q(creditdays__gte=0) | Q(creditdays__isnull=True), name="ck_account_creditdays_nonneg"),
-            models.CheckConstraint(check=Q(creditlimit__gte=0) | Q(creditlimit__isnull=True), name="ck_account_creditlimit_nonneg"),
         ]
         indexes = [
             models.Index(fields=["entity", "accountname"], name="ix_account_entity_name"),
-            models.Index(fields=["entity", "gstno"], name="ix_account_entity_gstno"),
-            models.Index(fields=["entity", "pan"], name="ix_account_entity_pan"),
             models.Index(fields=["entity", "accounthead"], name="ix_account_entity_head"),
-            models.Index(fields=["entity", "partytype"], name="ix_account_entity_partytype"),
             models.Index(fields=["entity", "isactive"], name="ix_account_entity_isactive"),
         ]
         # PAN uniqueness is intentionally deferred to a later migration because

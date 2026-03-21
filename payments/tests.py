@@ -59,10 +59,18 @@ class PaymentPostingAdapterTests(SimpleTestCase):
 
 
 class PaymentVoucherServiceTests(SimpleTestCase):
+    databases = {"default"}
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
-    def test_post_voucher_calls_posting_adapter(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+    def test_post_voucher_calls_posting_adapter(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        _mock_fresh_allocs,
+    ):
         header = SimpleNamespace(
             id=11,
             entity_id=1,
@@ -146,10 +154,17 @@ class PaymentVoucherServiceTests(SimpleTestCase):
                 level="hard",
             )
 
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[SimpleNamespace(open_item_id=501, settled_amount=Decimal("120.00"))])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
-    def test_post_voucher_warn_mode_returns_warning_message(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+    def test_post_voucher_warn_mode_returns_warning_message(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        _mock_fresh_allocs,
+    ):
         row = SimpleNamespace(open_item_id=501, settled_amount=Decimal("120.00"))
         header = SimpleNamespace(
             id=21,
@@ -219,10 +234,17 @@ class PaymentVoucherServiceTests(SimpleTestCase):
                 }],
             )
 
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
-    def test_post_voucher_with_advance_adjustments_requires_ap_sync(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+    def test_post_voucher_with_advance_adjustments_requires_ap_sync(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        _mock_fresh_allocs,
+    ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,
             allocation_id=None,
@@ -272,6 +294,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
                 PaymentVoucherService.post_voucher.__wrapped__(voucher_id=31, posted_by_id=9)
         mock_post_adapter.assert_not_called()
 
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PurchaseApService.post_settlement")
     @patch("payments.services.payment_voucher_service.PurchaseApService.create_settlement")
@@ -284,6 +307,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
         mock_create_settlement,
         mock_post_settlement,
         mock_post_adapter,
+        _mock_fresh_allocs,
     ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,

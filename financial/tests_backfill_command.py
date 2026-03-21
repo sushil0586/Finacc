@@ -24,15 +24,8 @@ class AccountProfilesBackfillCommandTests(TestCase):
             accountname="Legacy Vendor",
             createdby=self.user,
         )
-        account.objects.filter(pk=acc.pk).update(
-            gstno="29ABCDE1234F1Z5",
-            pan="ABCDE1234F",
-            partytype="Vendor",
-            creditdays=30,
-            address1="Addr 1",
-            pincode="560001",
-        )
-        acc.refresh_from_db()
+        AccountComplianceProfile.objects.filter(account=acc).delete()
+        AccountCommercialProfile.objects.filter(account=acc).delete()
 
         self.assertFalse(AccountComplianceProfile.objects.filter(account=acc).exists())
         self.assertFalse(AccountCommercialProfile.objects.filter(account=acc).exists())
@@ -42,7 +35,7 @@ class AccountProfilesBackfillCommandTests(TestCase):
 
         self.assertTrue(AccountComplianceProfile.objects.filter(account=acc).exists())
         self.assertTrue(AccountCommercialProfile.objects.filter(account=acc).exists())
-        self.assertTrue(AccountAddress.objects.filter(account=acc, isprimary=True, isactive=True).exists())
+        self.assertFalse(AccountAddress.objects.filter(account=acc, isprimary=True, isactive=True).exists())
 
     def test_backfill_dry_run_does_not_write(self):
         acc = account.objects.create(
@@ -50,12 +43,8 @@ class AccountProfilesBackfillCommandTests(TestCase):
             accountname="Legacy Customer",
             createdby=self.user,
         )
-        account.objects.filter(pk=acc.pk).update(
-            gstno="27ABCDE1234F1Z5",
-            pan="ABCDE1234F",
-            address1="Addr X",
-        )
-        acc.refresh_from_db()
+        AccountComplianceProfile.objects.filter(account=acc).delete()
+        AccountCommercialProfile.objects.filter(account=acc).delete()
 
         out = StringIO()
         call_command("backfill_account_profiles", entity_id=self.entity.id, dry_run=True, stdout=out)
@@ -64,3 +53,16 @@ class AccountProfilesBackfillCommandTests(TestCase):
         self.assertFalse(AccountCommercialProfile.objects.filter(account=acc).exists())
         self.assertFalse(AccountAddress.objects.filter(account=acc, isprimary=True, isactive=True).exists())
         self.assertIn("DRY RUN", out.getvalue())
+
+    def test_backfill_reports_zero_missing_primary_address_after_cutover(self):
+        acc = account.objects.create(
+            entity=self.entity,
+            accountname="Legacy Address Not Copied",
+            createdby=self.user,
+        )
+        AccountComplianceProfile.objects.filter(account=acc).delete()
+        AccountCommercialProfile.objects.filter(account=acc).delete()
+
+        out = StringIO()
+        call_command("backfill_account_profiles", entity_id=self.entity.id, dry_run=True, stdout=out)
+        self.assertIn("Missing primary addresses: 0", out.getvalue())

@@ -84,7 +84,7 @@ class SalesSettingsApiTests(SalesApiTestBase):
             round_grand_total_to=2,
         )
         mocked_get_seller_profile.return_value = {"entity_id": 10, "gstin": "22AAAAA0000A1Z5"}
-        mocked_get_current_doc_no.side_effect = ["SI/0001", "SCN/0001", "SDN/0001"]
+        mocked_get_current_doc_no.side_effect = lambda **kwargs: f"{kwargs.get('doc_code', 'DOC')}/0001"
         mocked_get_choices.return_value = {"DocType": [{"key": "TAX_INVOICE", "label": "Tax Invoice", "enabled": True}]}
 
         resp = self.client.get("/api/sales/settings/?entity_id=10&entityfinid=20&subentity_id=30")
@@ -98,7 +98,7 @@ class SalesSettingsApiTests(SalesApiTestBase):
         self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "SI")
         self.assertEqual(resp.data["capabilities"]["has_lock_periods"], True)
         self.assertEqual(resp.data["choice_override_catalog"], {"DocType": [{"key": "TAX_INVOICE", "label": "Tax Invoice", "enabled": True}]})
-        mocked_get_settings.assert_called_once_with(10, 30)
+        mocked_get_settings.assert_called_once_with(10, 30, entityfinid_id=20)
         mocked_get_seller_profile.assert_called_once_with(entity_id=10, subentity_id=30)
 
     @patch("sales.views.sales_settings_views.SalesChoicesService.get_choices")

@@ -10,8 +10,23 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
-from financial.models import Ledger, account, accountHead, accounttype
+from entity.models import (
+    Entity,
+    EntityAddress,
+    EntityFinancialYear,
+    EntityGstRegistration,
+    GstRegistrationType,
+    SubEntity,
+    UnitType,
+)
+from financial.models import (
+    AccountCommercialProfile,
+    AccountComplianceProfile,
+    Ledger,
+    account,
+    accountHead,
+    accounttype,
+)
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
@@ -37,16 +52,29 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
             legalname="Sales Contract Entity Pvt Ltd",
             unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
-            address="Address",
-            phoneoffice="9999999999",
-            phoneresidence="9999999998",
+            createdby=self.user,
+        )
+        EntityAddress.objects.create(
+            entity=self.entity,
+            address_type=EntityAddress.AddressType.REGISTERED,
+            line1="Address",
             country=self.country,
             state=self.state,
             district=self.district,
             city=self.city,
+            pincode="400001",
+            is_primary=True,
             createdby=self.user,
         )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch", address="Branch")
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="27AAAAA9999A1Z5",
+            registration_type=self.gst_type,
+            state=self.state,
+            is_primary=True,
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch")
         self.entityfin = EntityFinancialYear.objects.create(
             entity=self.entity,
             desc="FY 2025-26",
@@ -82,7 +110,17 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
             accounthead=self.customer_head,
             accountname="Alpha Retail",
             accountcode=5001,
+            createdby=self.user,
+        )
+        AccountComplianceProfile.objects.create(
+            account=self.customer,
+            entity=self.entity,
             gstno="27ABCDE1234F1Z5",
+            createdby=self.user,
+        )
+        AccountCommercialProfile.objects.create(
+            account=self.customer,
+            entity=self.entity,
             partytype="Customer",
             createdby=self.user,
         )

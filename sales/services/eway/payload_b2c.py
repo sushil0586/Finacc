@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List,Tuple
 from datetime import date
 from datetime import date, datetime
+from sales.services.profile_resolvers import entity_primary_address, entity_primary_state
 
 def _float(x) -> float:
     try:
@@ -27,7 +28,7 @@ def _state_code_from_entity(ent: Any) -> int:
     Reads GST state code from Entity.state FK.
     Update the attr list to match your State master.
     """
-    st = getattr(ent, "state", None)
+    st = entity_primary_state(ent)
     if not st:
         return 0
     for attr in ("gst_state_code", "state_code", "code", "gstcode", "tin_code", "statecode"):
@@ -106,9 +107,10 @@ def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Di
         raise ValueError("B2C payload builder called for non-B2C invoice.")
 
     ent = getattr(invoice, "entity", None)
+    ent_addr = entity_primary_address(ent) if ent else None
     if not ent:
         raise ValueError("Invoice.entity missing.")
-    if not getattr(ent, "pincode", None):
+    if not getattr(ent_addr, "pincode", None):
         raise ValueError("Entity pincode missing (invoice.entity.pincode).")
 
     ship = getattr(invoice, "shipto_snapshot", None)
@@ -215,11 +217,11 @@ def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Di
 
         "fromGstin": entity_gstin,
         "fromTrdName": (getattr(ent, "legalname", None) or getattr(ent, "entityname", None) or "Supplier")[:100],
-        "fromAddr1": (getattr(ent, "address", None) or "")[:100],
-        "fromAddr2": (getattr(ent, "address2", None) or "")[:100],
-        "fromPlace": (str(getattr(ent.city, "name", "")) if getattr(ent, "city", None) else "")[:50] or "NA",
+        "fromAddr1": (getattr(ent_addr, "line1", None) or "")[:100],
+        "fromAddr2": (getattr(ent_addr, "line2", None) or "")[:100],
+        "fromPlace": (str(getattr(getattr(ent_addr, "city", None), "cityname", "")) if ent_addr else "")[:50] or "NA",
         "actFromStateCode": int(from_state_code),
-        "fromPincode": _int(ent.pincode, 0),
+        "fromPincode": _int(getattr(ent_addr, "pincode", None), 0),
         "fromStateCode": int(from_state_code),
 
         "toGstin": "URP",

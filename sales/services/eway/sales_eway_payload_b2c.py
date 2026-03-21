@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Tuple, Optional
+from sales.services.profile_resolvers import entity_primary_address
 
 def _ddmmyyyy(d) -> str:
     return d.strftime("%d/%m/%Y")
@@ -52,12 +53,13 @@ def build_b2c_direct_eway_payload(*, inv: Any, ewb_artifact: Any, entity_gstin: 
 
      # FROM: entity pincode
     ent = getattr(inv, "entity", None)
-    from_pin = getattr(ent, "pincode", None) if ent else None
+    ent_addr = entity_primary_address(ent) if ent else None
+    from_pin = getattr(ent_addr, "pincode", None) if ent_addr else None
     if not from_pin:
         raise ValueError("Entity pincode missing (invoice.entity.pincode).")
 
     # TO: ship-to snapshot pincode + state_code
-    ship = getattr(inv, "ship_to_snapshot", None)
+    ship = getattr(inv, "shipto_snapshot", None)
     to_pin = getattr(ship, "pincode", None) if ship else None
     to_state = getattr(ship, "state_code", None) if ship else None
 
