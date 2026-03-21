@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Max, Q, Sum
+from django.db.models import Max, Prefetch, Q, Sum
 
 from financial.profile_access import (
     account_agent,
@@ -15,7 +15,7 @@ from financial.profile_access import (
     account_region_state,
 )
 
-from financial.models import account
+from financial.models import AccountAddress, account
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
 from sales.models.sales_core import SalesInvoiceHeader
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window
@@ -64,7 +64,11 @@ def _customer_queryset(*, entity_id, customer_id=None, customer_group=None, regi
     if customer_group:
         qs = qs.filter(commercial_profile__agent__iexact=customer_group)
     if region_id:
-        qs = qs.filter(state_id=region_id)
+        qs = qs.filter(
+            addresses__isprimary=True,
+            addresses__isactive=True,
+            addresses__state_id=region_id,
+        )
     if currency:
         qs = qs.filter(commercial_profile__currency__iexact=currency)
     if search:
@@ -75,7 +79,18 @@ def _customer_queryset(*, entity_id, customer_id=None, customer_group=None, regi
             | Q(accountcode__icontains=token)
             | Q(compliance_profile__gstno__icontains=token)
         )
-    return qs.select_related("ledger", "state", "commercial_profile", "compliance_profile").order_by("accountname", "id")
+    primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")
+    return (
+        qs.select_related("ledger", "commercial_profile", "compliance_profile")
+        .prefetch_related(
+            Prefetch(
+                "addresses",
+                queryset=primary_address_qs,
+                to_attr="prefetched_primary_addresses",
+            )
+        )
+        .order_by("accountname", "id")
+    )
 
 
 def _scope_filter(qs, *, entity_id, entityfin_id, subentity_id):

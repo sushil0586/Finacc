@@ -124,7 +124,7 @@ class FinancialLedgerSyncTests(TestCase):
         self.assertIsNone(comm.partytype)
         self.assertIsNone(comm.creditdays)
 
-    def test_profile_sync_updates_normalized_rows_after_account_change(self):
+    def test_profile_sync_does_not_copy_legacy_fields_after_cutover(self):
         acc = create_account_with_synced_ledger(
             account_data={
                 "entity": self.entity_a,
@@ -132,21 +132,20 @@ class FinancialLedgerSyncTests(TestCase):
                 "createdby": self.user,
             }
         )
-        account.objects.filter(pk=acc.pk).update(
-            partytype="Both",
-            creditdays=45,
-            gstno="27ABCDE1234F1Z5",
-            pan="ABCDE1234F",
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            commercial_data={"partytype": "Customer", "creditdays": 30},
+            createdby=self.user,
         )
-        acc.refresh_from_db()
         sync_account_profiles_for_account(acc)
 
         comp = AccountComplianceProfile.objects.get(account=acc)
         comm = AccountCommercialProfile.objects.get(account=acc)
-        self.assertEqual(comp.gstno, "27ABCDE1234F1Z5")
+        self.assertEqual(comp.gstno, "29ABCDE1234F1Z5")
         self.assertEqual(comp.pan, "ABCDE1234F")
-        self.assertEqual(comm.partytype, "Both")
-        self.assertEqual(comm.creditdays, 45)
+        self.assertEqual(comm.partytype, "Customer")
+        self.assertEqual(comm.creditdays, 30)
 
     def test_account_read_serializer_uses_normalized_profiles_only(self):
         acc = create_account_with_synced_ledger(
@@ -163,15 +162,6 @@ class FinancialLedgerSyncTests(TestCase):
             primary_address_data={"line1": "Profile Address 1"},
             createdby=self.user,
         )
-
-        account.objects.filter(pk=acc.pk).update(
-            gstno=None,
-            pan=None,
-            partytype=None,
-            creditdays=None,
-            address1=None,
-        )
-        acc.refresh_from_db()
 
         data = AccountProfileV2ReadSerializer(acc).data
         self.assertEqual(data["gstno"], "29ABCDE1234F1Z5")
@@ -212,10 +202,7 @@ class FinancialLedgerSyncTests(TestCase):
         acc = serializer.save()
 
         acc.refresh_from_db()
-        self.assertIsNone(acc.gstno)
-        self.assertIsNone(acc.pan)
-        self.assertIsNone(acc.partytype)
-        self.assertIsNone(acc.address1)
+        self.assertEqual(acc.accountname, "Normalized Writer")
 
         comp = AccountComplianceProfile.objects.get(account=acc)
         comm = AccountCommercialProfile.objects.get(account=acc)
@@ -251,14 +238,13 @@ class FinancialLedgerSyncTests(TestCase):
         self.assertIn("partytype", serializer.errors)
         self.assertIn("address1", serializer.errors)
 
-    def test_account_model_blocks_new_legacy_profile_writes(self):
-        with self.assertRaises(ValidationError):
-            account.objects.create(
-                entity=self.entity_a,
-                accountname="Blocked Legacy Write",
-                gstno="29ABCDE1234F1Z5",
-                createdby=self.user,
-            )
+    def test_account_model_allows_create_without_legacy_profile_columns(self):
+        acc = account.objects.create(
+            entity=self.entity_a,
+            accountname="Account Create",
+            createdby=self.user,
+        )
+        self.assertEqual(acc.accountname, "Account Create")
 
 
 class FinancialEndpointAliasTests(TestCase):

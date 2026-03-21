@@ -26,10 +26,11 @@ from django.db.models import (
     Value,
     When,
     Count,
+    Prefetch,
 )
 from django.db.models.functions import Abs, Coalesce
 
-from financial.models import account
+from financial.models import AccountAddress, account
 from posting.models import EntryStatus, JournalLine
 from purchase.models.purchase_ap import (
     VendorAdvanceBalance,
@@ -85,7 +86,11 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
     if vendor_group:
         qs = qs.filter(commercial_profile__agent__iexact=vendor_group)
     if region_id:
-        qs = qs.filter(state_id=region_id)
+        qs = qs.filter(
+            addresses__isprimary=True,
+            addresses__isactive=True,
+            addresses__state_id=region_id,
+        )
     if currency:
         qs = qs.filter(commercial_profile__currency__iexact=currency)
     if search:
@@ -96,27 +101,36 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
             | Q(accountcode__icontains=token)
             | Q(compliance_profile__gstno__icontains=token)
         )
-    return qs.select_related("ledger", "state", "commercial_profile", "compliance_profile").only(
-        "id",
-        "entity_id",
-        "ledger_id",
-        "ledger__id",
-        "ledger__ledger_code",
-        "ledger__name",
-        "ledger__accounthead_id",
-        "accountname",
-        "legalname",
-        "accountcode",
-        "commercial_profile__partytype",
-        "commercial_profile__currency",
-        "commercial_profile__agent",
-        "commercial_profile__creditdays",
-        "commercial_profile__creditlimit",
-        "compliance_profile__gstno",
-        "state_id",
-        "state__statename",
-        "state__statecode",
-    ).order_by("accountname", "id")
+    primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")
+    return (
+        qs.select_related("ledger", "commercial_profile", "compliance_profile")
+        .only(
+            "id",
+            "entity_id",
+            "ledger_id",
+            "ledger__id",
+            "ledger__ledger_code",
+            "ledger__name",
+            "ledger__accounthead_id",
+            "accountname",
+            "legalname",
+            "accountcode",
+            "commercial_profile__partytype",
+            "commercial_profile__currency",
+            "commercial_profile__agent",
+            "commercial_profile__creditdays",
+            "commercial_profile__creditlimit",
+            "compliance_profile__gstno",
+        )
+        .prefetch_related(
+            Prefetch(
+                "addresses",
+                queryset=primary_address_qs,
+                to_attr="prefetched_primary_addresses",
+            )
+        )
+        .order_by("accountname", "id")
+    )
 
 
 def scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
@@ -196,9 +210,6 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
         "vendor__commercial_profile__currency",
         "vendor__compliance_profile__gstno",
         "vendor__commercial_profile__agent",
-        "vendor__state_id",
-        "vendor__state__statename",
-        "vendor__state__statecode",
         "subentity_id",
         "subentity__subentityname",
         "header__id",
@@ -660,12 +671,16 @@ def settlement_history_queryset(*, entity_id, entityfin_id=None, subentity_id=No
     """Return settlements with related lines/open items prefetched for history reporting."""
     qs = VendorSettlement.objects.select_related(
         "vendor",
-        "vendor__state",
         "vendor_ledger",
         "advance_balance",
         "subentity",
         "posted_by",
     ).prefetch_related(
+        Prefetch(
+            "vendor__addresses",
+            queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state"),
+            to_attr="prefetched_primary_addresses",
+        ),
         "lines__open_item",
         "lines__open_item__header",
     ).filter(entity_id=entity_id)
@@ -688,13 +703,18 @@ def note_register_queryset(*, entity_id, entityfin_id=None, subentity_id=None, v
     """Return vendor debit/credit notes with linked references and open-item residuals."""
     qs = PurchaseInvoiceHeader.objects.select_related(
         "vendor",
-        "vendor__state",
         "vendor_ledger",
         "ref_document",
         "ap_open_item",
         "subentity",
         "posted_by",
         "created_by",
+    ).prefetch_related(
+        Prefetch(
+            "vendor__addresses",
+            queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state"),
+            to_attr="prefetched_primary_addresses",
+        )
     ).filter(
         entity_id=entity_id,
         doc_type__in=[PurchaseInvoiceHeader.DocType.CREDIT_NOTE, PurchaseInvoiceHeader.DocType.DEBIT_NOTE],

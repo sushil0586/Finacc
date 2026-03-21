@@ -34,7 +34,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from entity.models import Entity, SubEntity
-from financial.models import Ledger
+from financial.models import AccountAddress, Ledger
 from financial.serializers_ledger import SimpleAccountV2Serializer
 
 from .models import (
@@ -383,7 +383,16 @@ class ProductPageBootstrapAPIView(APIView):
         product_attributes = ProductAttribute.objects.filter(entity_id=entity_id_int, isactive=True).order_by("name")
         accounts = (
             Ledger.objects.filter(entity_id=entity_id_int, account_profile__isnull=False, isactive=True)
-            .select_related("account_profile", "account_profile__state", "account_profile__district", "account_profile__city", "accounthead")
+            .select_related("account_profile", "accounthead")
+            .prefetch_related(
+                Prefetch(
+                    "account_profile__addresses",
+                    queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related(
+                        "country", "state", "district", "city"
+                    ),
+                    to_attr="prefetched_primary_addresses",
+                )
+            )
             .order_by("name", "id")
         )
         locations = SubEntity.objects.filter(entity_id=entity_id_int).order_by("subentityname", "id")

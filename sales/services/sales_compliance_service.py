@@ -37,6 +37,7 @@ from sales.services.eway_payload_builder import (
 )
 
 from sales.services.eway.payload_b2c import build_b2c_direct_payload
+from sales.services.profile_resolvers import entity_primary_address
 
 
 MAX_EWAY_ATTEMPTS = 10
@@ -795,13 +796,14 @@ class SalesComplianceService:
                 **base,
             }
 
+        ent_addr = entity_primary_address(entity)
         default_disp = build_disp_dtls(
             name=getattr(entity, "legalname", None) or getattr(entity, "entityname", None),
-            addr1=getattr(entity, "address", None),
-            addr2=getattr(entity, "address2", None),
-            loc=getattr(getattr(entity, "city", None), "cityname", None) if getattr(entity, "city", None) else None,
-            pin=getattr(entity, "pincode", None),
-            stcd=SalesComplianceService._stcd(getattr(getattr(entity, "state", None), "statecode", None))
+            addr1=getattr(ent_addr, "line1", None),
+            addr2=getattr(ent_addr, "line2", None),
+            loc=getattr(getattr(ent_addr, "city", None), "cityname", None) if getattr(ent_addr, "city", None) else None,
+            pin=getattr(ent_addr, "pincode", None),
+            stcd=SalesComplianceService._stcd(getattr(getattr(ent_addr, "state", None), "statecode", None))
                 or SalesComplianceService._stcd(getattr(inv, "seller_state_code", None)),
         )
 
@@ -879,13 +881,14 @@ class SalesComplianceService:
         ship_in = req.get("exp_ship_dtls") or art.exp_ship_dtls_json
 
         if not disp_in:
+            ent_addr = entity_primary_address(entity)
             disp_in = build_disp_dtls(
                 name=getattr(entity, "legalname", None) or getattr(entity, "entityname", None),
-                addr1=getattr(entity, "address", None),
-                addr2=getattr(entity, "address2", None),
-                loc=getattr(getattr(entity, "city", None), "cityname", None) if getattr(entity, "city", None) else None,
-                pin=getattr(entity, "pincode", None),
-                stcd=getattr(getattr(entity, "state", None), "statecode", None) if getattr(entity, "state", None) else getattr(inv, "seller_state_code", None),
+                addr1=getattr(ent_addr, "line1", None),
+                addr2=getattr(ent_addr, "line2", None),
+                loc=getattr(getattr(ent_addr, "city", None), "cityname", None) if getattr(ent_addr, "city", None) else None,
+                pin=getattr(ent_addr, "pincode", None),
+                stcd=getattr(getattr(ent_addr, "state", None), "statecode", None) if getattr(ent_addr, "state", None) else getattr(inv, "seller_state_code", None),
             )
 
         if not ship_in:
@@ -1442,9 +1445,10 @@ class SalesComplianceService:
         # ✅ standardized ship-to snapshot name
         ship = getattr(invoice, "shipto_snapshot", None)
         ent = getattr(invoice, "entity", None)
+        ent_addr = entity_primary_address(ent) if ent else None
 
         missing = []
-        if not ent or not getattr(ent, "pincode", None):
+        if not ent_addr or not getattr(ent_addr, "pincode", None):
             missing.append("entity.pincode")
         if not ship or not getattr(ship, "pincode", None):
             missing.append("shipto_snapshot.pincode")

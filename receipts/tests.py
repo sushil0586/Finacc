@@ -59,10 +59,19 @@ class PaymentPostingAdapterTests(SimpleTestCase):
 
 
 class ReceiptVoucherServiceTests(SimpleTestCase):
+    databases = {"default"}
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
-    def test_post_voucher_calls_posting_adapter(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+    def test_post_voucher_calls_posting_adapter(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_fresh_allocs,
+    ):
         header = SimpleNamespace(
             id=11,
             entity_id=1,
@@ -89,6 +98,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         )
 
         mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_fresh_allocs.return_value = []
 
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "off",
@@ -146,10 +156,17 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 level="hard",
             )
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
-    def test_post_voucher_warn_mode_returns_warning_message(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+    def test_post_voucher_warn_mode_returns_warning_message(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_fresh_allocs,
+    ):
         row = SimpleNamespace(open_item_id=501, settled_amount=Decimal("120.00"))
         header = SimpleNamespace(
             id=21,
@@ -176,6 +193,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             save=MagicMock(),
         )
         mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_fresh_allocs.return_value = [row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "off",
@@ -219,10 +237,17 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 }],
             )
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
-    def test_post_voucher_with_advance_adjustments_requires_ap_sync(self, mock_header_objects, mock_get_policy, mock_post_adapter):
+    def test_post_voucher_with_advance_adjustments_requires_ap_sync(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_fresh_allocs,
+    ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,
             allocation_id=None,
@@ -256,6 +281,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             save=MagicMock(),
         )
         mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_fresh_allocs.return_value = [alloc_row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "off",
@@ -272,6 +298,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=31, posted_by_id=9)
         mock_post_adapter.assert_not_called()
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.SalesArService.post_settlement")
     @patch("receipts.services.receipt_voucher_service.SalesArService.create_settlement")
@@ -284,6 +311,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_create_settlement,
         mock_post_settlement,
         mock_post_adapter,
+        mock_fresh_allocs,
     ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,
@@ -323,6 +351,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             save=MagicMock(),
         )
         mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_fresh_allocs.return_value = [alloc_row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "on",
@@ -574,8 +603,10 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherAllocation.objects.create")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects.create")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._account_ledger_id")
     def test_draft_create_with_advance_adjustments(
         self,
+        mock_account_ledger_id,
         mock_get_policy,
         mock_header_create,
         mock_alloc_create,
@@ -585,6 +616,7 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
         mock_validate_allocations,
         mock_validate_adv,
     ):
+        mock_account_ledger_id.return_value = None
         header = MagicMock()
         header.id = 61
         header.entity_id = 1

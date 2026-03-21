@@ -208,7 +208,11 @@ class PurchaseGstTdsTests(SimpleTestCase):
 class PurchaseApiSmokeTests(APITestCase):
     def setUp(self):
         user_model = get_user_model()
-        self.user = user_model.objects.create_user(username="purchase_api_tester", password="x")
+        self.user = user_model.objects.create_user(
+            username="purchase_api_tester",
+            email="purchase_api_tester@example.com",
+            password="x",
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
@@ -252,7 +256,7 @@ class PurchaseApiSmokeTests(APITestCase):
         self.assertEqual(mock_get_current_doc_no.call_count, 3)
 
     def test_charge_type_detail_missing_id_returns_404(self):
-        resp = self.client.get("/api/purchase/charge-types/999999/")
+        resp = self.client.get("/api/purchase/charge-types/999999/?entity=1")
         self.assertEqual(resp.status_code, 404)
 
 
@@ -274,6 +278,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
             "bill_date": date(2026, 3, 3),
             "posting_date": date(2026, 3, 3),
             "vendor_id": 7001,
+            "vendor_ledger_id": 7001,
             "doc_type": 1,
             "purchase_number": "PINV-101",
             "grand_total": Decimal("100.00"),
@@ -498,7 +503,11 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
 class PurchaseApiExtendedSmokeTests(APITestCase):
     def setUp(self):
         user_model = get_user_model()
-        self.user = user_model.objects.create_user(username="purchase_api_ext_tester", password="x")
+        self.user = user_model.objects.create_user(
+            username="purchase_api_ext_tester",
+            email="purchase_api_ext_tester@example.com",
+            password="x",
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 

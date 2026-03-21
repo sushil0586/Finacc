@@ -68,11 +68,16 @@ class AccountHeadAdmin(ImportExportModelAdmin):
 @admin.register(account)
 class AccountAdmin(ImportExportModelAdmin):
     resource_class = AccountResource
-    list_display = ("accountname", "accountcode", "gstno", "entity", "accounthead")
+    list_display = ("accountname", "accountcode", "compliance_gstno", "entity", "accounthead")
     list_filter = ("entity",)
-    search_fields = ("accountname", "gstno", "accountcode")
+    search_fields = ("accountname", "compliance_profile__gstno", "accountcode")
     ordering = ("entity", "accountcode")
-    list_select_related = ("entity", "accounthead")
+    list_select_related = ("entity", "accounthead", "compliance_profile")
+
+    @admin.display(description="GSTIN")
+    def compliance_gstno(self, obj):
+        profile = getattr(obj, "compliance_profile", None)
+        return getattr(profile, "gstno", None)
 
 
 # Optional: keep these normal (not import/export), because they depend on Account IDs heavily

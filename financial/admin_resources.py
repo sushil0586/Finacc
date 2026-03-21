@@ -3,8 +3,6 @@ from import_export.widgets import ForeignKeyWidget
 
 from entity.models import Entity
 from Authentication.models import User
-from geography.models import Country, State, District, City
-
 from .models import (
     accounttype,
     accountHead,
@@ -148,27 +146,6 @@ class AccountResource(resources.ModelResource):
         widget=ForeignKeyWidget(accountHead, "code"),
     )
 
-    country = fields.Field(
-        column_name="country",
-        attribute="country",
-        widget=ForeignKeyWidget(Country, "name"),
-    )
-    state = fields.Field(
-        column_name="state",
-        attribute="state",
-        widget=ForeignKeyWidget(State, "name"),
-    )
-    district = fields.Field(
-        column_name="district",
-        attribute="district",
-        widget=ForeignKeyWidget(District, "name"),
-    )
-    city = fields.Field(
-        column_name="city",
-        attribute="city",
-        widget=ForeignKeyWidget(City, "name"),
-    )
-
     class Meta:
         model = account
         # Choose your natural key:
@@ -178,18 +155,12 @@ class AccountResource(resources.ModelResource):
             "entity",
             "accountcode",
             "accountname",
-            "gstno",
-            "pan",
             "emailid",
             "contactno",
             "openingbdr",
             "openingbcr",
             "accounthead_code",
             "creditaccounthead_code",
-            "country",
-            "state",
-            "district",
-            "city",
             "createdby",
         )
         skip_unchanged = True
@@ -206,8 +177,5 @@ class AccountResource(resources.ModelResource):
         row["createdby"] = _blank_to_none(row.get("createdby"))
         row["accounthead_code"] = _blank_to_none(row.get("accounthead_code"))
         row["creditaccounthead_code"] = _blank_to_none(row.get("creditaccounthead_code"))
-        # allow location blanks
-        for k in ("country", "state", "district", "city"):
-            row[k] = _blank_to_none(row.get(k))
 
 

@@ -506,9 +506,12 @@ class SimpleAccountsV2APIView(ListAPIView):
             "accounthead",
             "account_profile",
             "account_profile__compliance_profile",
-            "account_profile__state",
-            "account_profile__district",
-            "account_profile__city",
+        ).prefetch_related(
+            Prefetch(
+                "account_profile__addresses",
+                queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state"),
+                to_attr="prefetched_primary_addresses",
+            )
         )
 
         accounthead_codes = self.request.query_params.get("accounthead", "")
@@ -612,10 +615,6 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
             "ledger__creditaccounthead",
             "compliance_profile",
             "commercial_profile",
-            "country",
-            "state",
-            "district",
-            "city",
         ).prefetch_related(
             Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses")
         )
@@ -659,10 +658,6 @@ class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestr
             "ledger__creditaccounthead",
             "compliance_profile",
             "commercial_profile",
-            "country",
-            "state",
-            "district",
-            "city",
         ).prefetch_related(
             Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses")
         )

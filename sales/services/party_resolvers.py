@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 import re
-from financial.profile_access import account_gstno
+from financial.profile_access import account_gstno, account_primary_address
+from sales.services.profile_resolvers import entity_primary_address
 
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 
@@ -85,11 +86,7 @@ def seller_from_entity(entity) -> Dict[str, Any]:
     if not gst_row:
         raise ValueError("Entity gstno is required.")
     gstin = _normalize_gstin(getattr(gst_row, "gstin", None), allow_urp=False)
-    addr = (
-        entity.addresses.filter(isactive=True, is_primary=True)
-        .select_related("state", "city")
-        .first()
-    )
+    addr = entity_primary_address(entity)
     contact = entity.contacts.filter(isactive=True, is_primary=True).first()
 
     out = {
@@ -117,7 +114,8 @@ def seller_from_entity(entity) -> Dict[str, Any]:
 
 
 def buyer_from_account(acct, pos_state=None) -> Dict[str, Any]:
-    stcd = _state_gst_code(acct.state) if getattr(acct, "state", None) else "00"
+    acct_addr = account_primary_address(acct)
+    stcd = _state_gst_code(getattr(acct_addr, "state", None)) if getattr(acct_addr, "state", None) else "00"
     pos = _state_gst_code(pos_state) if pos_state else stcd
 
     gstin = (account_gstno(acct) or "").strip()
@@ -130,10 +128,10 @@ def buyer_from_account(acct, pos_state=None) -> Dict[str, Any]:
     out = {
         "Gstin": gstin,
         "LglNm": (getattr(acct, "legalname", None) or getattr(acct, "accountname", None) or "").strip() or "NA",
-        "Addr1": _clean_addr(getattr(acct, "address1", None)),
-        "Addr2": (getattr(acct, "address2", None) or "").strip() or None,
-        "Loc": _clean_loc(_name(getattr(acct, "city", None))),
-        "Pin": _clean_pin_required(getattr(acct, "pincode", None), "Buyer pincode"),
+        "Addr1": _clean_addr(getattr(acct_addr, "line1", None)),
+        "Addr2": (getattr(acct_addr, "line2", None) or "").strip() or None,
+        "Loc": _clean_loc(_name(getattr(acct_addr, "city", None))),
+        "Pin": _clean_pin_required(getattr(acct_addr, "pincode", None), "Buyer pincode"),
         "Stcd": stcd,
         "Pos": pos,
         # Optional:

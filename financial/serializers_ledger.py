@@ -2,6 +2,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from financial.models import Ledger, account
+from financial.profile_access import account_primary_address
 from financial.services import (
     allocate_next_ledger_code,
     apply_normalized_profile_payload,
@@ -100,11 +101,11 @@ class SimpleAccountV2Serializer(serializers.ModelSerializer):
     accounthead = serializers.IntegerField(source="accounthead_id", read_only=True)
     accountname = serializers.CharField(source="account_profile.accountname", read_only=True)
     accountcode = serializers.IntegerField(source="ledger_code", allow_null=True, read_only=True)
-    state = serializers.IntegerField(source="account_profile.state_id", allow_null=True, read_only=True)
-    statecode = serializers.CharField(source="account_profile.state.statecode", allow_null=True, read_only=True)
-    district = serializers.IntegerField(source="account_profile.district_id", allow_null=True, read_only=True)
-    city = serializers.IntegerField(source="account_profile.city_id", allow_null=True, read_only=True)
-    pincode = serializers.CharField(source="account_profile.pincode", allow_null=True, read_only=True)
+    state = serializers.SerializerMethodField()
+    statecode = serializers.SerializerMethodField()
+    district = serializers.SerializerMethodField()
+    city = serializers.SerializerMethodField()
+    pincode = serializers.SerializerMethodField()
     gstno = serializers.SerializerMethodField()
     pan = serializers.SerializerMethodField()
     saccode = serializers.CharField(source="account_profile.saccode", allow_null=True, read_only=True)
@@ -139,6 +140,34 @@ class SimpleAccountV2Serializer(serializers.ModelSerializer):
             return None
         compliance = getattr(acc, "compliance_profile", None)
         return getattr(compliance, "pan", None)
+
+    @staticmethod
+    def _primary_address(obj):
+        acc = getattr(obj, "account_profile", None)
+        if not acc:
+            return None
+        return account_primary_address(acc)
+
+    def get_state(self, obj):
+        address = self._primary_address(obj)
+        return getattr(address, "state_id", None)
+
+    def get_statecode(self, obj):
+        address = self._primary_address(obj)
+        state = getattr(address, "state", None)
+        return getattr(state, "statecode", None)
+
+    def get_district(self, obj):
+        address = self._primary_address(obj)
+        return getattr(address, "district_id", None)
+
+    def get_city(self, obj):
+        address = self._primary_address(obj)
+        return getattr(address, "city_id", None)
+
+    def get_pincode(self, obj):
+        address = self._primary_address(obj)
+        return getattr(address, "pincode", None)
 
 
 class AccountListPostV2RowSerializer(serializers.Serializer):
@@ -492,13 +521,6 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
             "ledger_mode",
             "ledger",
         )
-
-    def get_fields(self):
-        fields = super().get_fields()
-        gst_field = serializers.SerializerMethodField()
-        gst_field.bind("gstno", self)
-        fields["gstno"] = gst_field
-        return fields
 
     def _get_compliance(self, obj):
         return getattr(obj, "compliance_profile", None)

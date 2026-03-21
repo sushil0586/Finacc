@@ -20,8 +20,9 @@ from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.compliance_audit_service import ComplianceAuditService
 from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails, account
-from financial.profile_access import account_gstno, account_partytype
+from financial.profile_access import account_gstno, account_partytype, account_region_state
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
+from sales.services.profile_resolvers import entity_primary_gstin, entity_primary_state
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
 from posting.services.posting_service import PostingService, JLInput, IMInput
@@ -378,13 +379,13 @@ class SalesInvoiceService:
             if not cls._is_valid_gstin(header.customer_gstin):
                 header.customer_gstin = cls._normalize_gstin(account_gstno(cust))
             if not (header.customer_state_code or "").strip():
-                header.customer_state_code = cls._state_code_from_state_obj(getattr(cust, "state", None))
+                header.customer_state_code = cls._state_code_from_state_obj(account_region_state(cust))
 
         if ent:
             if not cls._is_valid_gstin(header.seller_gstin):
-                header.seller_gstin = cls._normalize_gstin(getattr(ent, "gstno", None))
+                header.seller_gstin = cls._normalize_gstin(entity_primary_gstin(ent))
             if not (header.seller_state_code or "").strip():
-                header.seller_state_code = cls._state_code_from_state_obj(getattr(ent, "state", None))
+                header.seller_state_code = cls._state_code_from_state_obj(entity_primary_state(ent))
 
         # Derive POS from bill-to/ship-to/customer when missing.
         if not (header.place_of_supply_state_code or "").strip():

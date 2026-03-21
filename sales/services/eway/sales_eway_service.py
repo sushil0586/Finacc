@@ -9,6 +9,7 @@ from sales.services.providers.mastergst_client import MasterGSTClient
 from sales.models import SalesEWayBill, SalesEWayStatus, SalesEWaySource
 
 from sales.services.eway.sales_eway_payload_b2c import build_b2c_direct_eway_payload
+from sales.services.profile_resolvers import entity_primary_gstin
 
 def _parse_mastergst_status_desc(status_desc: str) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -29,7 +30,7 @@ class SalesEWayService:
 
     @staticmethod
     def _entity_gstin(entity: Any) -> str:
-        gstin = getattr(entity, "gstin", None) or getattr(entity, "gstin_no", None)
+        gstin = entity_primary_gstin(entity)
         if not gstin:
             raise ValueError("Entity GSTIN missing.")
         return gstin

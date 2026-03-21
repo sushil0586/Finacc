@@ -4,7 +4,7 @@ from financial.services import backfill_missing_account_profiles
 
 
 class Command(BaseCommand):
-    help = "One-time backfill for missing normalized account profiles (compliance/commercial/address)."
+    help = "One-time backfill for missing normalized account profiles (compliance/commercial)."
 
     def add_arguments(self, parser):
         parser.add_argument("--entity-id", type=int, default=None)

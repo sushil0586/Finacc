@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 from catalog.models import Product, ProductGstRate, UnitOfMeasure
 from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import EntityFinancialYear, SubEntity
-from financial.models import account
+from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from purchase.models.purchase_config import DEFAULT_POLICY_CONTROLS
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorSettlement
@@ -69,49 +69,48 @@ class PurchaseMetaBaseAPIView(APIView):
         return rows
 
     def _vendors(self, entity_id: int):
-        rows = list(
+        primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state", "city")
+        vendors = list(
             account.objects.filter(entity_id=entity_id, isactive=True)
             .filter(
                 Q(commercial_profile__partytype__in=["Vendor", "Both", "Bank"])
                 | Q(commercial_profile__partytype__isnull=True)
                 | Q(commercial_profile__partytype="")
             )
-            .select_related("ledger", "state", "city", "compliance_profile", "commercial_profile")
-            .order_by("accountname", "id")
-            .values(
-                "id",
-                "accountname",
-                "compliance_profile__gstno",
-                "compliance_profile__pan",
-                "commercial_profile__partytype",
-                "state_id",
-                "state__statecode",
-                "state__statename",
-                "city_id",
-                "city__cityname",
-                "ledger_id",
-                "ledger__ledger_code",
-                "ledger__name",
+            .select_related("ledger", "compliance_profile", "commercial_profile")
+            .prefetch_related(
+                Prefetch(
+                    "addresses",
+                    queryset=primary_address_qs,
+                    to_attr="prefetched_primary_addresses",
+                )
             )
+            .order_by("accountname", "id")
         )
-        return [
-            {
-                "id": row["id"],
-                "accountname": row["accountname"],
-                "display_name": row["ledger__name"] or row["accountname"],
-                "accountcode": row["ledger__ledger_code"],
-                "gstno": row["compliance_profile__gstno"],
-                "pan": row["compliance_profile__pan"],
-                "partytype": row["commercial_profile__partytype"] or "Vendor",
-                "state": row["state_id"],
-                "statecode": row["state__statecode"],
-                "statename": row["state__statename"],
-                "city": row["city_id"],
-                "cityname": row["city__cityname"],
-                "ledger_id": row["ledger_id"],
-            }
-            for row in rows
-        ]
+        rows = []
+        for row in vendors:
+            prefetched_primary = getattr(row, "prefetched_primary_addresses", None)
+            primary = prefetched_primary[0] if prefetched_primary else None
+            state = getattr(primary, "state", None)
+            city = getattr(primary, "city", None)
+            rows.append(
+                {
+                    "id": row.id,
+                    "accountname": row.accountname,
+                    "display_name": getattr(row.ledger, "name", None) or row.accountname,
+                    "accountcode": getattr(row.ledger, "ledger_code", None),
+                    "gstno": getattr(getattr(row, "compliance_profile", None), "gstno", None),
+                    "pan": getattr(getattr(row, "compliance_profile", None), "pan", None),
+                    "partytype": getattr(getattr(row, "commercial_profile", None), "partytype", None) or "Vendor",
+                    "state": getattr(primary, "state_id", None),
+                    "statecode": getattr(state, "statecode", None),
+                    "statename": getattr(state, "statename", None),
+                    "city": getattr(primary, "city_id", None),
+                    "cityname": getattr(city, "cityname", None),
+                    "ledger_id": row.ledger_id,
+                }
+            )
+        return rows
 
     def _charge_types(self, entity_id: int):
         return list(
