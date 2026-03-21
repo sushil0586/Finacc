@@ -126,9 +126,11 @@ def build_financial_report_meta(entity_id: int) -> dict:
     )
     subentities = list(
         SubEntity.objects.filter(entity_id=entity_id, isactive=1)
-        .order_by("subentityname")
-        .values("id", "subentityname", "ismainentity")
+        .order_by("-is_head_office", "subentityname", "id")
+        .values("id", "subentityname", "is_head_office")
     )
+    for row in subentities:
+        row["ismainentity"] = row["is_head_office"]
     account_options = _account_option_payload(entity_id)
     return {
         "entity_id": entity_id,

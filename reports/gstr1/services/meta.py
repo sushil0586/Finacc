@@ -17,9 +17,11 @@ def build_gstr1_report_meta(*, entity_id: int, entityfinid_id: int | None = None
     )
     subentities = list(
         SubEntity.objects.filter(entity_id=entity_id, isactive=True)
-        .order_by("-ismainentity", "subentityname", "id")
-        .values("id", "subentityname", "ismainentity")
+        .order_by("-is_head_office", "subentityname", "id")
+        .values("id", "subentityname", "is_head_office")
     )
+    for row in subentities:
+        row["ismainentity"] = row["is_head_office"]
     return {
         "entity_id": entity_id,
         "entityfinid_id": entityfinid_id,

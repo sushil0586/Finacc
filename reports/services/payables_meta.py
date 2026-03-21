@@ -26,11 +26,14 @@ def _financial_years(entity_id: int) -> list[dict]:
 
 
 def _subentities(entity_id: int) -> list[dict]:
-    return list(
+    rows = list(
         SubEntity.objects.filter(entity_id=entity_id, isactive=True)
-        .order_by("-ismainentity", "subentityname", "id")
-        .values("id", "subentityname", "ismainentity")
+        .order_by("-is_head_office", "subentityname", "id")
+        .values("id", "subentityname", "is_head_office")
     )
+    for row in rows:
+        row["ismainentity"] = row["is_head_office"]
+    return rows
 
 
 def _vendors(entity_id: int) -> list[dict]:

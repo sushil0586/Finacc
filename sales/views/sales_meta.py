@@ -67,11 +67,15 @@ class SalesMetaBaseAPIView(APIView):
         )
 
     def _subentities(self, entity_id: int):
-        return list(
+        rows = list(
             SubEntity.objects.filter(entity_id=entity_id, isactive=True)
-            .order_by("-ismainentity", "subentityname", "id")
-            .values("id", "subentityname", "ismainentity")
+            .order_by("-is_head_office", "subentityname", "id")
+            .values("id", "subentityname", "is_head_office")
         )
+        for row in rows:
+            # Backward-compatible key for older frontend consumers.
+            row["ismainentity"] = row["is_head_office"]
+        return rows
 
     def _customers(self, entity_id: int):
         rows = list(
