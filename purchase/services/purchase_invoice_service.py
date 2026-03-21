@@ -1058,6 +1058,10 @@ class PurchaseInvoiceService:
 
         existing_qs = header.charges.all()
         existing_by_id = {c.id: c for c in existing_qs}
+        existing_by_line = {}
+        for c in existing_qs:
+            if c.line_no is not None and c.line_no not in existing_by_line:
+                existing_by_line[int(c.line_no)] = c
         seen_ids: set[int] = set()
 
         # recompute & upsert
@@ -1065,6 +1069,15 @@ class PurchaseInvoiceService:
             row = PurchaseInvoiceService._resolve_charge_master(header=header, row=row)
             cid = int(row.get("id") or 0)
             row["header"] = header
+            line_no_for_insert = int(row.get("line_no") or idx)
+
+            # normalize ITC reason; avoid nulls in DB
+            reason_str = (row.get("itc_block_reason") or "").strip()
+            itc_eligible_flag = bool(row.get("itc_eligible", True))
+            if not itc_eligible_flag and not reason_str:
+                reason_str = "Blocked ITC"
+            row["itc_eligible"] = itc_eligible_flag
+            row["itc_block_reason"] = reason_str
 
             # compute amounts server-side
             comp = PurchaseInvoiceService.compute_charge_amounts(header=header, row=row)
@@ -1107,10 +1120,43 @@ class PurchaseInvoiceService:
                     "updated_at",
                 ])
             else:
-                # insert
+                # insert or upsert by line_no to avoid unique constraint clashes
+                existing_line_obj = existing_by_line.get(line_no_for_insert)
+                if existing_line_obj:
+                    seen_ids.add(existing_line_obj.id)
+                    for f in [
+                        "line_no",
+                        "charge_type",
+                        "description",
+                        "taxability",
+                        "is_service",
+                        "hsn_sac_code",
+                        "is_rate_inclusive_of_tax",
+                        "taxable_value",
+                        "gst_rate",
+                        "cgst_amount",
+                        "sgst_amount",
+                        "igst_amount",
+                        "total_value",
+                        "itc_eligible",
+                        "itc_block_reason",
+                    ]:
+                        if f in row:
+                            setattr(existing_line_obj, f, row[f])
+                    existing_line_obj.save(update_fields=[
+                        "line_no", "charge_type", "description", "taxability",
+                        "is_service", "hsn_sac_code", "is_rate_inclusive_of_tax",
+                        "taxable_value", "gst_rate",
+                        "cgst_amount", "sgst_amount", "igst_amount",
+                        "total_value", "itc_eligible", "itc_block_reason",
+                        "updated_at",
+                    ])
+                    continue
+
+                # insert fresh
                 PurchaseChargeLine.objects.create(
                     header=header,
-                    line_no=int(row.get("line_no") or idx),
+                    line_no=line_no_for_insert,
                     charge_type=row.get("charge_type") or PurchaseChargeLine.ChargeType.OTHER,
                     description=row.get("description") or "",
                     taxability=row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE,
@@ -1171,6 +1217,10 @@ class PurchaseInvoiceService:
     def create_with_lines(validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         lines_client = validated_data.pop("lines", []) or []
         charges_client = validated_data.pop("charges", []) or []
+        # Numbering is controlled by allocation services on confirm/post.
+        # Ignore any client-sent values to avoid duplicate unique-key conflicts.
+        validated_data.pop("doc_no", None)
+        validated_data.pop("purchase_number", None)
 
         PurchaseInvoiceService.assert_not_locked(
             entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
@@ -1259,6 +1309,9 @@ class PurchaseInvoiceService:
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         lines_provided = "lines" in validated_data
         lines_client = validated_data.pop("lines", None)
+        # Never allow replacing allocated numbering from update payload.
+        validated_data.pop("doc_no", None)
+        validated_data.pop("purchase_number", None)
         if lines_provided:
             lines_client = lines_client or []
 

@@ -1,10 +1,31 @@
+from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.db import transaction
 
-from Authentication.models import MainMenu, Submenu, User
-from entity.models import Entity, Role as LegacyRole, RolePrivilege, UserRole
-
 from .models import Menu, MenuPermission, Permission, Role, RolePermission, UserRoleAssignment
-from .services import LegacyRBACCodes
+
+
+
+class LegacyRBACCodes:
+    @staticmethod
+    def role_code(legacy_role_id):
+        return f"legacy_role_{legacy_role_id}"
+
+    @staticmethod
+    def main_menu_code(legacy_main_menu_id):
+        return f"legacy.mainmenu.{legacy_main_menu_id}"
+
+    @staticmethod
+    def sub_menu_code(legacy_submenu_id):
+        return f"legacy.submenu.{legacy_submenu_id}"
+
+    @staticmethod
+    def main_menu_permission_code(legacy_main_menu_id):
+        return f"legacy.mainmenu.{legacy_main_menu_id}.access"
+
+    @staticmethod
+    def sub_menu_permission_code(legacy_submenu_id):
+        return f"legacy.submenu.{legacy_submenu_id}.access"
 
 
 def _safe_sort_order(value):
@@ -12,6 +33,13 @@ def _safe_sort_order(value):
         return max(int(value or 0), 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _get_model(app_label, model_name):
+    try:
+        return apps.get_model(app_label, model_name)
+    except LookupError:
+        return None
 
 
 class LegacyRBACBackfillService:
@@ -25,6 +53,11 @@ class LegacyRBACBackfillService:
 
     @classmethod
     def _backfill_menus_and_permissions(cls):
+        MainMenu = _get_model("Authentication", "MainMenu")
+        Submenu = _get_model("Authentication", "Submenu")
+        if MainMenu is None or Submenu is None:
+            return
+
         for main_menu in MainMenu.objects.all().order_by("order", "id"):
             root_menu, _ = Menu.objects.update_or_create(
                 code=LegacyRBACCodes.main_menu_code(main_menu.id),
@@ -99,6 +132,10 @@ class LegacyRBACBackfillService:
 
     @classmethod
     def _backfill_roles(cls):
+        LegacyRole = _get_model("entity", "Role")
+        if LegacyRole is None:
+            return
+
         for legacy_role in LegacyRole.objects.select_related("entity").all():
             Role.objects.update_or_create(
                 entity=legacy_role.entity,
@@ -119,15 +156,19 @@ class LegacyRBACBackfillService:
 
     @classmethod
     def _backfill_role_permissions(cls):
-        for privilege in RolePrivilege.objects.select_related("role", "submenu", "entity").all():
-            if privilege.role_id is None or privilege.submenu_id is None:
+        RolePrivilege = _get_model("entity", "RolePrivilege")
+        if RolePrivilege is None:
+            return
+
+        for privilege in RolePrivilege.objects.all().values("role_id", "submenu_id", "entity_id"):
+            if privilege["role_id"] is None or privilege["submenu_id"] is None:
                 continue
             role = Role.objects.filter(
-                entity_id=privilege.entity_id,
-                code=LegacyRBACCodes.role_code(privilege.role_id),
+                entity_id=privilege["entity_id"],
+                code=LegacyRBACCodes.role_code(privilege["role_id"]),
             ).first()
             permission = Permission.objects.filter(
-                code=LegacyRBACCodes.sub_menu_permission_code(privilege.submenu_id)
+                code=LegacyRBACCodes.sub_menu_permission_code(privilege["submenu_id"])
             ).first()
             if role and permission:
                 RolePermission.objects.get_or_create(
@@ -138,23 +179,28 @@ class LegacyRBACBackfillService:
 
     @classmethod
     def _backfill_user_assignments(cls):
-        for user_role in UserRole.objects.select_related("user", "entity", "role").all():
-            if user_role.user_id is None or user_role.entity_id is None or user_role.role_id is None:
+        UserRole = _get_model("entity", "UserRole")
+        if UserRole is None:
+            return
+
+        UserModel = get_user_model()
+        for user_role in UserRole.objects.all().values("id", "user_id", "entity_id", "role_id"):
+            if user_role["user_id"] is None or user_role["entity_id"] is None or user_role["role_id"] is None:
                 continue
             role = Role.objects.filter(
-                entity_id=user_role.entity_id,
-                code=LegacyRBACCodes.role_code(user_role.role_id),
+                entity_id=user_role["entity_id"],
+                code=LegacyRBACCodes.role_code(user_role["role_id"]),
             ).first()
             if not role:
                 continue
             UserRoleAssignment.objects.get_or_create(
-                user_id=user_role.user_id,
-                entity_id=user_role.entity_id,
+                user_id=user_role["user_id"],
+                entity_id=user_role["entity_id"],
                 role=role,
                 subentity=None,
                 defaults={
-                    "assigned_by_id": user_role.user_id if User.objects.filter(id=user_role.user_id).exists() else None,
+                    "assigned_by_id": user_role["user_id"] if UserModel.objects.filter(id=user_role["user_id"]).exists() else None,
                     "is_primary": True,
-                    "scope_data": {"legacy_user_role_id": user_role.id},
+                    "scope_data": {"legacy_user_role_id": user_role["id"]},
                 },
             )

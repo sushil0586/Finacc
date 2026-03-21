@@ -17,8 +17,7 @@ urlpatterns  = [
     path('user',views.AuthApiView.as_view(), name = 'user'),
     path('me',views.AuthMeView.as_view(), name = 'me'),
     path('changepassword',views.ChangePasswordView.as_view(), name = 'ChangePassword'),
-    path('menus',views.MenusApiView.as_view(), name = 'MenusApiView'),
-    path('submenus',views.SubMenusApiView.as_view(), name = 'MenusApiView'),
 
     
 ]
+

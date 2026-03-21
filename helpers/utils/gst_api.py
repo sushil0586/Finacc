@@ -12,7 +12,10 @@ from urllib3.util.retry import Retry
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad as pkcs7_pad
 
-from entity.models import MasterGstDetail
+try:
+    from entity.models import MasterGstDetail
+except ImportError:
+    MasterGstDetail = None
 
 logger = logging.getLogger(__name__)
 
@@ -430,3 +433,5 @@ def cancel_gst_invoice(irn: str, cancel_reason_code: Union[int, str], cancel_rem
     except Exception as e:
         logger.exception("Exception in cancel_gst_invoice")
         return {"error": "Exception occurred during e-invoice cancellation", "details": str(e)}
+
+

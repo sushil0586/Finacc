@@ -80,25 +80,32 @@ def _normalize_gstin(gstin: Optional[str], *, allow_urp: bool = False) -> str:
 
 
 def seller_from_entity(entity) -> Dict[str, Any]:
-    if not entity.gstno:
+    gst_row = entity.gst_registrations.filter(isactive=True, is_primary=True).first()
+    if not gst_row:
         raise ValueError("Entity gstno is required.")
-    gstin = _normalize_gstin(getattr(entity, "gstno", None), allow_urp=False)
+    gstin = _normalize_gstin(getattr(gst_row, "gstin", None), allow_urp=False)
+    addr = (
+        entity.addresses.filter(isactive=True, is_primary=True)
+        .select_related("state", "city")
+        .first()
+    )
+    contact = entity.contacts.filter(isactive=True, is_primary=True).first()
 
     out = {
         "Gstin": gstin,
         "LglNm": (entity.legalname or entity.entityname or "").strip() or "NA",
-        "Addr1": _clean_addr(getattr(entity, "address", None)),
-        "Addr2": (getattr(entity, "address2", None) or "").strip() or None,
-        "Loc": _clean_loc(_name(getattr(entity, "city", None))),
-        "Pin": _clean_pin_required(getattr(entity, "pincode", None), "Seller pincode"),
-        "Stcd": _state_gst_code(entity.state),
+        "Addr1": _clean_addr(getattr(addr, "line1", None)),
+        "Addr2": (getattr(addr, "line2", None) or "").strip() or None,
+        "Loc": _clean_loc(_name(getattr(addr, "city", None))),
+        "Pin": _clean_pin_required(getattr(addr, "pincode", None), "Seller pincode"),
+        "Stcd": _state_gst_code(getattr(addr, "state", None)),
         # Optional fields if you have them:
         # "Ph": str(entity.phone).strip()[:12] if getattr(entity, "phone", None) else None,
         # "Em": str(entity.email).strip()[:50] if getattr(entity, "email", None) else None,
     }
     trd = (getattr(entity, "entityname", None) or "").strip()
-    ph = (getattr(entity, "contactno", None) or getattr(entity, "phone", None) or "").strip()
-    em = (getattr(entity, "emailid", None) or getattr(entity, "email", None) or "").strip()
+    ph = (getattr(contact, "mobile", None) or getattr(entity, "contactno", None) or getattr(entity, "phone", None) or "").strip()
+    em = (getattr(contact, "email", None) or getattr(entity, "emailid", None) or getattr(entity, "email", None) or "").strip()
     if trd:
         out["TrdNm"] = trd[:100]
     if ph:

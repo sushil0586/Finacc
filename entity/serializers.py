@@ -1,9 +1,9 @@
 #import imp
 from struct import pack
 from rest_framework import serializers
-from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,EntityConstitution,Constitution,SubEntity,Role,RolePrivilege,UserRole,GstRegistrationType,BankAccount
-from Authentication.models import User,Submenu
-from Authentication.serializers import Registerserializers
+from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,EntityConstitution,Constitution,SubEntity,GstRegistrationType,BankAccount
+
+from Authentication.models import User
 from financial.models import accountHead,account
 from financial.serializers import AccountHeadSerializer,AccountSerializer,accountHeadSerializer2,accounttypeserializer,AccountTypeJsonSerializer
 import os
@@ -11,86 +11,9 @@ import json
 import collections
 from django.contrib.auth.hashers import make_password
 from django.db import transaction
-
+from rbac.models import Role as RBACRole, UserRoleAssignment
 
 #from Authentication.serializers import userserializer
-
-
-
-
-
-
-
-
-class rolemainSerializer1(serializers.ModelSerializer):
-  
-    class Meta:
-        model = Role
-        fields = ('id','rolename','roledesc','rolelevel','entity',)
-
-
-
-class RolePrivDetailSerializer(serializers.ModelSerializer):
-    
-
-    class Meta:
-        model = RolePrivilege
-        fields =  ('role','submenu','entity',)
-
-
-
-
-class RoleMainSerializer(serializers.ModelSerializer):
-    submenudetails = RolePrivDetailSerializer(many=True)
-
-    class Meta:
-        model = Role
-        fields = ('id', 'rolename', 'roledesc', 'rolelevel', 'entity', 'submenudetails')
-
-    def create(self, validated_data):
-        roledetails_data = validated_data.pop('submenudetails', [])
-        # Create the role instance
-        role = Role.objects.create(**validated_data)
-        
-        # Bulk create RolePriv instances
-        RolePrivilege.objects.bulk_create([
-            RolePrivilege(role=role, **roledetail_data) for roledetail_data in roledetails_data
-        ])
-        
-        return role
-
-    def update(self, instance, validated_data):
-        fields_to_update = ['rolename', 'roledesc', 'rolelevel', 'entity']
-        
-        # Update specified fields
-        for field in fields_to_update:
-            if field in validated_data:
-                setattr(instance, field, validated_data[field])
-        instance.save()
-
-        # Clear old RolePriv entries and add new ones
-        RolePrivilege.objects.filter(role=instance, entity=instance.entity).delete()
-        roledetails_data = validated_data.get('submenudetails', [])
-
-        # Bulk create RolePriv instances
-        RolePrivilege.objects.bulk_create([
-            RolePrivilege(role=instance, **roledetail_data) for roledetail_data in roledetails_data
-        ])
-
-        return instance
-
-
- 
-
-
-
-class roleSerializer(serializers.ModelSerializer):
-
-    class Meta:
-        model = RolePrivilege
-        fields = '__all__'
-
-
 
 class ConstitutionSerializer(serializers.ModelSerializer):
 
@@ -98,20 +21,17 @@ class ConstitutionSerializer(serializers.ModelSerializer):
         model = Constitution
         fields = '__all__'
 
-
 class unitTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UnitType
         fields = '__all__'
 
-
 class entityconstitutionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EntityConstitution
         fields = '__all__'
-
 
 class EntityFinancialYearSerializecreate(serializers.ModelSerializer):
     # Derived fields from related 'entity' model
@@ -134,11 +54,6 @@ class EntityFinancialYearSerializecreate(serializers.ModelSerializer):
 
             # Create a new financial year record for the entity
             return EntityFinancialYear.objects.create(**validated_data)
-
-
-
-
-
 
 class EntityFinancialYearSerializer(serializers.ModelSerializer):
     entityname = serializers.CharField(source='entity.entityname', read_only=True)
@@ -199,14 +114,12 @@ class EntityFinancialYearSerializer(serializers.ModelSerializer):
             return EntityFinancialYear.objects.create(**validated_data)
     
 
-
 class entityfinancialyearListSerializer(serializers.ModelSerializer):
 
     class Meta:
 
         model = EntityFinancialYear
         fields = ('id','finstartyear','finendyear','isactive',)
-
 
 class subentitySerializer(serializers.ModelSerializer):
 
@@ -215,7 +128,6 @@ class subentitySerializer(serializers.ModelSerializer):
         model = SubEntity
         fields = ('id','subentityname','address','country','state','district','city','pincode','phoneoffice','phoneresidence','email','ismainentity', 'entity')
 
-
 class subentitySerializerbyentity(serializers.ModelSerializer):
 
     class Meta:
@@ -223,22 +135,12 @@ class subentitySerializerbyentity(serializers.ModelSerializer):
         model = SubEntity
         fields = ('id','subentityname','ismainentity',)
 
-
     
     
-
 
     
 
     
-
-
-
-
-
-
-
-
 
 class entityAddSerializer(serializers.ModelSerializer):
 
@@ -254,9 +156,7 @@ class entityAddSerializer(serializers.ModelSerializer):
 
     serializer = AccountHeadSerializer
     accounthead = accountHeadSerializer2
-    roleserializer = rolemainSerializer1
 
- 
     acounttype = AccountTypeJsonSerializer
 
     def process_json_file(self, newentity, users, accountdate1):
@@ -268,7 +168,6 @@ class entityAddSerializer(serializers.ModelSerializer):
         # Mapping serializers to corresponding JSON keys
         serializers_mapping = {
             "acconttype": (self.acounttype, {"entity": newentity, "createdby": users[0]}),
-            "Roles": (self.roleserializer, {"entity": newentity}),
         }
 
         # Iterate through the JSON keys and process data
@@ -279,7 +178,6 @@ class entityAddSerializer(serializers.ModelSerializer):
                     serializer = serializer_class(data=item)
                     serializer.is_valid(raise_exception=True)
                     objects_to_create.append(serializer.save(**extra_kwargs))
-
 
     def create(self, validated_data):
         # Extract related data
@@ -310,10 +208,6 @@ class entityAddSerializer(serializers.ModelSerializer):
         # Process additional JSON file logic
         self.process_json_file(newentity=newentity, users=users, accountdate1=accountdate1)
 
-        # Create admin role and user role
-        roleid = Role.objects.get(entity=newentity, rolename="Admin")
-        UserRole.objects.create(entity=newentity, role=roleid, user=users[0])
-
         # Create default subentity
         SubEntity.objects.create(
             subentityname="Main-Branch",
@@ -327,13 +221,6 @@ class entityAddSerializer(serializers.ModelSerializer):
             phoneresidence=newentity.phoneresidence,
             entity=newentity,
         )
-
-        # Bulk create role privileges
-        submenus = Submenu.objects.all()
-        role_privileges = [
-            RolePrivilege(role=roleid, submenu=submenu, entity=newentity) for submenu in submenus
-        ]
-        RolePrivilege.objects.bulk_create(role_privileges)
 
         # Process constitution data
         constitution_details = []
@@ -426,17 +313,9 @@ class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
             return obj.finendyear.strftime('%Y-%m-%d')  # e.g., 2024-12-31
         return None
 
-
-
-
-
-
     
 
-
-
 # class entityUserSerializer(serializers.ModelSerializer):
-
 
 #     user_details = Registerserializers(many=False)
 
@@ -445,10 +324,7 @@ class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
 #         fields =  ('id','entity','user')
 #         depth = 0
 
-
-
 # class entityUserAddSerializer(serializers.ModelSerializer):
-
 
 #     user = Registerserializers(many=False)
 
@@ -475,176 +351,11 @@ class EntityFinancialYearSerializerlist(serializers.ModelSerializer):
        
     #     return rep
 
-
-class useroleentitySerializer(serializers.ModelSerializer):
-
-
-    user = Registerserializers(many = False)
-      
-
-    class Meta:
-        model = UserRole
-        fields = ('user','role','entity',)
-
-        
-
-  
-
-    
-
-    
-
-    def create(self, validated_data):
-        userdetails = validated_data.pop('user')
-
-        # print(userdetails.get('email'))
-
-        # if  User.objects.get(email = userdetails.get('email')).count() > 0:
-        #     return 1
-        # else:
-        user = User.objects.create(**userdetails)
-        userrole = UserRole.objects.create(user = user,**validated_data )
-        return userrole
-
-        
-
-    def update(self, instance, validated_data):
-
-        print(validated_data)
-        userdetails = validated_data.pop('user')
-        print(userdetails.get('email'))
-
-        if User.objects.filter(email = userdetails.get('email')):
-            print('1111111111111111111111111111111')
-            userdetails = userdetails.pop('email')
-            User.objects.filter(id = instance.user__id).update(username = userdetails.get('username'),first_name = userdetails.get('first_name'),last_name = userdetails.get('last_name'))
-        else:
-            print('222222222222222222222222222')
-            User.objects.filter(id = instance.user.id).update(**userdetails)
-
-        
-        newuser = UserRole.objects.filter(id = instance.id).update(role = validated_data.get('role'))
-
-        # fields = ['role','entity']
-        # for field in fields:
-        #     try:
-        #         setattr(instance, field, validated_data[field])
-        #     except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-        #         pass
-
-
-        
-
-       # User.objects.filter(id = instance.user).update(**userdetails)
-        # print(validated_data)
-        # package = validated_data.pop('user')
-        # role = validated_data.pop('role')
-        # package.pop('id')
-        # role = Role.objects.get(id = role)
-        # for key in range(len(package)):
-        #     print(key)
-        #     try:
-        #         id = User.objects.get(email = package[key]['email'])
-        #         instance.user.add(id)
-        #         Userrole.objects.filter(entity = instance.id,user = id).update(role = role,entity = instance.id,user = id)
-        #     except User.DoesNotExist:
-        #          u = User.objects.create(**package[key])
-        #          instance.user.add(u)
-        #          Userrole.objects.create(role = role,entity = instance.id,user = u)
-
-            
-            
-        #    # print(package[key])
-        
-        # # #instance.user.set(self.create_or_update_packages(package))
-        # # fields = ['id','unitType','entityName','address','ownerName']
-        # # for field in fields:
-        # #     try:
-        # #         setattr(instance, field, validated_data[field])
-        # #     except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-        # #         pass
-        # # print(instance)
-        # # instance.save()
-        return newuser
-    
-
-class userbyentitySerializer(serializers.ModelSerializer):
-
-
-    class Meta:
-        model = UserRole
-        #fields = ('id','entityName','fy',)
-        fields = ('username','first_name','last_name','email','password','roleid','entityid',)
-
-    def create(self, validated_data):
-
-        print(validated_data)
-
-        entityid = validated_data.pop('entityid')
-        roleid = validated_data.pop('roleid')
-        password = make_password(validated_data.pop('password'))
-
-        userid = User.objects.create(**validated_data,password = password)
-
-        roleinstance = UserRole.objects.create(entity = entityid,role = roleid,user =userid)
-
-        
-        # package = validated_data.pop('user', [])
-        # order = entity.objects.create(**validated_data)
-        # order.user.set(self.get_or_create_packages(package))
-        # return order
-        return userid
-
-    def update(self, instance, validated_data):
-        print(validated_data)
-        package = validated_data.pop('user', [])
-        for key in range(len(package)):
-            print(key)
-            try:
-                id = User.objects.get(email = package[key]['email'])
-                instance.user.add(id)
-            except User.DoesNotExist:
-                 u = User.objects.create(**package[key])
-                 instance.user.add(u)
-
-            
-            
-           # print(package[key])
-        
-        # #instance.user.set(self.create_or_update_packages(package))
-        # fields = ['id','unitType','entityName','address','ownerName']
-        # for field in fields:
-        #     try:
-        #         setattr(instance, field, validated_data[field])
-        #     except KeyError:  # validated_data may not contain all fields during HTTP PATCH
-        #         pass
-        # print(instance)
-        # instance.save()
-        return instance
-
-
-# class entitySerializer_load(serializers.ModelSerializer):
-
-
-#     entityUser = entityUserSerializer(many=True)
-
-    
-
-#     class Meta:
-#         model = entity
-#         fields = '__all__'
-        
-
-   
-
-
-
 class entityDetailsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EntityDetail
         fields = ('entity','email',)
-
 
    
         
@@ -652,9 +363,6 @@ class entityDetailsSerializer(serializers.ModelSerializer):
         # for PurchaseOrderDetail_data in PurchaseOrderDetails_data:
         #     PurchaseOrderDetails.objects.create(purchaseOrder = order, **PurchaseOrderDetail_data)
         # return order
-
-
-
 
 # class Userserializer(serializers.ModelSerializer):
 
@@ -665,7 +373,6 @@ class entityDetailsSerializer(serializers.ModelSerializer):
 #     uentity = entityAddSerializer(many=True)
 
 #     rolename = serializers.SerializerMethodField()
-
 
 #     class Meta:
 #         model = User
@@ -680,12 +387,10 @@ class entityDetailsSerializer(serializers.ModelSerializer):
 #             acc =  obj.role.rolename
 #             return acc
 
-
 class GstRegitrationTypesSerializer(serializers.ModelSerializer):
     class Meta:
         model = GstRegistrationType
         fields = ['id', 'Name', 'Description']
-
 
 class BankAccountSerializer(serializers.ModelSerializer):
     class Meta:
@@ -709,31 +414,25 @@ class BankAccountSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("A primary bank account already exists for this entity.")
         return attrs
 
-
 class BankAccountNewSerializer(serializers.ModelSerializer):
     class Meta:
         model = BankAccount
         exclude = ["entity"]
-
 
 class SubEntityNewSerializer(serializers.ModelSerializer):
     class Meta:
         model = SubEntity
         exclude = ["entity"]
 
-
 class EntityFinancialYearNewSerializer(serializers.ModelSerializer):
     class Meta:
         model = EntityFinancialYear
         exclude = ["entity", "createdby"]  # createdby set from request.user
 
-
 class EntityConstitutionNewSerializer(serializers.ModelSerializer):
     class Meta:
         model = EntityConstitution
         exclude = ["entity", "createdby"]  # createdby set from request.user
-
-
 
 class EntityNewSerializer(serializers.ModelSerializer):
     bank_accounts = BankAccountNewSerializer(many=True, required=False)
@@ -896,24 +595,21 @@ class EntityNewSerializer(serializers.ModelSerializer):
         # -------------------------
         # Assign Admin role to creator
         # -------------------------
-        roleid, _ = Role.objects.get_or_create(
+        roleid, _ = RBACRole.objects.get_or_create(
             entity=entity,
-            rolename="Admin",
+            code="entity.admin",
             defaults={
-                "roledesc": "System Admin",
-                "rolelevel": 1,
-              
+                "name": "Admin",
+                "description": "System Admin",
+                "role_level": RBACRole.LEVEL_ENTITY,
+                "is_system_role": True,
             },
         )
-
-        UserRole.objects.create(entity=entity, role=roleid, user=user)
-
-        # -------------------------
-        # Give all submenu privileges to Admin
-        # -------------------------
-        submenus = Submenu.objects.all()
-        RolePrivilege.objects.bulk_create(
-            [RolePrivilege(role=roleid, submenu=submenu, entity=entity) for submenu in submenus]
+        UserRoleAssignment.objects.get_or_create(
+            user=user,
+            entity=entity,
+            role=roleid,
+            defaults={"is_primary": True},
         )
 
         # -------------------------
@@ -1061,35 +757,4 @@ class EntityNewSerializer(serializers.ModelSerializer):
             self._upsert_nested(EntityConstitution, "constitution", instance, "entity", constitution_data, user=user)
 
         return instance
-
-class UserEntityRoleSerializer(serializers.ModelSerializer):
-    entityid = serializers.IntegerField(source='entity.id')
-    entityname = serializers.CharField(source='entity.entityname')
-    gstno = serializers.CharField(source='entity.gstno')
-    email = serializers.EmailField(source='user.email')
-    role = serializers.SerializerMethodField()
-    roleid = serializers.IntegerField(source='role.id')
-
-    class Meta:
-        model = UserRole
-        fields = ['entityid', 'entityname', 'email', 'gstno', 'role', 'roleid']
-
-    def get_role(self, obj):
-        return f"{obj.role.rolename} - {obj.entity.entityname}"
-
-
-class UserSerializerentities(serializers.ModelSerializer):
-    userid = serializers.IntegerField(source='id')
-    user = serializers.EmailField(source='email')
-    uentity = serializers.SerializerMethodField()
-
-    class Meta:
-        model = User
-        fields = ['userid', 'first_name', 'last_name', 'email', 'user', 'uentity']
-
-    def get_uentity(self, obj):
-        userroles = UserRole.objects.filter(user=obj).select_related('entity', 'role')
-        return UserEntityRoleSerializer(userroles, many=True).data
-
-
 

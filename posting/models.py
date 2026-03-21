@@ -67,6 +67,7 @@ class StaticAccount(models.Model):
                              default=StaticAccountGroup.OTHER, db_index=True)
     is_required = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0)
     description = models.CharField(max_length=500, null=True, blank=True)
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)
@@ -82,6 +83,8 @@ class EntityStaticAccountMap(models.Model):
     Use is_active to replace mappings over time without deleting.
     """
     entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE,related_name="posting_static_account_maps",)
+    sub_entity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
+
     static_account = models.ForeignKey(StaticAccount, on_delete=models.PROTECT,related_name="entity_maps",)
     account = models.ForeignKey(account, on_delete=models.PROTECT, related_name="+",)
     # Additive ledger storage. Keep account for compatibility until all downstream
@@ -98,10 +101,10 @@ class EntityStaticAccountMap(models.Model):
     class Meta:
         constraints = [
             UniqueConstraint(
-                fields=["entity", "static_account"],
-                condition=Q(is_active=True),
-                name="uq_esam_entity_static_active",
-            ),
+            fields=["entity", "sub_entity", "static_account"],
+            condition=Q(is_active=True),
+            name="uq_esam_entity_subentity_static_active",
+        ),
         ]
         indexes = [
             Index(fields=["entity", "static_account"], name="ix_esam_entity_static"),

@@ -6,6 +6,10 @@ from django.utils.html import format_html
 from django.urls import reverse
 from django.db.models.functions import Coalesce
 from django.db.models import DecimalField
+from django.forms import ModelForm
+from django.core.exceptions import ValidationError
+
+
 
 from .models import (
     StaticAccount,
@@ -49,22 +53,261 @@ class ReadOnlyAdminMixin:
 # -------------------------
 # Static accounts admin
 # -------------------------
+class EntityStaticAccountMapInline(admin.TabularInline):
+    model = EntityStaticAccountMap
+    extra = 0
+    fields = (
+        "entity",
+        "sub_entity",
+        "account",
+        "ledger",
+        "effective_from",
+        "is_active",
+    )
+    readonly_fields = ("effective_from",)
+    autocomplete_fields = ("entity", "sub_entity", "account", "ledger")
+    show_change_link = True
+
+
 @admin.register(StaticAccount)
 class StaticAccountAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "group", "is_required", "is_active", "created_at", "updated_at")
-    list_filter = ("group", "is_required", "is_active")
-    search_fields = ("code", "name")
-    ordering = ("group", "code")
-    readonly_fields = ("created_at", "updated_at")
+    list_display = (
+        "code",
+        "name",
+        "group",
+        "sort_order",
+        "is_required",
+        "is_active",
+        "usage_count",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = (
+        "group",
+        "is_required",
+        "is_active",
+    )
+    search_fields = (
+        "code",
+        "name",
+        "description",
+    )
+    ordering = (
+        "group",
+        "sort_order",
+        "code",
+    )
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+    )
+    inlines = (EntityStaticAccountMapInline,)
+
+    fieldsets = (
+        ("Basic Information", {
+            "fields": (
+                "code",
+                "name",
+                "group",
+                "sort_order",
+            )
+        }),
+        ("Behavior", {
+            "fields": (
+                "is_required",
+                "is_active",
+            )
+        }),
+        ("Description", {
+            "fields": (
+                "description",
+            )
+        }),
+        ("System Information", {
+            "fields": (
+                "created_at",
+                "updated_at",
+            )
+        }),
+    )
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.annotate(_usage_count=Count("entity_maps"))
+
+    def usage_count(self, obj):
+        return obj._usage_count
+    usage_count.short_description = "Usage Count"
+
+    def has_delete_permission(self, request, obj=None):
+        # Prevent accidental deletion of static master roles
+        return False
+
+
+class EntityStaticAccountMapAdminForm(ModelForm):
+    class Meta:
+        model = EntityStaticAccountMap
+        fields = "__all__"
+
+    def clean(self):
+        cleaned_data = super().clean()
+
+        entity = cleaned_data.get("entity")
+        static_account = cleaned_data.get("static_account")
+        is_active = cleaned_data.get("is_active")
+        account_obj = cleaned_data.get("account")
+        ledger = cleaned_data.get("ledger")
+
+        if not account_obj and not ledger:
+            raise ValidationError("Either account or ledger must be selected.")
+
+        # Respect current DB constraint:
+        # only one active mapping per entity + static_account
+        if entity and static_account and is_active:
+            qs = EntityStaticAccountMap.objects.filter(
+                entity=entity,
+                static_account=static_account,
+                is_active=True,
+            )
+            if self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+
+            if qs.exists():
+                raise ValidationError(
+                    "An active mapping already exists for this entity and static account."
+                )
+
+        return cleaned_data
 
 
 @admin.register(EntityStaticAccountMap)
 class EntityStaticAccountMapAdmin(admin.ModelAdmin):
-    list_display = ("entity", "static_account", "account", "ledger", "is_active", "effective_from", "created_at")
-    list_filter = ("entity", "is_active", "static_account__group")
-    search_fields = ("static_account__code", "static_account__name", "account__accountname", "ledger__name")
-    ordering = ("entity", "static_account__group", "static_account__code")
-    readonly_fields = ("created_at", "updated_at")
+    form = EntityStaticAccountMapAdminForm
+
+    list_display = (
+        "entity",
+        "sub_entity",
+        "static_account",
+        "static_group",
+        "account",
+        "ledger",
+        "is_active",
+        "effective_from",
+        "createdby",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = (
+        "entity",
+        "sub_entity",
+        "is_active",
+        "static_account__group",
+        "static_account__is_required",
+    )
+    search_fields = (
+        "entity__name",
+        "sub_entity__name",
+        "static_account__code",
+        "static_account__name",
+        "account__accountname",
+        "ledger__name",
+    )
+    ordering = (
+        "entity",
+        "sub_entity",
+        "static_account__group",
+        "static_account__sort_order",
+        "static_account__code",
+    )
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "createdby",
+    )
+    autocomplete_fields = (
+        "entity",
+        "sub_entity",
+        "static_account",
+        "account",
+        "ledger",
+    )
+    list_select_related = (
+        "entity",
+        "sub_entity",
+        "static_account",
+        "account",
+        "ledger",
+        "createdby",
+    )
+
+    fieldsets = (
+        ("Mapping Scope", {
+            "fields": (
+                "entity",
+                "sub_entity",
+                "static_account",
+            )
+        }),
+        ("Mapped Target", {
+            "fields": (
+                "account",
+                "ledger",
+            )
+        }),
+        ("Status", {
+            "fields": (
+                "is_active",
+                "effective_from",
+            )
+        }),
+        ("Audit", {
+            "fields": (
+                "createdby",
+                "created_at",
+                "updated_at",
+            )
+        }),
+    )
+
+    actions = ("mark_selected_inactive",)
+
+    def static_group(self, obj):
+        return obj.static_account.get_group_display()
+    static_group.short_description = "Group"
+    static_group.admin_order_field = "static_account__group"
+
+    def save_model(self, request, obj, form, change):
+        if not obj.createdby:
+            obj.createdby = request.user
+
+        # Respect current uniqueness rule:
+        # one active mapping per entity + static_account
+        if obj.is_active:
+            qs = EntityStaticAccountMap.objects.filter(
+                entity=obj.entity,
+                static_account=obj.static_account,
+                is_active=True,
+            )
+            if obj.pk:
+                qs = qs.exclude(pk=obj.pk)
+
+            # Auto-deactivate previous active mapping
+            for old in qs:
+                old.is_active = False
+                old.save(update_fields=["is_active", "updated_at"])
+
+        super().save_model(request, obj, form, change)
+
+    @admin.action(description="Mark selected mappings as inactive")
+    def mark_selected_inactive(self, request, queryset):
+        queryset.update(is_active=False)
+
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(super().get_readonly_fields(request, obj))
+        if obj:
+            # Prevent changing identity fields after creation
+            ro.extend(["entity", "sub_entity", "static_account"])
+        return ro
 
 
 # -------------------------

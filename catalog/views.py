@@ -20,7 +20,7 @@ from rest_framework.generics import ListAPIView
 from django.db.models import Q, Prefetch, OuterRef, Subquery
 from django.shortcuts import get_object_or_404
 
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, serializers, status
 from rest_framework.exceptions import ValidationError, NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -34,7 +34,6 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from entity.models import Entity, SubEntity
-from entity.serializers import subentitySerializerbyentity
 from financial.models import account
 from financial.serializers import SimpleAccountSerializer
 
@@ -81,6 +80,12 @@ from .serializers import (
     ProductBarcodeManageSerializer,
 )
 from .transaction_products import TransactionProductCatalogService
+
+
+class SubentityLiteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubEntity
+        fields = ("id", "subentityname", "is_head_office")
 
 
 # ----------------------------------------------------------------------
@@ -396,7 +401,7 @@ class ProductPageBootstrapAPIView(APIView):
             "pricelists": PriceListSerializer(pricelists, many=True).data,
             "product_attributes": ProductAttributeSerializer(product_attributes, many=True).data,
             "accounts": SimpleAccountSerializer(accounts, many=True).data,
-            "locations": subentitySerializerbyentity(locations, many=True).data,
+            "locations": SubentityLiteSerializer(locations, many=True).data,
         }
         return Response(data)
 

@@ -45,11 +45,23 @@ def _legacy_sub_menu_permission_code(submenu_id):
     return f"legacy.submenu.{submenu_id}.access"
 
 
+def _get_model_or_none(apps, app_label, model_name):
+    try:
+        return apps.get_model(app_label, model_name)
+    except LookupError:
+        return None
+
+
 def forwards(apps, schema_editor):
-    MainMenu = apps.get_model("Authentication", "MainMenu")
-    Submenu = apps.get_model("Authentication", "Submenu")
-    LegacyRole = apps.get_model("entity", "Role")
-    RolePrivilege = apps.get_model("entity", "RolePrivilege")
+    MainMenu = _get_model_or_none(apps, "Authentication", "MainMenu")
+    Submenu = _get_model_or_none(apps, "Authentication", "Submenu")
+    LegacyRole = _get_model_or_none(apps, "entity", "Role")
+    RolePrivilege = _get_model_or_none(apps, "entity", "RolePrivilege")
+    if not all([Submenu, RolePrivilege]):
+        return
+    if not all([MainMenu, Submenu, LegacyRole, RolePrivilege]):
+        # Legacy menu/role models may not exist on fresh installs.
+        return
     Menu = apps.get_model("rbac", "Menu")
     Permission = apps.get_model("rbac", "Permission")
     MenuPermission = apps.get_model("rbac", "MenuPermission")

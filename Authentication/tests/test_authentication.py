@@ -1,11 +1,13 @@
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework import exceptions
 from rest_framework.test import APIClient, APIRequestFactory
 
 from Authentication.models import AuthAuditLog, AuthOTP, AuthSession
 from Authentication.jwt import JwtAuthentication
+from Authentication.services import AuthOTPService, AuthSettings
 from subscriptions.models import CustomerAccount, CustomerSubscription
 
 
@@ -77,6 +79,7 @@ class AuthUserEndpointTests(TestCase):
 
 class AuthFlowTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.user = User.objects.create_user(
             username="login_user",
@@ -208,3 +211,45 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.data["intent"], "trial")
         self.assertTrue(resp.data["trial_started"])
         self.assertEqual(resp.data["subscription"]["subscription"]["status"], "trial")
+
+    def test_forgot_password_send_is_rate_limited(self):
+        original_limit = AuthSettings.OTP_SEND_RATE_LIMIT_ATTEMPTS
+        original_window = AuthSettings.OTP_SEND_RATE_LIMIT_WINDOW
+        AuthSettings.OTP_SEND_RATE_LIMIT_ATTEMPTS = 1
+        AuthSettings.OTP_SEND_RATE_LIMIT_WINDOW = 600
+        try:
+            first = self.client.post("/api/auth/forgotpassword", {"email": self.user.email}, format="json")
+            self.assertEqual(first.status_code, 200)
+
+            second = self.client.post("/api/auth/forgotpassword", {"email": self.user.email}, format="json")
+            self.assertEqual(second.status_code, 429)
+        finally:
+            AuthSettings.OTP_SEND_RATE_LIMIT_ATTEMPTS = original_limit
+            AuthSettings.OTP_SEND_RATE_LIMIT_WINDOW = original_window
+
+    def test_verify_email_invalid_attempts_are_rate_limited(self):
+        original_limit = AuthSettings.OTP_VERIFY_RATE_LIMIT_ATTEMPTS
+        original_window = AuthSettings.OTP_VERIFY_RATE_LIMIT_WINDOW
+        AuthSettings.OTP_VERIFY_RATE_LIMIT_ATTEMPTS = 1
+        AuthSettings.OTP_VERIFY_RATE_LIMIT_WINDOW = 600
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified", "updated_at"])
+        AuthOTPService.create_otp(user=self.user, email=self.user.email, purpose="email_verification")
+
+        try:
+            first = self.client.post(
+                "/api/auth/verify-email",
+                {"email": self.user.email, "otp": "000000"},
+                format="json",
+            )
+            self.assertEqual(first.status_code, 400)
+
+            second = self.client.post(
+                "/api/auth/verify-email",
+                {"email": self.user.email, "otp": "000000"},
+                format="json",
+            )
+            self.assertEqual(second.status_code, 429)
+        finally:
+            AuthSettings.OTP_VERIFY_RATE_LIMIT_ATTEMPTS = original_limit
+            AuthSettings.OTP_VERIFY_RATE_LIMIT_WINDOW = original_window

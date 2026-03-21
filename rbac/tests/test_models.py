@@ -4,23 +4,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from Authentication.models import User
-from Authentication.models import MainMenu, Submenu
-from entity.models import (
-    BankDetail,
-    Constitution,
-    Entity,
-    GstRegistrationType,
-    Role as LegacyRole,
-    RolePrivilege,
-    SubEntity,
-    UnitType,
-    UserRole,
-)
-from geography.models import City, Country, District, State
+from entity.models import Entity, SubEntity
 from rbac.models import Menu, Permission, Role, RolePermission, UserRoleAssignment
-from rbac.backfill import LegacyRBACBackfillService
 from rbac.seeding import PayrollRBACSeedService
-from rbac.services import LegacyMenuCompatibilityService
 
 
 class RBACModelTests(TestCase):
@@ -29,50 +15,11 @@ class RBACModelTests(TestCase):
             email="admin@example.com",
             username="admin@example.com",
             password="secret123",
+            email_verified=True,
         )
-        self.country = Country.objects.create(countryname="India", countrycode="IN")
-        self.state = State.objects.create(statename="Karnataka", statecode="KA", country=self.country)
-        self.district = District.objects.create(districtname="Bangalore", districtcode="BLR", state=self.state)
-        self.city = City.objects.create(
-            cityname="Bangalore",
-            citycode="BLR",
-            pincode="560001",
-            distt=self.district,
-        )
-        self.unit_type = UnitType.objects.create(UnitName="Unit", UnitDesc="Unit")
-        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
-        self.constitution = Constitution.objects.create(
-            constitutionname="Private Limited",
-            constitutiondesc="Private Limited",
-            constcode="PVT",
-            createdby=self.user,
-        )
-        self.bank = BankDetail.objects.create(bankname="ABC", bankcode="ABC", ifsccode="ABC0001")
-        self.entity = Entity.objects.create(
-            entityname="Demo Entity",
-            entitydesc="Demo",
-            legalname="Demo Entity Pvt Ltd",
-            unitType=self.unit_type,
-            GstRegitrationType=self.gst_type,
-            address="Address",
-            ownername="Owner",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
-            bank=self.bank,
-            phoneoffice="1234567890",
-            phoneresidence="1234567890",
-            const=self.constitution,
-            createdby=self.user,
-        )
+        self.entity = Entity.objects.create(entityname="Demo Entity", createdby=self.user)
         self.subentity = SubEntity.objects.create(
             subentityname="Branch 1",
-            address="Branch address",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
             entity=self.entity,
         )
 
@@ -119,40 +66,6 @@ class RBACModelTests(TestCase):
         with self.assertRaises(IntegrityError):
             RolePermission.objects.create(role=role, permission=permission)
 
-    def test_legacy_backfill_and_menu_compatibility(self):
-        main_menu = MainMenu.objects.create(mainmenu="Sales", menuurl="/sales", menucode="sales", order=1)
-        submenu = Submenu.objects.create(
-            mainmenu=main_menu,
-            submenu="Invoices",
-            submenucode="sales.invoices",
-            subMenuurl="/sales/invoices",
-            order=1,
-        )
-        legacy_role = LegacyRole.objects.create(
-            rolename="Sales User",
-            roledesc="Sales access",
-            rolelevel=1,
-            entity=self.entity,
-        )
-        UserRole.objects.create(user=self.user, entity=self.entity, role=legacy_role)
-        RolePrivilege.objects.create(role=legacy_role, submenu=submenu, entity=self.entity)
-
-        LegacyRBACBackfillService.run()
-
-        self.assertTrue(Role.objects.filter(entity=self.entity, code="legacy_role_1").exists())
-        self.assertTrue(Menu.objects.filter(code="legacy.mainmenu.1").exists())
-        self.assertTrue(Permission.objects.filter(code="legacy.submenu.1.access").exists())
-
-        response = LegacyMenuCompatibilityService.legacy_shape_for_user(
-            user=self.user,
-            entity_id=self.entity.id,
-            role_id=legacy_role.id,
-        )
-
-        sales_row = next(item for item in response if item["mainmenu"] == "Sales")
-        self.assertEqual(sales_row["mainmenu"], "Sales")
-        self.assertEqual(sales_row["submenu"][0]["submenu"], "Invoices")
-
     def test_assignment_effective_window_property(self):
         role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
         future_assignment = UserRoleAssignment.objects.create(
@@ -162,6 +75,20 @@ class RBACModelTests(TestCase):
             effective_from=timezone.now() + timezone.timedelta(days=1),
         )
         self.assertFalse(future_assignment.is_currently_effective)
+
+    def test_assignment_subentity_entity_mismatch_validation(self):
+        other_entity = Entity.objects.create(entityname="Other", createdby=self.user)
+        role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
+        foreign_subentity = SubEntity.objects.create(subentityname="Other Branch", entity=other_entity)
+        assignment = UserRoleAssignment(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            subentity=foreign_subentity,
+        )
+
+        with self.assertRaises(ValidationError):
+            assignment.clean()
 
     def test_payroll_rbac_seed_service_is_idempotent(self):
         first = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)

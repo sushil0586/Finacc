@@ -257,7 +257,25 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         return LedgerSerializer
 
     def perform_create(self, serializer):
-        serializer.save(createdby=self.request.user)
+        ledger = serializer.save(createdby=self.request.user)
+        # Auto-create a linked account profile for non-system ledgers.
+        if not ledger.is_system and not getattr(ledger, "account_profile_id", None):
+            account.objects.create(
+                ledger=ledger,
+                entity=ledger.entity,
+                accountname=ledger.name,
+                legalname=ledger.legal_name,
+                accountcode=ledger.ledger_code,
+                accounthead=ledger.accounthead,
+                creditaccounthead=ledger.creditaccounthead,
+                contraaccount=ledger.contra_ledger.account_profile if ledger.contra_ledger_id else None,
+                accounttype=ledger.accounttype,
+                openingbcr=ledger.openingbcr,
+                openingbdr=ledger.openingbdr,
+                canbedeleted=ledger.canbedeleted,
+                isactive=ledger.isactive,
+                createdby=self.request.user,
+            )
 
 
 class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):

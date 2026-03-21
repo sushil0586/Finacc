@@ -51,6 +51,7 @@ urlpatterns = [
     path("api/rbac/", include("rbac.urls", namespace="rbac_api")),
     path("api/vouchers/", include("vouchers.urls")),
     path("api/sales/", include("sales.urls.api")),
+    path("api/posting/", include("posting.urls")),
     path("api/", include("withholding.urls")),
 
     re_path(r'^swagger(?P<format>\.json|\.yaml)$',  # use re_path + raw string
