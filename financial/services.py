@@ -259,7 +259,14 @@ def apply_normalized_profile_payload(
             )
         address.entity = acc.entity
         address.createdby = actor
+        fk_fields = {"country", "state", "district", "city"}
         for field_name, value in primary_address_data.items():
+            # Frontend sends FK ids (e.g. state: 1). Django FK attributes
+            # expect model instances unless we assign via <field>_id.
+            if field_name in fk_fields:
+                normalized = None if value in (None, "", 0, "0") else value
+                setattr(address, f"{field_name}_id", normalized)
+                continue
             setattr(address, field_name, value)
         address.save()
 
