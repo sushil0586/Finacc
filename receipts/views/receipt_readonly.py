@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from rest_framework import generics, permissions
 from rest_framework.exceptions import ValidationError
@@ -166,8 +166,17 @@ class ReceiptCustomerStatementAPIView(APIView):
         )
         customer_obj = (
             account.objects.filter(id=customer_id)
-            .select_related("ledger")
-            .select_related("ledger", "compliance_profile", "commercial_profile").only("id", "accountname", "ledger_id", "ledger__ledger_code", "ledger__name")
+            .select_related("ledger", "compliance_profile", "commercial_profile")
+            .only(
+                "id",
+                "accountname",
+                "ledger_id",
+                "ledger__ledger_code",
+                "ledger__name",
+                "compliance_profile__gstno",
+                "compliance_profile__pan",
+                "commercial_profile__partytype",
+            )
             .first()
         )
         customer_block = None

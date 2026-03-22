@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
-from django.db.models import Max   # ✅ ADD THIS
+from django.db.models import Max, Q
 from django.db.models import Sum
 import re
 
@@ -38,6 +38,7 @@ from sales.models import (
     SalesInvoiceHeader,
     SalesInvoiceLine,
     SalesChargeLine,
+    SalesChargeType,
     SalesTaxSummary,
     SalesSettings,
     SalesLockPeriod,
@@ -506,7 +507,7 @@ class SalesInvoiceService:
         SalesInvoiceShipToSnapshot.objects.update_or_create(
             header=header,
             defaults=dict(
-                # ✅ include scope if your snapshot is EntityScopedModel
+                # âœ… include scope if your snapshot is EntityScopedModel
                 entity_id=header.entity_id,
                 entityfinid_id=header.entityfinid_id,
                 subentity_id=header.subentity_id,
@@ -569,7 +570,7 @@ class SalesInvoiceService:
         if not dt:
             raise ValueError(f"DocumentType not found: sales/{doc_key}")
 
-        # ✅ consumes number (thread-safe) ONLY now
+        # âœ… consumes number (thread-safe) ONLY now
         res = DocumentNumberService.allocate_final(
             entity_id=header.entity_id,
             entityfinid_id=header.entityfinid_id,
@@ -1008,10 +1009,10 @@ class SalesInvoiceService:
     def upsert_lines(*, header, incoming_lines, user, allow_delete: bool) -> None:
         incoming_lines = incoming_lines or []
 
-        # ✅ Always compute max from DB (ignores any deferred manager weirdness)
+        # âœ… Always compute max from DB (ignores any deferred manager weirdness)
         max_ln = int(header.lines.aggregate(m=Max("line_no")).get("m") or 0)
 
-        # ✅ Build existing maps from DB (no .only(), no defers)
+        # âœ… Build existing maps from DB (no .only(), no defers)
         existing_rows = list(header.lines.all().values("id", "line_no"))
         existing_by_id = {int(r["id"]): int(r["line_no"] or 0) for r in existing_rows}
         existing_by_lineno = {int(r["line_no"]): int(r["id"]) for r in existing_rows if r["line_no"]}
@@ -1035,7 +1036,7 @@ class SalesInvoiceService:
             row_id = int(row.get("id") or 0)
             row_ln = int(row.get("line_no") or 0)
 
-            # ✅ If UI forgot id but line_no matches existing, treat as UPDATE
+            # âœ… If UI forgot id but line_no matches existing, treat as UPDATE
             if row_id == 0 and row_ln > 0 and row_ln in existing_by_lineno:
                 row_id = existing_by_lineno[row_ln]
 
@@ -1251,9 +1252,98 @@ class SalesInvoiceService:
         )
 
     @staticmethod
+    def _resolve_charge_master(*, header: SalesInvoiceHeader, row: dict) -> dict:
+        data = dict(row or {})
+        raw_id = data.pop("charge_type_id", None)
+        raw_type = data.get("charge_type")
+        master = None
+
+        qs = (
+            SalesChargeType.objects.filter(is_active=True)
+            .filter(Q(entity_id=header.entity_id) | Q(entity__isnull=True))
+            .order_by("-entity_id", "id")
+        )
+
+        if raw_id not in (None, ""):
+            try:
+                master = qs.filter(id=int(raw_id)).first()
+            except (TypeError, ValueError):
+                raise ValidationError({"charges": [f"Invalid charge_type_id '{raw_id}'."]})
+            if not master:
+                raise ValidationError({"charges": [f"Charge type id {raw_id} not found for this entity."]})
+        elif raw_type not in (None, ""):
+            raw = str(raw_type).strip()
+            normalized = raw.upper().replace("-", "_").replace(" ", "_")
+            valid_enum_map = {str(value): value for value, _label in SalesChargeLine.ChargeType.choices}
+            valid_enum_map.update(
+                {
+                    str(label).upper().replace("-", "_").replace(" ", "_"): value
+                    for value, label in SalesChargeLine.ChargeType.choices
+                }
+            )
+
+            if normalized in valid_enum_map:
+                data["charge_type"] = valid_enum_map[normalized]
+            else:
+                master = qs.filter(code__iexact=raw).first() or qs.filter(name__iexact=raw).first()
+                if not master:
+                    raise ValidationError(
+                        {
+                            "charges": [
+                                f"Invalid charge_type '{raw}'. Provide charge_type_id or a valid charge type code/name."
+                            ]
+                        }
+                    )
+
+        if master:
+            base_map = {
+                SalesChargeType.BaseCategory.FREIGHT: SalesChargeLine.ChargeType.FREIGHT,
+                SalesChargeType.BaseCategory.PACKING: SalesChargeLine.ChargeType.PACKING,
+                SalesChargeType.BaseCategory.INSURANCE: SalesChargeLine.ChargeType.INSURANCE,
+                SalesChargeType.BaseCategory.OTHER: SalesChargeLine.ChargeType.OTHER,
+            }
+            data["charge_type"] = base_map.get(master.base_category, SalesChargeLine.ChargeType.OTHER)
+            if not (data.get("description") or "").strip():
+                data["description"] = master.name or master.description or ""
+            if data.get("is_service") in (None, ""):
+                data["is_service"] = bool(master.is_service)
+            if not (data.get("hsn_sac_code") or "").strip():
+                data["hsn_sac_code"] = (master.hsn_sac_code_default or "").strip()
+            if data.get("gst_rate") in (None, ""):
+                data["gst_rate"] = q4(master.gst_rate_default or ZERO2)
+            if data.get("revenue_account") in (None, "") and getattr(master, "revenue_account_id", None):
+                data["revenue_account"] = master.revenue_account
+
+        if data.get("charge_type") in (None, ""):
+            data["charge_type"] = SalesChargeLine.ChargeType.OTHER
+
+        raw_taxability = data.get("taxability")
+        if raw_taxability not in (None, "") and not isinstance(raw_taxability, int):
+            txt = str(raw_taxability).strip()
+            if txt.isdigit():
+                data["taxability"] = int(txt)
+            else:
+                by_name = {
+                    name.upper(): int(value)
+                    for name, value in SalesInvoiceHeader.Taxability.__members__.items()
+                }
+                by_label = {
+                    str(label).strip().upper(): int(value)
+                    for value, label in SalesInvoiceHeader.Taxability.choices
+                }
+                lookup = txt.upper()
+                if lookup in by_name:
+                    data["taxability"] = by_name[lookup]
+                elif lookup in by_label:
+                    data["taxability"] = by_label[lookup]
+        return data
+
+    @staticmethod
     def validate_charges(*, header: SalesInvoiceHeader, charges: list[dict]) -> None:
         seen_line_no: set[int] = set()
         for i, row in enumerate(charges or [], start=1):
+            row = SalesInvoiceService._resolve_charge_master(header=header, row=row)
+            charges[i - 1] = row
             line_no_raw = row.get("line_no")
             if line_no_raw not in (None, ""):
                 try:
@@ -1290,12 +1380,14 @@ class SalesInvoiceService:
 
         seen_ids = set()
         for row in incoming_charges:
+            row = SalesInvoiceService._resolve_charge_master(header=header, row=row)
             row_id = int(row.get("id") or 0)
             row_ln = int(row.get("line_no") or 0)
             if row_id == 0 and row_ln > 0 and row_ln in existing_by_lineno:
                 row_id = existing_by_lineno[row_ln]
 
             comp = SalesInvoiceService.compute_charge_amounts(header=header, row=row)
+            row["gst_rate"] = q2(row.get("gst_rate") or ZERO2)
             row["taxable_value"] = comp.taxable_value
             row["cgst_amount"] = comp.cgst_amount
             row["sgst_amount"] = comp.sgst_amount
@@ -1343,9 +1435,6 @@ class SalesInvoiceService:
 
             obj = SalesChargeLine(
                 header=header,
-                entity_id=header.entity_id,
-                entityfinid_id=header.entityfinid_id,
-                subentity_id=header.subentity_id,
                 line_no=row_ln,
                 charge_type=row.get("charge_type") or SalesChargeLine.ChargeType.OTHER,
                 description=(row.get("description") or "").strip(),
@@ -1354,7 +1443,7 @@ class SalesInvoiceService:
                 hsn_sac_code=(row.get("hsn_sac_code") or "").strip(),
                 is_rate_inclusive_of_tax=bool(row.get("is_rate_inclusive_of_tax", False)),
                 taxable_value=row["taxable_value"],
-                gst_rate=q4(row.get("gst_rate") or ZERO2),
+                gst_rate=row["gst_rate"],
                 cgst_amount=row["cgst_amount"],
                 sgst_amount=row["sgst_amount"],
                 igst_amount=row["igst_amount"],
@@ -1537,7 +1626,7 @@ class SalesInvoiceService:
 
         cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
 
-        # ✅ recompute everything first
+        # âœ… recompute everything first
         cls.apply_dates(header)
         cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
@@ -1556,7 +1645,7 @@ class SalesInvoiceService:
         cls.recompute_settlement_fields(header=header)
         
 
-        # ✅ issue doc_no ONLY NOW
+        # âœ… issue doc_no ONLY NOW
         cls.ensure_doc_number(header=header, user=user)
 
         header.status = SalesInvoiceHeader.Status.CONFIRMED
@@ -1883,3 +1972,5 @@ class SalesInvoiceService:
         header.save(update_fields=["status", "cancelled_at", "cancelled_by", "remarks", "updated_by", "updated_at"])
         SalesArService.close_open_item_for_header(header)
         return header
+
+

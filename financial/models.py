@@ -753,4 +753,4 @@ class AccountCommercialProfile(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "partytype"], name="ix_acccom_ent_party"),
             models.Index(fields=["entity", "currency"], name="ix_acccom_ent_curr"),
-        ]
+        ]   
