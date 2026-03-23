@@ -66,6 +66,7 @@ SALES_SETTINGS_SCHEMA = _with_help(
         {"name": "enforce_statutory_cancel_before_business_cancel", "label": "Require Statutory Cancel Before Business Cancel", "type": "boolean", "group": "automation"},
         {"name": "enable_round_off", "label": "Enable Round Off", "type": "boolean", "group": "rounding"},
         {"name": "round_grand_total_to", "label": "Round Grand Total To", "type": "integer", "group": "rounding"},
+        {"name": "policy_controls", "label": "Policy Controls", "type": "json", "group": "policy"},
     ],
     {
         "default_doc_code_invoice": "Default document code used when generating sales invoice numbers.",
@@ -88,6 +89,7 @@ SALES_SETTINGS_SCHEMA = _with_help(
         "enforce_statutory_cancel_before_business_cancel": "Prevents business cancellation before statutory cancellation completes.",
         "enable_round_off": "Enables round-off handling for invoice totals.",
         "round_grand_total_to": "Number of decimal places to retain after round-off.",
+        "policy_controls": "Advanced enterprise policy controls for delete/confirm/match/settlement behavior.",
     },
 )
 
@@ -132,6 +134,7 @@ EDITABLE_FIELDS = {
     "tcs_credit_note_policy",
     "enable_round_off",
     "round_grand_total_to",
+    "policy_controls",
 }
 
 SALES_DOC_TYPES = {
@@ -318,6 +321,7 @@ class SalesSettingsAPIView(APIView):
 
     def _payload(self, *, entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int]) -> dict:
         settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
+        policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
         choice_catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
         payload = {
             "seller": SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id),
@@ -342,6 +346,7 @@ class SalesSettingsAPIView(APIView):
                 "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
                 "enable_round_off": settings_obj.enable_round_off,
                 "round_grand_total_to": settings_obj.round_grand_total_to,
+                "policy_controls": policy_controls,
             },
             "schema": SALES_SETTINGS_SCHEMA,
             "sections": _sections(SALES_SETTINGS_SCHEMA),
@@ -355,7 +360,7 @@ class SalesSettingsAPIView(APIView):
             "capabilities": {
                 "has_lock_periods": True,
                 "has_choice_overrides": True,
-                "has_policy_controls": False,
+                "has_policy_controls": True,
                 "has_doc_number_preview": bool(entityfinid_id),
                 "has_numbering_management": bool(entityfinid_id),
             },
@@ -376,9 +381,14 @@ class SalesSettingsAPIView(APIView):
         settings_updates = nested_settings if nested_settings is not None else request.data
 
         settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
-        for key, value in settings_updates.items():
-            if key in EDITABLE_FIELDS:
-                setattr(settings_obj, key, value)
+        try:
+            for key, value in settings_updates.items():
+                if key in EDITABLE_FIELDS:
+                    if key == "policy_controls":
+                        value = SalesSettingsService.normalize_policy_controls(value)
+                    setattr(settings_obj, key, value)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)})
 
         if "numbering_series" in request.data:
             rows = request.data.get("numbering_series") or []

@@ -49,6 +49,10 @@ class SettlementCancelResult:
 
 class SalesArService:
     @staticmethod
+    def _get_policy(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None):
+        return SalesSettingsService.get_policy(entity_id, subentity_id, entityfinid_id=entityfinid_id)
+
+    @staticmethod
     def _resolve_customer_ledger_id(customer_id: Optional[int]) -> Optional[int]:
         if not customer_id:
             return None
@@ -145,8 +149,9 @@ class SalesArService:
 
     @staticmethod
     def _auto_adjust_credit_note_if_enabled(*, header: SalesInvoiceHeader, cn_item: CustomerBillOpenItem) -> None:
-        policy = SalesSettingsService.get_policy(header.entity_id, header.subentity_id)
-        if str(getattr(policy, "tcs_credit_note_policy", "allow")).lower().strip() == "block":
+        policy = SalesArService._get_policy(header.entity_id, header.subentity_id, header.entityfinid_id)
+        controls = getattr(policy, "controls", {}) or {}
+        if str(controls.get("auto_adjust_credit_notes", "off")).lower().strip() != "on":
             return
         if int(header.doc_type) != int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
             return
@@ -345,9 +350,15 @@ class SalesArService:
         advance_balance_id: Optional[int] = None,
     ) -> SettlementCreateResult:
         lines_data = list(lines or [])
+        policy = SalesArService._get_policy(entity_id, subentity_id, entityfinid_id)
+        controls = getattr(policy, "controls", {}) or {}
+        settlement_mode = str(controls.get("settlement_mode", "basic")).lower().strip()
+        allocation_policy = str(controls.get("allocation_policy", "manual")).lower().strip()
+        if settlement_mode == "off":
+            raise ValueError("Settlement is disabled by sales policy.")
         customer_ledger_id = SalesArService._resolve_customer_ledger_id(customer_id)
         if not lines_data:
-            if q2(amount or ZERO2) > ZERO2:
+            if q2(amount or ZERO2) > ZERO2 and allocation_policy == "fifo":
                 lines_data = SalesArService._auto_fifo_lines(
                     entity_id=entity_id,
                     entityfinid_id=entityfinid_id,
@@ -413,7 +424,9 @@ class SalesArService:
         if int(settlement.status) == int(CustomerSettlement.Status.CANCELLED):
             raise ValueError("Cancelled settlement cannot be posted.")
 
-        over_rule = "block"
+        policy = SalesArService._get_policy(settlement.entity_id, settlement.subentity_id, settlement.entityfinid_id)
+        controls = getattr(policy, "controls", {}) or {}
+        over_rule = str(controls.get("over_settlement_rule", "block")).lower().strip()
 
         lines = list(
             settlement.lines.select_related("open_item")

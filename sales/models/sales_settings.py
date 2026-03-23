@@ -11,6 +11,24 @@ from sales.models.sales_core import SalesInvoiceHeader  # adjust path if needed
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 
+DEFAULT_POLICY_CONTROLS = {
+    "delete_policy": "draft_only",
+    "confirm_lock_check": "hard",
+    "require_lines_on_confirm": "hard",
+    "line_amount_mismatch": "hard",
+    "invoice_match_mode": "off",
+    "invoice_match_enforcement": "off",
+    "settlement_mode": "basic",
+    "allocation_policy": "manual",
+    "over_settlement_rule": "block",
+    "auto_adjust_credit_notes": "off",
+    "statutory_maker_checker": "off",
+}
+
+
+def default_policy_controls():
+    return dict(DEFAULT_POLICY_CONTROLS)
+
 
 class SalesSettings(EntityScopedModel):
     """
@@ -102,6 +120,7 @@ class SalesSettings(EntityScopedModel):
     # -------------------------
     round_grand_total_to = models.PositiveSmallIntegerField(default=2)  # decimals
     enable_round_off = models.BooleanField(default=True)
+    policy_controls = models.JSONField(default=default_policy_controls, blank=True)
 
     class Meta:
         constraints = [

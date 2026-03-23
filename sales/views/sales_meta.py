@@ -390,6 +390,7 @@ class SalesSettingsMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
         settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
+        policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
         seller = SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id)
         current_doc_numbers = {
             "invoice": SalesSettingsService.get_current_doc_no(
@@ -443,6 +444,7 @@ class SalesSettingsMetaAPIView(SalesMetaBaseAPIView):
                     "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
                     "enable_round_off": settings_obj.enable_round_off,
                     "round_grand_total_to": settings_obj.round_grand_total_to,
+                    "policy_controls": policy_controls,
                 },
                 "current_doc_numbers": current_doc_numbers,
             }
@@ -453,6 +455,7 @@ class SalesComplianceMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
         settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
+        policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
         return Response(
             {
                 "entity_id": entity_id,
@@ -479,6 +482,7 @@ class SalesComplianceMetaAPIView(SalesMetaBaseAPIView):
                     "prefer_irp_generate_einvoice_and_eway_together": settings_obj.prefer_irp_generate_einvoice_and_eway_together,
                     "enforce_statutory_cancel_before_business_cancel": settings_obj.enforce_statutory_cancel_before_business_cancel,
                     "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
+                    "policy_controls": policy_controls,
                 },
             }
         )
