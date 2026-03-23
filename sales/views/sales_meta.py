@@ -182,9 +182,9 @@ class SalesMetaBaseAPIView(APIView):
                 "charges",
             )
         )
-        if subentity_id is None:
-            return qs.filter(subentity__isnull=True)
-        return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+        if subentity_id is not None:
+            return qs.filter(subentity_id=subentity_id)
+        return qs
 
     def _invoice_action_flags(self, header: SalesInvoiceHeader):
         is_draft = int(header.status) == int(SalesInvoiceHeader.Status.DRAFT)

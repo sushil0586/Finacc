@@ -70,9 +70,7 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
         )
         if entity_id is not None and entityfinid_id is not None:
             base_qs = base_qs.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-            if subentity_id is None:
-                base_qs = base_qs.filter(subentity__isnull=True)
-            else:
+            if subentity_id is not None:
                 base_qs = base_qs.filter(subentity_id=subentity_id)
 
         if self.request.method.upper() == "GET":
@@ -138,9 +136,9 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
                 "charges",
             )
         )
-        if subentity_id is None:
-            return qs.filter(subentity__isnull=True)
-        return qs.filter(subentity_id=subentity_id)
+        if subentity_id is not None:
+            return qs.filter(subentity_id=subentity_id)
+        return qs
 
     def perform_destroy(self, instance):
         policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
@@ -234,6 +232,6 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "created_at", "updated_at",
             )
         )
-        if subentity_id is None:
-            return qs.filter(subentity__isnull=True)
-        return qs.filter(subentity_id=subentity_id)
+        if subentity_id is not None:
+            return qs.filter(subentity_id=subentity_id)
+        return qs
