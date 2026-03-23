@@ -47,7 +47,7 @@ class PurchaseInvoiceLinesListAPIView(generics.ListAPIView):
             header__entityfinid_id=entityfinid_id,
         )
         if subentity_id is None:
-            return qs.filter(header__subentity__isnull=True)
+            return qs
         return qs.filter(header__subentity_id=subentity_id)
 
 
@@ -80,5 +80,5 @@ class PurchaseTaxSummaryListAPIView(generics.ListAPIView):
             header__entityfinid_id=entityfinid_id,
         )
         if subentity_id is None:
-            return qs.filter(header__subentity__isnull=True)
+            return qs
         return qs.filter(header__subentity_id=subentity_id)

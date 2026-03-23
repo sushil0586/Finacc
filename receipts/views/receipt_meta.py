@@ -34,13 +34,13 @@ class ReceiptMetaBaseAPIView(APIView):
             raise serializers.ValidationError({field_name: f"{field_name} must be an integer"})
 
     def _parse_scope(self, request, *, require_entityfinid: bool = False):
-        entity_id = self._parse_int(request.query_params.get("entity"), "entity", required=True)
+        entity_id = self._parse_int(request.query_params.get("entity_id", request.query_params.get("entity")), "entity_id", required=True)
         entityfinid_id = self._parse_int(
             request.query_params.get("entityfinid"),
             "entityfinid",
             required=require_entityfinid,
         )
-        subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity", required=False)
+        subentity_id = self._parse_int(request.query_params.get("subentity_id", request.query_params.get("subentity")), "subentity_id", required=False)
         if subentity_id == 0:
             subentity_id = None
         return entity_id, entityfinid_id, subentity_id
@@ -148,9 +148,9 @@ class ReceiptMetaBaseAPIView(APIView):
             "advance_adjustments__advance_balance__receipt_voucher",
             "adjustments",
         )
-        if subentity_id is None:
-            return qs.filter(subentity__isnull=True)
-        return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+        if subentity_id is not None:
+            return qs.filter(subentity_id=subentity_id)
+        return qs
 
     def _action_flags(self, header: ReceiptVoucherHeader):
         is_draft = int(header.status) == int(ReceiptVoucherHeader.Status.DRAFT)
@@ -189,7 +189,7 @@ class ReceiptMetaBaseAPIView(APIView):
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
             "subentity_id": subentity_id,
-            "choices": ReceiptChoiceService.compile_choices(),
+            "choices": ReceiptChoiceService.compile_choices(entity_id=entity_id, subentity_id=subentity_id),
             "financial_years": self._financial_years(entity_id),
             "subentities": self._subentities(entity_id),
             "received_in_accounts": self._received_in_accounts(entity_id),
@@ -239,7 +239,7 @@ class ReceiptVoucherSearchMetaAPIView(ReceiptMetaBaseAPIView):
                 "entity_id": entity_id,
                 "entityfinid_id": entityfinid_id,
                 "subentity_id": subentity_id,
-                "choices": ReceiptChoiceService.compile_choices(),
+                "choices": ReceiptChoiceService.compile_choices(entity_id=entity_id, subentity_id=subentity_id),
                 "financial_years": self._financial_years(entity_id),
                 "subentities": self._subentities(entity_id),
                 "customers": self._customers(entity_id),
@@ -350,3 +350,4 @@ class ReceiptSettingsMetaAPIView(ReceiptMetaBaseAPIView):
                 },
             }
         )
+

@@ -194,11 +194,9 @@ class PurchaseMetaBaseAPIView(APIView):
                 "charges",
             )
         )
-        if subentity_id is None:
-            return qs.filter(subentity__isnull=True)
-        # Entity-level invoices should still be visible when a branch/subentity
-        # is selected, so screens can open older/shared documents reliably.
-        return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+        if subentity_id is not None:
+            return qs.filter(subentity_id=subentity_id)
+        return qs
 
     def _invoice_action_flags(self, header: PurchaseInvoiceHeader):
         policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
@@ -557,3 +555,5 @@ class PurchaseStatutoryMetaAPIView(PurchaseMetaBaseAPIView):
             "policy_controls": PurchaseSettingsService.get_policy(entity_id, subentity_id).controls,
         }
         return Response(payload)
+
+

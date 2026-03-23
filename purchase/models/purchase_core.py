@@ -252,7 +252,7 @@ class PurchaseInvoiceHeader(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("entity", "entityfinid", "doc_type", "doc_code", "doc_no"),
+                fields=("entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"),
                 name="uq_purchase_doc_entity_fin_type_code_no",
             ),
             models.CheckConstraint(

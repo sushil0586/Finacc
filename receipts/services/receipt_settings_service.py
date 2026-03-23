@@ -46,7 +46,8 @@ class ReceiptSettingsService:
         s = ReceiptSettings.objects.filter(entity_id=entity_id, subentity__isnull=True).first()
         if s:
             return s
-        return ReceiptSettings(entity_id=entity_id, subentity_id=subentity_id)
+        created, _ = ReceiptSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
+        return created
 
     @staticmethod
     def get_policy(entity_id: int, subentity_id: Optional[int]) -> ReceiptPolicy:
@@ -100,6 +101,14 @@ class ReceiptSettingsService:
                 normalized[key] = v
                 continue
         return normalized
+
+    @staticmethod
+    def effective_policy_controls(settings_obj: Any) -> Dict[str, Any]:
+        raw = getattr(settings_obj, "policy_controls", None) or {}
+        merged = dict(DEFAULT_RECEIPT_POLICY_CONTROLS)
+        if isinstance(raw, dict):
+            merged.update(raw)
+        return merged
 
     @staticmethod
     def upsert_settings(*, entity_id: int, subentity_id: Optional[int], updates: Dict[str, Any]) -> ReceiptSettings:

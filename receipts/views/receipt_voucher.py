@@ -65,9 +65,7 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
         )
         if entity_id is not None and entityfinid_id is not None:
             qs = qs.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-            if subentity_id is None:
-                qs = qs.filter(subentity__isnull=True)
-            else:
+            if subentity_id is not None:
                 qs = qs.filter(subentity_id=subentity_id)
         if self.request.method.upper() == "GET":
             return qs.order_by("-voucher_date", "-id")
@@ -125,7 +123,7 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             "adjustments",
         )
         if subentity_id is None:
-            return qs.filter(subentity__isnull=True)
+            return qs
         return qs.filter(subentity_id=subentity_id)
 
     def perform_destroy(self, instance):
@@ -269,7 +267,8 @@ class ReceiptVoucherSettlementSummaryAPIView(APIView):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
 
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-        qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
         voucher = qs.select_related(
             "received_in",
             "received_in__ledger",

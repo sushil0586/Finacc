@@ -675,6 +675,53 @@ class SalesInvoiceService:
                 raise ValueError("original_invoice is allowed only for Credit Note / Debit Note.")
 
     @staticmethod
+    def _resolve_original_invoice_from_reference(
+        *,
+        reference: Optional[str],
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        customer_id: Optional[int],
+    ):
+        ref = (reference or "").strip()
+        if not ref:
+            return None
+
+        qs = SalesInvoiceHeader.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        if customer_id:
+            qs = qs.filter(customer_id=customer_id)
+
+        matches = []
+        if ref.isdigit():
+            nref = int(ref)
+            # Support legacy UI behavior where reference may carry source invoice id.
+            matches.extend(list(qs.filter(id=nref)[:3]))
+            matches.extend(list(qs.filter(doc_no=nref)[:3]))
+        if not matches:
+            matches.extend(list(qs.filter(invoice_number__iexact=ref)[:3]))
+
+        uniq = []
+        seen = set()
+        for row in matches:
+            if row.id not in seen:
+                seen.add(row.id)
+                uniq.append(row)
+
+        if len(uniq) > 1:
+            raise ValueError(
+                f"Reference '{ref}' matches multiple invoices. Please pass explicit original_invoice id."
+            )
+        return uniq[0] if uniq else None
+
+    @staticmethod
     def _aggregate_adjustment_totals(*, original_invoice_id: int, doc_type: int, exclude_header_id: Optional[int] = None) -> dict:
         qs = SalesInvoiceHeader.objects.filter(
             original_invoice_id=original_invoice_id,
@@ -808,8 +855,21 @@ class SalesInvoiceService:
             shipping_detail_id=shipping_detail_id,
         )
 
-        original_invoice = header_data.get("original_invoice")
         doc_type = int(header_data.get("doc_type") or SalesInvoiceHeader.DocType.TAX_INVOICE)
+        original_invoice = header_data.get("original_invoice")
+        if (
+            original_invoice is None
+            and doc_type in (int(SalesInvoiceHeader.DocType.CREDIT_NOTE), int(SalesInvoiceHeader.DocType.DEBIT_NOTE))
+        ):
+            original_invoice = cls._resolve_original_invoice_from_reference(
+                reference=header_data.get("reference"),
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                customer_id=customer_id,
+            )
+            if original_invoice is not None:
+                header_data["original_invoice"] = original_invoice
         cls._validate_doc_linkage(
             doc_type=doc_type,
             original_invoice=original_invoice,
@@ -928,8 +988,21 @@ class SalesInvoiceService:
                 shipping_detail_id=shipping_detail_id,
             )
 
-        original_invoice = header_data.get("original_invoice", header.original_invoice)
         doc_type = int(header_data.get("doc_type", header.doc_type))
+        original_invoice = header_data.get("original_invoice", header.original_invoice)
+        if (
+            original_invoice is None
+            and doc_type in (int(SalesInvoiceHeader.DocType.CREDIT_NOTE), int(SalesInvoiceHeader.DocType.DEBIT_NOTE))
+        ):
+            original_invoice = cls._resolve_original_invoice_from_reference(
+                reference=header_data.get("reference", header.reference),
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                customer_id=customer_id,
+            )
+            if original_invoice is not None:
+                header_data["original_invoice"] = original_invoice
         cls._validate_doc_linkage(
             doc_type=doc_type,
             original_invoice=original_invoice,
