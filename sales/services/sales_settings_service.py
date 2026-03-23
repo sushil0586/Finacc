@@ -18,10 +18,41 @@ from sales.models.sales_settings import (
     SalesChoiceOverride,
 )
 
+ENFORCEMENT_LEVELS = {"off", "warn", "hard"}
+DELETE_POLICIES = {"draft_only", "non_posted", "never"}
+MATCH_MODES = {"off", "two_way", "three_way"}
+SETTLEMENT_MODES = {"off", "basic"}
+ALLOCATION_POLICIES = {"manual", "fifo"}
+OVER_SETTLEMENT_RULES = {"block", "warn"}
+ON_OFF = {"off", "on"}
+
+DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
+    "delete_policy": "draft_only",
+    "confirm_lock_check": "hard",
+    "require_lines_on_confirm": "hard",
+    "line_amount_mismatch": "hard",
+    "invoice_match_mode": "off",
+    "invoice_match_enforcement": "off",
+    "settlement_mode": "basic",
+    "allocation_policy": "manual",
+    "over_settlement_rule": "block",
+    "auto_adjust_credit_notes": "off",
+    "statutory_maker_checker": "off",
+}
+
 
 @dataclass(frozen=True)
 class SalesPolicy:
     settings: SalesSettings
+
+    @property
+    def controls(self) -> Dict[str, Any]:
+        raw = getattr(self.settings, "policy_controls", None) or {}
+        if not isinstance(raw, dict):
+            return dict(DEFAULT_POLICY_CONTROLS)
+        merged = dict(DEFAULT_POLICY_CONTROLS)
+        merged.update(raw)
+        return merged
 
     @property
     def default_action(self) -> str:
@@ -92,8 +123,79 @@ class SalesPolicy:
     def enforce_statutory_cancel_before_business_cancel(self) -> bool:
         return bool(self.settings.enforce_statutory_cancel_before_business_cancel)
 
+    def level(self, key: str, default: str = "hard") -> str:
+        val = str(self.controls.get(key, default)).lower().strip()
+        return val if val in ENFORCEMENT_LEVELS else default
+
+    @property
+    def delete_policy(self) -> str:
+        val = str(self.controls.get("delete_policy", "draft_only")).lower().strip()
+        return val if val in DELETE_POLICIES else "draft_only"
+
 
 class SalesSettingsService:
+
+    @staticmethod
+    def normalize_policy_controls(raw: Any) -> Dict[str, Any]:
+        if raw in (None, ""):
+            return {}
+        if not isinstance(raw, dict):
+            raise ValueError("policy_controls must be a JSON object.")
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw.items():
+            if key not in DEFAULT_POLICY_CONTROLS:
+                continue
+            if key == "delete_policy":
+                v = str(value).lower().strip()
+                if v not in DELETE_POLICIES:
+                    raise ValueError("policy_controls.delete_policy must be one of: draft_only, non_posted, never.")
+                normalized[key] = v
+                continue
+            if key == "invoice_match_mode":
+                v = str(value).lower().strip()
+                if v not in MATCH_MODES:
+                    raise ValueError("policy_controls.invoice_match_mode must be one of: off, two_way, three_way.")
+                normalized[key] = v
+                continue
+            if key == "settlement_mode":
+                v = str(value).lower().strip()
+                if v not in SETTLEMENT_MODES:
+                    raise ValueError("policy_controls.settlement_mode must be one of: off, basic.")
+                normalized[key] = v
+                continue
+            if key == "allocation_policy":
+                v = str(value).lower().strip()
+                if v not in ALLOCATION_POLICIES:
+                    raise ValueError("policy_controls.allocation_policy must be one of: manual, fifo.")
+                normalized[key] = v
+                continue
+            if key == "over_settlement_rule":
+                v = str(value).lower().strip()
+                if v not in OVER_SETTLEMENT_RULES:
+                    raise ValueError("policy_controls.over_settlement_rule must be one of: block, warn.")
+                normalized[key] = v
+                continue
+            if key == "auto_adjust_credit_notes":
+                v = str(value).lower().strip()
+                if v not in ON_OFF:
+                    raise ValueError("policy_controls.auto_adjust_credit_notes must be one of: off, on.")
+                normalized[key] = v
+                continue
+
+            v = str(value).lower().strip()
+            if v not in ENFORCEMENT_LEVELS:
+                raise ValueError(f"policy_controls.{key} must be one of: off, warn, hard.")
+            normalized[key] = v
+        return normalized
+
+    @staticmethod
+    def effective_policy_controls(settings_obj: Any) -> Dict[str, Any]:
+        raw = getattr(settings_obj, "policy_controls", None) or {}
+        merged = dict(DEFAULT_POLICY_CONTROLS)
+        if isinstance(raw, dict):
+            merged.update(raw)
+        return merged
 
 
     @staticmethod

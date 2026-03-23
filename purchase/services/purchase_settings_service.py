@@ -332,21 +332,18 @@ class PurchaseSettingsService:
     def get_settings(entity_id: int, subentity_id: Optional[int]) -> PurchaseSettings:
         """
         Prefer entity+subentity row. Fallback to entity-only row (subentity NULL).
+        If none exists, create settings for requested scope.
         """
-        s = PurchaseSettings.objects.filter(
-            entity_id=entity_id, subentity_id=subentity_id
-        ).first()
-        if s:
-            return s
+        scoped = PurchaseSettings.objects.filter(entity_id=entity_id, subentity_id=subentity_id).first()
+        if scoped:
+            return scoped
 
-        s = PurchaseSettings.objects.filter(
-            entity_id=entity_id, subentity__isnull=True
-        ).first()
-        if s:
-            return s
+        fallback = PurchaseSettings.objects.filter(entity_id=entity_id, subentity__isnull=True).first()
+        if fallback:
+            return fallback
 
-        # Return in-memory defaults without side effects on GET/read flows.
-        return PurchaseSettings(entity_id=entity_id, subentity_id=subentity_id)
+        created, _ = PurchaseSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
+        return created
 
     @staticmethod
     def get_policy(entity_id: int, subentity_id: Optional[int]) -> PurchasePolicy:

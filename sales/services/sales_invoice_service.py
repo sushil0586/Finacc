@@ -50,6 +50,10 @@ ZERO4 = Decimal("0.0000")
 Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
+SALES_POLICY_DEFAULTS = {
+    "confirm_lock_check": "hard",
+    "require_lines_on_confirm": "hard",
+}
 
 
 def q2(x) -> Decimal:
@@ -89,6 +93,24 @@ class Totals:
 
 
 class SalesInvoiceService:
+    @staticmethod
+    def _policy_controls(header: SalesInvoiceHeader) -> dict:
+        settings_obj = SalesInvoiceService.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        raw = getattr(settings_obj, "policy_controls", None) or {}
+        merged = dict(SALES_POLICY_DEFAULTS)
+        if isinstance(raw, dict):
+            merged.update(raw)
+        return merged
+
+    @staticmethod
+    def _policy_level(controls: dict, key: str, default: str = "hard") -> str:
+        val = str(controls.get(key, default)).lower().strip()
+        return val if val in {"off", "warn", "hard"} else default
+
     @staticmethod
     def _resolve_customer_ledger_id(customer_id: Optional[int]) -> Optional[int]:
         if not customer_id:
@@ -1622,9 +1644,14 @@ class SalesInvoiceService:
         if header.status != SalesInvoiceHeader.Status.DRAFT:
             raise ValueError("Only Draft invoices can be confirmed.")
 
+        controls = cls._policy_controls(header)
         cls.freeze_ship_to_snapshot(header=header)
-
-        cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
+        lock_level = cls._policy_level(controls, "confirm_lock_check", default="hard")
+        if lock_level == "hard":
+            cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
+        require_lines_level = cls._policy_level(controls, "require_lines_on_confirm", default="hard")
+        if require_lines_level == "hard" and not header.lines.exists():
+            raise ValueError("At least one invoice line is required before confirm.")
 
         # âœ… recompute everything first
         cls.apply_dates(header)
@@ -1692,7 +1719,10 @@ class SalesInvoiceService:
             raise ValueError("Only Confirmed invoices can be posted.")
 
         # ---- lock-period validation ----
-        cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
+        controls = cls._policy_controls(header)
+        lock_level = cls._policy_level(controls, "confirm_lock_check", default="hard")
+        if lock_level == "hard":
+            cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
 
         # ---- snapshot (idempotent) ----
         cls.freeze_ship_to_snapshot(header=header)
