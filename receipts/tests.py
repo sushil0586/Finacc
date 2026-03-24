@@ -102,7 +102,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
 
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "off",
-            "sync_ap_settlement_on_post": "off",
+            "sync_ar_settlement_on_post": "off",
         })
 
         res = ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=11, posted_by_id=9)
@@ -196,7 +196,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_fresh_allocs.return_value = [row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
-            "sync_ap_settlement_on_post": "off",
+            "sync_ar_settlement_on_post": "off",
             "over_settlement_rule": "warn",
             "allocation_amount_match_rule": "warn",
         })
@@ -284,7 +284,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_fresh_allocs.return_value = [alloc_row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
-            "sync_ap_settlement_on_post": "off",
+            "sync_ar_settlement_on_post": "off",
             "allocation_amount_match_rule": "hard",
             "require_confirm_before_post": "on",
             "receipt_maker_checker": "off",
@@ -294,7 +294,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
 
         with patch.object(ReceiptVoucherService, "_validate_advance_adjustments", return_value=None), \
              patch.object(ReceiptVoucherService, "_validate_allocations", return_value=[]):
-            with self.assertRaisesMessage(ValueError, "Advance adjustments require AP settlement sync to be enabled."):
+            with self.assertRaisesMessage(ValueError, "Advance adjustments require AR settlement sync to be enabled."):
                 ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=31, posted_by_id=9)
         mock_post_adapter.assert_not_called()
 
@@ -354,7 +354,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_fresh_allocs.return_value = [alloc_row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
-            "sync_ap_settlement_on_post": "on",
+            "sync_ar_settlement_on_post": "on",
             "allocation_amount_match_rule": "hard",
             "require_confirm_before_post": "on",
             "receipt_maker_checker": "off",
@@ -588,7 +588,7 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
             "require_confirm_before_post": "on",
             "receipt_maker_checker": "hard",
             "require_allocation_on_post": "off",
-            "sync_ap_settlement_on_post": "off",
+            "sync_ar_settlement_on_post": "off",
         })
 
         with self.assertRaisesMessage(ValueError, "Voucher must be approved before posting by policy."):
@@ -831,3 +831,4 @@ class PaymentVoucherPDFEndpointTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
+

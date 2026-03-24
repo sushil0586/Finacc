@@ -21,6 +21,7 @@ from receipts.models.receipt_core import (
     ReceiptVoucherAdvanceAdjustment,
 )
 from receipts.services.receipt_settings_service import ReceiptSettingsService
+from receipts.services.receipt_allocation_service import ReceiptAllocationService
 
 ZERO2 = Decimal("0.00")
 Q2 = Decimal("0.01")
@@ -163,9 +164,19 @@ class ReceiptVoucherService:
 
     @staticmethod
     def _validate_allocations(
-        voucher: ReceiptVoucherHeader, allocations: List[Dict[str, Any]], over_settlement_rule: str = "block"
+        voucher: ReceiptVoucherHeader,
+        allocations: List[Dict[str, Any]],
+        over_settlement_rule: str = "block",
+        controls: Optional[Dict[str, Any]] = None,
     ) -> list[str]:
         warnings: list[str] = []
+        allocatable = ReceiptAllocationService.allocatable_map(
+            entity_id=int(voucher.entity_id),
+            entityfinid_id=int(voucher.entityfinid_id),
+            subentity_id=voucher.subentity_id,
+            customer_id=int(voucher.received_from_id),
+            controls=controls,
+        )
         for i, row in enumerate(allocations or [], start=1):
             open_item_id = row.get("open_item")
             amt = q2(row.get("settled_amount") or ZERO2)
@@ -184,17 +195,16 @@ class ReceiptVoucherService:
             if int(open_item.customer_id) != int(voucher.received_from_id):
                 raise ValueError(f"Allocation row {i}: open_item customer mismatch with received_from.")
 
+            allowed = q2(allocatable.get(int(open_item_id), ZERO2))
             if over_settlement_rule == "block":
-                outstanding = q2(open_item.outstanding_amount)
-                if amt > outstanding:
+                if amt > allowed:
                     raise ValueError(
-                        f"Allocation row {i}: settled_amount {amt} exceeds outstanding {outstanding} for open_item {open_item_id}."
+                        f"Allocation row {i}: settled_amount {amt} exceeds allocatable {allowed} for open_item {open_item_id}."
                     )
             elif over_settlement_rule == "warn":
-                outstanding = q2(open_item.outstanding_amount)
-                if amt > outstanding:
+                if amt > allowed:
                     warnings.append(
-                        f"Allocation row {i}: settled_amount {amt} exceeds outstanding {outstanding} for open_item {open_item_id}."
+                        f"Allocation row {i}: settled_amount {amt} exceeds allocatable {allowed} for open_item {open_item_id}."
                     )
         return warnings
 
@@ -330,38 +340,17 @@ class ReceiptVoucherService:
         subentity_id: Optional[int],
         customer_id: int,
         target_amount: Decimal,
+        controls: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        remaining = q2(target_amount)
-        if remaining <= ZERO2:
-            return []
-        rows: List[Dict[str, Any]] = []
-        qs = (
-            SalesArService.list_open_items(
-                entity_id=entity_id,
-                entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
-                customer_id=customer_id,
-                is_open=True,
-            )
-            .filter(outstanding_amount__gt=ZERO2)
-            .order_by("due_date", "bill_date", "id")
+        preview = ReceiptAllocationService.preview_allocation(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            customer_id=customer_id,
+            target_amount=q2(target_amount),
+            controls=controls,
         )
-        for item in qs:
-            if remaining <= ZERO2:
-                break
-            can = min(q2(item.outstanding_amount), remaining)
-            if can <= ZERO2:
-                continue
-            rows.append(
-                {
-                    "open_item": item.id,
-                    "settled_amount": can,
-                    "is_full_settlement": can >= q2(item.outstanding_amount),
-                    "is_advance_adjustment": False,
-                }
-            )
-            remaining = q2(remaining - can)
-        return rows
+        return list(preview.get("plan") or [])
 
     @staticmethod
     @transaction.atomic
@@ -420,6 +409,7 @@ class ReceiptVoucherService:
                 subentity_id=validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
                 customer_id=validated_data["received_from"].id if hasattr(validated_data.get("received_from"), "id") else validated_data["received_from"],
                 target_amount=effective,
+                controls=policy.controls,
             )
 
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
@@ -435,7 +425,7 @@ class ReceiptVoucherService:
 
         over_settlement_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
         if allocations:
-            ReceiptVoucherService._validate_allocations(header, allocations, over_settlement_rule=over_settlement_rule)
+            ReceiptVoucherService._validate_allocations(header, allocations, over_settlement_rule=over_settlement_rule, controls=policy.controls)
 
         for row in allocations:
             ReceiptVoucherAllocation.objects.create(
@@ -531,7 +521,7 @@ class ReceiptVoucherService:
         instance.save()
 
         if allocations is not None:
-            ReceiptVoucherService._validate_allocations(instance, allocations, over_settlement_rule=over_settlement_rule)
+            ReceiptVoucherService._validate_allocations(instance, allocations, over_settlement_rule=over_settlement_rule, controls=policy.controls)
             live_advance_rows = advance_adjustments
             if live_advance_rows is None:
                 live_advance_rows = [
@@ -880,6 +870,7 @@ class ReceiptVoucherService:
                 subentity_id=h.subentity_id,
                 customer_id=h.received_from_id,
                 target_amount=total_support_amount,
+                controls=policy.controls,
             )
             for row in fifo_rows:
                 ReceiptVoucherAllocation.objects.create(
@@ -928,7 +919,7 @@ class ReceiptVoucherService:
             warnings.extend(ReceiptVoucherService._validate_allocations(h, [
                 {"open_item": r.open_item_id, "settled_amount": r.settled_amount}
                 for r in allocation_rows
-            ], over_settlement_rule=over_settlement_rule))
+            ], over_settlement_rule=over_settlement_rule, controls=policy.controls))
             try:
                 warnings.extend(
                     ReceiptVoucherService._validate_allocation_effective_match(
@@ -942,10 +933,10 @@ class ReceiptVoucherService:
                     f"Allocation total {q2(allocation_total)} does not match settlement support amount {q2(total_support_amount)} before posting."
                 )
 
-        if live_advance_rows and str(policy.controls.get("sync_ap_settlement_on_post", "on")).lower().strip() != "on":
-            raise ValueError("Advance adjustments require AP settlement sync to be enabled.")
+        if live_advance_rows and str(policy.controls.get("sync_ar_settlement_on_post", "on")).lower().strip() != "on":
+            raise ValueError("Advance adjustments require AR settlement sync to be enabled.")
 
-        if str(policy.controls.get("sync_ap_settlement_on_post", "on")).lower().strip() == "on":
+        if str(policy.controls.get("sync_ar_settlement_on_post", "on")).lower().strip() == "on":
             advance_by_open_item: Dict[int, Decimal] = {}
             for adj in live_advance_rows:
                 if not adj.open_item_id:
@@ -1150,3 +1141,5 @@ class ReceiptVoucherService:
         )
         h.save(update_fields=["status", "is_cancelled", "cancel_reason", "cancelled_by", "cancelled_at", "workflow_payload", "updated_at"])
         return ReceiptVoucherResult(h, "Cancelled.")
+
+

@@ -10,7 +10,11 @@ from .receipt_voucher import (
 )
 from .receipt_settings import ReceiptSettingsAPIView
 from .receipt_choices import ReceiptCompiledChoicesAPIView
-from .receipt_readonly import ReceiptCustomerAdvanceBalanceListAPIView, ReceiptCustomerBillOpenItemListAPIView
+from .receipt_readonly import (
+    ReceiptCustomerAdvanceBalanceListAPIView,
+    ReceiptCustomerBillOpenItemListAPIView,
+    ReceiptAllocationPreviewAPIView,
+)
 from .receipt_readonly import ReceiptCustomerSettlementListAPIView, ReceiptCustomerStatementAPIView
 from .receipt_masters import ReceiptModeListAPIView
 from .receipt_exports import ReceiptVoucherPDFAPIView
@@ -38,6 +42,7 @@ __all__ = [
     "ReceiptCustomerAdvanceBalanceListAPIView",
     "ReceiptCustomerSettlementListAPIView",
     "ReceiptCustomerStatementAPIView",
+    "ReceiptAllocationPreviewAPIView",
     "ReceiptModeListAPIView",
     "ReceiptVoucherPDFAPIView",
     "ReceiptVoucherFormMetaAPIView",
