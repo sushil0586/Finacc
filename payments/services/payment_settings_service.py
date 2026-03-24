@@ -12,6 +12,7 @@ ENFORCEMENT_LEVELS = {"off", "warn", "hard"}
 ON_OFF = {"on", "off"}
 OVER_SETTLEMENT_RULES = {"block", "warn"}
 ALLOCATION_POLICIES = {"manual", "fifo"}
+CREDIT_NOTE_CONSUMPTION_MODES = {"off", "fifo", "reference_only", "reference_then_fifo"}
 UNPOST_TARGETS = {"confirmed", "draft"}
 
 
@@ -93,6 +94,11 @@ class PaymentSettingsService:
             if key == "allocation_policy":
                 if v not in ALLOCATION_POLICIES:
                     raise ValueError("policy_controls.allocation_policy must be one of: manual, fifo.")
+                normalized[key] = v
+                continue
+            if key == "credit_note_consumption_mode":
+                if v not in CREDIT_NOTE_CONSUMPTION_MODES:
+                    raise ValueError("policy_controls.credit_note_consumption_mode must be one of: off, fifo, reference_only, reference_then_fifo.")
                 normalized[key] = v
                 continue
             if key == "unpost_target_status":

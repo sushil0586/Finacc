@@ -18,6 +18,7 @@ from purchase.models.purchase_ap import (
 )
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from purchase.services.ap_allocation_service import PurchaseApAllocationService
 
 ZERO2 = Decimal("0.00")
 Q2 = Decimal("0.01")
@@ -276,30 +277,21 @@ class PurchaseApService:
         subentity_id: Optional[int],
         vendor_id: int,
         amount: Decimal,
+        controls: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         remaining = q2(amount)
         if remaining <= ZERO2:
             return []
 
-        # FIFO only against positive outstanding invoices.
-        qs = PurchaseApService.list_open_items(
+        preview = PurchaseApAllocationService.preview_allocation(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             vendor_id=vendor_id,
-            is_open=True,
-        ).filter(outstanding_amount__gt=ZERO2)
-
-        out: List[Dict[str, Any]] = []
-        for item in qs:
-            if remaining <= ZERO2:
-                break
-            can = min(q2(item.outstanding_amount), remaining)
-            if can <= ZERO2:
-                continue
-            out.append({"open_item_id": item.id, "amount": can})
-            remaining = q2(remaining - can)
-        return out
+            target_amount=remaining,
+            controls=controls,
+        )
+        return [{"open_item_id": int(x["open_item"]), "amount": q2(x["settled_amount"])} for x in (preview.get("plan") or [])]
 
     @staticmethod
     @transaction.atomic
@@ -332,6 +324,7 @@ class PurchaseApService:
                     subentity_id=subentity_id,
                     vendor_id=vendor_id,
                     amount=q2(amount or ZERO2),
+                    controls=policy.controls,
                 )
             if not lines_data:
                 raise ValueError("Provide settlement lines (or amount with FIFO policy).")
@@ -407,6 +400,14 @@ class PurchaseApService:
         if not lines:
             raise ValueError("Settlement has no lines.")
 
+        allocatable_remaining = PurchaseApAllocationService.allocatable_map(
+            entity_id=settlement.entity_id,
+            entityfinid_id=settlement.entityfinid_id,
+            subentity_id=settlement.subentity_id,
+            vendor_id=settlement.vendor_id,
+            controls=policy.controls,
+        )
+
         applied_total = ZERO2
         advance_balance = None
         available_advance = ZERO2
@@ -421,13 +422,22 @@ class PurchaseApService:
                 continue
 
             remaining_abs = q2(abs(item.outstanding_amount))
+            allocatable_abs = q2(allocatable_remaining.get(int(item.id), ZERO2))
             requested_abs = q2(ln.amount)
 
             apply_abs = requested_abs
-            if requested_abs - remaining_abs > TOL:
+            if allocatable_abs <= ZERO2:
+                if over_rule == "block":
+                    raise ValueError(f"Open item {item.id} is not allocatable after credit-note adjustment.")
+                continue
+            if requested_abs - allocatable_abs > TOL:
+                if over_rule == "block":
+                    raise ValueError(f"Line for open item {item.id} exceeds allocatable amount.")
+                apply_abs = allocatable_abs
+            if requested_abs - remaining_abs > TOL and apply_abs > remaining_abs:
                 if over_rule == "block":
                     raise ValueError(f"Line for open item {item.id} exceeds outstanding.")
-                apply_abs = remaining_abs
+                apply_abs = min(apply_abs, remaining_abs)
             if advance_balance is not None and apply_abs - available_advance > TOL:
                 if over_rule == "block":
                     raise ValueError(f"Advance balance {advance_balance.id} is insufficient for line open item {item.id}.")
@@ -452,6 +462,7 @@ class PurchaseApService:
             ln.applied_amount_signed = applied_signed
             ln.save(update_fields=["applied_amount_signed", "updated_at"])
             applied_total = q2(applied_total + apply_abs)
+            allocatable_remaining[int(item.id)] = q2(max(allocatable_abs - apply_abs, ZERO2))
             if advance_balance is not None:
                 available_advance = q2(available_advance - apply_abs)
 

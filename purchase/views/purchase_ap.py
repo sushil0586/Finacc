@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -13,6 +15,7 @@ from purchase.serializers.purchase_ap import (
     VendorSettlementCreateInputSerializer,
 )
 from purchase.services.purchase_ap_service import PurchaseApService
+from purchase.services.ap_allocation_service import PurchaseApAllocationService
 from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
@@ -37,7 +40,7 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = VendorBillOpenItemSerializer
 
-    def get_queryset(self):
+    def _scope(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
 
         vendor = self.request.query_params.get("vendor")
@@ -49,6 +52,10 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
         else:
             open_flag = str(is_open).strip().lower() in ("1", "true", "yes", "y")
 
+        return entity_id, entityfinid_id, subentity_id, vendor_id, open_flag
+
+    def get_queryset(self):
+        entity_id, entityfinid_id, subentity_id, vendor_id, open_flag = self._scope()
         return PurchaseApService.list_open_items(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -56,6 +63,40 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
             vendor_id=vendor_id,
             is_open=open_flag,
         ).select_related("vendor", "vendor__ledger", "header")
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        rows = list(qs)
+        payload = VendorBillOpenItemSerializer(rows, many=True).data
+
+        entity_id, entityfinid_id, subentity_id, vendor_id, open_flag = self._scope()
+        if vendor_id is None:
+            return Response(payload)
+
+        projected = PurchaseApAllocationService.build_open_item_projection(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            vendor_id=vendor_id,
+        )
+        by_id = {int(r["id"]): r for r in projected}
+
+        out = []
+        for row in payload:
+            rid = int(row.get("id"))
+            enrich = by_id.get(rid, {})
+            row["raw_outstanding_amount"] = enrich.get("raw_outstanding_amount", row.get("outstanding_amount"))
+            row["credit_adjusted_amount"] = enrich.get("credit_adjusted_amount", "0.00")
+            row["allocatable_amount"] = enrich.get("allocatable_amount", "0.00")
+            row["allocation_sequence"] = enrich.get("allocation_sequence")
+            row["is_allocatable"] = enrich.get("is_allocatable", False)
+            row["reference_invoice_header_id"] = enrich.get("reference_invoice_header_id")
+            if open_flag:
+                allocatable = Decimal(str(row.get("allocatable_amount") or "0"))
+                if allocatable <= Decimal("0"):
+                    continue
+            out.append(row)
+        return Response(out)
 
 
 class VendorAdvanceBalanceListAPIView(generics.ListAPIView):

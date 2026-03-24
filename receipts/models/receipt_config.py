@@ -10,7 +10,7 @@ DEFAULT_RECEIPT_POLICY_CONTROLS = {
     "require_allocation_on_post": "hard",      # off|warn|hard
     "allow_advance_without_allocation": "on",  # on|off
     "allow_on_account_without_allocation": "on",  # on|off
-    "sync_ap_settlement_on_post": "on",        # on|off
+    "sync_ar_settlement_on_post": "on",        # on|off
     "sync_advance_balance_on_post": "on",      # on|off
     "residual_to_advance_balance": "on",       # on|off
     "require_confirm_before_post": "on",       # on|off
@@ -23,6 +23,7 @@ DEFAULT_RECEIPT_POLICY_CONTROLS = {
     "receipt_maker_checker": "off",            # off|warn|hard
     "same_user_submit_approve": "on",          # on|off
     "require_reference_number": "off",         # off|warn|hard
+    "credit_note_consumption_mode": "reference_then_fifo",  # off|fifo|reference_only|reference_then_fifo
 }
 
 

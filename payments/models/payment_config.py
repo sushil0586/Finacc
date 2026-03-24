@@ -18,6 +18,7 @@ DEFAULT_PAYMENT_POLICY_CONTROLS = {
     "allow_edit_after_submit": "on",           # on|off
     "unpost_target_status": "confirmed",       # confirmed|draft
     "allocation_policy": "manual",             # manual|fifo
+    "credit_note_consumption_mode": "reference_then_fifo",  # off|fifo|reference_only|reference_then_fifo
     "over_settlement_rule": "block",           # block|warn
     "allocation_amount_match_rule": "hard",    # off|warn|hard
     "payment_maker_checker": "off",            # off|warn|hard

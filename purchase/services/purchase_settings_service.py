@@ -20,6 +20,7 @@ DELETE_POLICIES = {"draft_only", "non_posted", "never"}
 MATCH_MODES = {"off", "two_way", "three_way"}
 SETTLEMENT_MODES = {"off", "basic"}
 ALLOCATION_POLICIES = {"manual", "fifo"}
+CREDIT_NOTE_CONSUMPTION_MODES = {"off", "fifo", "reference_only", "reference_then_fifo"}
 OVER_SETTLEMENT_RULES = {"block", "warn"}
 ON_OFF = {"off", "on"}
 
@@ -148,6 +149,12 @@ class PurchaseSettingsService:
                 v = str(value).lower().strip()
                 if v not in ALLOCATION_POLICIES:
                     raise ValueError("policy_controls.allocation_policy must be one of: manual, fifo.")
+                normalized[key] = v
+                continue
+            if key == "credit_note_consumption_mode":
+                v = str(value).lower().strip()
+                if v not in CREDIT_NOTE_CONSUMPTION_MODES:
+                    raise ValueError("policy_controls.credit_note_consumption_mode must be one of: off, fifo, reference_only, reference_then_fifo.")
                 normalized[key] = v
                 continue
             if key == "over_settlement_rule":

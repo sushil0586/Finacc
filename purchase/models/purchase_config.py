@@ -19,6 +19,7 @@ DEFAULT_POLICY_CONTROLS = {
     "invoice_match_enforcement": "off",   # off | warn | hard
     "settlement_mode": "off",             # off | basic
     "allocation_policy": "manual",        # manual | fifo
+    "credit_note_consumption_mode": "reference_then_fifo",  # off|fifo|reference_only|reference_then_fifo
     "over_settlement_rule": "block",      # block | warn
     "auto_adjust_credit_notes": "off",    # off | on
     "vendor_tds_variance_rule": "warn",   # off | warn | hard

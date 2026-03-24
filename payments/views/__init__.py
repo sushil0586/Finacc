@@ -15,6 +15,7 @@ from .payment_readonly import (
     PaymentVendorBillOpenItemListAPIView,
     PaymentVendorSettlementListAPIView,
     PaymentVendorStatementAPIView,
+    PaymentAllocationPreviewAPIView,
 )
 from .payment_masters import PaymentModeListAPIView
 from .payment_exports import PaymentVoucherPDFAPIView
@@ -42,6 +43,7 @@ __all__ = [
     "PaymentVendorAdvanceBalanceListAPIView",
     "PaymentVendorSettlementListAPIView",
     "PaymentVendorStatementAPIView",
+    "PaymentAllocationPreviewAPIView",
     "PaymentModeListAPIView",
     "PaymentVoucherPDFAPIView",
     "PaymentVoucherFormMetaAPIView",

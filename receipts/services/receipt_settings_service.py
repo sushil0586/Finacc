@@ -13,6 +13,7 @@ ON_OFF = {"on", "off"}
 OVER_SETTLEMENT_RULES = {"block", "warn"}
 ALLOCATION_POLICIES = {"manual", "fifo"}
 UNPOST_TARGETS = {"confirmed", "draft"}
+CREDIT_NOTE_CONSUMPTION_MODES = {"off", "fifo", "reference_only", "reference_then_fifo"}
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class ReceiptSettingsService:
             if key in {
                 "allow_advance_without_allocation",
                 "allow_on_account_without_allocation",
-                "sync_ap_settlement_on_post",
+                "sync_ar_settlement_on_post",
                 "sync_advance_balance_on_post",
                 "residual_to_advance_balance",
                 "require_confirm_before_post",
@@ -98,6 +99,11 @@ class ReceiptSettingsService:
             if key == "unpost_target_status":
                 if v not in UNPOST_TARGETS:
                     raise ValueError("policy_controls.unpost_target_status must be one of: confirmed, draft.")
+                normalized[key] = v
+                continue
+            if key == "credit_note_consumption_mode":
+                if v not in CREDIT_NOTE_CONSUMPTION_MODES:
+                    raise ValueError("policy_controls.credit_note_consumption_mode must be one of: off, fifo, reference_only, reference_then_fifo.")
                 normalized[key] = v
                 continue
         return normalized
