@@ -61,11 +61,33 @@ class PaymentVoucherService:
 
     @classmethod
     def _normalize_allocations(cls, allocations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+        rows_by_open_item: Dict[int, Dict[str, Any]] = {}
+        rows_without_open_item: List[Dict[str, Any]] = []
         for row in allocations or []:
             item = dict(row or {})
             item["open_item"] = cls._as_pk(item.get("open_item"))
-            rows.append(item)
+            open_item = item.get("open_item")
+            if open_item in (None, ""):
+                rows_without_open_item.append(item)
+                continue
+
+            open_item = int(open_item)
+            existing = rows_by_open_item.get(open_item)
+            if existing is None:
+                item["open_item"] = open_item
+                item["settled_amount"] = q2(item.get("settled_amount") or ZERO2)
+                item["is_full_settlement"] = bool(item.get("is_full_settlement", False))
+                item["is_advance_adjustment"] = bool(item.get("is_advance_adjustment", False))
+                rows_by_open_item[open_item] = item
+            else:
+                existing["settled_amount"] = q2(existing.get("settled_amount") or ZERO2) + q2(item.get("settled_amount") or ZERO2)
+                existing["is_full_settlement"] = bool(existing.get("is_full_settlement", False) or item.get("is_full_settlement", False))
+                existing["is_advance_adjustment"] = bool(existing.get("is_advance_adjustment", False) or item.get("is_advance_adjustment", False))
+                if not existing.get("id") and item.get("id"):
+                    existing["id"] = item.get("id")
+
+        rows: List[Dict[str, Any]] = list(rows_by_open_item.values())
+        rows.extend(rows_without_open_item)
         return rows
 
     @classmethod
@@ -168,6 +190,40 @@ class PaymentVoucherService:
     @staticmethod
     def _effective_settlement_amount(cash_paid_amount: Decimal, adjustment_total: Decimal) -> Decimal:
         return q2(q2(cash_paid_amount) + q2(adjustment_total))
+
+    @staticmethod
+    def _has_positive_advance_consumption(rows: Iterable[Any]) -> bool:
+        for row in rows or []:
+            if isinstance(row, dict):
+                amt = q2(row.get("adjusted_amount") or ZERO2)
+            else:
+                amt = q2(getattr(row, "adjusted_amount", ZERO2) or ZERO2)
+            if amt > ZERO2:
+                return True
+        return False
+
+    @staticmethod
+    def _validate_cash_paid_input(
+        *,
+        payment_type: Any,
+        cash_paid_amount: Decimal,
+        advance_adjustments: Iterable[Any],
+        has_allocations: bool = False,
+    ) -> None:
+        has_cash_paid = q2(cash_paid_amount) > ZERO2
+        has_advance_consumption = PaymentVoucherService._has_positive_advance_consumption(advance_adjustments)
+
+        if payment_type == PaymentVoucherHeader.PaymentType.AGAINST_BILL:
+            if has_allocations and not has_cash_paid and not has_advance_consumption:
+                raise ValueError({
+                    "cash_paid_amount": "cash_paid_amount must be > 0 unless advance adjustments are provided for AGAINST_BILL."
+                })
+            return
+
+        if not has_cash_paid:
+            raise ValueError({
+                "cash_paid_amount": "cash_paid_amount must be > 0 for ADVANCE/ON_ACCOUNT payment vouchers."
+            })
 
     @staticmethod
     def _validate_allocations(
@@ -525,6 +581,20 @@ class PaymentVoucherService:
                 raise ValueError({"exchange_rate": "exchange_rate must be > 0."})
             validated_data["exchange_rate"] = ex
 
+        live_advance_for_cash_check = advance_adjustments
+        if live_advance_for_cash_check is None:
+            live_advance_for_cash_check = [
+                {"adjusted_amount": x.adjusted_amount}
+                for x in instance.advance_adjustments.all()
+            ]
+
+        PaymentVoucherService._validate_cash_paid_input(
+            payment_type=validated_data.get("payment_type", getattr(instance, "payment_type", PaymentVoucherHeader.PaymentType.AGAINST_BILL)),
+            cash_paid_amount=q2(validated_data.get("cash_paid_amount", instance.cash_paid_amount)),
+            advance_adjustments=live_advance_for_cash_check,
+            has_allocations=bool(allocations),
+        )
+
         for k, v in validated_data.items():
             setattr(instance, k, v)
         if "paid_from" in validated_data:
@@ -565,6 +635,11 @@ class PaymentVoucherService:
                 level=amount_match_level,
             )
             existing = {x.id: x for x in instance.allocations.all()}
+            existing_by_open_item = {
+                int(x.open_item_id): x
+                for x in instance.allocations.all()
+                if x.open_item_id
+            }
             seen = set()
             for row in allocations:
                 rid = row.get("id")
@@ -577,13 +652,22 @@ class PaymentVoucherService:
                     obj.save()
                     seen.add(rid)
                 else:
-                    obj = PaymentVoucherAllocation.objects.create(
-                        payment_voucher=instance,
-                        open_item_id=row.get("open_item"),
-                        settled_amount=q2(row.get("settled_amount") or ZERO2),
-                        is_full_settlement=bool(row.get("is_full_settlement", False)),
-                        is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
-                    )
+                    match = existing_by_open_item.get(int(row.get("open_item"))) if row.get("open_item") not in (None, "") else None
+                    if match and match.id not in seen:
+                        obj = match
+                        obj.open_item_id = row.get("open_item")
+                        obj.settled_amount = q2(row.get("settled_amount") or ZERO2)
+                        obj.is_full_settlement = bool(row.get("is_full_settlement", False))
+                        obj.is_advance_adjustment = bool(row.get("is_advance_adjustment", False))
+                        obj.save()
+                    else:
+                        obj = PaymentVoucherAllocation.objects.create(
+                            payment_voucher=instance,
+                            open_item_id=row.get("open_item"),
+                            settled_amount=q2(row.get("settled_amount") or ZERO2),
+                            is_full_settlement=bool(row.get("is_full_settlement", False)),
+                            is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
+                        )
                     seen.add(obj.id)
             for rid, obj in existing.items():
                 if rid not in seen:
@@ -851,6 +935,13 @@ class PaymentVoucherService:
             q2(h.cash_paid_amount),
             live_adjustment_total,
         )
+        PaymentVoucherService._validate_cash_paid_input(
+            payment_type=h.payment_type,
+            cash_paid_amount=q2(h.cash_paid_amount),
+            advance_adjustments=live_advance_rows,
+            has_allocations=bool(live_advance_rows) or bool(PaymentVoucherService._fresh_allocation_rows(h)),
+        )
+
         if (
             q2(h.total_adjustment_amount) != q2(live_adjustment_total)
             or q2(h.settlement_effective_amount) != q2(live_effective_amount)
@@ -1068,12 +1159,24 @@ class PaymentVoucherService:
                     payment_voucher_id=h.id,
                 )
 
-        PaymentVoucherPostingAdapter.post_payment_voucher(
-            header=h,
-            adjustments=h.adjustments.all(),
-            user_id=posted_by_id or h.created_by_id,
-            config=PaymentVoucherPostingConfig(),
-        )
+        try:
+            PaymentVoucherPostingAdapter.post_payment_voucher(
+                header=h,
+                adjustments=h.adjustments.all(),
+                user_id=posted_by_id or h.created_by_id,
+                config=PaymentVoucherPostingConfig(),
+            )
+        except ValueError as exc:
+            # Advance-only against-bill settlements can have zero cash/adjustment impact.
+            # In that case we still allow posting after AP settlement sync.
+            if (
+                "Computed vendor settlement amount must be > 0." in str(exc)
+                and live_advance_total > ZERO2
+                and effective_amount <= ZERO2
+            ):
+                pass
+            else:
+                raise
 
         h.status = PaymentVoucherHeader.Status.POSTED
         h.approved_at = h.approved_at or timezone.now()

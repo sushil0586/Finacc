@@ -119,8 +119,14 @@ class PaymentVoucherHeader(TrackingModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "doc_code", "doc_no"),
+                condition=Q(subentity__isnull=False, doc_no__isnull=False),
+                name="uq_payment_voucher_scope_docno_sub",
+            ),
+            models.UniqueConstraint(
                 fields=("entity", "entityfinid", "doc_code", "doc_no"),
-                name="uq_payment_voucher_entity_fin_code_no",
+                condition=Q(subentity__isnull=True, doc_no__isnull=False),
+                name="uq_payment_voucher_scope_docno_root",
             ),
             models.CheckConstraint(name="ck_payment_cash_nonneg", check=Q(cash_paid_amount__gte=0)),
         ]

@@ -14,6 +14,7 @@ OVER_SETTLEMENT_RULES = {"block", "warn"}
 ALLOCATION_POLICIES = {"manual", "fifo"}
 UNPOST_TARGETS = {"confirmed", "draft"}
 CREDIT_NOTE_CONSUMPTION_MODES = {"off", "fifo", "reference_only", "reference_then_fifo"}
+TABLE11_AMENDMENT_MODES = {"snapshot", "off"}
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class ReceiptSettingsService:
                 "require_submit_before_approve",
                 "allow_edit_after_submit",
                 "same_user_submit_approve",
+                "sync_gstr1_table11_on_post",
             }:
                 if v not in ON_OFF:
                     raise ValueError(f"policy_controls.{key} must be one of: on, off.")
@@ -104,6 +106,11 @@ class ReceiptSettingsService:
             if key == "credit_note_consumption_mode":
                 if v not in CREDIT_NOTE_CONSUMPTION_MODES:
                     raise ValueError("policy_controls.credit_note_consumption_mode must be one of: off, fifo, reference_only, reference_then_fifo.")
+                normalized[key] = v
+                continue
+            if key == "table11_amendment_mode":
+                if v not in TABLE11_AMENDMENT_MODES:
+                    raise ValueError("policy_controls.table11_amendment_mode must be one of: snapshot, off.")
                 normalized[key] = v
                 continue
         return normalized

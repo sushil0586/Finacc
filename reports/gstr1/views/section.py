@@ -27,7 +27,8 @@ class Gstr1SectionAPIView(APIView):
     def get(self, request, section_name):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
-        qs = service.section(scope, section_name)
+        smart_filters = service.build_smart_filters(request.query_params)
+        qs = service.section(scope, section_name, smart_filters=smart_filters)
         qs = Gstr1SectionService.annotate_rows(qs).order_by(
             "bill_date",
             "doc_code",
@@ -60,7 +61,7 @@ class Gstr1SectionAPIView(APIView):
             report_code=f"gstr1-{section_name.lower()}",
             report_name=f"GSTR-1 {section_name.upper()}",
             payload=response_payload,
-            filters=scope_filters(scope),
+            filters=scope_filters(scope, smart_filters),
             defaults={
                 "decimal_places": 2,
                 "show_zero_balances_default": True,

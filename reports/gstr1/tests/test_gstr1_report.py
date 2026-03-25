@@ -15,7 +15,13 @@ from financial.profile_access import account_gstno
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload
 from geography.models import City, Country, District, State
-from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
+from sales.models import (
+    SalesAdvanceAdjustment,
+    SalesEcommerceSupply,
+    SalesInvoiceHeader,
+    SalesInvoiceLine,
+    SalesTaxSummary,
+)
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -35,6 +41,7 @@ class Gstr1ReportAPITests(APITestCase):
         self.meta_url = reverse("reports_api:gstr1-meta")
         self.export_url = reverse("reports_api:gstr1-export")
         self.invoice_url = lambda pk: reverse("reports_api:gstr1-invoice-detail", args=[pk])
+        self.table_url = lambda code: reverse("reports_api:gstr1-table", args=[code])
 
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
@@ -323,6 +330,45 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIsNotNone(data.get("next"))
         self.assertIsNone(data.get("previous"))
 
+    def test_section_smart_filters(self):
+        self._create_sales_document(
+            customer=self.customer_beta,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            grand_total="300000.00",
+            taxable="250000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="45000.00",
+            place_of_supply="29",
+            invoice_number="BIG-001",
+        )
+        self._create_sales_document(
+            customer=self.customer_beta,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            grand_total="90000.00",
+            taxable="75000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="15000.00",
+            place_of_supply="27",
+            invoice_number="SMALL-001",
+        )
+        response = self.client.get(
+            self.section_url("B2CL"),
+            {
+                **self.base_params,
+                "pos": "29",
+                "min_taxable_value": "200000",
+                "search": "BIG",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get("count"), 1)
+        self.assertEqual(data["results"][0]["invoice_number"], "BIG-001")
+
     def test_validation_warnings(self):
         self._create_sales_document(
             customer=self.customer_alpha,
@@ -334,6 +380,20 @@ class Gstr1ReportAPITests(APITestCase):
         data = response.json()
         codes = {item["code"] for item in data.get("warnings", [])}
         self.assertIn("B2B_GSTIN_REQUIRED", codes)
+
+    def test_validation_warning_severity_filter(self):
+        self._create_sales_document(
+            customer=self.customer_alpha,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            customer_gstin="",
+        )
+        warning_response = self.client.get(self.validation_url, {**self.base_params, "warning_severity": "warning"})
+        self.assertEqual(warning_response.status_code, 200)
+        self.assertGreaterEqual(warning_response.json().get("warning_count", 0), 1)
+
+        error_response = self.client.get(self.validation_url, {**self.base_params, "warning_severity": "error"})
+        self.assertEqual(error_response.status_code, 200)
+        self.assertEqual(error_response.json().get("warning_count", 0), 0)
 
     def test_b2cl_threshold_boundary(self):
         self._create_sales_document(
@@ -370,6 +430,7 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("supported_sections", payload)
+        self.assertIn("supported_tables", payload)
         self.assertIn("thresholds", payload)
         self.assertIn("choices", payload)
         self.assertIn("taxability", payload["choices"])
@@ -377,6 +438,110 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("supply_category", payload["choices"])
         self.assertIn("doc_type", payload["choices"])
         self.assertIn("status", payload["choices"])
+
+    def test_table_endpoint_taxpayer(self):
+        response = self.client.get(self.table_url("TAXPAYER_1_3"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["table_code"], "TAXPAYER_1_3")
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertEqual(payload["count"], 1)
+
+    def test_table_endpoint_eco_sections(self):
+        SalesEcommerceSupply.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            invoice_date="2025-04-12",
+            invoice_number="ECO-001",
+            operator_gstin="27ABCDE1234F1Z5",
+            supplier_eco_gstin="27ABCDE1234F1Z5",
+            supply_split=SalesEcommerceSupply.SupplySplit.B2B,
+            taxable_value=Decimal("1000.00"),
+            cgst_amount=Decimal("90.00"),
+            sgst_amount=Decimal("90.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+        )
+        response = self.client.get(self.table_url("TABLE_14"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertEqual(payload["count"], 1)
+
+    def test_table_endpoint_advances(self):
+        SalesAdvanceAdjustment.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_date="2025-04-20",
+            voucher_number="ADV-001",
+            customer=self.customer_alpha,
+            customer_name=self.customer_alpha.accountname or "Alpha Retail",
+            customer_gstin=account_gstno(self.customer_alpha),
+            place_of_supply_state_code="27",
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT,
+            taxable_value=Decimal("500.00"),
+            cgst_amount=Decimal("45.00"),
+            sgst_amount=Decimal("45.00"),
+        )
+        response = self.client.get(self.table_url("TABLE_11"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertEqual(payload["count"], 1)
+
+    def test_table_endpoints_5_7_10(self):
+        b2cl = self._create_sales_document(
+            customer=self.customer_beta,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            grand_total="300000.00",
+            taxable="250000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="45000.00",
+            place_of_supply="29",
+        )
+        b2cs = self._create_sales_document(
+            customer=self.customer_beta,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            grand_total="1180.00",
+            taxable="1000.00",
+            cgst="90.00",
+            sgst="90.00",
+            igst="0.00",
+            place_of_supply="27",
+        )
+        self._create_sales_document(
+            customer=self.customer_beta,
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=b2cs,
+            customer_gstin="",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+        )
+
+        response = self.client.get(self.table_url("TABLE_5"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertEqual(payload["rows"][0]["invoice_id"], b2cl.id)
+
+        response = self.client.get(self.table_url("TABLE_7"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertGreaterEqual(payload["count"], 1)
+
+        response = self.client.get(self.table_url("TABLE_10"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertGreaterEqual(payload["count"], 1)
 
     def test_export_smoke(self):
         self._create_sales_document(customer=self.customer_alpha)
@@ -387,6 +552,18 @@ class Gstr1ReportAPITests(APITestCase):
         response = self.client.get(self.export_url, {**self.base_params, "format": "csv", "section": "B2B"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("Intra-state", response.content.decode("utf-8"))
+
+    def test_export_section_respects_smart_filters(self):
+        self._create_sales_document(customer=self.customer_alpha, invoice_number="ALPHA-EXP-1")
+        self._create_sales_document(customer=self.customer_alpha, invoice_number="BETA-EXP-1")
+        response = self.client.get(
+            self.export_url,
+            {**self.base_params, "format": "csv", "section": "B2B", "search": "ALPHA-EXP-1"},
+        )
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode("utf-8")
+        self.assertIn("ALPHA-EXP-1", content)
+        self.assertNotIn("BETA-EXP-1", content)
 
     def test_export_empty_section(self):
         response = self.client.get(self.export_url, {**self.base_params, "format": "csv", "section": "B2B"})
@@ -550,7 +727,7 @@ class Gstr1ReportAPITests(APITestCase):
         )
         response = self.client.get(self.validation_url, self.base_params)
         codes = {item["code"] for item in response.json().get("warnings", [])}
-        self.assertNotIn("DUPLICATE_INVOICE", codes)
+        self.assertIn("DUPLICATE_INVOICE", codes)
 
     def test_pos_tax_regime_mismatch_validation(self):
         self._create_sales_document(

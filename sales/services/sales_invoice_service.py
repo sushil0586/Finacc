@@ -482,6 +482,35 @@ class SalesInvoiceService:
         if not cls._is_valid_gstin(header.customer_gstin):
             raise ValueError("Valid customer_gstin is required for non-B2C invoices.")
 
+    @classmethod
+    def _validate_invoice_uniqueness_per_gstin(cls, *, header: SalesInvoiceHeader) -> None:
+        """
+        Enforce invoice uniqueness at GSTIN scope (not subentity scope):
+        (seller_gstin, entityfinid, doc_type, invoice_number) must be unique.
+        """
+        invoice_number = (header.invoice_number or "").strip()
+        if not invoice_number:
+            return
+
+        seller_gstin = cls._normalize_gstin(getattr(header, "seller_gstin", ""))
+        if not seller_gstin:
+            return
+
+        qs = SalesInvoiceHeader.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            doc_type=header.doc_type,
+            seller_gstin__iexact=seller_gstin,
+            invoice_number__iexact=invoice_number,
+        )
+        if header.id:
+            qs = qs.exclude(id=header.id)
+
+        if qs.exists():
+            raise ValueError(
+                f"Duplicate invoice_number '{invoice_number}' for seller GSTIN '{seller_gstin}' in the same financial year."
+            )
+
     @staticmethod
     def _validate_shipping_detail_for_customer(*, customer_id: Optional[int], shipping_detail_id: Optional[int]) -> None:
         if not shipping_detail_id:
@@ -903,6 +932,7 @@ class SalesInvoiceService:
         cls.apply_dates(header)
         cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
+        cls._validate_invoice_uniqueness_per_gstin(header=header)
 
         header.full_clean(exclude=None)
         header.save()
@@ -1028,6 +1058,7 @@ class SalesInvoiceService:
         cls.apply_dates(header)
         cls._refresh_party_snapshots(header=header)
         cls.derive_tax_regime(header)
+        cls._validate_invoice_uniqueness_per_gstin(header=header)
 
         header.full_clean(exclude=None)
         header.save()
@@ -1747,6 +1778,7 @@ class SalesInvoiceService:
 
         # âœ… issue doc_no ONLY NOW
         cls.ensure_doc_number(header=header, user=user)
+        cls._validate_invoice_uniqueness_per_gstin(header=header)
 
         header.status = SalesInvoiceHeader.Status.CONFIRMED
         header.confirmed_at = timezone.now()
@@ -1802,6 +1834,7 @@ class SalesInvoiceService:
 
         # ---- safety: if someone bypassed confirm, ensure doc number exists ----
         cls.ensure_doc_number(header=header, user=user)
+        cls._validate_invoice_uniqueness_per_gstin(header=header)
 
         # ---- safety recompute (same idea as purchase hook: rebuild + totals) ----
         # If you prefer no recompute at post time, you can remove these, but recommended.

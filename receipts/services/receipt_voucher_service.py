@@ -12,6 +12,7 @@ from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_ar_service import SalesArService
 from sales.models.sales_ar import CustomerBillOpenItem
+from sales.models import SalesAdvanceAdjustment
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter, ReceiptVoucherPostingConfig
 
 from receipts.models.receipt_core import (
@@ -46,11 +47,33 @@ class ReceiptVoucherService:
 
     @classmethod
     def _normalize_allocations(cls, allocations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+        rows_by_open_item: Dict[int, Dict[str, Any]] = {}
+        rows_without_open_item: List[Dict[str, Any]] = []
         for row in allocations or []:
             item = dict(row or {})
             item["open_item"] = cls._as_pk(item.get("open_item"))
-            rows.append(item)
+            open_item = item.get("open_item")
+            if open_item in (None, ""):
+                rows_without_open_item.append(item)
+                continue
+
+            open_item = int(open_item)
+            existing = rows_by_open_item.get(open_item)
+            if existing is None:
+                item["open_item"] = open_item
+                item["settled_amount"] = q2(item.get("settled_amount") or ZERO2)
+                item["is_full_settlement"] = bool(item.get("is_full_settlement", False))
+                item["is_advance_adjustment"] = bool(item.get("is_advance_adjustment", False))
+                rows_by_open_item[open_item] = item
+            else:
+                existing["settled_amount"] = q2(existing.get("settled_amount") or ZERO2) + q2(item.get("settled_amount") or ZERO2)
+                existing["is_full_settlement"] = bool(existing.get("is_full_settlement", False) or item.get("is_full_settlement", False))
+                existing["is_advance_adjustment"] = bool(existing.get("is_advance_adjustment", False) or item.get("is_advance_adjustment", False))
+                if not existing.get("id") and item.get("id"):
+                    existing["id"] = item.get("id")
+
+        rows: List[Dict[str, Any]] = list(rows_by_open_item.values())
+        rows.extend(rows_without_open_item)
         return rows
 
     @classmethod
@@ -115,6 +138,285 @@ class ReceiptVoucherService:
         logs.append(event)
         data["_audit_log"] = logs
         return data
+
+    @staticmethod
+    def _safe_state_code_from_header(header: ReceiptVoucherHeader) -> str:
+        st = getattr(header, "place_of_supply_state", None)
+        if not st:
+            return ""
+        code = (
+            getattr(st, "gst_state_code", None)
+            or getattr(st, "statecode", None)
+            or getattr(st, "code", None)
+            or ""
+        )
+        return str(code or "").strip()
+
+    @staticmethod
+    def _table11_voucher_no(base: str, suffix: str = "") -> str:
+        raw = f"{(base or '').strip()}{suffix}"
+        return raw[:50]
+
+    @staticmethod
+    def _table11_row_payload(
+        *,
+        header: ReceiptVoucherHeader,
+        voucher_number: str,
+        customer_id: Optional[int],
+        customer_name: str,
+        customer_gstin: str,
+        pos_code: str,
+        entry_type: str,
+        taxable_value: Decimal,
+        cgst_amount: Decimal,
+        sgst_amount: Decimal,
+        igst_amount: Decimal,
+        cess_amount: Decimal,
+        linked_invoice_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "entity_id": header.entity_id,
+            "entityfinid_id": header.entityfinid_id,
+            "subentity_id": getattr(header, "subentity_id", None),
+            "voucher_date": header.voucher_date,
+            "voucher_number": voucher_number,
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "customer_gstin": customer_gstin,
+            "place_of_supply_state_code": pos_code,
+            "entry_type": entry_type,
+            "taxable_value": taxable_value,
+            "cgst_amount": cgst_amount,
+            "sgst_amount": sgst_amount,
+            "igst_amount": igst_amount,
+            "cess_amount": cess_amount,
+            "linked_invoice_id": linked_invoice_id,
+            "is_amendment": False,
+        }
+
+    @staticmethod
+    def _table11_changed(existing: SalesAdvanceAdjustment, payload: Dict[str, Any]) -> bool:
+        compare_fields = (
+            "voucher_date",
+            "customer_id",
+            "customer_name",
+            "customer_gstin",
+            "place_of_supply_state_code",
+            "entry_type",
+            "taxable_value",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "cess_amount",
+            "linked_invoice_id",
+        )
+        for field_name in compare_fields:
+            if getattr(existing, field_name) != payload.get(field_name):
+                return True
+        return False
+
+    @staticmethod
+    def _table11_create_amendment_snapshot(
+        *,
+        source: SalesAdvanceAdjustment,
+        replacement: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        stamp = timezone.now().strftime("%Y%m%d%H%M%S")
+        snap = replacement or {}
+        SalesAdvanceAdjustment.objects.create(
+            entity_id=source.entity_id,
+            entityfinid_id=source.entityfinid_id,
+            subentity_id=source.subentity_id,
+            voucher_date=snap.get("voucher_date", source.voucher_date),
+            voucher_number=ReceiptVoucherService._table11_voucher_no(source.voucher_number, f"-AMD-{stamp}"),
+            customer_id=snap.get("customer_id", source.customer_id),
+            customer_name=snap.get("customer_name", source.customer_name),
+            customer_gstin=snap.get("customer_gstin", source.customer_gstin),
+            place_of_supply_state_code=snap.get("place_of_supply_state_code", source.place_of_supply_state_code),
+            entry_type=snap.get("entry_type", source.entry_type),
+            taxable_value=snap.get("taxable_value", source.taxable_value),
+            cgst_amount=snap.get("cgst_amount", source.cgst_amount),
+            sgst_amount=snap.get("sgst_amount", source.sgst_amount),
+            igst_amount=snap.get("igst_amount", source.igst_amount),
+            cess_amount=snap.get("cess_amount", source.cess_amount),
+            linked_invoice_id=snap.get("linked_invoice_id", source.linked_invoice_id),
+            original_entry=source,
+            is_amendment=True,
+        )
+
+    @staticmethod
+    def _sync_gstr1_table11_rows(
+        *,
+        header: ReceiptVoucherHeader,
+        live_advance_rows: List[ReceiptVoucherAdvanceAdjustment],
+        track_amendments: bool = True,
+    ) -> None:
+        if not (
+            getattr(header, "entity_id", None)
+            and getattr(header, "entityfinid_id", None)
+            and getattr(header, "voucher_date", None)
+        ):
+            return
+
+        voucher_no = (getattr(header, "voucher_code", None) or getattr(header, "reference_number", None) or "").strip()
+        if not voucher_no:
+            voucher_no = f"{getattr(header, 'doc_code', 'RV') or 'RV'}-{getattr(header, 'doc_no', None) or getattr(header, 'id', None)}"
+        voucher_no = ReceiptVoucherService._table11_voucher_no(voucher_no)
+
+        from entity.models import Entity, EntityFinancialYear
+        if not Entity.objects.filter(id=header.entity_id).exists():
+            return
+        if not EntityFinancialYear.objects.filter(id=header.entityfinid_id).exists():
+            return
+
+        active_qs = SalesAdvanceAdjustment.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=getattr(header, "subentity_id", None),
+            voucher_number=voucher_no,
+            is_amendment=False,
+        )
+        adj_qs = SalesAdvanceAdjustment.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=getattr(header, "subentity_id", None),
+            voucher_number__startswith=ReceiptVoucherService._table11_voucher_no(f"{voucher_no}-ADJ-"),
+            is_amendment=False,
+        )
+        existing_rows: Dict[str, SalesAdvanceAdjustment] = {
+            row.voucher_number: row for row in list(active_qs) + list(adj_qs)
+        }
+        desired_rows: List[Dict[str, Any]] = []
+
+        customer = getattr(header, "received_from", None)
+        customer_name = (
+            (getattr(customer, "legalname", None) or getattr(customer, "accountname", None) or "").strip()
+            if customer
+            else ""
+        )
+        customer_gstin = (getattr(header, "customer_gstin", "") or "").strip().upper()
+        pos_code = ReceiptVoucherService._safe_state_code_from_header(header)
+
+        customer_id = getattr(header, "received_from_id", None)
+        if customer_id and not FinancialAccount.objects.filter(id=customer_id).exists():
+            customer_id = None
+
+        adv_taxable = q2(getattr(header, "advance_taxable_value", ZERO2))
+        adv_cgst = q2(getattr(header, "advance_cgst", ZERO2))
+        adv_sgst = q2(getattr(header, "advance_sgst", ZERO2))
+        adv_igst = q2(getattr(header, "advance_igst", ZERO2))
+        adv_cess = q2(getattr(header, "advance_cess", ZERO2))
+
+        if (
+            getattr(header, "receipt_type", None) in {ReceiptVoucherHeader.ReceiptType.ADVANCE, ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT}
+            or any(x > ZERO2 for x in [adv_taxable, adv_cgst, adv_sgst, adv_igst, adv_cess])
+        ):
+            desired_rows.append(
+                ReceiptVoucherService._table11_row_payload(
+                    header=header,
+                    voucher_number=voucher_no,
+                    customer_id=customer_id,
+                    customer_name=customer_name,
+                    customer_gstin=customer_gstin,
+                    pos_code=pos_code,
+                    entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT,
+                    taxable_value=adv_taxable,
+                    cgst_amount=adv_cgst,
+                    sgst_amount=adv_sgst,
+                    igst_amount=adv_igst,
+                    cess_amount=adv_cess,
+                )
+            )
+
+        total_adjusted = q2(sum(q2(getattr(x, "adjusted_amount", ZERO2)) for x in live_advance_rows))
+        for idx, adj in enumerate(live_advance_rows, start=1):
+            adjusted = q2(getattr(adj, "adjusted_amount", ZERO2))
+            if adjusted <= ZERO2:
+                continue
+
+            ratio = Decimal("0.00")
+            if total_adjusted > ZERO2:
+                ratio = adjusted / total_adjusted
+
+            linked_invoice_id = None
+            open_item_id = getattr(adj, "open_item_id", None)
+            if open_item_id:
+                try:
+                    open_item = CustomerBillOpenItem.objects.filter(id=open_item_id).only("header_id").first()
+                    linked_invoice_id = getattr(open_item, "header_id", None)
+                except Exception:
+                    linked_invoice_id = None
+
+            desired_rows.append(
+                ReceiptVoucherService._table11_row_payload(
+                    header=header,
+                    voucher_number=ReceiptVoucherService._table11_voucher_no(f"{voucher_no}-ADJ-{idx}"),
+                    customer_id=customer_id,
+                    customer_name=customer_name,
+                    customer_gstin=customer_gstin,
+                    pos_code=pos_code,
+                    entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT,
+                    taxable_value=q2(adv_taxable * ratio),
+                    cgst_amount=q2(adv_cgst * ratio),
+                    sgst_amount=q2(adv_sgst * ratio),
+                    igst_amount=q2(adv_igst * ratio),
+                    cess_amount=q2(adv_cess * ratio),
+                    linked_invoice_id=linked_invoice_id,
+                )
+            )
+
+        seen = set()
+        for payload in desired_rows:
+            key = payload["voucher_number"]
+            seen.add(key)
+            existing = existing_rows.get(key)
+            if not existing:
+                SalesAdvanceAdjustment.objects.create(**payload)
+                continue
+            if not ReceiptVoucherService._table11_changed(existing, payload):
+                continue
+            if track_amendments:
+                ReceiptVoucherService._table11_create_amendment_snapshot(source=existing)
+            for field_name, value in payload.items():
+                setattr(existing, field_name, value)
+            existing.save()
+
+        removed_rows = [row for key, row in existing_rows.items() if key not in seen]
+        for row in removed_rows:
+            if track_amendments:
+                ReceiptVoucherService._table11_create_amendment_snapshot(
+                    source=row,
+                    replacement={
+                        "taxable_value": ZERO2,
+                        "cgst_amount": ZERO2,
+                        "sgst_amount": ZERO2,
+                        "igst_amount": ZERO2,
+                        "cess_amount": ZERO2,
+                    },
+                )
+            row.delete()
+
+    @staticmethod
+    def _unsync_gstr1_table11_rows(*, header: ReceiptVoucherHeader) -> None:
+        voucher_no = (getattr(header, "voucher_code", None) or getattr(header, "reference_number", None) or "").strip()
+        if not voucher_no:
+            voucher_no = f"{getattr(header, 'doc_code', 'RV') or 'RV'}-{getattr(header, 'doc_no', None) or getattr(header, 'id', None)}"
+
+        filters = {
+            "entity_id": getattr(header, "entity_id", None),
+            "entityfinid_id": getattr(header, "entityfinid_id", None),
+            "subentity_id": getattr(header, "subentity_id", None),
+            "voucher_number__startswith": voucher_no,
+        }
+        voucher_date = getattr(header, "voucher_date", None)
+        if voucher_date is not None:
+            filters["voucher_date"] = voucher_date
+
+        customer_id = getattr(header, "received_from_id", None)
+        if customer_id and FinancialAccount.objects.filter(id=customer_id).exists():
+            filters["customer_id"] = customer_id
+
+        SalesAdvanceAdjustment.objects.filter(**filters).delete()
 
     @staticmethod
     def _sum_allocations(allocations: Iterable[Dict[str, Any]]) -> Decimal:
@@ -547,6 +849,11 @@ class ReceiptVoucherService:
                 level=amount_match_level,
             )
             existing = {x.id: x for x in instance.allocations.all()}
+            existing_by_open_item = {
+                int(x.open_item_id): x
+                for x in instance.allocations.all()
+                if x.open_item_id
+            }
             seen = set()
             for row in allocations:
                 rid = row.get("id")
@@ -559,13 +866,22 @@ class ReceiptVoucherService:
                     obj.save()
                     seen.add(rid)
                 else:
-                    obj = ReceiptVoucherAllocation.objects.create(
-                        receipt_voucher=instance,
-                        open_item_id=row.get("open_item"),
-                        settled_amount=q2(row.get("settled_amount") or ZERO2),
-                        is_full_settlement=bool(row.get("is_full_settlement", False)),
-                        is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
-                    )
+                    match = existing_by_open_item.get(int(row.get("open_item"))) if row.get("open_item") not in (None, "") else None
+                    if match and match.id not in seen:
+                        obj = match
+                        obj.open_item_id = row.get("open_item")
+                        obj.settled_amount = q2(row.get("settled_amount") or ZERO2)
+                        obj.is_full_settlement = bool(row.get("is_full_settlement", False))
+                        obj.is_advance_adjustment = bool(row.get("is_advance_adjustment", False))
+                        obj.save()
+                    else:
+                        obj = ReceiptVoucherAllocation.objects.create(
+                            receipt_voucher=instance,
+                            open_item_id=row.get("open_item"),
+                            settled_amount=q2(row.get("settled_amount") or ZERO2),
+                            is_full_settlement=bool(row.get("is_full_settlement", False)),
+                            is_advance_adjustment=bool(row.get("is_advance_adjustment", False)),
+                        )
                     seen.add(obj.id)
             for rid, obj in existing.items():
                 if rid not in seen:
@@ -1042,12 +1358,32 @@ class ReceiptVoucherService:
                     receipt_voucher_id=h.id,
                 )
 
-        ReceiptVoucherPostingAdapter.post_receipt_voucher(
-            header=h,
-            adjustments=h.adjustments.all(),
-            user_id=posted_by_id or h.created_by_id,
-            config=ReceiptVoucherPostingConfig(),
-        )
+        try:
+            ReceiptVoucherPostingAdapter.post_receipt_voucher(
+                header=h,
+                adjustments=h.adjustments.all(),
+                user_id=posted_by_id or h.created_by_id,
+                config=ReceiptVoucherPostingConfig(),
+            )
+        except ValueError as exc:
+            # Advance-only against-invoice settlements can have zero cash/adjustment impact.
+            # In that case we still allow posting after AR settlement sync.
+            if (
+                "Computed customer settlement amount must be > 0." in str(exc)
+                and live_advance_total > ZERO2
+                and effective_amount <= ZERO2
+            ):
+                pass
+            else:
+                raise
+
+        if str(policy.controls.get("sync_gstr1_table11_on_post", "on")).lower().strip() == "on":
+            table11_mode = str(policy.controls.get("table11_amendment_mode", "snapshot")).lower().strip()
+            ReceiptVoucherService._sync_gstr1_table11_rows(
+                header=h,
+                live_advance_rows=live_advance_rows,
+                track_amendments=(table11_mode == "snapshot"),
+            )
 
         h.status = ReceiptVoucherHeader.Status.POSTED
         h.approved_at = h.approved_at or timezone.now()
@@ -1101,6 +1437,8 @@ class ReceiptVoucherService:
                 adv.save(update_fields=["is_open", "outstanding_amount", "updated_at"])
             else:
                 raise ValueError("Cannot unpost receipt voucher: linked advance balance is already adjusted.")
+
+        ReceiptVoucherService._unsync_gstr1_table11_rows(header=h)
 
         ReceiptVoucherPostingAdapter.unpost_receipt_voucher(
             header=h,

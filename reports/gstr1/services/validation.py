@@ -115,23 +115,24 @@ class Gstr1ValidationService:
     def _duplicate_invoice_warnings(self):
         duplicates = (
             self.base_queryset.exclude(invoice_number__in=[None, ""])
-            .values("invoice_number", "doc_type", "doc_code")
+            .exclude(seller_gstin__in=[None, ""])
+            .values("invoice_number", "doc_type", "seller_gstin")
             .annotate(cnt=Count("id"))
             .filter(cnt__gt=1)
         )
-        duplicate_map = {(row["invoice_number"], row["doc_type"], row["doc_code"]) for row in duplicates}
+        duplicate_map = {(row["invoice_number"], row["doc_type"], row["seller_gstin"]) for row in duplicates}
         if not duplicate_map:
             return []
         qs = self.base_queryset.filter(
             Q(invoice_number__in=[row[0] for row in duplicate_map]),
             Q(doc_type__in=[row[1] for row in duplicate_map]),
-            Q(doc_code__in=[row[2] for row in duplicate_map]),
-        ).values("id", "invoice_number", "doc_type", "doc_code")
-        qs = [row for row in qs if (row["invoice_number"], row["doc_type"], row["doc_code"]) in duplicate_map]
+            Q(seller_gstin__in=[row[2] for row in duplicate_map]),
+        ).values("id", "invoice_number", "doc_type", "seller_gstin")
+        qs = [row for row in qs if (row["invoice_number"], row["doc_type"], row["seller_gstin"]) in duplicate_map]
         return [
             _warning(
                 code="DUPLICATE_INVOICE",
-                message="Duplicate invoice number found within the selected scope.",
+                message="Duplicate invoice number found for same seller GSTIN and document type.",
                 invoice_id=row["id"],
                 invoice_number=row["invoice_number"],
                 field="invoice_number",

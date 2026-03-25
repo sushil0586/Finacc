@@ -255,6 +255,11 @@ class PurchaseInvoiceHeader(models.Model):
                 fields=("entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"),
                 name="uq_purchase_doc_entity_fin_type_code_no",
             ),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "doc_type", "doc_code", "doc_no"),
+                condition=Q(subentity__isnull=True, doc_no__isnull=False),
+                name="uq_purchase_doc_root_type_code_no",
+            ),
             models.CheckConstraint(
                 name="ck_purchase_ref_required_for_notes",
                 check=(

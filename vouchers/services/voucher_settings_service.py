@@ -51,7 +51,8 @@ class VoucherSettingsService:
         s = VoucherSettings.objects.filter(entity_id=entity_id, subentity__isnull=True).first()
         if s:
             return s
-        return VoucherSettings(entity_id=entity_id, subentity_id=subentity_id)
+        created, _ = VoucherSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
+        return created
 
     @staticmethod
     def get_policy(entity_id: int, subentity_id: Optional[int]) -> VoucherPolicy:
@@ -81,6 +82,29 @@ class VoucherSettingsService:
             normalized[key] = v
         return normalized
 
+
+
+    @staticmethod
+    def normalize_workflow_action(raw: Any) -> Any:
+        # Backward compatibility: older clients sent VoucherHeader status ids.
+        legacy_map = {
+            "1": VoucherSettings.DefaultWorkflowAction.DRAFT,
+            "2": VoucherSettings.DefaultWorkflowAction.CONFIRM,
+            "3": VoucherSettings.DefaultWorkflowAction.POST,
+            1: VoucherSettings.DefaultWorkflowAction.DRAFT,
+            2: VoucherSettings.DefaultWorkflowAction.CONFIRM,
+            3: VoucherSettings.DefaultWorkflowAction.POST,
+        }
+        return legacy_map.get(raw, raw)
+
+    @staticmethod
+    def effective_policy_controls(settings_obj: VoucherSettings) -> Dict[str, Any]:
+        raw = getattr(settings_obj, "policy_controls", None) or {}
+        merged = dict(DEFAULT_VOUCHER_POLICY_CONTROLS)
+        if isinstance(raw, dict):
+            merged.update(raw)
+        return merged
+
     @staticmethod
     def upsert_settings(*, entity_id: int, subentity_id: Optional[int], updates: Dict[str, Any]) -> VoucherSettings:
         settings, _ = VoucherSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
@@ -91,9 +115,21 @@ class VoucherSettingsService:
             "default_workflow_action",
             "policy_controls",
         }
+        workflow_values = {v for v, _ in VoucherSettings.DefaultWorkflowAction.choices}
         for key, val in updates.items():
             if key not in editable:
                 continue
+            if key in {"default_doc_code_cash", "default_doc_code_bank", "default_doc_code_journal"} and val is not None:
+                code = str(val).strip()
+                if not code:
+                    raise ValueError(f"{key} cannot be blank.")
+                if len(code) > 10:
+                    raise ValueError(f"{key} must be at most 10 characters.")
+                val = code
+            if key == "default_workflow_action":
+                val = VoucherSettingsService.normalize_workflow_action(val)
+                if val not in workflow_values:
+                    raise ValueError(f"default_workflow_action must be one of: {', '.join(sorted(workflow_values))}.")
             if key == "policy_controls":
                 val = VoucherSettingsService.normalize_policy_controls(val)
             setattr(settings, key, val)

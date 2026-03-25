@@ -34,12 +34,14 @@ from reports.api.purchase_register_view import (
     PurchaseRegisterPrintAPIView,
 )
 from reports.api.sales_register_view import SalesRegisterAPIView
+from reports.api.sales_gstin_view import SalesGstinAPIView
 from reports.gstr1.views import (
     Gstr1ExportAPIView,
     Gstr1InvoiceDetailAPIView,
     Gstr1MetaAPIView,
     Gstr1SectionAPIView,
     Gstr1SummaryAPIView,
+    Gstr1TableAPIView,
     Gstr1ValidationAPIView,
 )
 from reports.api.statutory import Gstr1ReportAPIView
@@ -121,9 +123,11 @@ urlpatterns = [
     path("purchases/register/csv/", PurchaseRegisterCSVAPIView.as_view(), name="purchase-register-csv"),
     path("purchases/register/print/", PurchaseRegisterPrintAPIView.as_view(), name="purchase-register-print"),
     path("sales/register/", SalesRegisterAPIView.as_view(), name="sales-register"),
+    path("sales/gstin/", SalesGstinAPIView.as_view(), name="sales-gstin"),
     path("gstr1/summary/", Gstr1SummaryAPIView.as_view(), name="gstr1-summary"),
     path("gstr1/meta/", Gstr1MetaAPIView.as_view(), name="gstr1-meta"),
     path("gstr1/section/<str:section_name>/", Gstr1SectionAPIView.as_view(), name="gstr1-section"),
+    path("gstr1/table/<str:table_code>/", Gstr1TableAPIView.as_view(), name="gstr1-table"),
     path("gstr1/validations/", Gstr1ValidationAPIView.as_view(), name="gstr1-validations"),
     path("gstr1/export/", Gstr1ExportAPIView.as_view(), name="gstr1-export"),
     path("gstr1/invoice/<int:invoice_id>/", Gstr1InvoiceDetailAPIView.as_view(), name="gstr1-invoice-detail"),

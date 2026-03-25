@@ -33,6 +33,28 @@ def _sections(schema: list[dict]) -> list[dict]:
     return sections
 
 
+POLICY_CONTROLS_SCHEMA = [
+    {"key": "require_allocation_on_post", "label": "Require Allocation On Post", "type": "choice", "choices": ["off", "warn", "hard"]},
+    {"key": "allow_advance_without_allocation", "label": "Allow Advance Without Allocation", "type": "choice", "choices": ["on", "off"]},
+    {"key": "allow_on_account_without_allocation", "label": "Allow On Account Without Allocation", "type": "choice", "choices": ["on", "off"]},
+    {"key": "sync_ar_settlement_on_post", "label": "Sync AR Settlement On Post", "type": "choice", "choices": ["on", "off"]},
+    {"key": "sync_gstr1_table11_on_post", "label": "Sync GSTR1 Table 11 On Post", "type": "choice", "choices": ["on", "off"]},
+    {"key": "table11_amendment_mode", "label": "Table 11 Amendment Mode", "type": "choice", "choices": ["snapshot", "off"]},
+    {"key": "sync_advance_balance_on_post", "label": "Sync Advance Balance On Post", "type": "choice", "choices": ["on", "off"]},
+    {"key": "residual_to_advance_balance", "label": "Residual To Advance Balance", "type": "choice", "choices": ["on", "off"]},
+    {"key": "require_confirm_before_post", "label": "Require Confirm Before Post", "type": "choice", "choices": ["on", "off"]},
+    {"key": "require_submit_before_approve", "label": "Require Submit Before Approve", "type": "choice", "choices": ["on", "off"]},
+    {"key": "allow_edit_after_submit", "label": "Allow Edit After Submit", "type": "choice", "choices": ["on", "off"]},
+    {"key": "unpost_target_status", "label": "Unpost Target Status", "type": "choice", "choices": ["confirmed", "draft"]},
+    {"key": "allocation_policy", "label": "Allocation Policy", "type": "choice", "choices": ["manual", "fifo"]},
+    {"key": "over_settlement_rule", "label": "Over Settlement Rule", "type": "choice", "choices": ["block", "warn"]},
+    {"key": "allocation_amount_match_rule", "label": "Allocation Amount Match Rule", "type": "choice", "choices": ["off", "warn", "hard"]},
+    {"key": "receipt_maker_checker", "label": "Receipt Maker Checker", "type": "choice", "choices": ["off", "warn", "hard"]},
+    {"key": "same_user_submit_approve", "label": "Same User Submit Approve", "type": "choice", "choices": ["on", "off"]},
+    {"key": "require_reference_number", "label": "Require Reference Number", "type": "choice", "choices": ["off", "warn", "hard"]},
+    {"key": "credit_note_consumption_mode", "label": "Credit Note Consumption Mode", "type": "choice", "choices": ["off", "fifo", "reference_only", "reference_then_fifo"]},
+]
+
 RECEIPT_SETTINGS_SCHEMA = [
     {"name": "default_doc_code_receipt", "label": "Receipt Doc Code", "type": "string", "group": "numbering_defaults"},
     {"name": "default_workflow_action", "label": "Default Workflow", "type": "choice", "group": "workflow", "choices": _choice_payload(ReceiptSettings.DefaultWorkflowAction.choices)},
@@ -276,6 +298,7 @@ class ReceiptSettingsAPIView(APIView):
                 "policy_controls": ReceiptSettingsService.effective_policy_controls(settings_obj),
             },
             "schema": RECEIPT_SETTINGS_SCHEMA,
+            "policy_controls_schema": POLICY_CONTROLS_SCHEMA,
             "sections": _sections(RECEIPT_SETTINGS_SCHEMA),
             "current_doc_numbers": self._current_doc_numbers(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj),
             "numbering_series": self._series_payload(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj) if entityfinid_id else [],

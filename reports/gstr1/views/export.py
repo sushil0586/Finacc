@@ -34,14 +34,15 @@ class Gstr1ExportAPIView(APIView):
 
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        smart_filters = service.build_smart_filters(request.query_params)
         exporter = self.export_service_class()
 
         if section:
-            return self._export_section(request, service, exporter, scope, section, export_format)
-        return self._export_summary(service, exporter, scope, export_format)
+            return self._export_section(request, service, exporter, scope, smart_filters, section, export_format)
+        return self._export_summary(service, exporter, scope, smart_filters, export_format)
 
-    def _export_summary(self, service, exporter, scope, export_format):
-        payload = service.summary(scope)
+    def _export_summary(self, service, exporter, scope, smart_filters, export_format):
+        payload = service.summary(scope, smart_filters=smart_filters)
         if export_format == "json":
             return Response(Gstr1SummarySerializer(payload).data)
         if export_format == "csv":
@@ -77,8 +78,8 @@ class Gstr1ExportAPIView(APIView):
             )
         return Response({"detail": "Unsupported export format."}, status=400)
 
-    def _export_section(self, request, service, exporter, scope, section, export_format):
-        qs = service.section(scope, section)
+    def _export_section(self, request, service, exporter, scope, smart_filters, section, export_format):
+        qs = service.section(scope, section, smart_filters=smart_filters)
         qs = Gstr1SectionService.annotate_rows(qs).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for row in qs:

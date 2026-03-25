@@ -17,7 +17,8 @@ class Gstr1SummaryAPIView(APIView):
     def get(self, request):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
-        payload = service.summary(scope)
+        smart_filters = service.build_smart_filters(request.query_params)
+        payload = service.summary(scope, smart_filters=smart_filters)
         response_payload = {
             "summary": Gstr1SummarySerializer(payload).data,
         }
@@ -25,7 +26,7 @@ class Gstr1SummaryAPIView(APIView):
             report_code="gstr1-summary",
             report_name="GSTR-1 Summary",
             payload=response_payload,
-            filters=scope_filters(scope),
+            filters=scope_filters(scope, smart_filters),
             defaults={
                 "decimal_places": 2,
                 "show_zero_balances_default": True,

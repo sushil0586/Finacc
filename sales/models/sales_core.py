@@ -252,6 +252,16 @@ class SalesInvoiceHeader(EntityScopedModel):
                 fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "invoice_number"],
                 name="uq_sales_hdr_scope_invoiceno",
             ),
+            models.UniqueConstraint(
+                fields=["entity", "entityfinid", "doc_type", "doc_code", "doc_no"],
+                condition=Q(subentity__isnull=True, doc_no__isnull=False),
+                name="uq_sales_hdr_root_docno",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "entityfinid", "doc_type", "doc_code", "invoice_number"],
+                condition=Q(subentity__isnull=True, invoice_number__isnull=False) & ~Q(invoice_number=""),
+                name="uq_sales_hdr_root_invoiceno",
+            ),
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "subentity", "bill_date"], name="ix_sales_hdr_billdt"),
