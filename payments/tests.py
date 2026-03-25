@@ -823,3 +823,29 @@ class PaymentVoucherPDFEndpointTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
+
+
+class PaymentVoucherCashGuardTests(SimpleTestCase):
+    def test_against_bill_allows_zero_cash_with_advance(self):
+        PaymentVoucherService._validate_cash_paid_input(
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            cash_paid_amount=Decimal("0.00"),
+            advance_adjustments=[{"adjusted_amount": Decimal("100.00")}],
+        )
+
+    def test_against_bill_rejects_zero_cash_without_advance(self):
+        with self.assertRaisesMessage(ValueError, "unless advance adjustments are provided"):
+            PaymentVoucherService._validate_cash_paid_input(
+                payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+                cash_paid_amount=Decimal("0.00"),
+                advance_adjustments=[],
+                has_allocations=True,
+            )
+
+    def test_advance_rejects_zero_cash(self):
+        with self.assertRaisesMessage(ValueError, "must be > 0 for ADVANCE/ON_ACCOUNT"):
+            PaymentVoucherService._validate_cash_paid_input(
+                payment_type=PaymentVoucherHeader.PaymentType.ADVANCE,
+                cash_paid_amount=Decimal("0.00"),
+                advance_adjustments=[{"adjusted_amount": Decimal("500.00")}],
+            )

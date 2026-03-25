@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db import models
+from django.db.models import Q
 
 from .base import TrackingModel
 
@@ -53,3 +54,46 @@ class VoucherSettings(TrackingModel):
 
     def __str__(self):
         return f"VoucherSettings(entity={self.entity_id}, subentity={self.subentity_id})"
+
+
+class VoucherLockPeriod(TrackingModel):
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
+    lock_date = models.DateField()
+    reason = models.CharField(max_length=200, null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "subentity", "lock_date"], name="ix_voucher_lock_period"),
+        ]
+
+    def __str__(self):
+        return f"Lock({self.entity_id}, {self.subentity_id}, {self.lock_date})"
+
+
+class VoucherChoiceOverride(TrackingModel):
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
+
+    choice_group = models.CharField(max_length=50)
+    choice_key = models.CharField(max_length=50)
+    is_enabled = models.BooleanField(default=True)
+    override_label = models.CharField(max_length=200, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("entity", "subentity", "choice_group", "choice_key"),
+                name="uq_vch_choice_ovr_scope",
+            ),
+            models.CheckConstraint(
+                name="ck_vch_choice_group_key_nn",
+                check=Q(choice_group__isnull=False) & Q(choice_key__isnull=False),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "subentity", "choice_group"], name="ix_vch_choice_ovr_scope"),
+        ]
+
+    def __str__(self):
+        return f"{self.choice_group}:{self.choice_key} ({'on' if self.is_enabled else 'off'})"

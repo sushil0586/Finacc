@@ -82,7 +82,16 @@ class VoucherHeader(TrackingModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=("entity", "entityfinid", "doc_code", "doc_no"), name="uq_voucher_entity_fin_code_no"),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "doc_code", "doc_no"),
+                condition=Q(subentity__isnull=False, doc_no__isnull=False),
+                name="uq_voucher_scope_docno_sub",
+            ),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "doc_code", "doc_no"),
+                condition=Q(subentity__isnull=True, doc_no__isnull=False),
+                name="uq_voucher_scope_docno_root",
+            ),
             models.CheckConstraint(name="ck_voucher_dr_nonneg", check=Q(total_debit_amount__gte=0)),
             models.CheckConstraint(name="ck_voucher_cr_nonneg", check=Q(total_credit_amount__gte=0)),
         ]

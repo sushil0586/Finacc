@@ -13,6 +13,8 @@ from .sales_settings import (
 from .sales_addons import (
     SalesChargeType,
     SalesChargeLine,
+    SalesAdvanceAdjustment,
+    SalesEcommerceSupply,
 )
 from .sales_ar import (
     CustomerBillOpenItem,

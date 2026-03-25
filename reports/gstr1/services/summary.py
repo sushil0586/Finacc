@@ -44,28 +44,46 @@ class Gstr1SummaryService:
             default=Value(Decimal("1")),
             output_field=DecimalField(max_digits=4, decimal_places=0),
         )
-        qs = SalesInvoiceLine.objects.filter(header__in=self.base_queryset)
-        qs = qs.annotate(
-            signed_taxable=F("taxable_value") * sign,
-            signed_cgst=F("cgst_amount") * sign,
-            signed_sgst=F("sgst_amount") * sign,
-            signed_igst=F("igst_amount") * sign,
-            signed_cess=F("cess_amount") * sign,
-            signed_qty=F("qty") * sign,
-        )
-        return list(
-            qs.values("hsn_sac_code", "is_service", "gst_rate")
+
+        # Amount/tax part comes from tax summary so both product lines and charge lines are included.
+        tax_rows = list(
+            SalesTaxSummary.objects.filter(header__in=self.base_queryset)
+            .annotate(
+                signed_taxable=F("taxable_value") * sign,
+                signed_cgst=F("cgst_amount") * sign,
+                signed_sgst=F("sgst_amount") * sign,
+                signed_igst=F("igst_amount") * sign,
+                signed_cess=F("cess_amount") * sign,
+            )
+            .values("hsn_sac_code", "is_service", "gst_rate")
             .annotate(
                 taxable_value=Coalesce(Sum("signed_taxable"), ZERO),
                 cgst_amount=Coalesce(Sum("signed_cgst"), ZERO),
                 sgst_amount=Coalesce(Sum("signed_sgst"), ZERO),
                 igst_amount=Coalesce(Sum("signed_igst"), ZERO),
                 cess_amount=Coalesce(Sum("signed_cess"), ZERO),
-                total_qty=Coalesce(Sum("signed_qty"), ZERO),
                 document_count=Count("header_id", distinct=True),
             )
             .order_by("hsn_sac_code", "gst_rate", "is_service")
         )
+
+        # Quantity exists only on material/service lines (not on header charges).
+        qty_map = {}
+        qty_rows = (
+            SalesInvoiceLine.objects.filter(header__in=self.base_queryset)
+            .annotate(signed_qty=F("qty") * sign)
+            .values("hsn_sac_code", "is_service", "gst_rate")
+            .annotate(total_qty=Coalesce(Sum("signed_qty"), ZERO))
+        )
+        for row in qty_rows:
+            key = (row.get("hsn_sac_code") or "", bool(row.get("is_service")), row.get("gst_rate"))
+            qty_map[key] = row.get("total_qty") or ZERO
+
+        for row in tax_rows:
+            key = (row.get("hsn_sac_code") or "", bool(row.get("is_service")), row.get("gst_rate"))
+            row["total_qty"] = qty_map.get(key, ZERO)
+
+        return tax_rows
 
     def nil_exempt_summary(self):
         qs = SalesTaxSummary.objects.filter(

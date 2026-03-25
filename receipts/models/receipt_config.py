@@ -24,6 +24,8 @@ DEFAULT_RECEIPT_POLICY_CONTROLS = {
     "same_user_submit_approve": "on",          # on|off
     "require_reference_number": "off",         # off|warn|hard
     "credit_note_consumption_mode": "reference_then_fifo",  # off|fifo|reference_only|reference_then_fifo
+    "sync_gstr1_table11_on_post": "on",  # on|off
+    "table11_amendment_mode": "snapshot",  # snapshot|off
 }
 
 

@@ -119,8 +119,14 @@ class ReceiptVoucherHeader(TrackingModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "doc_code", "doc_no"),
+                condition=Q(subentity__isnull=False, doc_no__isnull=False),
+                name="uq_receipt_voucher_scope_docno_sub",
+            ),
+            models.UniqueConstraint(
                 fields=("entity", "entityfinid", "doc_code", "doc_no"),
-                name="uq_receipt_voucher_entity_fin_code_no",
+                condition=Q(subentity__isnull=True, doc_no__isnull=False),
+                name="uq_receipt_voucher_scope_docno_root",
             ),
             models.CheckConstraint(name="ck_receipt_cash_nonneg", check=Q(cash_received_amount__gte=0)),
         ]
