@@ -33,7 +33,7 @@ def build_gstr1_report_meta(*, entity_id: int, entityfinid_id: int | None = None
             {"code": table.code, "label": table.label}
             for table in Gstr1TableViewService.table_definitions()
         ],
-        "supported_exports": ["json", "csv", "xlsx"],
+        "supported_exports": ["json", "csv", "xlsx", "gstn_json"],
         "thresholds": {
             "b2cl_invoice_value": str(b2cl_threshold()),
         },
@@ -72,6 +72,7 @@ def build_gstr1_report_meta(*, entity_id: int, entityfinid_id: int | None = None
                 {"value": "json", "label": "JSON"},
                 {"value": "csv", "label": "CSV"},
                 {"value": "xlsx", "label": "Excel"},
+                {"value": "gstn_json", "label": "GSTN Filing JSON"},
             ],
             "date_presets": [],
         },

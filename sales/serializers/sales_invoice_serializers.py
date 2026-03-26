@@ -193,6 +193,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "shipping_detail",
 
             "seller_gstin",
+            "ecm_gstin",
             "seller_state_code",
             "place_of_supply_state_code",
             "place_of_supply_pincode",
@@ -333,7 +334,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         if bad:
             raise serializers.ValidationError({k: "Field is controlled by backend." for k in bad})
 
-        for field in ("customer_gstin", "seller_gstin"):
+        for field in ("customer_gstin", "seller_gstin", "ecm_gstin"):
             if field in attrs and attrs.get(field):
                 val = str(attrs[field]).strip().upper()
                 if not self.GSTIN_RE.fullmatch(val):

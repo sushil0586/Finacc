@@ -200,17 +200,18 @@ class IRPPayloadBuilder:
 
     @staticmethod
     def _tran_dtls(inv, sup_typ: str) -> Dict[str, Any]:
+        ecm = str(getattr(inv, "ecm_gstin", "") or "").strip().upper()
+        igst_on_intra = getattr(inv, "igst_on_intra", None)
+
         out: Dict[str, Any] = {
             "TaxSch": "GST",
             "SupTyp": sup_typ,
             "RegRev": "Y" if bool(getattr(inv, "is_reverse_charge", False)) else "N",
+            # Keep key explicit to match NIC schema across providers.
+            "EcmGstin": ecm or None,
+            # Default to "N" unless explicitly set true on invoice.
+            "IgstOnIntra": "Y" if bool(igst_on_intra) else "N",
         }
-        ecm = str(getattr(inv, "ecm_gstin", "") or "").strip().upper()
-        if ecm:
-            out["EcmGstin"] = ecm
-        igst_on_intra = getattr(inv, "igst_on_intra", None)
-        if igst_on_intra is not None:
-            out["IgstOnIntra"] = "Y" if bool(igst_on_intra) else "N"
         return out
 
     def _ref_dtls(self, inv) -> Optional[Dict[str, Any]]:

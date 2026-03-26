@@ -15,11 +15,11 @@ Coverage includes:
 from decimal import Decimal
 import re
 
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Max, Min, Q, Sum
 
 from reports.gstr1.conf import export_pos_code, enable_gstin_checksum
 from reports.gstr1.utils.gstin import format_valid as gstin_format_valid, is_valid as gstin_valid
-from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
+from sales.models import SalesAdvanceAdjustment, SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 TOLERANCE = Decimal("0.50")
@@ -49,6 +49,176 @@ class Gstr1ValidationService:
         warnings.extend(self._non_positive_taxable_warnings())
         warnings.extend(self._non_positive_total_warnings())
         warnings.extend(self._cancelled_amount_warnings())
+        warnings.extend(self._table11_orphan_adjustment_warnings())
+        warnings.extend(self._table11_adjustment_exceeds_source_warnings())
+        warnings.extend(self._table11_duplicate_active_adjustment_warnings())
+        return warnings
+
+    def _table11_queryset(self):
+        scope = self.base_queryset.values("entity_id", "entityfinid_id", "subentity_id").distinct()
+        if not scope:
+            return SalesAdvanceAdjustment.objects.none()
+        filters = Q()
+        for row in scope:
+            if row["subentity_id"]:
+                filters |= Q(
+                    entity_id=row["entity_id"],
+                    entityfinid_id=row["entityfinid_id"],
+                    subentity_id=row["subentity_id"],
+                )
+            else:
+                filters |= Q(
+                    entity_id=row["entity_id"],
+                    entityfinid_id=row["entityfinid_id"],
+                    subentity_id__isnull=True,
+                )
+        qs = SalesAdvanceAdjustment.objects.filter(filters, is_amendment=False)
+        date_bounds = self.base_queryset.aggregate(min_bill=Min("bill_date"), max_bill=Max("bill_date"))
+        if date_bounds.get("min_bill"):
+            qs = qs.filter(voucher_date__gte=date_bounds["min_bill"])
+        if date_bounds.get("max_bill"):
+            qs = qs.filter(voucher_date__lte=date_bounds["max_bill"])
+        return qs
+
+    @staticmethod
+    def _table11_base_voucher_no(voucher_number: str) -> str:
+        value = str(voucher_number or "")
+        marker = "-ADJ-"
+        idx = value.find(marker)
+        if idx == -1:
+            return value
+        return value[:idx]
+
+    def _table11_orphan_adjustment_warnings(self):
+        qs = self._table11_queryset().filter(entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT)
+        if not qs.exists():
+            return []
+
+        source_rows = self._table11_queryset().filter(
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT
+        ).values("entity_id", "entityfinid_id", "subentity_id", "voucher_number")
+        source_keys = {
+            (
+                row["entity_id"],
+                row["entityfinid_id"],
+                row["subentity_id"],
+                row["voucher_number"],
+            )
+            for row in source_rows
+        }
+        warnings = []
+        for row in qs.values("id", "linked_invoice_id", "voucher_number", "entity_id", "entityfinid_id", "subentity_id"):
+            base_no = self._table11_base_voucher_no(row["voucher_number"])
+            key = (row["entity_id"], row["entityfinid_id"], row["subentity_id"], base_no)
+            if key in source_keys:
+                continue
+            warnings.append(
+                _warning(
+                    code="TABLE11_ORPHAN_ADJUSTMENT",
+                    message="Table 11B adjustment has no matching 11A source advance row.",
+                    invoice_id=row.get("linked_invoice_id"),
+                    invoice_number=base_no,
+                    severity="warning",
+                )
+            )
+        return warnings
+
+    def _table11_adjustment_exceeds_source_warnings(self):
+        qs = self._table11_queryset()
+        if not qs.exists():
+            return []
+
+        sources = {}
+        src_rows = qs.filter(entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT).values(
+            "entity_id",
+            "entityfinid_id",
+            "subentity_id",
+            "voucher_number",
+            "taxable_value",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "cess_amount",
+        )
+        for row in src_rows:
+            key = (row["entity_id"], row["entityfinid_id"], row["subentity_id"], row["voucher_number"])
+            total = (
+                Decimal(row.get("taxable_value") or 0)
+                + Decimal(row.get("cgst_amount") or 0)
+                + Decimal(row.get("sgst_amount") or 0)
+                + Decimal(row.get("igst_amount") or 0)
+                + Decimal(row.get("cess_amount") or 0)
+            )
+            sources[key] = total
+
+        adj_totals = {}
+        adj_rows = qs.filter(entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT).values(
+            "entity_id",
+            "entityfinid_id",
+            "subentity_id",
+            "voucher_number",
+            "linked_invoice_id",
+            "taxable_value",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "cess_amount",
+        )
+        for row in adj_rows:
+            base_no = self._table11_base_voucher_no(row["voucher_number"])
+            key = (row["entity_id"], row["entityfinid_id"], row["subentity_id"], base_no)
+            line_total = (
+                Decimal(row.get("taxable_value") or 0)
+                + Decimal(row.get("cgst_amount") or 0)
+                + Decimal(row.get("sgst_amount") or 0)
+                + Decimal(row.get("igst_amount") or 0)
+                + Decimal(row.get("cess_amount") or 0)
+            )
+            group = adj_totals.get(key) or {"total": Decimal("0.00"), "linked_invoice_id": row.get("linked_invoice_id")}
+            group["total"] = group["total"] + line_total
+            if not group.get("linked_invoice_id"):
+                group["linked_invoice_id"] = row.get("linked_invoice_id")
+            adj_totals[key] = group
+
+        warnings = []
+        for key, row in adj_totals.items():
+            source_total = Decimal(sources.get(key) or 0)
+            if row["total"] <= source_total + TOLERANCE:
+                continue
+            warnings.append(
+                _warning(
+                    code="TABLE11_ADJUSTMENT_EXCEEDS_SOURCE",
+                    message="Table 11B adjustments exceed source advance tax amounts.",
+                    invoice_id=row.get("linked_invoice_id"),
+                    invoice_number=key[3],
+                    severity="warning",
+                )
+            )
+        return warnings
+
+    def _table11_duplicate_active_adjustment_warnings(self):
+        qs = self._table11_queryset().filter(
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT,
+            linked_invoice__isnull=False,
+        )
+        duplicates = (
+            qs.values("entity_id", "entityfinid_id", "subentity_id", "voucher_number", "linked_invoice_id")
+            .annotate(cnt=Count("id"))
+            .filter(cnt__gt=1)
+        )
+        if not duplicates:
+            return []
+        warnings = []
+        for row in duplicates:
+            warnings.append(
+                _warning(
+                    code="TABLE11_DUPLICATE_ADJUSTMENT",
+                    message="Duplicate active Table 11B rows exist for same voucher and linked invoice.",
+                    invoice_id=row.get("linked_invoice_id"),
+                    invoice_number=row.get("voucher_number"),
+                    severity="warning",
+                )
+            )
         return warnings
 
     def _invalid_gstin_warnings(self):

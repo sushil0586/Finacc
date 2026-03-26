@@ -9,6 +9,10 @@ from .models import (
     account,
     ShippingDetails,
     ContactDetails,
+    AccountBankDetails,
+    AccountAddress,
+    AccountComplianceProfile,
+    AccountCommercialProfile,
 )
 from .admin_resources import (
     AccountTypeResource,
@@ -73,11 +77,66 @@ class AccountAdmin(ImportExportModelAdmin):
     search_fields = ("accountname", "compliance_profile__gstno", "accountcode")
     ordering = ("entity", "accountcode")
     list_select_related = ("entity", "accounthead", "compliance_profile")
+    inlines = []
 
     @admin.display(description="GSTIN")
     def compliance_gstno(self, obj):
         profile = getattr(obj, "compliance_profile", None)
         return getattr(profile, "gstno", None)
+
+
+class AccountComplianceProfileInline(admin.StackedInline):
+    model = AccountComplianceProfile
+    fk_name = "account"
+    extra = 0
+    max_num = 1
+    show_change_link = True
+
+
+class AccountCommercialProfileInline(admin.StackedInline):
+    model = AccountCommercialProfile
+    fk_name = "account"
+    extra = 0
+    max_num = 1
+    show_change_link = True
+
+
+class AccountAddressInline(admin.TabularInline):
+    model = AccountAddress
+    fk_name = "account"
+    extra = 0
+    show_change_link = True
+
+
+class AccountBankDetailsInline(admin.TabularInline):
+    model = AccountBankDetails
+    fk_name = "account"
+    extra = 0
+    show_change_link = True
+
+
+class ShippingDetailsInline(admin.TabularInline):
+    model = ShippingDetails
+    fk_name = "account"
+    extra = 0
+    show_change_link = True
+
+
+class ContactDetailsInline(admin.TabularInline):
+    model = ContactDetails
+    fk_name = "account"
+    extra = 0
+    show_change_link = True
+
+
+AccountAdmin.inlines = [
+    AccountComplianceProfileInline,
+    AccountCommercialProfileInline,
+    AccountAddressInline,
+    AccountBankDetailsInline,
+    ShippingDetailsInline,
+    ContactDetailsInline,
+]
 
 
 # Optional: keep these normal (not import/export), because they depend on Account IDs heavily
@@ -91,3 +150,35 @@ class ShippingDetailsAdmin(admin.ModelAdmin):
 class ContactDetailsAdmin(admin.ModelAdmin):
     list_display = ("account", "full_name", "designation")
     search_fields = ("account__accountname", "full_name", "designation")
+
+
+@admin.register(AccountBankDetails)
+class AccountBankDetailsAdmin(admin.ModelAdmin):
+    list_display = ("account", "bankname", "banKAcno", "ifsc", "isprimary", "isactive")
+    list_filter = ("isprimary", "isactive", "entity")
+    search_fields = ("account__accountname", "bankname", "banKAcno", "ifsc")
+    list_select_related = ("account", "entity")
+
+
+@admin.register(AccountAddress)
+class AccountAddressAdmin(admin.ModelAdmin):
+    list_display = ("account", "address_type", "line1", "pincode", "isprimary", "isactive")
+    list_filter = ("address_type", "isprimary", "isactive", "entity")
+    search_fields = ("account__accountname", "line1", "pincode")
+    list_select_related = ("account", "entity", "country", "state", "district", "city")
+
+
+@admin.register(AccountComplianceProfile)
+class AccountComplianceProfileAdmin(admin.ModelAdmin):
+    list_display = ("account", "gstno", "pan", "gstintype", "gstregtype", "is_sez", "isactive")
+    list_filter = ("gstintype", "gstregtype", "is_sez", "isactive", "entity")
+    search_fields = ("account__accountname", "gstno", "pan")
+    list_select_related = ("account", "entity")
+
+
+@admin.register(AccountCommercialProfile)
+class AccountCommercialProfileAdmin(admin.ModelAdmin):
+    list_display = ("account", "partytype", "currency", "creditdays", "creditlimit", "approved", "isactive")
+    list_filter = ("partytype", "currency", "approved", "isactive", "entity")
+    search_fields = ("account__accountname", "agent", "blockedreason")
+    list_select_related = ("account", "entity")

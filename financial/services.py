@@ -10,6 +10,7 @@ from financial.models import (
     Ledger,
     account,
 )
+from financial.gstin import validate_financial_gstin
 from posting.services.balances import ledger_balance_map
 
 
@@ -234,6 +235,9 @@ def apply_normalized_profile_payload(
 
     if compliance_data is not None:
         defaults = {"entity": acc.entity, "createdby": actor}
+        if "gstno" in compliance_data:
+            compliance_data = dict(compliance_data)
+            compliance_data["gstno"] = validate_financial_gstin(compliance_data.get("gstno"))
         defaults.update(compliance_data)
         compliance_profile, _ = AccountComplianceProfile.objects.update_or_create(account=acc, defaults=defaults)
         acc.compliance_profile = compliance_profile

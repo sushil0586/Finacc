@@ -1,4 +1,6 @@
 from django.core.validators import MinLengthValidator, RegexValidator
+from django.core.exceptions import ValidationError
+from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from helpers.models import TrackingModel
@@ -9,8 +11,13 @@ from django.utils.dateformat import DateFormat
 
 # Create your models here.
 
+_RELAXED_GSTIN = bool(getattr(settings, "ALLOW_RELAXED_GSTIN_FOR_SANDBOX", False))
 gstin_validator = RegexValidator(
-    regex=r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$",
+    regex=(
+        r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$"
+        if _RELAXED_GSTIN
+        else r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"
+    ),
     message="Enter a valid GSTIN.",
 )
 pan_validator = RegexValidator(
@@ -302,12 +309,48 @@ class EntityGstRegistration(TrackingModel):
         constraints = [
             models.UniqueConstraint(fields=["gstin"], condition=Q(isactive=True), name="uq_entity_gst_registration_active_gstin"),
             models.UniqueConstraint(fields=["entity"], condition=Q(isactive=True, is_primary=True), name="uq_entity_gst_registration_primary"),
+            models.UniqueConstraint(
+                fields=["entity", "state"],
+                condition=Q(isactive=True, state__isnull=False),
+                name="uq_entity_gst_registration_entity_state_active",
+            ),
         ]
         indexes = [models.Index(fields=["entity", "is_primary", "isactive"])]
+
+    def clean(self):
+        gstin = (self.gstin or "").strip().upper()
+
+        # GSTIN carries the GST state code in the first 2 chars. Keep DB state aligned.
+        if gstin and self.state_id:
+            gst_state_code = gstin[:2]
+            state_code = str(getattr(self.state, "statecode", "") or "").strip().zfill(2)
+            if state_code and gst_state_code != state_code:
+                raise ValidationError({"state": "State does not match GSTIN state code."})
+
+        # Prevent multiple active GST rows for same entity+state.
+        if self.isactive and self.entity_id and self.state_id:
+            exists_same_state = EntityGstRegistration.objects.filter(
+                entity_id=self.entity_id,
+                state_id=self.state_id,
+                isactive=True,
+            ).exclude(pk=self.pk).exists()
+            if exists_same_state:
+                raise ValidationError({"state": "Only one active GST registration is allowed per entity per state."})
+
+        # Keep one active primary row per entity for clean downstream lookups.
+        if self.isactive and self.entity_id and not self.is_primary:
+            has_primary = EntityGstRegistration.objects.filter(
+                entity_id=self.entity_id,
+                isactive=True,
+                is_primary=True,
+            ).exclude(pk=self.pk).exists()
+            if not has_primary:
+                raise ValidationError({"is_primary": "At least one active primary GST registration is required per entity."})
 
     def save(self, *args, **kwargs):
         self.gstin = (self.gstin or "").strip().upper()
         self.credential_ref = (self.credential_ref or "").strip() or None
+        self.full_clean()
         super().save(*args, **kwargs)
 
 

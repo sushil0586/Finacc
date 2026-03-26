@@ -13,4 +13,5 @@ class Gstr1TableEnvelopeSerializer(serializers.Serializer):
     table_label = serializers.CharField()
     count = serializers.IntegerField()
     rows = serializers.ListField(child=serializers.DictField(), allow_empty=True)
+    groups = serializers.DictField(child=serializers.DictField(), required=False)
     coverage = Gstr1TableCoverageSerializer()

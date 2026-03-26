@@ -13,6 +13,11 @@ class CredentialResolver:
 
     @staticmethod
     def mastergst_for_invoice(invoice):
+        return CredentialResolver.provider_for_invoice(invoice, provider_name="mastergst")
+
+    @staticmethod
+    def provider_for_invoice(invoice, *, provider_name: str = "mastergst"):
+        provider = (provider_name or "mastergst").strip().lower()
         raw = getattr(settings, "SALES_MASTERGST_ENV", None)
         if raw is None:
             raw = getattr(settings, "MASTERGST_ENV", "SANDBOX")
@@ -32,5 +37,7 @@ class CredentialResolver:
             .first()
         )
         if not cred:
-            raise ValidationError("MasterGST EINVOICE credential not configured for this entity/environment.")
+            raise ValidationError(
+                f"{provider.title()} EINVOICE credential not configured for this entity/environment."
+            )
         return cred

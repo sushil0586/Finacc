@@ -945,6 +945,18 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
 
         return instance
 
+    # Product attribute rows are standalone masters.
+    # Keep create/update flat so /product-attributes APIs do not route through
+    # product nested create logic by mistake.
+    def create(self, validated_data):
+        return ProductAttribute.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
+
 
 # ----------------------------------------------------------------------
 # Choice serializers (unchanged)

@@ -239,9 +239,17 @@ LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_L10N = True
-EINVOICE_PROVIDER = "mastergst"
+EINVOICE_PROVIDER = "whitebooks"
+EWAY_PROVIDER = "whitebooks"
 MASTERGST_ENV = "SANDBOX"
-MASTERGST_BASE_URL = "https://api.mastergst.com"   # if they use different base, change here
+MASTERGST_BASE_URL = "https://api.mastergst.com"   # fallback/provider-specific base
+WHITEBOOKS_BASE_URL = os.getenv("WHITEBOOKS_BASE_URL", "https://apisandbox.whitebooks.in").strip()
+GST_PROVIDER_BASE_URLS = {
+    "mastergst": MASTERGST_BASE_URL,
+    "whitebooks": WHITEBOOKS_BASE_URL or MASTERGST_BASE_URL,
+}
+ALLOW_RELAXED_GSTIN_FOR_SANDBOX = True
+FINANCIAL_ACCOUNT_ALLOW_RELAXED_GSTIN = True
 MASTERGST_IP_ADDRESS = "10.14.676.200"                   # set to your EC2 public IP in production
 
     
