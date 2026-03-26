@@ -212,7 +212,33 @@ class SalesAdvanceAdjustment(TrackingModel):
                     & Q(igst_amount__gte=0)
                     & Q(cess_amount__gte=0)
                 ),
-            )
+            ),
+            # One active (non-amendment) advance-receipt row per voucher.
+            models.UniqueConstraint(
+                fields=["entity", "entityfinid", "subentity", "voucher_number", "entry_type"],
+                condition=Q(is_amendment=False, entry_type="ADVANCE_RECEIPT"),
+                name="uq_sales_adv_receipt_active_per_voucher",
+            ),
+            # One active (non-amendment) adjustment row per voucher+invoice.
+            models.UniqueConstraint(
+                fields=["entity", "entityfinid", "subentity", "voucher_number", "entry_type", "linked_invoice"],
+                condition=Q(
+                    is_amendment=False,
+                    entry_type="ADVANCE_ADJUSTMENT",
+                    linked_invoice__isnull=False,
+                ),
+                name="uq_sales_adv_adjust_active_per_invoice",
+            ),
+            # If linked invoice is unavailable, allow only one active fallback row.
+            models.UniqueConstraint(
+                fields=["entity", "entityfinid", "subentity", "voucher_number", "entry_type"],
+                condition=Q(
+                    is_amendment=False,
+                    entry_type="ADVANCE_ADJUSTMENT",
+                    linked_invoice__isnull=True,
+                ),
+                name="uq_sales_adv_adjust_active_without_invoice",
+            ),
         ]
 
 

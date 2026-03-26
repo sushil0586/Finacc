@@ -12,8 +12,6 @@ Precedence rules:
 """
 
 from dataclasses import dataclass
-from decimal import Decimal
-
 from django.db.models import F, Q
 
 from reports.gstr1.conf import b2cl_threshold
@@ -43,9 +41,6 @@ ALL_SECTIONS = (
 )
 
 GSTIN_PATTERN = r"^[0-9A-Z]{15}$"
-B2CL_THRESHOLD = Decimal("250000.00")  # default; overridden via config accessor
-
-
 class Gstr1ClassificationService:
     @staticmethod
     def section_filter(section_code: str) -> Q:
@@ -135,10 +130,7 @@ class Gstr1ClassificationService:
                 & unregistered_recipient
                 & ~export_supply
                 & ~sez_supply
-                & (
-                    intrastate
-                    | Q(grand_total__lt=B2CL_THRESHOLD)
-                )
+                & (intrastate | Q(grand_total__lt=b2cl_threshold()))
             )
 
         raise ValueError(f"Unsupported section: {section_code}")

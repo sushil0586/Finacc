@@ -22,6 +22,7 @@ from sales.models.sales_compliance import (
 )
 from sales.models.mastergst_models import SalesMasterGSTCredential, MasterGSTEnvironment, MasterGSTServiceScope
 from sales.services.providers.mastergst_client import MasterGSTClient
+from sales.services.providers.config import active_einvoice_provider, active_eway_provider
 
 from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.party_resolvers import seller_from_entity, buyer_from_account
@@ -62,6 +63,14 @@ class SalesComplianceService:
     # -------------------------
     # Common helpers
     # -------------------------
+
+    @staticmethod
+    def _einvoice_provider_name() -> str:
+        return active_einvoice_provider()
+
+    @staticmethod
+    def _eway_provider_name() -> str:
+        return active_eway_provider()
 
     @staticmethod
     def _ensure_invoice_eligible_for_eway(inv: SalesInvoiceHeader) -> None:
@@ -110,8 +119,8 @@ class SalesComplianceService:
         }
 
     def _assert_confirmed_for_irn(self) -> None:
-        if self.invoice.status != self.invoice.Status.CONFIRMED:
-            raise ValidationError("Invoice must be CONFIRMED before generating IRN.")
+        if self.invoice.status not in (self.invoice.Status.CONFIRMED, self.invoice.Status.POSTED):
+            raise ValidationError("Invoice must be CONFIRMED or POSTED before generating IRN.")
 
     def _buyer_account(self) -> AccountModel:
         inv = self.invoice
@@ -360,7 +369,8 @@ class SalesComplianceService:
         return int(raw)
 
     @staticmethod
-    def _get_mastergst_cred_for_entity(entity) -> SalesMasterGSTCredential:
+    def _get_mastergst_cred_for_entity(entity, *, provider_name: Optional[str] = None) -> SalesMasterGSTCredential:
+        provider_label = (provider_name or SalesComplianceService._einvoice_provider_name()).strip().lower()
         env = SalesComplianceService._mastergst_env_from_settings()
 
         cred = (
@@ -375,7 +385,7 @@ class SalesComplianceService:
         )
         if not cred:
             raise ValidationError(
-                f"MasterGST EINVOICE credential not configured for this entity (env={env}, scope={MasterGSTServiceScope.EINVOICE})."
+                f"{provider_label.title()} EINVOICE credential not configured for this entity (env={env}, scope={MasterGSTServiceScope.EINVOICE})."
             )
 
         missing = []
@@ -387,7 +397,7 @@ class SalesComplianceService:
         if not cred.gst_password: missing.append("gst_password")
 
         if missing:
-            raise ValidationError(f"MasterGST credential incomplete: {', '.join(missing)}")
+            raise ValidationError(f"{provider_label.title()} credential incomplete: {', '.join(missing)}")
 
         return cred
 
@@ -422,7 +432,7 @@ class SalesComplianceService:
         einv.save()
 
         # if you use ProviderRegistry, keep it; else call MasterGST provider directly
-        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider_name = self._einvoice_provider_name()
         provider = ProviderRegistry.get_einvoice(provider_name)  # noqa: F821 (if you keep ProviderRegistry)
 
         try:
@@ -517,7 +527,7 @@ class SalesComplianceService:
         if ewb and int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.GENERATED) and getattr(ewb, "ewb_no", None):
             raise ValidationError("IRN cannot be cancelled while EWB is active. Cancel E-Way Bill first.")
 
-        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider_name = self._einvoice_provider_name()
         provider = ProviderRegistry.get_einvoice(provider_name)
         result = provider.cancel_irn(invoice=inv, irn=einv.irn, reason_code=reason_code, remarks=remarks)
 
@@ -592,7 +602,7 @@ class SalesComplianceService:
         if not irn_to_fetch:
             raise ValidationError("IRN is required. Generate IRN first or pass irn in request.")
 
-        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider_name = self._einvoice_provider_name()
         provider = ProviderRegistry.get_einvoice(provider_name)
         result = provider.get_irn_details(invoice=inv, irn=irn_to_fetch, supplier_gstin=supplier_gstin)
 
@@ -684,7 +694,7 @@ class SalesComplianceService:
         if not irn_to_fetch:
             raise ValidationError("IRN is required. Generate IRN first or pass irn in request.")
 
-        provider_name = getattr(settings, "EINVOICE_PROVIDER", "mastergst")
+        provider_name = self._einvoice_provider_name()
         provider = ProviderRegistry.get_einvoice(provider_name)
         result = provider.get_eway_details_by_irn(invoice=inv, irn=irn_to_fetch, supplier_gstin=supplier_gstin)
 
@@ -937,8 +947,10 @@ class SalesComplianceService:
                 art.created_by = created_by
         art.save()
 
-        cred = SalesComplianceService._get_mastergst_cred_for_entity(entity)
-        client = MasterGSTClient(cred=cred)
+        cred = SalesComplianceService._get_mastergst_cred_for_entity(
+            entity, provider_name=SalesComplianceService._eway_provider_name()
+        )
+        client = MasterGSTClient(cred=cred, provider_name=SalesComplianceService._eway_provider_name())
 
         resp = client.generate_ewaybill(payload)
         art.last_response_json = resp
@@ -1015,8 +1027,8 @@ class SalesComplianceService:
         if not art.ewb_no or art.status != SalesEWayStatus.GENERATED:
             raise ValidationError("E-Way cancel is allowed only for generated EWB.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity)
-        client = MasterGSTClient(cred=cred)
+        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         ewb_no_raw = str(art.ewb_no or "").strip()
         reason_raw = str(reason_code or "").strip()
         payload = {
@@ -1094,8 +1106,8 @@ class SalesComplianceService:
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity)
-        client = MasterGSTClient(cred=cred)
+        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         payload = {
             "ewbNo": str(art.ewb_no),
             "vehicleNo": str(req.get("vehicle_no") or ""),
@@ -1155,8 +1167,8 @@ class SalesComplianceService:
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity)
-        client = MasterGSTClient(cred=cred)
+        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         payload = {"ewbNo": str(art.ewb_no), "transporterId": str(transporter_id)}
         resp = client.update_eway_transporter(payload)
         status_cd = str(resp.get("status_cd") or "")
@@ -1194,8 +1206,8 @@ class SalesComplianceService:
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity)
-        client = MasterGSTClient(cred=cred)
+        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         payload = {
             "ewbNo": str(art.ewb_no),
             "reasonCode": str(req.get("reason_code") or ""),
@@ -1311,8 +1323,8 @@ class SalesComplianceService:
         if ewb.status == SalesEWayStatus.GENERATED and ewb.ewb_no and ewb.valid_upto and ewb.valid_upto > now:
             return {"status": "SUCCESS", "ewb_no": ewb.ewb_no, "valid_upto": ewb.valid_upto, "idempotent": True}
 
-        cred = self._get_mastergst_cred_for_entity(invoice.entity)
-        client = MasterGSTClient(cred=cred)
+        cred = self._get_mastergst_cred_for_entity(invoice.entity, provider_name=self._eway_provider_name())
+        client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
 
         payload = build_b2c_direct_payload(invoice=invoice, ewb=ewb, entity_gstin=cred.gstin)
 

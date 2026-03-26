@@ -20,6 +20,7 @@ class Gstr1TableDefinition:
 
 
 TABLE_1_3 = Gstr1TableDefinition("TAXPAYER_1_3", "1/2/3 Taxpayer Details")
+TABLE_4 = Gstr1TableDefinition("TABLE_4", "4 B2B")
 TABLE_5 = Gstr1TableDefinition("TABLE_5", "5 B2CL (Large)")
 TABLE_6 = Gstr1TableDefinition("TABLE_6", "6 Exports / Deemed Exports / SEZ")
 TABLE_7 = Gstr1TableDefinition("TABLE_7", "7 B2CS")
@@ -36,6 +37,7 @@ TABLE_15A = Gstr1TableDefinition("TABLE_15A", "15A Amendments to Table 15")
 
 ALL_GSTR1_TABLES = (
     TABLE_1_3,
+    TABLE_4,
     TABLE_5,
     TABLE_6,
     TABLE_7,
@@ -65,6 +67,8 @@ class Gstr1TableViewService:
         code = (table_code or "").upper()
         if code == TABLE_1_3.code:
             return self._table_taxpayer()
+        if code in {TABLE_4.code, "4"}:
+            return self._table_4()
         if code == TABLE_5.code:
             return self._table_5()
         if code == TABLE_6.code:
@@ -158,6 +162,30 @@ class Gstr1TableViewService:
                 }
             )
         return self._ok(TABLE_5, rows)
+
+    def _table_4(self):
+        qs = self.base_queryset.filter(
+            Gstr1ClassificationService.section_filter("B2B")
+        ).order_by("bill_date", "doc_code", "doc_no", "id")
+        rows = []
+        for row in qs:
+            rows.append(
+                {
+                    "invoice_id": row.id,
+                    "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
+                    "invoice_date": row.bill_date,
+                    "customer_name": row.customer_name,
+                    "customer_gstin": row.customer_gstin,
+                    "place_of_supply_state_code": row.place_of_supply_state_code,
+                    "taxable_amount": row.total_taxable_value,
+                    "cgst_amount": row.total_cgst,
+                    "sgst_amount": row.total_sgst,
+                    "igst_amount": row.total_igst,
+                    "cess_amount": row.total_cess,
+                    "grand_total": row.grand_total,
+                }
+            )
+        return self._ok(TABLE_4, rows)
 
     def _table_6(self):
         qs = self.base_queryset.filter(
@@ -325,27 +353,37 @@ class Gstr1TableViewService:
         if self.scope.to_date:
             qs = qs.filter(voucher_date__lte=self.scope.to_date)
         rows = []
+        rows_11a = []
+        rows_11b = []
         for row in qs:
-            rows.append(
-                {
-                    "id": row.id,
-                    "voucher_date": row.voucher_date,
-                    "voucher_number": row.voucher_number,
-                    "entry_type": row.entry_type,
-                    "customer_name": row.customer_name,
-                    "customer_gstin": row.customer_gstin,
-                    "place_of_supply_state_code": row.place_of_supply_state_code,
-                    "taxable_value": row.taxable_value,
-                    "cgst_amount": row.cgst_amount,
-                    "sgst_amount": row.sgst_amount,
-                    "igst_amount": row.igst_amount,
-                    "cess_amount": row.cess_amount,
-                    "linked_invoice_id": row.linked_invoice_id,
-                    "is_amendment": row.is_amendment,
-                    "original_entry_id": row.original_entry_id,
-                }
-            )
-        return self._ok(TABLE_11, rows)
+            payload = {
+                "id": row.id,
+                "voucher_date": row.voucher_date,
+                "voucher_number": row.voucher_number,
+                "entry_type": row.entry_type,
+                "customer_name": row.customer_name,
+                "customer_gstin": row.customer_gstin,
+                "place_of_supply_state_code": row.place_of_supply_state_code,
+                "taxable_value": row.taxable_value,
+                "cgst_amount": row.cgst_amount,
+                "sgst_amount": row.sgst_amount,
+                "igst_amount": row.igst_amount,
+                "cess_amount": row.cess_amount,
+                "linked_invoice_id": row.linked_invoice_id,
+                "is_amendment": row.is_amendment,
+                "original_entry_id": row.original_entry_id,
+            }
+            rows.append(payload)
+            if row.entry_type == SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT:
+                rows_11a.append(payload)
+            elif row.entry_type == SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT:
+                rows_11b.append(payload)
+        result = self._ok(TABLE_11, rows)
+        result["groups"] = {
+            "11A": {"count": len(rows_11a), "rows": rows_11a},
+            "11B": {"count": len(rows_11b), "rows": rows_11b},
+        }
+        return result
 
     def _table_12(self):
         rows = []

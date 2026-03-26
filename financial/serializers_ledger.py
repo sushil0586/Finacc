@@ -1,6 +1,8 @@
 from django.db import transaction
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
+from financial.gstin import validate_financial_gstin
 from financial.models import Ledger, account
 from financial.profile_access import account_primary_address
 from financial.services import (
@@ -265,6 +267,13 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         if unknown_fields:
             raise serializers.ValidationError({field: "This field is not allowed." for field in unknown_fields})
         attrs = super().validate(attrs)
+        compliance = dict(attrs.get("compliance_profile", {}) or {})
+        if "gstno" in compliance:
+            try:
+                compliance["gstno"] = validate_financial_gstin(compliance.get("gstno"))
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"compliance_profile": {"gstno": exc.messages[0]}})
+            attrs["compliance_profile"] = compliance
         if self.instance is None and not attrs.get("entity"):
             raise serializers.ValidationError({"entity": "Entity is required."})
         if self.instance is None and not attrs.get("accountname"):

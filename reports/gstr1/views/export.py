@@ -8,10 +8,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from reports.gstr1.exporters.export_service import Gstr1ExportService
+from reports.gstr1.exporters.gstn_json_export import Gstr1GstnJsonExportService
+from reports.gstr1.selectors.queries import apply_smart_filters
 from reports.gstr1.serializers.section import Gstr1SectionRowSerializer
 from reports.gstr1.serializers.summary import Gstr1SummarySerializer
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr1.services.section import Gstr1SectionService
+from reports.gstr1.services.table_views import Gstr1TableViewService
 
 
 class Gstr1ExportAPIView(APIView):
@@ -42,6 +45,11 @@ class Gstr1ExportAPIView(APIView):
         return self._export_summary(service, exporter, scope, smart_filters, export_format)
 
     def _export_summary(self, service, exporter, scope, smart_filters, export_format):
+        if export_format == "gstn_json":
+            base_queryset = service.filtered_queryset(scope, smart_filters=smart_filters)
+            filing_payload = Gstr1GstnJsonExportService().build(scope=scope, base_queryset=base_queryset)
+            return Response(filing_payload)
+
         payload = service.summary(scope, smart_filters=smart_filters)
         if export_format == "json":
             return Response(Gstr1SummarySerializer(payload).data)
@@ -65,11 +73,20 @@ class Gstr1ExportAPIView(APIView):
             content = exporter.export_section_csv(headers, rows)
             return _file_response("GSTR1_Summary.csv", content, "text/csv")
         if export_format == "xlsx":
-            content = exporter.export_summary_excel(
+            scoped_qs = service.scoped_queryset(scope)
+            filtered_qs = apply_smart_filters(scoped_qs, smart_filters)
+            table_service = Gstr1TableViewService(scope=scope, base_queryset=filtered_qs)
+            table_payloads = {}
+            for table_def in table_service.table_definitions():
+                table_payloads[table_def.code] = table_service.build(table_def.code)
+            warnings = service.validations(scope, smart_filters=smart_filters)
+            content = exporter.export_comprehensive_excel(
                 sections=payload["sections"],
                 hsn_summary=payload["hsn_summary"],
                 document_summary=payload["document_summary"],
                 nil_exempt_summary=payload["nil_exempt_summary"],
+                table_payloads=table_payloads,
+                warnings=warnings,
             )
             return _file_response(
                 "GSTR1_Summary.xlsx",

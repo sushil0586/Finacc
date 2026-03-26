@@ -189,6 +189,15 @@ class EntityOnboardingService:
 
         gstno = (profile.get("gstno") or "").strip().upper()
         if gstno:
+            # Keep only one active primary GST registration per entity.
+            # If GSTIN changed during onboarding update, demote old primary first
+            # to avoid hitting uq_entity_gst_registration_primary.
+            EntityGstRegistration.objects.filter(
+                entity=entity,
+                isactive=True,
+                is_primary=True,
+            ).exclude(gstin=gstno).update(is_primary=False)
+
             EntityGstRegistration.objects.update_or_create(
                 entity=entity,
                 gstin=gstno,

@@ -97,13 +97,35 @@ class ReceiptVoucherService:
 
     @classmethod
     def _normalize_advance_adjustments(cls, rows_in: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+        merged: Dict[tuple, Dict[str, Any]] = {}
+        rows_without_keys: List[Dict[str, Any]] = []
         for row in rows_in or []:
             item = dict(row or {})
             item["advance_balance_id"] = cls._as_pk(item.get("advance_balance_id") or item.get("advance_balance"))
             item["allocation"] = cls._as_pk(item.get("allocation"))
             item["open_item"] = cls._as_pk(item.get("open_item"))
-            rows.append(item)
+            advance_balance_id = item.get("advance_balance_id")
+            open_item = item.get("open_item")
+            if advance_balance_id in (None, "") or open_item in (None, ""):
+                rows_without_keys.append(item)
+                continue
+
+            key = (int(advance_balance_id), int(open_item))
+            existing = merged.get(key)
+            if existing is None:
+                item["advance_balance_id"] = int(advance_balance_id)
+                item["open_item"] = int(open_item)
+                item["adjusted_amount"] = q2(item.get("adjusted_amount") or ZERO2)
+                merged[key] = item
+            else:
+                existing["adjusted_amount"] = q2(existing.get("adjusted_amount") or ZERO2) + q2(item.get("adjusted_amount") or ZERO2)
+                if not existing.get("remarks") and item.get("remarks"):
+                    existing["remarks"] = item.get("remarks")
+                if not existing.get("id") and item.get("id"):
+                    existing["id"] = item.get("id")
+
+        rows: List[Dict[str, Any]] = list(merged.values())
+        rows.extend(rows_without_keys)
         return rows
 
     @staticmethod
@@ -328,15 +350,14 @@ class ReceiptVoucherService:
                 )
             )
 
-        total_adjusted = q2(sum(q2(getattr(x, "adjusted_amount", ZERO2)) for x in live_advance_rows))
-        for idx, adj in enumerate(live_advance_rows, start=1):
+        # Build Table 11B from source advance snapshots (not current voucher
+        # header), so invoice-period adjustments remain correct even when the
+        # adjustment voucher itself has zero advance tax fields.
+        linked_tax_totals: Dict[Optional[int], Dict[str, Decimal]] = {}
+        for adj in live_advance_rows:
             adjusted = q2(getattr(adj, "adjusted_amount", ZERO2))
             if adjusted <= ZERO2:
                 continue
-
-            ratio = Decimal("0.00")
-            if total_adjusted > ZERO2:
-                ratio = adjusted / total_adjusted
 
             linked_invoice_id = None
             open_item_id = getattr(adj, "open_item_id", None)
@@ -347,6 +368,55 @@ class ReceiptVoucherService:
                 except Exception:
                     linked_invoice_id = None
 
+            source_taxable = ZERO2
+            source_cgst = ZERO2
+            source_sgst = ZERO2
+            source_igst = ZERO2
+            source_cess = ZERO2
+            source_total = ZERO2
+
+            adv_balance = getattr(adj, "advance_balance", None)
+            if adv_balance is not None:
+                rv = getattr(adv_balance, "receipt_voucher", None)
+                if rv is not None:
+                    source_taxable = q2(getattr(rv, "advance_taxable_value", ZERO2))
+                    source_cgst = q2(getattr(rv, "advance_cgst", ZERO2))
+                    source_sgst = q2(getattr(rv, "advance_sgst", ZERO2))
+                    source_igst = q2(getattr(rv, "advance_igst", ZERO2))
+                    source_cess = q2(getattr(rv, "advance_cess", ZERO2))
+                    source_total = q2(source_taxable + source_cgst + source_sgst + source_igst + source_cess)
+
+                if source_total <= ZERO2:
+                    source_total = q2(getattr(adv_balance, "original_amount", ZERO2))
+
+            ratio = Decimal("0.00")
+            if source_total > ZERO2:
+                ratio = adjusted / source_total
+
+            taxable_part = q2(source_taxable * ratio)
+            cgst_part = q2(source_cgst * ratio)
+            sgst_part = q2(source_sgst * ratio)
+            igst_part = q2(source_igst * ratio)
+            cess_part = q2(source_cess * ratio)
+
+            bucket = linked_tax_totals.get(linked_invoice_id)
+            if bucket is None:
+                bucket = {
+                    "taxable_value": ZERO2,
+                    "cgst_amount": ZERO2,
+                    "sgst_amount": ZERO2,
+                    "igst_amount": ZERO2,
+                    "cess_amount": ZERO2,
+                }
+                linked_tax_totals[linked_invoice_id] = bucket
+
+            bucket["taxable_value"] = q2(bucket["taxable_value"] + taxable_part)
+            bucket["cgst_amount"] = q2(bucket["cgst_amount"] + cgst_part)
+            bucket["sgst_amount"] = q2(bucket["sgst_amount"] + sgst_part)
+            bucket["igst_amount"] = q2(bucket["igst_amount"] + igst_part)
+            bucket["cess_amount"] = q2(bucket["cess_amount"] + cess_part)
+
+        for idx, (linked_invoice_id, taxes) in enumerate(linked_tax_totals.items(), start=1):
             desired_rows.append(
                 ReceiptVoucherService._table11_row_payload(
                     header=header,
@@ -356,11 +426,11 @@ class ReceiptVoucherService:
                     customer_gstin=customer_gstin,
                     pos_code=pos_code,
                     entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT,
-                    taxable_value=q2(adv_taxable * ratio),
-                    cgst_amount=q2(adv_cgst * ratio),
-                    sgst_amount=q2(adv_sgst * ratio),
-                    igst_amount=q2(adv_igst * ratio),
-                    cess_amount=q2(adv_cess * ratio),
+                    taxable_value=q2(taxes["taxable_value"]),
+                    cgst_amount=q2(taxes["cgst_amount"]),
+                    sgst_amount=q2(taxes["sgst_amount"]),
+                    igst_amount=q2(taxes["igst_amount"]),
+                    cess_amount=q2(taxes["cess_amount"]),
                     linked_invoice_id=linked_invoice_id,
                 )
             )

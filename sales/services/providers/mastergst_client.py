@@ -14,12 +14,14 @@ from django.utils import timezone
 from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken
 
 from sales.services.mastergst_eway_token_service import MasterGSTEWayTokenService
+from sales.services.providers.config import provider_base_url, provider_debug_enabled
 
 
 class MasterGSTClient:
-    def __init__(self, cred: SalesMasterGSTCredential):
+    def __init__(self, cred: SalesMasterGSTCredential, *, provider_name: str = "mastergst"):
         self.cred = cred
-        self.base_url = getattr(settings, "MASTERGST_BASE_URL", "https://api.mastergst.com").rstrip("/")
+        self.provider_name = (provider_name or "mastergst").strip().lower()
+        self.base_url = provider_base_url(self.provider_name)
         self._eway_auth_valid_till = None
         self._eway_auth_token = None
         self._eway_cookies = None
@@ -28,7 +30,7 @@ class MasterGSTClient:
     # Common helpers
     # ----------------------------
     def _debug_enabled(self) -> bool:
-        return bool(getattr(settings, "MASTERGST_DEBUG", False))
+        return provider_debug_enabled(self.provider_name)
 
     def _resolve_ip(self) -> str:
         ip = "127.0.0.1"

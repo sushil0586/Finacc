@@ -121,6 +121,7 @@ class SalesInvoiceHeader(EntityScopedModel):
     # Seller snapshot (optional but recommended)
     # -------------------------
     seller_gstin = models.CharField(max_length=15, blank=True, default="", validators=[GSTIN_VALIDATOR])
+    ecm_gstin = models.CharField(max_length=15, blank=True, default="", validators=[GSTIN_VALIDATOR])
     seller_state_code = models.CharField(max_length=2, blank=True, default="")
 
     # -------------------------

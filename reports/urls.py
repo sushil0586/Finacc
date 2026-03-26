@@ -35,6 +35,7 @@ from reports.api.purchase_register_view import (
 )
 from reports.api.sales_register_view import SalesRegisterAPIView
 from reports.api.sales_gstin_view import SalesGstinAPIView
+from reports.api.ping import ReportsPingAPIView
 from reports.gstr1.views import (
     Gstr1ExportAPIView,
     Gstr1InvoiceDetailAPIView,
@@ -44,6 +45,7 @@ from reports.gstr1.views import (
     Gstr1TableAPIView,
     Gstr1ValidationAPIView,
 )
+from reports.gstr3b.views import Gstr3bExportAPIView, Gstr3bMetaAPIView, Gstr3bSummaryAPIView, Gstr3bValidationAPIView
 from reports.api.statutory import Gstr1ReportAPIView
 from reports.api.receivables_views import (
     CustomerOutstandingReportAPIView,
@@ -113,6 +115,7 @@ app_name = "reports"
 
 
 urlpatterns = [
+    path("ping/", ReportsPingAPIView.as_view(), name="reports-ping"),
     path("financial/meta/", FinancialReportsMetaAPIView.as_view(), name="financial-meta"),
     path("financial/daybook/", DaybookAPIView.as_view(), name="financial-daybook"),
     path("financial/daybook/<int:entry_id>/", DaybookEntryDetailAPIView.as_view(), name="financial-daybook-detail"),
@@ -131,6 +134,17 @@ urlpatterns = [
     path("gstr1/validations/", Gstr1ValidationAPIView.as_view(), name="gstr1-validations"),
     path("gstr1/export/", Gstr1ExportAPIView.as_view(), name="gstr1-export"),
     path("gstr1/invoice/<int:invoice_id>/", Gstr1InvoiceDetailAPIView.as_view(), name="gstr1-invoice-detail"),
+    path("gstr3b/summary/", Gstr3bSummaryAPIView.as_view(), name="gstr3b-summary"),
+    path("gstr3b/meta/", Gstr3bMetaAPIView.as_view(), name="gstr3b-meta"),
+    path("gstr3b/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b-validations"),
+    path("gstr3b/export/", Gstr3bExportAPIView.as_view(), name="gstr3b-export"),
+    path("gstr3b/export", Gstr3bExportAPIView.as_view(), name="gstr3b-export-noslash"),
+    # Backward-compatible aliases for older frontend routes.
+    path("gstr3b1/summary/", Gstr3bSummaryAPIView.as_view(), name="gstr3b1-summary"),
+    path("gstr3b1/meta/", Gstr3bMetaAPIView.as_view(), name="gstr3b1-meta"),
+    path("gstr3b1/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b1-validations"),
+    path("gstr3b1/export/", Gstr3bExportAPIView.as_view(), name="gstr3b1-export"),
+    path("gstr3b1/export", Gstr3bExportAPIView.as_view(), name="gstr3b1-export-noslash"),
     path("statutory/gstr1/", Gstr1ReportAPIView.as_view(), name="gstr1-register"),
     path("financial/trial-balance/", TrialBalanceAPIView.as_view(), name="financial-trial-balance"),
     path("financial/ledger-book/", LedgerBookAPIView.as_view(), name="financial-ledger-book"),

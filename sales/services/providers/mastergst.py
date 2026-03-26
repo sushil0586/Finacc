@@ -68,10 +68,11 @@ def _pick(raw: Dict[str, Any], *keys: str):
 
 class MasterGSTProvider:
     name = "mastergst"
+    client_provider_name = "mastergst"
 
     def generate_irn(self, *, invoice, payload: Dict[str, Any]) -> IRNResult:
-        cred = CredentialResolver.mastergst_for_invoice(invoice)
-        client = MasterGSTClient(cred)
+        cred = CredentialResolver.provider_for_invoice(invoice, provider_name=self.name)
+        client = MasterGSTClient(cred, provider_name=self.client_provider_name)
 
         raw = client.generate_irn(payload)
 
@@ -108,8 +109,8 @@ class MasterGSTProvider:
         )
 
     def cancel_irn(self, *, invoice, irn: str, reason_code: str, remarks: str | None = None) -> IRNResult:
-        cred = CredentialResolver.mastergst_for_invoice(invoice)
-        client = MasterGSTClient(cred)
+        cred = CredentialResolver.provider_for_invoice(invoice, provider_name=self.name)
+        client = MasterGSTClient(cred, provider_name=self.client_provider_name)
         payload = {
             "Irn": irn,
             "CnlRsn": str(reason_code),
@@ -130,8 +131,8 @@ class MasterGSTProvider:
         )
 
     def get_irn_details(self, *, invoice, irn: str, supplier_gstin: str | None = None) -> IRNResult:
-        cred = CredentialResolver.mastergst_for_invoice(invoice)
-        client = MasterGSTClient(cred)
+        cred = CredentialResolver.provider_for_invoice(invoice, provider_name=self.name)
+        client = MasterGSTClient(cred, provider_name=self.client_provider_name)
         raw = client.get_irn_details(irn=irn, supplier_gstin=supplier_gstin)
 
         status_cd = str(raw.get("status_cd") or "")
@@ -172,8 +173,8 @@ class MasterGSTProvider:
         )
 
     def get_eway_details_by_irn(self, *, invoice, irn: str, supplier_gstin: str | None = None) -> EWayResult:
-        cred = CredentialResolver.mastergst_for_invoice(invoice)
-        client = MasterGSTClient(cred)
+        cred = CredentialResolver.provider_for_invoice(invoice, provider_name=self.name)
+        client = MasterGSTClient(cred, provider_name=self.client_provider_name)
         raw = client.get_eway_details_by_irn(irn=irn, supplier_gstin=supplier_gstin)
 
         status_cd = str(raw.get("status_cd") or "")
@@ -207,3 +208,10 @@ class MasterGSTProvider:
             valid_upto=_pick(raw, "EwbValidTill", "validUpto"),
             raw=raw,
         )
+
+
+class WhitebooksProvider(MasterGSTProvider):
+    # Whitebooks currently follows the same contract and payloads.
+    # Keeping this as an alias provider allows a clean runtime switch.
+    name = "whitebooks"
+    client_provider_name = "whitebooks"

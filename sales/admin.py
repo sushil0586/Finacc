@@ -211,6 +211,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "status_badge",
         "customer_display",
         "customer_gstin",
+        "ecm_gstin",
         "regime_display",
         "pos_display",
         "einvoice_display",
@@ -252,6 +253,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         "invoice_number",
         "customer_name",
         "customer_gstin",
+        "ecm_gstin",
         "doc_code",
         "reference",
     )
@@ -289,7 +291,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
         ("Customer (Snapshot)", {
             "fields": (
                 ("customer",),
-                ("customer_name", "customer_gstin"),
+                ("customer_name", "customer_gstin", "ecm_gstin"),
                 ("customer_state_code",),
                 ("shipping_detail",),   # ✅ add
             )
@@ -440,7 +442,7 @@ class SalesInvoiceHeaderAdmin(admin.ModelAdmin):
             ro.extend([
                 "doc_type", "bill_date", "doc_code", "doc_no", "invoice_number",
                 "credit_days",
-                "customer", "customer_name", "customer_gstin", "customer_state_code",
+                "customer", "customer_name", "customer_gstin", "ecm_gstin", "customer_state_code",
                 "seller_gstin", "seller_state_code", "place_of_supply_state_code",
                 "supply_category", "taxability",
                 "is_reverse_charge",
