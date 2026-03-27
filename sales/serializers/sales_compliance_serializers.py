@@ -3,6 +3,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from sales.models.sales_compliance import SalesEInvoice, SalesEWayBill
+from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
 
 
 class SalesEInvoiceArtifactReadSerializer(serializers.ModelSerializer):
@@ -111,6 +112,58 @@ class GenerateEWayActionSerializer(serializers.Serializer):
     vehicle_type = serializers.IntegerField(required=False)
     doc_no = serializers.CharField(required=False, allow_blank=True)
     doc_date = serializers.DateField(required=False)
+
+
+class GenerateIRNAndEWayActionSerializer(serializers.Serializer):
+    """
+    Combined action:
+    - generate IRN
+    - optionally generate E-Way in same call
+
+    Accepts e-way data either under `eway: {...}` or as flat keys.
+    """
+
+    generate_eway = serializers.BooleanField(required=False, default=True)
+    eway = serializers.DictField(required=False)
+
+    # Flat aliases for frontend convenience
+    distance_km = serializers.IntegerField(required=False)
+    trans_mode = serializers.CharField(required=False, allow_blank=True)
+    transporter_id = serializers.CharField(required=False, allow_blank=True, max_length=32)
+    transporter_name = serializers.CharField(required=False, allow_blank=True, max_length=128)
+    trans_doc_no = serializers.CharField(required=False, allow_blank=True, max_length=15)
+    trans_doc_date = serializers.DateField(required=False)
+    vehicle_no = serializers.CharField(required=False, allow_blank=True, max_length=32)
+    vehicle_type = serializers.CharField(required=False, allow_blank=True, max_length=1)
+    disp_dtls = serializers.JSONField(required=False)
+    exp_ship_dtls = serializers.JSONField(required=False)
+
+    def validate(self, attrs):
+        if not attrs.get("generate_eway", True):
+            attrs["eway"] = {}
+            return attrs
+
+        payload = dict(attrs.get("eway") or {})
+        flat_keys = (
+            "distance_km",
+            "trans_mode",
+            "transporter_id",
+            "transporter_name",
+            "trans_doc_no",
+            "trans_doc_date",
+            "vehicle_no",
+            "vehicle_type",
+            "disp_dtls",
+            "exp_ship_dtls",
+        )
+        for key in flat_keys:
+            if key in attrs and attrs.get(key) not in (None, ""):
+                payload[key] = attrs.get(key)
+
+        eway_ser = GenerateEWayRequestSerializer(data=payload)
+        eway_ser.is_valid(raise_exception=True)
+        attrs["eway"] = eway_ser.validated_data
+        return attrs
 
 
 class CancelIRNActionSerializer(serializers.Serializer):

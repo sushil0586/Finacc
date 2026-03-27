@@ -32,6 +32,14 @@ from .views_ledger import (
     ShippingDetailsRetrieveUpdateDestroyView,
     SimpleAccountsV2APIView,
 )
+from .views_bulk_accounts import (
+    AccountsBulkTemplateAPIView,
+    AccountsBulkExportAPIView,
+    AccountsBulkImportValidateAPIView,
+    AccountsBulkImportCommitAPIView,
+    AccountsBulkJobDetailAPIView,
+    AccountsBulkJobErrorsExportAPIView,
+)
 
 
 app_name = "financial"
@@ -62,6 +70,12 @@ urlpatterns = [
     path("ledger-balances", LedgerBalanceListAPIView.as_view(), name="ledger-balance-list"),
     path("accounts-v2", AccountProfileV2ListCreateAPIView.as_view(), name="account-profile-v2-list-create"),
     path("accounts-v2/<int:pk>", AccountProfileV2RetrieveUpdateDestroyAPIView.as_view(), name="account-profile-v2-detail"),
+    path("accounts-v2/bulk/template/", AccountsBulkTemplateAPIView.as_view(), name="accounts-v2-bulk-template"),
+    path("accounts-v2/bulk/export/", AccountsBulkExportAPIView.as_view(), name="accounts-v2-bulk-export"),
+    path("accounts-v2/bulk/import/validate/", AccountsBulkImportValidateAPIView.as_view(), name="accounts-v2-bulk-import-validate"),
+    path("accounts-v2/bulk/import/commit/", AccountsBulkImportCommitAPIView.as_view(), name="accounts-v2-bulk-import-commit"),
+    path("accounts-v2/bulk/jobs/<int:job_id>/", AccountsBulkJobDetailAPIView.as_view(), name="accounts-v2-bulk-job-detail"),
+    path("accounts-v2/bulk/jobs/<int:job_id>/errors/", AccountsBulkJobErrorsExportAPIView.as_view(), name="accounts-v2-bulk-job-errors"),
     path("shipping-details/", ShippingDetailsListCreateAPIView.as_view(), name="shipping-details-list-create"),
     path("shipping-details/<int:pk>/", ShippingDetailsRetrieveUpdateDestroyView.as_view(), name="shipping-details-detail"),
     path("shipping-details/account/<int:account_id>/", ShippingDetailsByAccountView.as_view(), name="shipping-details-by-account"),

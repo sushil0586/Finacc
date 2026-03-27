@@ -52,6 +52,22 @@ from .views import (
     ProductImageListCreateAPIView,
     ProductImageRUDAPIView,
 )
+from .views_bulk import (
+    ProductBulkTemplateAPIView,
+    ProductBulkExportAPIView,
+    ProductBulkImportValidateAPIView,
+    ProductBulkImportCommitAPIView,
+    ProductBulkJobDetailAPIView,
+    ProductBulkJobErrorsExportAPIView,
+)
+from .views_bulk_hsn import (
+    HsnSacBulkTemplateAPIView,
+    HsnSacBulkExportAPIView,
+    HsnSacBulkImportValidateAPIView,
+    HsnSacBulkImportCommitAPIView,
+    HsnSacBulkJobDetailAPIView,
+    HsnSacBulkJobErrorsExportAPIView,
+)
 
 
 
@@ -140,4 +156,16 @@ urlpatterns = [
         PurchaseInvoiceProductListAPIView.as_view(),
         name="invoice-products",
     ),
+    path("products/bulk/template/", ProductBulkTemplateAPIView.as_view(), name="product-bulk-template"),
+    path("products/bulk/export/", ProductBulkExportAPIView.as_view(), name="product-bulk-export"),
+    path("products/bulk/import/validate/", ProductBulkImportValidateAPIView.as_view(), name="product-bulk-import-validate"),
+    path("products/bulk/import/commit/", ProductBulkImportCommitAPIView.as_view(), name="product-bulk-import-commit"),
+    path("products/bulk/jobs/<int:job_id>/", ProductBulkJobDetailAPIView.as_view(), name="product-bulk-job-detail"),
+    path("products/bulk/jobs/<int:job_id>/errors/", ProductBulkJobErrorsExportAPIView.as_view(), name="product-bulk-job-errors"),
+    path("hsn-sac/bulk/template/", HsnSacBulkTemplateAPIView.as_view(), name="hsn-sac-bulk-template"),
+    path("hsn-sac/bulk/export/", HsnSacBulkExportAPIView.as_view(), name="hsn-sac-bulk-export"),
+    path("hsn-sac/bulk/import/validate/", HsnSacBulkImportValidateAPIView.as_view(), name="hsn-sac-bulk-import-validate"),
+    path("hsn-sac/bulk/import/commit/", HsnSacBulkImportCommitAPIView.as_view(), name="hsn-sac-bulk-import-commit"),
+    path("hsn-sac/bulk/jobs/<int:job_id>/", HsnSacBulkJobDetailAPIView.as_view(), name="hsn-sac-bulk-job-detail"),
+    path("hsn-sac/bulk/jobs/<int:job_id>/errors/", HsnSacBulkJobErrorsExportAPIView.as_view(), name="hsn-sac-bulk-job-errors"),
 ]

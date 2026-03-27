@@ -60,6 +60,24 @@ def _balance_sheet_bucket_for_amount(amount, head, acc_type):
     return _balance_sheet_bucket(head, acc_type)
 
 
+def _resolve_effective_head_and_type(ledger, amount):
+    """
+    Dynamic head selection:
+    - For party ledgers, choose debit/credit head by sign.
+    - For others, prefer debit head with credit fallback.
+    """
+    debit_head = getattr(ledger, "accounthead", None)
+    credit_head = getattr(ledger, "creditaccounthead", None)
+
+    if getattr(ledger, "is_party", False) and amount < 0:
+        head = credit_head or debit_head
+    else:
+        head = debit_head or credit_head
+
+    acc_type = getattr(head, "accounttype", None) if head else getattr(ledger, "accounttype", None)
+    return head, acc_type
+
+
 def _coerce_date(value):
     if value is None or isinstance(value, date):
         return value
@@ -108,7 +126,7 @@ def _closing_map(entity_id, entityfin_id=None, subentity_id=None, from_date=None
     movement_map = {row["resolved_ledger_id"]: row for row in movement_rows}
     ledgers = (
         Ledger.objects.filter(id__in=movement_map.keys())
-        .select_related("accounthead", "accounthead__accounttype", "accounttype")
+        .select_related("accounthead", "accounthead__accounttype", "creditaccounthead", "creditaccounthead__accounttype", "accounttype")
         .order_by("accounthead__code", "ledger_code", "name")
     )
     closing = {}
@@ -140,10 +158,9 @@ def _raw_balance_rows(
     search_text = (search or "").strip().lower()
     for item in closing.values():
         ledger = item["ledger"]
-        head = ledger.accounthead
-        acc_type = getattr(head, "accounttype", None) if head else getattr(ledger, "accounttype", None)
-        type_code = str(getattr(acc_type, "accounttypecode", "")) if acc_type else ""
         amount = item["amount"]
+        head, acc_type = _resolve_effective_head_and_type(ledger, amount)
+        type_code = str(getattr(acc_type, "accounttypecode", "")) if acc_type else ""
         if type_code in PNL_INCOME_TYPE_CODES or type_code in PNL_EXPENSE_TYPE_CODES:
             continue
         if not include_zero_balances and amount == 0:
@@ -203,7 +220,7 @@ def _raw_profit_loss_rows(
 
     ledgers = (
         Ledger.objects.filter(id__in=movement_map.keys())
-        .select_related("accounthead", "accounthead__accounttype", "accounttype")
+        .select_related("accounthead", "accounthead__accounttype", "creditaccounthead", "creditaccounthead__accounttype", "accounttype")
         .order_by("accounthead__code", "ledger_code", "name")
     )
 
@@ -211,15 +228,14 @@ def _raw_profit_loss_rows(
     search_text = (search or "").strip().lower()
     for ledger in ledgers:
         move = movement_map.get(ledger.id, {})
-        head = ledger.accounthead
-        acc_type = getattr(head, "accounttype", None) if head else getattr(ledger, "accounttype", None)
-        type_code = str(getattr(acc_type, "accounttypecode", "")) if acc_type else ""
-        if type_code not in PNL_INCOME_TYPE_CODES and type_code not in PNL_EXPENSE_TYPE_CODES:
-            continue
-
         debit = move.get("debit") or Decimal("0.00")
         credit = move.get("credit") or Decimal("0.00")
         net = debit - credit
+
+        head, acc_type = _resolve_effective_head_and_type(ledger, net)
+        type_code = str(getattr(acc_type, "accounttypecode", "")) if acc_type else ""
+        if type_code not in PNL_INCOME_TYPE_CODES and type_code not in PNL_EXPENSE_TYPE_CODES:
+            continue
         if not include_zero_balances and net == 0:
             continue
 

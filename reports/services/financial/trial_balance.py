@@ -19,6 +19,7 @@ GROUP_BY_CHOICES = {"ledger", "accounthead", "accounttype"}
 PERIOD_BY_CHOICES = {"month", "quarter", "year"}
 
 
+
 def _coerce_date(value):
     if value is None or isinstance(value, date):
         return value
@@ -89,6 +90,29 @@ def _iter_period_ranges(start_date, end_date, period_by):
         cursor = period_end + timedelta(days=1)
 
 
+def _resolve_dynamic_party_head(ledger, closing_value):
+    """
+    Resolve display account head dynamically:
+    - non-party: use configured debit head (or credit head fallback)
+    - party with positive closing: use debit head
+    - party with negative closing: use credit head
+    - party with zero closing: use debit head (credit fallback)
+    """
+    debit_head = getattr(ledger, "accounthead", None)
+    credit_head = getattr(ledger, "creditaccounthead", None)
+
+    if not getattr(ledger, "is_party", False):
+        selected = debit_head or credit_head
+    elif closing_value < 0:
+        selected = credit_head or debit_head
+    else:
+        selected = debit_head or credit_head
+
+    if selected is None:
+        return None, None, Debit
+    return selected.id, selected.name, selected.drcreffect or Debit
+
+
 def _raw_trial_balance_rows(
     *,
     entity_id,
@@ -119,7 +143,7 @@ def _raw_trial_balance_rows(
 
     ledgers = (
         Ledger.objects.filter(id__in=ledger_ids)
-        .select_related("accounthead", "accounttype")
+        .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
         .order_by("ledger_code", "name")
     )
 
@@ -133,17 +157,18 @@ def _raw_trial_balance_rows(
         debit = movement.get("debit") or Decimal("0.00")
         credit = movement.get("credit") or Decimal("0.00")
         closing = opening + debit - credit
+        accounthead_id, accounthead_name, normal_balance = _resolve_dynamic_party_head(ledger, closing)
         if not include_zero_balances and opening == 0 and debit == 0 and credit == 0 and closing == 0:
             continue
         row = {
             "ledger_id": ledger.id,
             "ledger_code": ledger.ledger_code,
             "ledger_name": ledger.name,
-            "accounthead_id": ledger.accounthead_id,
-            "accounthead_name": ledger.accounthead.name if ledger.accounthead_id else None,
+            "accounthead_id": accounthead_id,
+            "accounthead_name": accounthead_name,
             "accounttype_id": ledger.accounttype_id,
             "accounttype_name": ledger.accounttype.accounttypename if ledger.accounttype_id else None,
-            "normal_balance": ledger.accounthead.drcreffect if ledger.accounthead_id else Debit,
+            "normal_balance": normal_balance,
             "opening": f"{opening:.2f}",
             "debit": f"{debit:.2f}",
             "credit": f"{credit:.2f}",

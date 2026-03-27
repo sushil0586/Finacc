@@ -100,6 +100,16 @@ def _stcd(v: Any) -> Optional[str]:
     return s
 
 
+def _state_code_from_obj(state_obj: Any) -> Optional[str]:
+    if not state_obj:
+        return None
+    for field in ("gst_state_code", "gststatecode", "statecode", "code"):
+        raw = getattr(state_obj, field, None)
+        if raw not in (None, ""):
+            return _stcd(raw)
+    return None
+
+
 class IRPPayloadBuilder:
     """
     Minimal but NIC/MasterGST-valid payload builder for SalesInvoiceHeader + SalesInvoiceLine.
@@ -258,6 +268,31 @@ class IRPPayloadBuilder:
         return {"CntCode": self._country_code_from_invoice(inv)}
 
     def _disp_dtls(self, inv) -> Optional[Dict[str, Any]]:
+        # Preferred source: selected subentity (dispatch from branch/plant)
+        if getattr(inv, "subentity_id", None):
+            sub = getattr(inv, "subentity", None)
+            if sub is not None:
+                addr = (
+                    sub.addresses.filter(isactive=True, is_primary=True).select_related("state", "city").first()
+                    or sub.addresses.filter(isactive=True).select_related("state", "city").first()
+                )
+                if addr:
+                    pin = _clean_pin(getattr(addr, "pincode", None))
+                    stcd = _state_code_from_obj(getattr(addr, "state", None))
+                    nm = str(getattr(sub, "subentityname", "") or "").strip()
+                    addr1 = str(getattr(addr, "line1", "") or "").strip()
+                    loc = str(getattr(getattr(addr, "city", None), "cityname", "") or "").strip()
+                    if nm and addr1 and loc and pin and stcd:
+                        return {
+                            "Nm": nm[:100],
+                            "Addr1": addr1[:100],
+                            "Addr2": (str(getattr(addr, "line2", "") or "").strip() or None),
+                            "Loc": loc[:50],
+                            "Pin": pin,
+                            "Stcd": stcd,
+                        }
+
+        # Fallback: legacy eway artifact json
         art = getattr(inv, "eway_artifact", None)
         src = getattr(art, "disp_dtls_json", None) if art else None
         if not isinstance(src, dict):
@@ -279,6 +314,32 @@ class IRPPayloadBuilder:
         }
 
     def _ship_dtls(self, inv) -> Optional[Dict[str, Any]]:
+        # Preferred source: selected shipping detail on invoice (ship-to)
+        sd = getattr(inv, "shipping_detail", None)
+        if sd is not None:
+            pin = _clean_pin(getattr(sd, "pincode", None))
+            stcd = _state_code_from_obj(getattr(sd, "state", None))
+            lgl = str(getattr(sd, "full_name", "") or "").strip() or str(getattr(inv, "customer_name", "") or "").strip()
+            addr1 = str(getattr(sd, "address1", "") or "").strip()
+            loc = str(getattr(getattr(sd, "city", None), "cityname", "") or "").strip()
+            gstin = str(getattr(sd, "gstno", "") or getattr(inv, "customer_gstin", "") or "").strip().upper()
+            if lgl and addr1 and loc and pin and stcd:
+                out = {
+                    "LglNm": lgl[:100],
+                    "Addr1": addr1[:100],
+                    "Addr2": (str(getattr(sd, "address2", "") or "").strip() or None),
+                    "Loc": loc[:50],
+                    "Pin": pin,
+                    "Stcd": stcd,
+                }
+                if gstin and (gstin == "URP" or re.fullmatch(r"^[0-9A-Z]{15}$", gstin)):
+                    out["Gstin"] = gstin
+                trd = str(getattr(inv, "customer_name", "") or "").strip()
+                if trd:
+                    out["TrdNm"] = trd[:100]
+                return out
+
+        # Fallback: legacy eway artifact json
         art = getattr(inv, "eway_artifact", None)
         src = getattr(art, "exp_ship_dtls_json", None) if art else None
         if not isinstance(src, dict):
