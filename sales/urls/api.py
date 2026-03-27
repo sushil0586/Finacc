@@ -24,6 +24,7 @@ from sales.views.sales_invoice_views import (
 from sales.views.sales_invoice_compliance_api import (
     SalesInvoiceEnsureComplianceAPIView,
     SalesInvoiceGenerateIRNAPIView,
+    SalesInvoiceGenerateIRNAndEWayAPIView,
     SalesInvoiceCancelIRNAPIView,
     SalesInvoiceGetIRNDetailsAPIView,
     SalesInvoiceGetEWayByIRNAPIView,
@@ -88,6 +89,7 @@ urlpatterns = [
     path("ar/customer-statement/", CustomerStatementAPIView.as_view(), name="sales-ar-customer-statement"),
     path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/generate-irn-and-eway/", SalesInvoiceGenerateIRNAndEWayAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/cancel-irn/", SalesInvoiceCancelIRNAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/get-irn-details/", SalesInvoiceGetIRNDetailsAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/get-eway-by-irn/", SalesInvoiceGetEWayByIRNAPIView.as_view()),

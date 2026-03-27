@@ -220,6 +220,9 @@ REST_FRAMEWORK = {
     'COERCE_DECIMAL_TO_STRING': False,
     'DATETIME_FORMAT': '%d-%m-%Y',
     'DATE_FORMAT': '%d-%m-%Y',
+    # Keep `?format=` available for business APIs (xlsx/csv/json) without
+    # DRF renderer negotiation intercepting and raising Http404.
+    'URL_FORMAT_OVERRIDE': None,
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'Authentication.jwt.JwtAuthentication',
     ],

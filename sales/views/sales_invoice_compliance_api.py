@@ -13,6 +13,7 @@ from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerial
 from sales.serializers.sales_compliance_serializers import (
     EnsureComplianceActionSerializer,
     GenerateIRNActionSerializer,
+    GenerateIRNAndEWayActionSerializer,
     GenerateEWayActionSerializer,
     CancelIRNActionSerializer,
     GetIRNDetailsActionSerializer,
@@ -155,6 +156,78 @@ class SalesInvoiceGenerateIRNAPIView(_InvoiceMixin, GenericAPIView):
         invoice_data = SalesInvoiceHeaderSerializer(invoice).data
         return Response(
             {"ok": True, "einvoice_id": einv.id, "status": einv.status, "invoice": invoice_data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class SalesInvoiceGenerateIRNAndEWayAPIView(_InvoiceMixin, GenericAPIView):
+    """
+    POST /sales-invoices/{pk}/compliance/generate-irn-and-eway/
+    Body:
+      {
+        "generate_eway": true,
+        "eway": { ...transport fields... }
+      }
+    """
+
+    serializer_class = GenerateIRNAndEWayActionSerializer
+
+    def post(self, request, pk: int, *args, **kwargs):
+        invoice = self.get_invoice()
+        ser = self.get_serializer(data=request.data or {})
+        ser.is_valid(raise_exception=True)
+
+        try:
+            svc = SalesComplianceService(invoice=invoice, user=request.user)
+            einv = svc.generate_irn()
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+
+        workflow_status = "SUCCESS"
+        eway_result = {
+            "status": "SKIPPED",
+            "reason": "generate_eway=false",
+        }
+
+        if ser.validated_data.get("generate_eway", True):
+            if bool(getattr(invoice, "is_eway_applicable", False)):
+                try:
+                    eway_result = SalesComplianceService.generate_eway(
+                        inv=invoice,
+                        entity=invoice.entity,
+                        req=ser.validated_data.get("eway") or {},
+                        created_by=request.user,
+                    )
+                    if eway_result.get("status") != "SUCCESS":
+                        workflow_status = "PARTIAL_SUCCESS"
+                except (ValueError, DjangoValidationError, DRFValidationError) as e:
+                    workflow_status = "PARTIAL_SUCCESS"
+                    eway_result = {
+                        "status": "FAILED",
+                        "errors": self._error_list_payload(e).get("errors", []),
+                    }
+            else:
+                eway_result = {
+                    "status": "SKIPPED",
+                    "reason": "E-Way not applicable for this invoice.",
+                }
+                workflow_status = "PARTIAL_SUCCESS"
+
+        invoice_data = SalesInvoiceHeaderSerializer(invoice).data
+        return Response(
+            {
+                "ok": workflow_status == "SUCCESS",
+                "workflow_status": workflow_status,
+                "einvoice": {
+                    "id": einv.id,
+                    "status": einv.status,
+                    "irn": getattr(einv, "irn", None),
+                    "ack_no": getattr(einv, "ack_no", None),
+                    "ack_date": getattr(einv, "ack_date", None),
+                },
+                "eway": eway_result,
+                "invoice": invoice_data,
+            },
             status=status.HTTP_200_OK,
         )
 

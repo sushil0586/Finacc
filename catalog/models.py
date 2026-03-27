@@ -954,3 +954,54 @@ class ProductPlanning(TimeStampedModel):
 
     def __str__(self):
         return f"Planning for {self.product}"
+
+
+class ProductBulkJob(TimeStampedModel):
+    class JobType(models.TextChoices):
+        VALIDATE = "validate", "Validate"
+        IMPORT = "import", "Import"
+        EXPORT = "export", "Export"
+
+    class JobStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    class FileFormat(models.TextChoices):
+        XLSX = "xlsx", "XLSX"
+        CSV = "csv", "CSV"
+
+    class UpsertMode(models.TextChoices):
+        CREATE_ONLY = "create_only", "Create only"
+        UPDATE_ONLY = "update_only", "Update only"
+        UPSERT = "upsert", "Upsert"
+
+    class DuplicateStrategy(models.TextChoices):
+        FAIL = "fail", "Fail"
+        SKIP = "skip", "Skip"
+        OVERWRITE = "overwrite", "Overwrite"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="catalog_bulk_jobs")
+    created_by = models.ForeignKey("Authentication.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+
+    job_type = models.CharField(max_length=20, choices=JobType.choices, default=JobType.VALIDATE, db_index=True)
+    status = models.CharField(max_length=20, choices=JobStatus.choices, default=JobStatus.PENDING, db_index=True)
+    file_format = models.CharField(max_length=10, choices=FileFormat.choices, default=FileFormat.XLSX)
+    upsert_mode = models.CharField(max_length=20, choices=UpsertMode.choices, default=UpsertMode.UPSERT)
+    duplicate_strategy = models.CharField(max_length=20, choices=DuplicateStrategy.choices, default=DuplicateStrategy.FAIL)
+
+    validation_token = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    input_filename = models.CharField(max_length=255, null=True, blank=True)
+
+    summary = models.JSONField(default=dict, blank=True)
+    errors = models.JSONField(default=list, blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "job_type", "status"]),
+            models.Index(fields=["entity", "validation_token"]),
+        ]
+
+    def __str__(self):
+        return f"ProductBulkJob<{self.id}> {self.job_type} {self.status}"

@@ -156,6 +156,15 @@ class PriceListSerializer(serializers.ModelSerializer):
 # Nested child serializers
 # ----------------------------------------------------------------------
 
+class FlexibleDateField(serializers.DateField):
+    """
+    Accept API dates in both ISO and UI-friendly formats.
+    """
+    def __init__(self, **kwargs):
+        kwargs.setdefault("input_formats", ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"])
+        super().__init__(**kwargs)
+
+
 class EntityScopedValidationMixin:
     def _target_entity(self, attrs):
         entity = self.context.get("entity")
@@ -193,6 +202,8 @@ class ProductGstRateSerializer(EntityScopedValidationMixin, serializers.ModelSer
     - adds validations mirroring model clean() (gives nicer API errors)
     """
     id = serializers.IntegerField(required=False)
+    valid_from = FlexibleDateField(required=True)
+    valid_to = FlexibleDateField(required=False, allow_null=True)
 
     class Meta:
         model = ProductGstRate
@@ -317,6 +328,7 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
 
     def validate(self, attrs):
         entity = self._target_entity(attrs)
+        product = self.context.get("product") or getattr(self.instance, "product", None)
         uom = attrs.get("uom", getattr(self.instance, "uom", None))
         self._validate_entity_scoped_fk(field_name="uom", obj=uom, entity=entity, label="UOM")
 
@@ -328,6 +340,27 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
         sp = attrs.get("selling_price", None)
         if mrp is not None and sp is not None and sp > mrp:
             raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+
+        if product and uom:
+            barcode = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
+            pack_size = attrs.get("pack_size", getattr(self.instance, "pack_size", 1)) or 1
+
+            duplicate_key = ProductBarcode.objects.filter(product=product, uom=uom, pack_size=pack_size)
+            if self.instance:
+                duplicate_key = duplicate_key.exclude(pk=self.instance.pk)
+            if duplicate_key.exists():
+                raise serializers.ValidationError({
+                    "uom": "Barcode row already exists for this UOM and pack size for this product."
+                })
+
+            if barcode:
+                duplicate_barcode = ProductBarcode.objects.filter(product=product, barcode=barcode)
+                if self.instance:
+                    duplicate_barcode = duplicate_barcode.exclude(pk=self.instance.pk)
+                if duplicate_barcode.exists():
+                    raise serializers.ValidationError({
+                        "barcode": "This barcode already exists for this product."
+                    })
         return attrs
 
 
@@ -367,6 +400,7 @@ class ProductUomConversionSerializer(EntityScopedValidationMixin, serializers.Mo
 
 class OpeningStockByLocationSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    as_of_date = FlexibleDateField(required=False)
 
     class Meta:
         model = OpeningStockByLocation
@@ -386,13 +420,31 @@ class OpeningStockByLocationSerializer(EntityScopedValidationMixin, serializers.
 
     def validate(self, attrs):
         entity = self._target_entity(attrs)
+        product = self.context.get("product") or getattr(self.instance, "product", None)
         location = attrs.get("location", getattr(self.instance, "location", None))
+        as_of_date = attrs.get("as_of_date", getattr(self.instance, "as_of_date", None))
         self._validate_entity_scoped_fk(field_name="location", obj=location, entity=entity, label="Location")
+
+        if product and location and as_of_date:
+            duplicate = OpeningStockByLocation.objects.filter(
+                entity=product.entity,
+                product=product,
+                location=location,
+                as_of_date=as_of_date,
+            )
+            if self.instance:
+                duplicate = duplicate.exclude(pk=self.instance.pk)
+            if duplicate.exists():
+                raise serializers.ValidationError({
+                    "as_of_date": "Opening stock already exists for this location and date. Edit the existing row."
+                })
         return attrs
 
 
 class ProductPriceSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    effective_from = FlexibleDateField(required=True)
+    effective_to = FlexibleDateField(required=False, allow_null=True)
 
     class Meta:
         model = ProductPrice
@@ -502,6 +554,7 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
 
 class ProductAttributeValueSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    value_date = FlexibleDateField(required=False, allow_null=True)
 
     class Meta:
         model = ProductAttributeValue
@@ -565,6 +618,8 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
     planning = ProductPlanningSerializer(required=False, allow_null=True)
     attributes = ProductAttributeValueSerializer(many=True, required=False)
     images = ProductImageNestedSerializer(many=True, required=False)
+    launch_date = FlexibleDateField(required=False, allow_null=True)
+    discontinue_date = FlexibleDateField(required=False, allow_null=True)
 
     class Meta:
         model = Product
@@ -1036,6 +1091,7 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
 
     def validate(self, attrs):
         entity = self._target_entity(attrs)
+        product = self.context.get("product") or getattr(self.instance, "product", None)
         uom = attrs.get("uom", getattr(self.instance, "uom", None))
         self._validate_entity_scoped_fk(field_name="uom", obj=uom, entity=entity, label="UOM")
 
@@ -1047,6 +1103,27 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
         sp = attrs.get("selling_price", None)
         if mrp is not None and sp is not None and sp > mrp:
             raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+
+        if product and uom:
+            barcode = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
+            pack_size = attrs.get("pack_size", getattr(self.instance, "pack_size", 1)) or 1
+
+            duplicate_key = ProductBarcode.objects.filter(product=product, uom=uom, pack_size=pack_size)
+            if self.instance:
+                duplicate_key = duplicate_key.exclude(pk=self.instance.pk)
+            if duplicate_key.exists():
+                raise serializers.ValidationError({
+                    "uom": "Barcode row already exists for this UOM and pack size for this product."
+                })
+
+            if barcode:
+                duplicate_barcode = ProductBarcode.objects.filter(product=product, barcode=barcode)
+                if self.instance:
+                    duplicate_barcode = duplicate_barcode.exclude(pk=self.instance.pk)
+                if duplicate_barcode.exists():
+                    raise serializers.ValidationError({
+                        "barcode": "This barcode already exists for this product."
+                    })
 
         return attrs
 
