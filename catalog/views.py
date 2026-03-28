@@ -112,6 +112,25 @@ class EntityFromQueryMixin:
         ctx["entity"] = self.get_entity()
         return ctx
 
+    def apply_isactive_filter(self, queryset):
+        """
+        Optional list filter:
+        - ?isactive=true/false (or 1/0, yes/no)
+        """
+        raw = self.request.query_params.get("isactive")
+        if raw is None:
+            return queryset
+
+        normalized = str(raw).strip().lower()
+        truthy = {"1", "true", "yes", "y", "on"}
+        falsy = {"0", "false", "no", "n", "off"}
+        if normalized in truthy:
+            return queryset.filter(isactive=True)
+        if normalized in falsy:
+            return queryset.filter(isactive=False)
+
+        raise ValidationError({"isactive": "Invalid value. Use true/false."})
+
 
 # ----------------------------------------------------------------------
 # Product master views
@@ -162,6 +181,8 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
             "base_uom",
         )
         if self.request.method.upper() == "GET":
+            queryset = self.apply_isactive_filter(queryset)
+        if self.request.method.upper() == "GET":
             return queryset.order_by("productname", "id")
         return product_queryset_optimized().filter(entity=entity)
 
@@ -199,12 +220,13 @@ class ProductCategoryListCreateAPIView(EntityFromQueryMixin, generics.ListCreate
 
     def get_queryset(self):
         entity = self.get_entity()
-        return (
+        queryset = (
             ProductCategory.objects
             .filter(entity=entity)
             .select_related("maincategory")
             .order_by("pcategoryname")
         )
+        return self.apply_isactive_filter(queryset)
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())
@@ -231,7 +253,8 @@ class BrandListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     serializer_class = BrandSerializer
 
     def get_queryset(self):
-        return Brand.objects.filter(entity=self.get_entity()).order_by("name")
+        queryset = Brand.objects.filter(entity=self.get_entity()).order_by("name")
+        return self.apply_isactive_filter(queryset)
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())
@@ -250,7 +273,8 @@ class UnitOfMeasureListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAP
     serializer_class = UnitOfMeasureSerializer
 
     def get_queryset(self):
-        return UnitOfMeasure.objects.filter(entity=self.get_entity()).order_by("code")
+        queryset = UnitOfMeasure.objects.filter(entity=self.get_entity()).order_by("code")
+        return self.apply_isactive_filter(queryset)
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())
@@ -269,7 +293,8 @@ class HsnSacListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     serializer_class = HsnSacSerializer
 
     def get_queryset(self):
-        return HsnSac.objects.filter(entity=self.get_entity()).order_by("code")
+        queryset = HsnSac.objects.filter(entity=self.get_entity()).order_by("code")
+        return self.apply_isactive_filter(queryset)
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())
@@ -288,7 +313,8 @@ class PriceListListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIVie
     serializer_class = PriceListSerializer
 
     def get_queryset(self):
-        return PriceList.objects.filter(entity=self.get_entity()).order_by("name")
+        queryset = PriceList.objects.filter(entity=self.get_entity()).order_by("name")
+        return self.apply_isactive_filter(queryset)
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())
@@ -307,7 +333,8 @@ class ProductAttributeListCreateAPIView(EntityFromQueryMixin, generics.ListCreat
     serializer_class = ProductAttributeSerializer
 
     def get_queryset(self):
-        return ProductAttribute.objects.filter(entity=self.get_entity()).order_by("name")
+        queryset = ProductAttribute.objects.filter(entity=self.get_entity()).order_by("name")
+        return self.apply_isactive_filter(queryset)
 
     def perform_create(self, serializer):
         serializer.save(entity=self.get_entity())

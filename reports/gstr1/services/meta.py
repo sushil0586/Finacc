@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from entity.models import EntityFinancialYear, SubEntity
 
-from reports.gstr1.conf import b2cl_threshold, export_pos_code, enable_gstin_checksum
+from reports.gstr1.conf import b2cl_threshold, export_pos_code, enable_gstin_checksum, rcm_tax_amount_source
 from reports.gstr1.services.classification import ALL_SECTIONS
 from reports.gstr1.services.table_views import Gstr1TableViewService
 from sales.models import SalesInvoiceHeader
@@ -101,5 +101,7 @@ def build_gstr1_report_meta(*, entity_id: int, entityfinid_id: int | None = None
         "config": {
             "export_pos_code": export_pos_code(),
             "gstin_checksum_enabled": enable_gstin_checksum(),
+            "rcm_tax_amount_source": rcm_tax_amount_source(),
+            "rcm_contract_version": "gstr1.rcm.v1",
         },
     }

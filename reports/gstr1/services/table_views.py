@@ -9,7 +9,7 @@ from entity.models import Entity, EntityFinancialYear
 from sales.models import SalesAdvanceAdjustment, SalesEcommerceSupply
 from sales.models import SalesInvoiceHeader
 
-from reports.gstr1.conf import b2cl_threshold
+from reports.gstr1.conf import b2cl_threshold, rcm_tax_amount_source
 from reports.gstr1.services.classification import Gstr1ClassificationService, SECTION_B2CL, SECTION_B2CS, SECTION_CDNUR
 
 
@@ -148,19 +148,18 @@ class Gstr1TableViewService:
         ).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for row in qs:
-            rows.append(
-                {
-                    "invoice_id": row.id,
-                    "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
-                    "invoice_date": row.bill_date,
-                    "customer_name": row.customer_name,
-                    "place_of_supply_state_code": row.place_of_supply_state_code,
-                    "taxable_amount": row.total_taxable_value,
-                    "igst_amount": row.total_igst,
-                    "cess_amount": row.total_cess,
-                    "grand_total": row.grand_total,
-                }
-            )
+            payload = {
+                "invoice_id": row.id,
+                "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
+                "invoice_date": row.bill_date,
+                "customer_name": row.customer_name,
+                "place_of_supply_state_code": row.place_of_supply_state_code,
+                "taxable_amount": row.total_taxable_value,
+                "igst_amount": row.total_igst,
+                "cess_amount": row.total_cess,
+                "grand_total": row.grand_total,
+            }
+            rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_5.code))
         return self._ok(TABLE_5, rows)
 
     def _table_4(self):
@@ -169,22 +168,21 @@ class Gstr1TableViewService:
         ).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for row in qs:
-            rows.append(
-                {
-                    "invoice_id": row.id,
-                    "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
-                    "invoice_date": row.bill_date,
-                    "customer_name": row.customer_name,
-                    "customer_gstin": row.customer_gstin,
-                    "place_of_supply_state_code": row.place_of_supply_state_code,
-                    "taxable_amount": row.total_taxable_value,
-                    "cgst_amount": row.total_cgst,
-                    "sgst_amount": row.total_sgst,
-                    "igst_amount": row.total_igst,
-                    "cess_amount": row.total_cess,
-                    "grand_total": row.grand_total,
-                }
-            )
+            payload = {
+                "invoice_id": row.id,
+                "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
+                "invoice_date": row.bill_date,
+                "customer_name": row.customer_name,
+                "customer_gstin": row.customer_gstin,
+                "place_of_supply_state_code": row.place_of_supply_state_code,
+                "taxable_amount": row.total_taxable_value,
+                "cgst_amount": row.total_cgst,
+                "sgst_amount": row.total_sgst,
+                "igst_amount": row.total_igst,
+                "cess_amount": row.total_cess,
+                "grand_total": row.grand_total,
+            }
+            rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_4.code))
         return self._ok(TABLE_4, rows)
 
     def _table_6(self):
@@ -199,22 +197,21 @@ class Gstr1TableViewService:
         ).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for row in qs:
-            rows.append(
-                {
-                    "invoice_id": row.id,
-                    "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
-                    "invoice_date": row.bill_date,
-                    "supply_category": row.get_supply_category_display(),
-                    "tax_regime": row.get_tax_regime_display(),
-                    "customer_name": row.customer_name,
-                    "customer_gstin": row.customer_gstin,
-                    "place_of_supply_state_code": row.place_of_supply_state_code,
-                    "taxable_amount": row.total_taxable_value,
-                    "igst_amount": row.total_igst,
-                    "cess_amount": row.total_cess,
-                    "grand_total": row.grand_total,
-                }
-        )
+            payload = {
+                "invoice_id": row.id,
+                "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
+                "invoice_date": row.bill_date,
+                "supply_category": row.get_supply_category_display(),
+                "tax_regime": row.get_tax_regime_display(),
+                "customer_name": row.customer_name,
+                "customer_gstin": row.customer_gstin,
+                "place_of_supply_state_code": row.place_of_supply_state_code,
+                "taxable_amount": row.total_taxable_value,
+                "igst_amount": row.total_igst,
+                "cess_amount": row.total_cess,
+                "grand_total": row.grand_total,
+            }
+            rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_6.code))
         return self._ok(TABLE_6, rows)
 
     def _table_7(self):
@@ -306,23 +303,22 @@ class Gstr1TableViewService:
         for note in notes:
             original = note.original_invoice
             target_section = self._classify_original_for_amendment(original)
-            rows.append(
-                {
-                    "note_id": note.id,
-                    "note_number": note.invoice_number or f"{note.doc_code}-{note.doc_no}",
-                    "note_date": note.bill_date,
-                    "note_type": note.get_doc_type_display(),
-                    "original_invoice_id": original.id if original else None,
-                    "original_invoice_number": original.invoice_number if original else "",
-                    "amendment_target_section": target_section,
-                    "taxable_amount": note.total_taxable_value,
-                    "cgst_amount": note.total_cgst,
-                    "sgst_amount": note.total_sgst,
-                    "igst_amount": note.total_igst,
-                    "cess_amount": note.total_cess,
-                    "grand_total": note.grand_total,
-                }
-            )
+            payload = {
+                "note_id": note.id,
+                "note_number": note.invoice_number or f"{note.doc_code}-{note.doc_no}",
+                "note_date": note.bill_date,
+                "note_type": note.get_doc_type_display(),
+                "original_invoice_id": original.id if original else None,
+                "original_invoice_number": original.invoice_number if original else "",
+                "amendment_target_section": target_section,
+                "taxable_amount": note.total_taxable_value,
+                "cgst_amount": note.total_cgst,
+                "sgst_amount": note.total_sgst,
+                "igst_amount": note.total_igst,
+                "cess_amount": note.total_cess,
+                "grand_total": note.grand_total,
+            }
+            rows.append(self._attach_invoice_rcm_contract(payload, note, table_code=TABLE_9.code))
         return self._ok(TABLE_9, rows)
 
     def _table_10(self):
@@ -331,19 +327,18 @@ class Gstr1TableViewService:
         ).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for note in notes:
-            rows.append(
-                {
-                    "note_id": note.id,
-                    "note_number": note.invoice_number or f"{note.doc_code}-{note.doc_no}",
-                    "note_date": note.bill_date,
-                    "note_type": note.get_doc_type_display(),
-                    "place_of_supply_state_code": note.place_of_supply_state_code,
-                    "taxable_amount": note.total_taxable_value,
-                    "igst_amount": note.total_igst,
-                    "cess_amount": note.total_cess,
-                    "grand_total": note.grand_total,
-                }
-            )
+            payload = {
+                "note_id": note.id,
+                "note_number": note.invoice_number or f"{note.doc_code}-{note.doc_no}",
+                "note_date": note.bill_date,
+                "note_type": note.get_doc_type_display(),
+                "place_of_supply_state_code": note.place_of_supply_state_code,
+                "taxable_amount": note.total_taxable_value,
+                "igst_amount": note.total_igst,
+                "cess_amount": note.total_cess,
+                "grand_total": note.grand_total,
+            }
+            rows.append(self._attach_invoice_rcm_contract(payload, note, table_code=TABLE_10.code))
         return self._ok(TABLE_10, rows)
 
     def _table_11(self):
@@ -607,6 +602,12 @@ class Gstr1TableViewService:
             "table_label": definition.label,
             "count": len(rows),
             "rows": rows,
+            "contracts": {
+                "reverse_charge": {
+                    "version": "gstr1.rcm.v1",
+                    "tax_amount_source": rcm_tax_amount_source(),
+                }
+            },
             "coverage": {
                 "status": "implemented",
                 "message": "",
@@ -632,3 +633,28 @@ class Gstr1TableViewService:
         if self.scope.subentity_id:
             queryset = queryset.filter(subentity_id=self.scope.subentity_id)
         return queryset
+
+    def _attach_invoice_rcm_contract(self, payload: dict, invoice: SalesInvoiceHeader, *, table_code: str) -> dict:
+        is_reverse = bool(getattr(invoice, "is_reverse_charge", False))
+        taxable = payload.get("taxable_amount", Decimal("0.00")) or Decimal("0.00")
+        cgst = payload.get("cgst_amount", Decimal("0.00")) or Decimal("0.00")
+        sgst = payload.get("sgst_amount", Decimal("0.00")) or Decimal("0.00")
+        igst = payload.get("igst_amount", Decimal("0.00")) or Decimal("0.00")
+        cess = payload.get("cess_amount", Decimal("0.00")) or Decimal("0.00")
+
+        payload["reverse_charge"] = is_reverse
+        payload["reported_taxable_amount"] = taxable
+        payload["reported_cgst_amount"] = cgst
+        payload["reported_sgst_amount"] = sgst
+        payload["reported_igst_amount"] = igst
+        payload["reported_cess_amount"] = cess
+        payload["rcm_contract"] = {
+            "version": "gstr1.rcm.v1",
+            "table_code": table_code,
+            "is_reverse_charge": is_reverse,
+            "liability_side": "recipient" if is_reverse else "supplier",
+            "tax_amount_source": rcm_tax_amount_source(),
+            "invoice_tax_amounts_zero_expected": is_reverse,
+            "reporting_note": "For reverse charge invoices, liability remains on recipient; contract fields keep filing output deterministic.",
+        }
+        return payload

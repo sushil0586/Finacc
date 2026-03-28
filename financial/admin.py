@@ -13,6 +13,8 @@ from .models import (
     AccountAddress,
     AccountComplianceProfile,
     AccountCommercialProfile,
+    InvoiceCustomFieldDefinition,
+    InvoiceCustomFieldDefault,
 )
 from .admin_resources import (
     AccountTypeResource,
@@ -182,3 +184,30 @@ class AccountCommercialProfileAdmin(admin.ModelAdmin):
     list_filter = ("partytype", "currency", "approved", "isactive", "entity")
     search_fields = ("account__accountname", "agent", "blockedreason")
     list_select_related = ("account", "entity")
+
+
+@admin.register(InvoiceCustomFieldDefinition)
+class InvoiceCustomFieldDefinitionAdmin(admin.ModelAdmin):
+    list_display = (
+        "module",
+        "key",
+        "label",
+        "field_type",
+        "entity",
+        "subentity",
+        "applies_to_account",
+        "is_required",
+        "order_no",
+        "isactive",
+    )
+    list_filter = ("module", "field_type", "is_required", "isactive", "entity", "subentity")
+    search_fields = ("key", "label", "help_text", "applies_to_account__accountname")
+    list_select_related = ("entity", "subentity", "applies_to_account")
+
+
+@admin.register(InvoiceCustomFieldDefault)
+class InvoiceCustomFieldDefaultAdmin(admin.ModelAdmin):
+    list_display = ("definition", "party_account", "isactive")
+    list_filter = ("isactive", "definition__module", "definition__entity")
+    search_fields = ("definition__key", "definition__label", "party_account__accountname")
+    list_select_related = ("definition", "party_account")

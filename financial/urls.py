@@ -40,6 +40,11 @@ from .views_bulk_accounts import (
     AccountsBulkJobDetailAPIView,
     AccountsBulkJobErrorsExportAPIView,
 )
+from .views_invoice_custom_fields import (
+    InvoiceCustomFieldDefinitionListCreateAPIView,
+    InvoiceCustomFieldDefinitionDetailAPIView,
+    InvoiceCustomFieldDefaultListCreateAPIView,
+)
 
 
 app_name = "financial"
@@ -82,4 +87,7 @@ urlpatterns = [
     path("contact-details/", ContactDetailsListCreateView.as_view(), name="contact-details-list-create"),
     path("contact-details/<int:pk>/", ContactDetailsRetrieveUpdateDestroyView.as_view(), name="contact-details-detail"),
     path("contact-details/account/<int:account_id>/", ContactDetailsByAccountView.as_view(), name="contact-details-by-account"),
+    path("invoice-custom-fields/definitions/", InvoiceCustomFieldDefinitionListCreateAPIView.as_view(), name="invoice-custom-field-definitions"),
+    path("invoice-custom-fields/definitions/<int:pk>/", InvoiceCustomFieldDefinitionDetailAPIView.as_view(), name="invoice-custom-field-definition-detail"),
+    path("invoice-custom-fields/defaults/", InvoiceCustomFieldDefaultListCreateAPIView.as_view(), name="invoice-custom-field-defaults"),
 ]

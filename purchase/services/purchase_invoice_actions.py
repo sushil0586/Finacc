@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 from django.db import transaction
+from django.db.models.deletion import ProtectedError
 from django.utils import timezone
+from django.apps import apps
 
 from purchase.models.purchase_core import (
     PurchaseInvoiceHeader,
@@ -13,12 +15,15 @@ from purchase.models.purchase_core import (
 )
 
 from posting.adapters.purchase_invoice import PurchaseInvoicePostingAdapter, PurchaseInvoicePostingConfig
+from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
+from posting.services.posting_service import PostingService, JLInput, IMInput
 
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_ap_service import PurchaseApService
+from purchase.models.purchase_ap import VendorBillOpenItem
 
 # ✅ Numbering imports (your requirement)
 from numbering.services.document_number_service import DocumentNumberService
@@ -32,6 +37,32 @@ class ActionResult:
 
 
 class PurchaseInvoiceActions:
+    @staticmethod
+    def _purchase_doc_label(h: PurchaseInvoiceHeader) -> str:
+        return str(getattr(h, "purchase_number", None) or f"{getattr(h, 'doc_code', '')}-{getattr(h, 'doc_no', '')}").strip("-")
+
+    @staticmethod
+    def _payment_voucher_label(voucher) -> str:
+        return str(getattr(voucher, "voucher_code", None) or f"{getattr(voucher, 'doc_code', '')}-{getattr(voucher, 'doc_no', '')}").strip("-")
+
+    @staticmethod
+    def _txn_type_for_header(h: PurchaseInvoiceHeader) -> str:
+        doc_type = int(getattr(h, "doc_type", PurchaseInvoiceHeader.DocType.TAX_INVOICE))
+        if doc_type == int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE):
+            return TxnType.PURCHASE_CREDIT_NOTE
+        if doc_type == int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE):
+            return TxnType.PURCHASE_DEBIT_NOTE
+        return TxnType.PURCHASE
+
+    @staticmethod
+    def _reverse_move_type(move_type: str) -> str:
+        mv = (move_type or "").upper()
+        if mv == "IN":
+            return "OUT"
+        if mv == "OUT":
+            return "IN"
+        return "REV"
+
     @staticmethod
     def _assert_action_allowed_by_level(*, h: PurchaseInvoiceHeader, level_key: str, message: str) -> None:
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
@@ -205,6 +236,160 @@ class PurchaseInvoiceActions:
         PurchaseApService.sync_open_item_for_header(h)
 
         return ActionResult(h, "Posted successfully.")
+
+    @staticmethod
+    @transaction.atomic
+    def unpost(pk: int, unposted_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
+        h = PurchaseInvoiceActions._get(pk)
+        purchase_doc = PurchaseInvoiceActions._purchase_doc_label(h)
+        if int(h.status) != int(Status.POSTED):
+            raise ValueError("Only posted purchase documents can be unposted.")
+
+        policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
+        if str(policy.controls.get("allow_unpost_posted", "on")).lower().strip() == "off":
+            raise ValueError("Unpost after posting is disabled by purchase policy.")
+
+        open_item = VendorBillOpenItem.objects.select_for_update().filter(header_id=h.id).first()
+        if open_item and (open_item.settled_amount or 0) != 0:
+            raise ValueError("Cannot unpost: AP settlement already exists on this document.")
+        if open_item and open_item.settlement_lines.exists():
+            raise ValueError("Cannot unpost: settlement history exists on this document.")
+
+        if open_item:
+            PaymentVoucherAllocation = apps.get_model("payments", "PaymentVoucherAllocation")
+            alloc_qs = (
+                PaymentVoucherAllocation.objects
+                .select_related("payment_voucher")
+                .filter(open_item_id=open_item.id)
+            )
+            if alloc_qs.exists():
+                vouchers = []
+                seen = set()
+                for allocation in alloc_qs:
+                    voucher = getattr(allocation, "payment_voucher", None)
+                    if not voucher:
+                        continue
+                    label = PurchaseInvoiceActions._payment_voucher_label(voucher)
+                    if label in seen:
+                        continue
+                    seen.add(label)
+                    vouchers.append(label)
+                voucher_text = ", ".join(vouchers) if vouchers else "payment vouchers"
+                raise ValueError(
+                    f"Cannot unpost purchase invoice {purchase_doc} because payment allocation exists in {voucher_text}. "
+                    "Unpost/cancel those payment vouchers first."
+                )
+
+        txn_type = PurchaseInvoiceActions._txn_type_for_header(h)
+        entry = (
+            Entry.objects.select_for_update()
+            .filter(
+                entity_id=h.entity_id,
+                entityfin_id=h.entityfinid_id,
+                subentity_id=h.subentity_id,
+                txn_type=txn_type,
+                txn_id=h.id,
+            )
+            .first()
+        )
+        if not entry:
+            raise ValueError("Posted ledger entry not found for this purchase document.")
+
+        old_jls = list(
+            JournalLine.objects.filter(
+                entity_id=h.entity_id,
+                entityfin_id=h.entityfinid_id,
+                subentity_id=h.subentity_id,
+                txn_type=txn_type,
+                txn_id=h.id,
+            )
+        )
+        old_ims = list(
+            InventoryMove.objects.filter(
+                entity_id=h.entity_id,
+                entityfin_id=h.entityfinid_id,
+                subentity_id=h.subentity_id,
+                txn_type=txn_type,
+                txn_id=h.id,
+            )
+        )
+
+        jl_inputs: list[JLInput] = []
+        for jl in old_jls:
+            jl_inputs.append(
+                JLInput(
+                    account_id=jl.account_id,
+                    accounthead_id=jl.accounthead_id,
+                    ledger_id=jl.ledger_id,
+                    drcr=(not bool(jl.drcr)),
+                    amount=jl.amount,
+                    description=f"Reversal: {jl.description or ''}".strip(),
+                    detail_id=jl.detail_id,
+                )
+            )
+
+        im_inputs: list[IMInput] = []
+        for im in old_ims:
+            im_inputs.append(
+                IMInput(
+                    product_id=im.product_id,
+                    qty=im.qty,
+                    base_qty=im.base_qty,
+                    uom_id=im.uom_id,
+                    base_uom_id=im.base_uom_id,
+                    uom_factor=im.uom_factor,
+                    unit_cost=im.unit_cost,
+                    move_type=PurchaseInvoiceActions._reverse_move_type(im.move_type),
+                    cost_source=im.cost_source,
+                    cost_meta={"reversal_of_txn": f"{txn_type}#{h.id}"},
+                    detail_id=im.detail_id,
+                    location_id=im.location_id,
+                )
+            )
+
+        PostingService(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            user_id=unposted_by_id,
+        ).post(
+            txn_type=txn_type,
+            txn_id=h.id,
+            voucher_no=str(h.purchase_number or h.doc_no or h.id),
+            voucher_date=h.bill_date,
+            posting_date=h.posting_date or h.bill_date,
+            narration=f"Reversal for {h.purchase_number or h.id}",
+            jl_inputs=jl_inputs,
+            im_inputs=im_inputs,
+            use_advisory_lock=True,
+            mark_posted=True,
+        )
+
+        Entry.objects.filter(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            txn_type=txn_type,
+            txn_id=h.id,
+        ).update(
+            status=EntryStatus.REVERSED,
+            narration=f"Reversed: {(reason or '').strip()}".strip(),
+        )
+
+        if open_item:
+            try:
+                open_item.delete()
+            except ProtectedError:
+                raise ValueError(
+                    f"Cannot unpost purchase invoice {purchase_doc} because payment allocation exists. "
+                    "Unpost/cancel related payment vouchers first."
+                )
+
+        h.status = Status.CONFIRMED
+        h.posted_at = None
+        h.posted_by_id = None
+        h.save(update_fields=["status", "posted_at", "posted_by"])
+        return ActionResult(h, "Unposted successfully.")
 
     @staticmethod
     @transaction.atomic

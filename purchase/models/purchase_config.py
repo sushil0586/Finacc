@@ -10,6 +10,8 @@ ZERO4 = Decimal("0.0000")
 
 DEFAULT_POLICY_CONTROLS = {
     "delete_policy": "draft_only",
+    "allow_edit_confirmed": "on",
+    "allow_unpost_posted": "on",
     "confirm_lock_check": "hard",
     "require_lines_on_confirm": "hard",
     "itc_action_status_gate": "hard",

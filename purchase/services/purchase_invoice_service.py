@@ -898,6 +898,17 @@ class PurchaseInvoiceService:
         taxable = q2(row.get("taxable_value") or ZERO2)
         inclusive = bool(row.get("is_rate_inclusive_of_tax") or False)
 
+        # RCM normalization: purchase invoice charges should also carry zero GST amounts.
+        if bool(getattr(header, "is_reverse_charge", False)):
+            taxable2 = q2r(taxable)
+            return ChargeComputed(
+                taxable_value=taxable2,
+                cgst_amount=ZERO2,
+                sgst_amount=ZERO2,
+                igst_amount=ZERO2,
+                total_value=taxable2,
+            )
+
         # Non-taxable => force GST = 0, total = taxable
         if taxability != str(PurchaseChargeLine.Taxability.TAXABLE) or gst_rate <= ZERO2 or taxable <= ZERO2:
             taxable2 = q2r(taxable)
@@ -1318,6 +1329,14 @@ class PurchaseInvoiceService:
 
         # IMPORTANT: None means "not provided" so DO NOT delete existing charges
         charges_client = validated_data.pop("charges", None)
+
+        if int(instance.status) in (int(Status.CANCELLED), int(Status.POSTED)):
+            raise ValueError("Posted/Cancelled purchase invoices cannot be edited.")
+        if int(instance.status) == int(Status.CONFIRMED):
+            policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
+            allow_edit_confirmed = str(policy.controls.get("allow_edit_confirmed", "on")).lower().strip()
+            if allow_edit_confirmed == "off":
+                raise ValueError("Confirmed purchase invoice editing is disabled by purchase policy.")
 
         PurchaseInvoiceService.assert_not_locked(
             entity_id=instance.entity_id,

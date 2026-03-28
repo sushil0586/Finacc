@@ -39,9 +39,18 @@ from sales.services.eway_payload_builder import (
 
 from sales.services.eway.payload_b2c import build_b2c_direct_payload
 from sales.services.profile_resolvers import entity_primary_address
+from sales.services.sales_settings_service import SalesSettingsService
 
 
 MAX_EWAY_ATTEMPTS = 10
+ON_OFF = {"on", "off"}
+DEFAULT_COMPLIANCE_POLICY_CONTROLS = {
+    "compliance_allow_generate_irn_on_confirmed": "on",
+    "compliance_allow_generate_irn_on_posted": "on",
+    "compliance_allow_regenerate_irn_after_cancel": "off",
+    "compliance_allow_regenerate_eway_after_cancel": "on",
+    "compliance_allow_cancel_irn_when_eway_active": "off",
+}
 
 
 class SalesComplianceService:
@@ -76,6 +85,128 @@ class SalesComplianceService:
     def _ensure_invoice_eligible_for_eway(inv: SalesInvoiceHeader) -> None:
         if inv.status not in (inv.Status.CONFIRMED, inv.Status.POSTED):
             raise ValidationError("E-Way allowed only after CONFIRMED/POSTED invoices.")
+
+    @staticmethod
+    def _controls(inv: SalesInvoiceHeader) -> Dict[str, Any]:
+        policy = SalesSettingsService.get_policy(
+            entity_id=inv.entity_id,
+            subentity_id=getattr(inv, "subentity_id", None),
+            entityfinid_id=getattr(inv, "entityfinid_id", None),
+        )
+        controls = dict(DEFAULT_COMPLIANCE_POLICY_CONTROLS)
+        controls.update(policy.controls or {})
+        return controls
+
+    @staticmethod
+    def _flag_on(controls: Dict[str, Any], key: str, default: str = "on") -> bool:
+        val = str(controls.get(key, default)).strip().lower()
+        if val not in ON_OFF:
+            val = default
+        return val == "on"
+
+    @staticmethod
+    def compliance_action_flags(inv: SalesInvoiceHeader) -> Dict[str, Any]:
+        controls = SalesComplianceService._controls(inv)
+
+        status = int(getattr(inv, "status", 0) or 0)
+        is_confirmed = status == int(SalesInvoiceHeader.Status.CONFIRMED)
+        is_posted = status == int(SalesInvoiceHeader.Status.POSTED)
+        can_open = is_confirmed or is_posted
+
+        is_b2c = int(getattr(inv, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C)
+        einvoice_applicable_raw = bool(getattr(inv, "is_einvoice_applicable", False))
+        seller_gstin = str(getattr(inv, "seller_gstin", "") or "").strip()
+        customer_gstin = str(getattr(inv, "customer_gstin", "") or "").strip()
+        # Practical fallback: for non-B2C invoice with GSTINs present, keep IRN flow available
+        # even if stored flag was not derived correctly on that draft/confirm cycle.
+        einvoice_applicable = bool(
+            einvoice_applicable_raw
+            or ((not is_b2c) and len(seller_gstin) == 15 and len(customer_gstin) == 15)
+        )
+        eway_applicable = bool(getattr(inv, "is_eway_applicable", False))
+
+        einv = getattr(inv, "einvoice_artifact", None)
+        ewb = getattr(inv, "eway_artifact", None)
+        irn_generated = bool(
+            einv
+            and int(getattr(einv, "status", 0) or 0) == int(SalesEInvoiceStatus.GENERATED)
+            and getattr(einv, "irn", None)
+        )
+        irn_cancelled = bool(
+            einv and int(getattr(einv, "status", 0) or 0) == int(SalesEInvoiceStatus.CANCELLED)
+        )
+        eway_generated = bool(
+            ewb
+            and int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.GENERATED)
+            and getattr(ewb, "ewb_no", None)
+        )
+        eway_cancelled = bool(
+            ewb and int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.CANCELLED)
+        )
+
+        allow_irn_confirmed = SalesComplianceService._flag_on(controls, "compliance_allow_generate_irn_on_confirmed", "on")
+        allow_irn_posted = SalesComplianceService._flag_on(controls, "compliance_allow_generate_irn_on_posted", "on")
+        allow_regen_irn = SalesComplianceService._flag_on(controls, "compliance_allow_regenerate_irn_after_cancel", "off")
+        allow_regen_eway = SalesComplianceService._flag_on(controls, "compliance_allow_regenerate_eway_after_cancel", "on")
+        allow_irn_cancel_with_eway = SalesComplianceService._flag_on(controls, "compliance_allow_cancel_irn_when_eway_active", "off")
+
+        irn_generation_status_ok = (is_confirmed and allow_irn_confirmed) or (is_posted and allow_irn_posted)
+        irn_generation_not_already_done = (not irn_generated) and (allow_regen_irn or not irn_cancelled)
+        eway_generation_not_already_done = (not eway_generated) and (allow_regen_eway or not eway_cancelled)
+
+        can_generate_irn = can_open and einvoice_applicable and (not is_b2c) and irn_generation_status_ok and irn_generation_not_already_done
+        # Keep flow practical: once IRN exists, allow E-Way actions even if applicability flag later toggles.
+        eway_flow_eligible = eway_applicable or irn_generated or eway_generated or eway_cancelled
+        can_generate_eway = can_open and eway_flow_eligible and eway_generation_not_already_done and (is_b2c or irn_generated)
+
+        can_cancel_irn = can_open and irn_generated and (allow_irn_cancel_with_eway or not eway_generated)
+        can_cancel_eway = can_open and eway_generated
+
+        return {
+            "can_open_console": can_open,
+            "can_ensure": can_open,
+            "can_generate_irn": can_generate_irn,
+            # Combined flow should be available when IRN can be generated now and E-Way is eligible.
+            # It intentionally does not require pre-existing IRN.
+            "can_generate_irn_and_eway": can_open and (not is_b2c) and can_generate_irn and eway_flow_eligible and eway_generation_not_already_done,
+            "can_generate_eway": can_generate_eway,
+            "can_generate_eway_b2c": can_generate_eway and is_b2c,
+            "can_load_eway_prefill": can_open and (not is_b2c) and irn_generated and eway_flow_eligible,
+            "can_load_eway_b2c_prefill": can_open and is_b2c,
+            "can_cancel_irn": can_cancel_irn,
+            "can_cancel_eway": can_cancel_eway,
+            "can_get_irn_details": can_open and (einvoice_applicable or irn_generated or irn_cancelled),
+            "can_get_eway_by_irn": can_open and (einvoice_applicable or irn_generated or irn_cancelled),
+            "can_update_eway_vehicle": can_open and eway_generated,
+            "can_update_eway_transporter": can_open and eway_generated,
+            "can_extend_eway_validity": can_open and eway_generated,
+            "state": {
+                "invoice_confirmed_or_posted": can_open,
+                "is_b2c": is_b2c,
+                "einvoice_applicable": einvoice_applicable,
+                "eway_applicable": eway_applicable,
+                "irn_generated": irn_generated,
+                "irn_cancelled": irn_cancelled,
+                "eway_generated": eway_generated,
+                "eway_cancelled": eway_cancelled,
+            },
+        }
+
+    @staticmethod
+    def assert_action_allowed(inv: SalesInvoiceHeader, action_key: str) -> None:
+        flags = SalesComplianceService.compliance_action_flags(inv)
+        if bool(flags.get(action_key)):
+            return
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="COMPLIANCE_POLICY_GUARD",
+            outcome="FAILED",
+            user=None,
+            error_code="COMPLIANCE_ACTION_BLOCKED",
+            error_message=f"Action '{action_key}' blocked by policy/state guard.",
+            request_json={"action_key": action_key, "flags": flags},
+        )
+        raise ValidationError(f"Compliance action '{action_key}' is not allowed for current invoice state.")
 
     @staticmethod
     def _ewb_state(ewb: Any) -> Optional[Dict[str, Any]]:
@@ -161,6 +292,7 @@ class SalesComplianceService:
         with current invoice applicability flags.
         """
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_ensure")
         einv = self._ensure_einvoice_row()
         ewb = self._ensure_eway_row()
 
@@ -407,13 +539,14 @@ class SalesComplianceService:
 
     @transaction.atomic
     def generate_irn(self) -> SalesEInvoice:
-        self._assert_confirmed_for_irn()
-        if int(getattr(self.invoice, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C):
-            raise ValidationError("IRN generation is not allowed for B2C invoices.")
-
         einv = self._ensure_einvoice_row()
         if einv.status == SalesEInvoiceStatus.GENERATED and einv.irn:
             return einv  # idempotent
+
+        self.assert_action_allowed(self.invoice, "can_generate_irn")
+        self._assert_confirmed_for_irn()
+        if int(getattr(self.invoice, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C):
+            raise ValidationError("IRN generation is not allowed for B2C invoices.")
 
         payload = IRPPayloadBuilder(self.invoice).build()
         payload["SellerDtls"] = seller_from_entity(self.invoice.entity)
@@ -520,6 +653,7 @@ class SalesComplianceService:
     @transaction.atomic
     def cancel_irn(self, *, reason_code: str, remarks: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_cancel_irn")
         einv = self._ensure_einvoice_row()
         if not einv.irn or einv.status != SalesEInvoiceStatus.GENERATED:
             raise ValidationError("IRN cancel is allowed only for generated IRN.")
@@ -597,6 +731,7 @@ class SalesComplianceService:
     @transaction.atomic
     def get_irn_details(self, *, irn: Optional[str] = None, supplier_gstin: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_irn_details")
         einv = self._ensure_einvoice_row()
         irn_to_fetch = (irn or einv.irn or "").strip()
         if not irn_to_fetch:
@@ -689,6 +824,7 @@ class SalesComplianceService:
     @transaction.atomic
     def get_eway_details_by_irn(self, *, irn: Optional[str] = None, supplier_gstin: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_by_irn")
         einv = self._ensure_einvoice_row()
         irn_to_fetch = (irn or einv.irn or "").strip()
         if not irn_to_fetch:
@@ -870,6 +1006,7 @@ class SalesComplianceService:
     @staticmethod
     @transaction.atomic
     def generate_eway(inv: SalesInvoiceHeader, entity, req: Dict[str, Any], created_by=None) -> Dict[str, Any]:
+        SalesComplianceService.assert_action_allowed(inv, "can_generate_eway")
         SalesComplianceService._ensure_invoice_eligible_for_eway(inv)
         irn = SalesComplianceService._get_irn(inv)
 
@@ -1023,6 +1160,7 @@ class SalesComplianceService:
     @transaction.atomic
     def cancel_eway(self, *, reason_code: str, remarks: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_cancel_eway")
         art = self._ensure_eway_row()
         if not art.ewb_no or art.status != SalesEWayStatus.GENERATED:
             raise ValidationError("E-Way cancel is allowed only for generated EWB.")
@@ -1102,6 +1240,7 @@ class SalesComplianceService:
     @transaction.atomic
     def update_eway_vehicle(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_update_eway_vehicle")
         art = self._ensure_eway_row()
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
@@ -1163,6 +1302,7 @@ class SalesComplianceService:
     @transaction.atomic
     def update_eway_transporter(self, *, transporter_id: str) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_update_eway_transporter")
         art = self._ensure_eway_row()
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
@@ -1202,6 +1342,7 @@ class SalesComplianceService:
     @transaction.atomic
     def extend_eway_validity(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
         inv = self.invoice
+        self.assert_action_allowed(inv, "can_extend_eway_validity")
         art = self._ensure_eway_row()
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
@@ -1314,6 +1455,7 @@ class SalesComplianceService:
         }
 
     def eway_generate_b2c(self, invoice: "SalesInvoiceHeader", *, user=None) -> dict:
+        self.assert_action_allowed(invoice, "can_generate_eway_b2c")
         ewb = getattr(invoice, "eway_artifact", None)
         if not ewb:
             ewb = SalesEWayBill.objects.create(invoice=invoice)

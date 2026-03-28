@@ -82,13 +82,30 @@ class ProductCategorySerializercreate(serializers.ModelSerializer):
         return obj.maincategory.pcategoryname if obj.maincategory else None
 
     def validate(self, attrs):
-        entity = self.context.get("entity")
+        entity = self.context.get("entity") or getattr(getattr(self, "instance", None), "entity", None)
         parent = attrs.get("maincategory")
+        category_name = (attrs.get("pcategoryname") or getattr(self.instance, "pcategoryname", "") or "").strip()
+
+        if not category_name:
+            raise serializers.ValidationError({"pcategoryname": "Category name is required."})
+        attrs["pcategoryname"] = category_name
 
         if parent and entity and parent.entity_id != entity.id:
             raise serializers.ValidationError({
                 "maincategory_id": "Parent category must belong to the same entity."
             })
+
+        if entity is not None:
+            duplicate_qs = ProductCategory.objects.filter(
+                entity=entity,
+                pcategoryname__iexact=category_name,
+            )
+            if self.instance:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError({
+                    "pcategoryname": "Product category with this name already exists."
+                })
 
         attrs["level"] = (parent.level or 1) + 1 if parent else 1
         return attrs

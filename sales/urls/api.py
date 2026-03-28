@@ -23,6 +23,7 @@ from sales.views.sales_invoice_views import (
 
 from sales.views.sales_invoice_compliance_api import (
     SalesInvoiceEnsureComplianceAPIView,
+    SalesInvoiceComplianceStatusAPIView,
     SalesInvoiceGenerateIRNAPIView,
     SalesInvoiceGenerateIRNAndEWayAPIView,
     SalesInvoiceCancelIRNAPIView,
@@ -88,6 +89,7 @@ urlpatterns = [
     path("ar/settlements/<int:pk>/cancel/", CustomerSettlementCancelAPIView.as_view(), name="sales-ar-settlement-cancel"),
     path("ar/customer-statement/", CustomerStatementAPIView.as_view(), name="sales-ar-customer-statement"),
     path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
+    path("sales-invoices/<int:pk>/compliance/status/", SalesInvoiceComplianceStatusAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn-and-eway/", SalesInvoiceGenerateIRNAndEWayAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/cancel-irn/", SalesInvoiceCancelIRNAPIView.as_view()),

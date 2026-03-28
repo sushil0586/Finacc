@@ -22,6 +22,7 @@ from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 
 
 DEC2 = Decimal("0.01")
@@ -162,6 +163,7 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
 class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     lines = PurchaseInvoiceLineSerializer(many=True, required=False)
     charges = PurchaseChargeLineSerializer(many=True, required=False)
+    custom_fields = serializers.JSONField(source="custom_fields_json", required=False)
     vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
     vendor_ledger_id = serializers.SerializerMethodField()
@@ -317,6 +319,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "vendor_gst_tds_notes",
             "match_status",
             "match_notes",
+            "custom_fields",
 
             # derived rates
             "gst_tds_cgst_rate",
@@ -501,6 +504,22 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                     ln["discount_amount"] = Decimal("0.00")
                 if ln.get("cess_percent") is None:
                     ln["cess_percent"] = Decimal("0.00")
+
+        if "custom_fields_json" in attrs:
+            entity = attrs.get("entity") or getattr(inst, "entity", None)
+            subentity = attrs.get("subentity") or getattr(inst, "subentity", None)
+            vendor = attrs.get("vendor") or getattr(inst, "vendor", None)
+            if entity:
+                try:
+                    attrs["custom_fields_json"] = InvoiceCustomFieldService.validate_payload(
+                        entity_id=int(getattr(entity, "id", entity)),
+                        module="purchase_invoice",
+                        payload=attrs.get("custom_fields_json") or {},
+                        subentity_id=int(getattr(subentity, "id", subentity)) if subentity else None,
+                        party_account_id=int(getattr(vendor, "id", vendor)) if vendor else None,
+                    )
+                except ValueError as ex:
+                    raise serializers.ValidationError({"custom_fields": str(ex)})
 
         # --------------------------
         # Income-tax TDS (manual/auto)

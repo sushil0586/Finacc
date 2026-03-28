@@ -46,6 +46,21 @@ class PurchaseInvoicePostAPIView(APIView):
         })
 
 
+class PurchaseInvoiceUnpostAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk: int):
+        reason = (request.data.get("reason") or "").strip() or None
+        try:
+            result = PurchaseInvoiceActions.unpost(pk, unposted_by_id=request.user.id, reason=reason)
+        except ValueError as e:
+            _raise_validation_error(e)
+        return Response({
+            "message": result.message,
+            "data": PurchaseInvoiceHeaderSerializer(result.header).data
+        })
+
+
 class PurchaseInvoiceCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
