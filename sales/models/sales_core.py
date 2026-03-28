@@ -226,6 +226,7 @@ class SalesInvoiceHeader(EntityScopedModel):
     # -------------------------
     reference = models.CharField(max_length=255, blank=True, default="")
     remarks = models.TextField(blank=True, default="")
+    custom_fields_json = models.JSONField(default=dict, blank=True)
 
     # -------------------------
     # Audit / lifecycle

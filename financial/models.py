@@ -753,4 +753,69 @@ class AccountCommercialProfile(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "partytype"], name="ix_acccom_ent_party"),
             models.Index(fields=["entity", "currency"], name="ix_acccom_ent_curr"),
-        ]   
+        ]
+
+
+class InvoiceCustomFieldDefinition(TrackingModel):
+    class Module(models.TextChoices):
+        SALES_INVOICE = "sales_invoice", _("Sales Invoice")
+        PURCHASE_INVOICE = "purchase_invoice", _("Purchase Invoice")
+
+    class FieldType(models.TextChoices):
+        TEXT = "text", _("Text")
+        NUMBER = "number", _("Number")
+        DATE = "date", _("Date")
+        BOOLEAN = "boolean", _("Boolean")
+        SELECT = "select", _("Select")
+        MULTISELECT = "multiselect", _("Multi Select")
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="invoice_custom_field_defs")
+    subentity = models.ForeignKey("entity.SubEntity", null=True, blank=True, on_delete=models.CASCADE, related_name="invoice_custom_field_defs")
+    module = models.CharField(max_length=30, choices=Module.choices)
+    key = models.CharField(max_length=64)
+    label = models.CharField(max_length=120)
+    field_type = models.CharField(max_length=20, choices=FieldType.choices, default=FieldType.TEXT)
+    is_required = models.BooleanField(default=False)
+    order_no = models.PositiveIntegerField(default=0)
+    help_text = models.CharField(max_length=255, blank=True, default="")
+    options_json = models.JSONField(default=list, blank=True)
+    applies_to_account = models.ForeignKey(
+        "financial.account",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="invoice_custom_field_defs",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "module", "isactive"], name="ix_icfdef_ent_mod_act"),
+            models.Index(fields=["entity", "subentity", "module"], name="ix_icfdef_ent_sub_mod"),
+            models.Index(fields=["entity", "module", "key"], name="ix_icfdef_ent_mod_key"),
+            models.Index(fields=["entity", "module", "applies_to_account"], name="ix_icfdef_ent_mod_acc"),
+        ]
+
+
+class InvoiceCustomFieldDefault(TrackingModel):
+    definition = models.ForeignKey(
+        InvoiceCustomFieldDefinition,
+        on_delete=models.CASCADE,
+        related_name="defaults",
+    )
+    party_account = models.ForeignKey(
+        "financial.account",
+        on_delete=models.CASCADE,
+        related_name="invoice_custom_field_defaults",
+    )
+    default_value = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["definition", "party_account"],
+                name="uq_icfdefault_definition_party",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["definition", "party_account"], name="ix_icfdefault_def_party"),
+        ]

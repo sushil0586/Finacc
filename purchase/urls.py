@@ -31,6 +31,7 @@ from purchase.views.purchase_settings import PurchaseSettingsAPIView
 from purchase.views.purchase_invoice_actions import (
     PurchaseInvoiceConfirmAPIView,
     PurchaseInvoicePostAPIView,
+    PurchaseInvoiceUnpostAPIView,
     PurchaseInvoiceCancelAPIView,
     PurchaseInvoiceRebuildTaxSummaryAPIView,
     PurchaseInvoiceCreateCreditNoteAPIView,
@@ -84,6 +85,7 @@ urlpatterns = [
     # Actions
     path("purchase-invoices/<int:pk>/confirm/", PurchaseInvoiceConfirmAPIView.as_view(), name="purchase-invoice-confirm"),
     path("purchase-invoices/<int:pk>/post/", PurchaseInvoicePostAPIView.as_view(), name="purchase-invoice-post"),
+    path("purchase-invoices/<int:pk>/unpost/", PurchaseInvoiceUnpostAPIView.as_view(), name="purchase-invoice-unpost"),
     path("purchase-invoices/<int:pk>/cancel/", PurchaseInvoiceCancelAPIView.as_view(), name="purchase-invoice-cancel"),
     path("purchase-invoices/<int:pk>/rebuild-tax-summary/", PurchaseInvoiceRebuildTaxSummaryAPIView.as_view(), name="purchase-invoice-rebuild-tax-summary"),
     path("charge-types/", PurchaseChargeTypeListCreateAPIView.as_view(), name="purchase-charge-type-list"),

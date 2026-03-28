@@ -11,6 +11,7 @@ from catalog.models import Product, ProductGstRate, UnitOfMeasure
 from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
+from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from purchase.models.purchase_config import DEFAULT_POLICY_CONTROLS
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorSettlement
@@ -161,6 +162,12 @@ class PurchaseMetaBaseAPIView(APIView):
         return cfg_qs.first()
 
     def _invoice_form_meta(self, entity_id: int, subentity_id: int | None):
+        custom_defs = InvoiceCustomFieldService.get_effective_definitions(
+            entity_id=entity_id,
+            module="purchase_invoice",
+            subentity_id=subentity_id,
+            party_account_id=None,
+        )
         return {
             "entity_id": entity_id,
             "subentity_id": subentity_id,
@@ -170,6 +177,19 @@ class PurchaseMetaBaseAPIView(APIView):
             "vendors": self._vendors(entity_id),
             "charge_types": self._charge_types(entity_id),
             "tds_sections": self._tds_sections(),
+            "custom_field_definitions": [
+                {
+                    "id": d.id,
+                    "key": d.key,
+                    "label": d.label,
+                    "field_type": d.field_type,
+                    "is_required": d.is_required,
+                    "order_no": d.order_no,
+                    "help_text": d.help_text,
+                    "options_json": d.options_json,
+                }
+                for d in custom_defs
+            ],
             "ui_contract": purchase_invoice_ui_contract(),
         }
 
@@ -204,6 +224,8 @@ class PurchaseMetaBaseAPIView(APIView):
         is_confirmed = int(header.status) == int(PurchaseInvoiceHeader.Status.CONFIRMED)
         is_posted = int(header.status) == int(PurchaseInvoiceHeader.Status.POSTED)
         is_cancelled = int(header.status) == int(PurchaseInvoiceHeader.Status.CANCELLED)
+        allow_edit_confirmed = str(policy.controls.get("allow_edit_confirmed", "on")).lower().strip() == "on"
+        allow_unpost_posted = str(policy.controls.get("allow_unpost_posted", "on")).lower().strip() == "on"
 
         delete_allowed = False
         if not is_cancelled:
@@ -214,10 +236,17 @@ class PurchaseMetaBaseAPIView(APIView):
             else:
                 delete_allowed = False
 
+        can_edit = False
+        if is_draft:
+            can_edit = True
+        elif is_confirmed and allow_edit_confirmed:
+            can_edit = True
+
         return {
-            "can_edit": not is_posted and not is_cancelled,
+            "can_edit": can_edit and not is_cancelled,
             "can_confirm": is_draft,
             "can_post": is_confirmed,
+            "can_unpost": is_posted and allow_unpost_posted,
             "can_cancel": is_draft or is_confirmed,
             "can_delete": delete_allowed,
             "can_rebuild_tax_summary": not is_cancelled,
@@ -274,6 +303,12 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
                 "invoice": invoice_data,
                 "action_flags": self._invoice_action_flags(header),
                 "vendor": self._vendor_block(header),
+                "custom_field_defaults": InvoiceCustomFieldService.get_defaults_map(
+                    entity_id=entity_id,
+                    module="purchase_invoice",
+                    party_account_id=header.vendor_id,
+                    subentity_id=subentity_id,
+                ) if header.vendor_id else {},
             }
         )
         return Response(payload)

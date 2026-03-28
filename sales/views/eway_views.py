@@ -7,11 +7,13 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from sales.models import SalesInvoiceHeader
 from sales.models.sales_compliance import SalesEWayBill
 from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
+from sales.serializers.eway_serializers import SalesEWayB2CGenerateSerializer
 from sales.serializers.sales_compliance_serializers import (
     CancelEWayActionSerializer,
     UpdateEWayVehicleActionSerializer,
@@ -19,10 +21,15 @@ from sales.serializers.sales_compliance_serializers import (
     ExtendEWayValidityActionSerializer,
 )
 from sales.services.sales_compliance_service import SalesComplianceService
+from rbac.services import EffectivePermissionService
+
+COMPLIANCE_EXCEPTIONS = (ValueError, RuntimeError, DjangoValidationError, DRFValidationError)
 
 
 class _ScopedInvoiceMixin:
     permission_classes = [IsAuthenticated]
+    permission_view_code = "sales.invoice.view"
+    permission_manage_code = "sales.invoice.update"
 
     def _scope_filters(self):
         payload = self.request.data if isinstance(getattr(self.request, "data", None), dict) else {}
@@ -47,17 +54,46 @@ class _ScopedInvoiceMixin:
         return f
 
     def _get_invoice(self, id: int) -> SalesInvoiceHeader:
-        return get_object_or_404(
+        invoice = get_object_or_404(
             SalesInvoiceHeader.objects.filter(**self._scope_filters()),
             pk=id,
         )
+        self._require_any_permission(["sales.compliance.view", self.permission_view_code], invoice.entity_id)
+        return invoice
 
     def _fetch_invoice_with_related(self, id: int) -> SalesInvoiceHeader:
-        return get_object_or_404(
+        invoice = get_object_or_404(
             SalesInvoiceHeader.objects.filter(**self._scope_filters())
             .select_related("customer", "entity", "einvoice_artifact", "eway_artifact", "shipto_snapshot")
             .prefetch_related("lines"),
             pk=id,
+        )
+        self._require_any_permission(["sales.compliance.view", self.permission_view_code], invoice.entity_id)
+        return invoice
+
+    def _require_permission(self, permission_code: str, entity_id: int) -> None:
+        if not entity_id:
+            raise PermissionDenied("Entity scope is required for permission check.")
+        permission_codes = EffectivePermissionService.permission_codes_for_user(
+            self.request.user,
+            int(entity_id),
+        )
+        if permission_code not in permission_codes:
+            raise PermissionDenied(f"Missing permission: {permission_code}")
+
+    def _require_any_permission(self, permission_codes: list[str], entity_id: int) -> None:
+        if not entity_id:
+            raise PermissionDenied("Entity scope is required for permission check.")
+        available = EffectivePermissionService.permission_codes_for_user(self.request.user, int(entity_id))
+        for code in permission_codes:
+            if code in available:
+                return
+        raise PermissionDenied(f"Missing permission: one of {', '.join(permission_codes)}")
+
+    def _require_manage_permission(self, invoice: SalesInvoiceHeader) -> None:
+        self._require_any_permission(
+            ["sales.compliance.generate_eway", "sales.invoice.update", "sales.invoice.edit"],
+            invoice.entity_id,
         )
 
     @staticmethod
@@ -132,7 +168,7 @@ class SalesInvoiceEWayPrefillAPIView(_ScopedInvoiceMixin, GenericAPIView):
         inv = self._fetch_invoice_with_related(id)
         try:
             payload = SalesComplianceService(invoice=inv, user=request.user).eway_prefill(inv)
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+        except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(payload, status=status.HTTP_200_OK)
 
@@ -147,6 +183,10 @@ class SalesInvoiceGenerateEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
 
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.generate_eway", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
@@ -157,7 +197,7 @@ class SalesInvoiceGenerateEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
                 req=ser.validated_data,
                 created_by=request.user,
             )
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+        except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
         http_status = status.HTTP_200_OK if result.get("status") == "SUCCESS" else status.HTTP_400_BAD_REQUEST
@@ -185,36 +225,34 @@ class SalesInvoiceEWayB2CPrefillAPIView(_ScopedInvoiceMixin, GenericAPIView):
 
 
 class SalesInvoiceEWayB2CGenerateAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = SalesEWayB2CGenerateSerializer
+
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.generate_eway", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
 
         if int(inv.supply_category or 0) != 2:
             return Response(
-                {"status": "FAILED", "error_message": "Only B2C invoices allowed here."},
+                self._error_list_payload(DRFValidationError("Only B2C invoices are allowed on this endpoint.")),
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
 
         ewb = getattr(inv, "eway_artifact", None) or SalesEWayBill.objects.create(invoice=inv)
-        d = request.data or {}
-
-        if not d.get("distance_km"):
-            return Response(
-                {"status": "FAILED", "error_message": "distance_km required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if not d.get("trans_mode"):
-            return Response(
-                {"status": "FAILED", "error_message": "trans_mode required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        d = ser.validated_data
 
         ewb.distance_km = int(d["distance_km"])
         ewb.transport_mode = int(d["trans_mode"])
         ewb.transporter_id = (d.get("transporter_id") or "").strip() or None
         ewb.transporter_name = (d.get("transporter_name") or "").strip() or None
         ewb.doc_type = (d.get("doc_type") or "").strip() or None
-        ewb.doc_no = (d.get("trans_doc_no") or "").strip() or None
-        ewb.doc_date = d.get("trans_doc_date") or None
+        ewb.doc_no = (d.get("doc_no") or "").strip() or None
+        ewb.doc_date = d.get("doc_date") or None
         ewb.vehicle_no = (d.get("vehicle_no") or "").strip() or None
         ewb.vehicle_type = (d.get("vehicle_type") or "").strip() or None
         ewb.last_attempt_at = timezone.now()
@@ -225,8 +263,8 @@ class SalesInvoiceEWayB2CGenerateAPIView(_ScopedInvoiceMixin, GenericAPIView):
         svc = SalesComplianceService(invoice=inv, user=request.user)
         try:
             out = svc.eway_generate_b2c(inv, user=request.user)
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            return Response({"status": "FAILED", **self._error_list_payload(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
             out,
@@ -239,11 +277,15 @@ class SalesInvoiceCancelEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
 
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.cancel_eway", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
             out = SalesComplianceService(invoice=inv, user=request.user).cancel_eway(**ser.validated_data)
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+        except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(out, status=status.HTTP_200_OK)
 
@@ -253,11 +295,15 @@ class SalesInvoiceEWayUpdateVehicleAPIView(_ScopedInvoiceMixin, GenericAPIView):
 
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.update_eway", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
             out = SalesComplianceService(invoice=inv, user=request.user).update_eway_vehicle(req=ser.validated_data)
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+        except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(out, status=status.HTTP_200_OK)
 
@@ -267,13 +313,17 @@ class SalesInvoiceEWayUpdateTransporterAPIView(_ScopedInvoiceMixin, GenericAPIVi
 
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.update_eway", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
             out = SalesComplianceService(invoice=inv, user=request.user).update_eway_transporter(
                 transporter_id=ser.validated_data["transporter_id"]
             )
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+        except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(out, status=status.HTTP_200_OK)
 
@@ -283,10 +333,14 @@ class SalesInvoiceEWayExtendValidityAPIView(_ScopedInvoiceMixin, GenericAPIView)
 
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.update_eway", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
             out = SalesComplianceService(invoice=inv, user=request.user).extend_eway_validity(req=ser.validated_data)
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+        except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(out, status=status.HTTP_200_OK)

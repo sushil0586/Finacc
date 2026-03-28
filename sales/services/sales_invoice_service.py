@@ -51,8 +51,11 @@ Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 SALES_POLICY_DEFAULTS = {
+    "allow_edit_confirmed": "on",
+    "allow_unpost_posted": "on",
     "confirm_lock_check": "hard",
     "require_lines_on_confirm": "hard",
+    "auto_compliance_failure_mode": "warn",
 }
 
 
@@ -152,8 +155,26 @@ class SalesInvoiceService:
         settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
         from sales.services.sales_compliance_service import SalesComplianceService
 
+        controls = cls._policy_controls(header)
+        failure_mode = str(controls.get("auto_compliance_failure_mode", "warn")).lower().strip()
+        if failure_mode not in {"warn", "hard"}:
+            failure_mode = "warn"
+
         svc = SalesComplianceService(invoice=header, user=user)
-        svc.ensure_rows()
+        try:
+            svc.ensure_rows()
+        except Exception as exc:
+            ComplianceAuditService.log_action(
+                invoice=header,
+                action_type="AUTO_COMPLIANCE",
+                outcome="FAILED",
+                user=user,
+                error_code="AUTO_COMPLIANCE_ENSURE_FAILED",
+                error_message=str(exc),
+                request_json={"stage": stage, "step": "ensure_rows"},
+            )
+            if failure_mode == "hard":
+                raise
 
         auto_irn = (
             bool(getattr(settings_obj, "auto_generate_einvoice_on_confirm", False))
@@ -166,28 +187,90 @@ class SalesInvoiceService:
             else bool(getattr(settings_obj, "auto_generate_eway_on_post", False))
         )
 
-        if bool(getattr(settings_obj, "enable_einvoice", True)) and auto_irn and bool(header.is_einvoice_applicable):
-            svc.generate_irn()
+        seller_gstin = str(getattr(header, "seller_gstin", "") or "").strip()
+        customer_gstin = str(getattr(header, "customer_gstin", "") or "").strip()
+        is_b2c = int(getattr(header, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C)
+        effective_einvoice_applicable = bool(
+            getattr(header, "is_einvoice_applicable", False)
+            or ((not is_b2c) and len(seller_gstin) == 15 and len(customer_gstin) == 15)
+        )
+
+        if bool(getattr(settings_obj, "enable_einvoice", True)) and auto_irn and effective_einvoice_applicable:
+            try:
+                svc.generate_irn()
+            except Exception as exc:
+                ComplianceAuditService.log_action(
+                    invoice=header,
+                    action_type="AUTO_COMPLIANCE",
+                    outcome="FAILED",
+                    user=user,
+                    error_code="AUTO_COMPLIANCE_IRN_FAILED",
+                    error_message=str(exc),
+                    request_json={"stage": stage, "step": "generate_irn"},
+                )
+                if failure_mode == "hard":
+                    raise
 
         if not (bool(getattr(settings_obj, "enable_eway", True)) and auto_eway and bool(header.is_eway_applicable)):
             return
 
         # B2C direct E-Way
         if int(getattr(header, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C):
-            out = svc.eway_generate_b2c(header, user=user)
-            if out.get("status") != "SUCCESS":
-                raise ValueError(out.get("error_message") or "Auto E-Way(B2C) generation failed.")
+            try:
+                out = svc.eway_generate_b2c(header, user=user)
+                if out.get("status") != "SUCCESS":
+                    raise ValueError(out.get("error_message") or "Auto E-Way(B2C) generation failed.")
+            except Exception as exc:
+                ComplianceAuditService.log_action(
+                    invoice=header,
+                    action_type="AUTO_COMPLIANCE",
+                    outcome="FAILED",
+                    user=user,
+                    error_code="AUTO_COMPLIANCE_EWAY_B2C_FAILED",
+                    error_message=str(exc),
+                    request_json={"stage": stage, "step": "eway_generate_b2c"},
+                )
+                if failure_mode == "hard":
+                    raise
             return
 
         # B2B/IRN-based E-Way needs transport info.
+        # If details are missing, do not attempt API call. UI should collect these via popup.
         art = getattr(header, "eway_artifact", None)
         if not art:
-            raise ValueError("Auto E-Way requires eway artifact row and transport details.")
+            ComplianceAuditService.log_action(
+                invoice=header,
+                action_type="AUTO_COMPLIANCE",
+                outcome="SKIPPED",
+                user=user,
+                error_code="AUTO_COMPLIANCE_EWAY_INPUT_REQUIRED",
+                error_message="Auto E-Way skipped because transport details are not available.",
+                request_json={"stage": stage, "step": "generate_eway", "reason": "eway_artifact_missing"},
+            )
+            return
 
         if not getattr(art, "distance_km", None):
-            raise ValueError("Auto E-Way requires eway.distance_km.")
+            ComplianceAuditService.log_action(
+                invoice=header,
+                action_type="AUTO_COMPLIANCE",
+                outcome="SKIPPED",
+                user=user,
+                error_code="AUTO_COMPLIANCE_EWAY_INPUT_REQUIRED",
+                error_message="Auto E-Way skipped because distance_km is missing.",
+                request_json={"stage": stage, "step": "generate_eway", "reason": "distance_km_missing"},
+            )
+            return
         if not getattr(art, "transport_mode", None):
-            raise ValueError("Auto E-Way requires eway.transport_mode.")
+            ComplianceAuditService.log_action(
+                invoice=header,
+                action_type="AUTO_COMPLIANCE",
+                outcome="SKIPPED",
+                user=user,
+                error_code="AUTO_COMPLIANCE_EWAY_INPUT_REQUIRED",
+                error_message="Auto E-Way skipped because transport_mode is missing.",
+                request_json={"stage": stage, "step": "generate_eway", "reason": "transport_mode_missing"},
+            )
+            return
 
         req = {
             "distance_km": int(art.distance_km),
@@ -201,14 +284,27 @@ class SalesInvoiceService:
             "disp_dtls": art.disp_dtls_json or None,
             "exp_ship_dtls": art.exp_ship_dtls_json or None,
         }
-        out = SalesComplianceService.generate_eway(
-            inv=header,
-            entity=header.entity,
-            req=req,
-            created_by=user,
-        )
-        if out.get("status") != "SUCCESS":
-            raise ValueError(out.get("error_message") or "Auto E-Way generation failed.")
+        try:
+            out = SalesComplianceService.generate_eway(
+                inv=header,
+                entity=header.entity,
+                req=req,
+                created_by=user,
+            )
+            if out.get("status") != "SUCCESS":
+                raise ValueError(out.get("error_message") or "Auto E-Way generation failed.")
+        except Exception as exc:
+            ComplianceAuditService.log_action(
+                invoice=header,
+                action_type="AUTO_COMPLIANCE",
+                outcome="FAILED",
+                user=user,
+                error_code="AUTO_COMPLIANCE_EWAY_FAILED",
+                error_message=str(exc),
+                request_json={"stage": stage, "step": "generate_eway"},
+            )
+            if failure_mode == "hard":
+                raise
 
     @classmethod
     def _apply_tcs(cls, *, header: SalesInvoiceHeader, user) -> None:
@@ -981,6 +1077,11 @@ class SalesInvoiceService:
     ) -> SalesInvoiceHeader:
         if header.status in (SalesInvoiceHeader.Status.POSTED, SalesInvoiceHeader.Status.CANCELLED):
             raise ValueError("Posted/Cancelled invoices cannot be edited.")
+        if int(header.status) == int(SalesInvoiceHeader.Status.CONFIRMED):
+            controls = cls._policy_controls(header)
+            allow_edit_confirmed = str(controls.get("allow_edit_confirmed", "on")).lower().strip()
+            if allow_edit_confirmed == "off":
+                raise ValueError("Confirmed invoice editing is disabled by sales policy.")
 
         bill_date = header_data.get("bill_date") or header.bill_date
         cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=bill_date)
@@ -1315,13 +1416,19 @@ class SalesInvoiceService:
         # If rate is inclusive of tax, back-calculate taxable
         taxable = net
         cgst = sgst = igst = ZERO2
+        tax_total = ZERO2
 
         if line.is_rate_inclusive_of_tax and gst_rate > ZERO4:
             # taxable = net / (1 + gst_rate/100)
             taxable = q2(net / (Decimal("1.0") + (gst_rate / Decimal("100"))))
             tax_total = q2(net - taxable)
-        else:
+        elif gst_rate > ZERO4:
             tax_total = q2(taxable * gst_rate / Decimal("100"))
+
+        # Reverse-charge invoices should not carry GST/CESS amounts on invoice lines.
+        if bool(getattr(header, "is_reverse_charge", False)):
+            tax_total = ZERO2
+            cess_amt = ZERO2
 
         if header.is_igst:
             igst = tax_total
@@ -1345,6 +1452,17 @@ class SalesInvoiceService:
         gst_rate = q4(row.get("gst_rate") or ZERO2)
         taxable = q2(row.get("taxable_value") or ZERO2)
         inclusive = bool(row.get("is_rate_inclusive_of_tax") or False)
+
+        # RCM normalization: charge GST must stay zero when invoice is reverse-charge.
+        if bool(getattr(header, "is_reverse_charge", False)):
+            taxable2 = q2(taxable)
+            return ChargeComputed(
+                taxable_value=taxable2,
+                cgst_amount=ZERO2,
+                sgst_amount=ZERO2,
+                igst_amount=ZERO2,
+                total_value=taxable2,
+            )
 
         if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE) or gst_rate <= ZERO2 or taxable <= ZERO2:
             taxable2 = q2(taxable)
@@ -1927,6 +2045,10 @@ class SalesInvoiceService:
     def reverse_posting(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
         if int(header.status) != int(SalesInvoiceHeader.Status.POSTED):
             raise ValueError("Only posted invoices can be reversed.")
+        controls = cls._policy_controls(header)
+        allow_unpost = str(controls.get("allow_unpost_posted", "on")).lower().strip()
+        if allow_unpost == "off":
+            raise ValueError("Unpost after posting is disabled by sales policy.")
         if bool(getattr(header, "is_posting_reversed", False)):
             return header
 

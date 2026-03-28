@@ -13,6 +13,8 @@ ZERO4 = Decimal("0.0000")
 
 DEFAULT_POLICY_CONTROLS = {
     "delete_policy": "draft_only",
+    "allow_edit_confirmed": "on",
+    "allow_unpost_posted": "on",
     "confirm_lock_check": "hard",
     "require_lines_on_confirm": "hard",
     "line_amount_mismatch": "hard",
@@ -23,6 +25,12 @@ DEFAULT_POLICY_CONTROLS = {
     "over_settlement_rule": "block",
     "auto_adjust_credit_notes": "off",
     "statutory_maker_checker": "off",
+    "auto_compliance_failure_mode": "warn",
+    "compliance_allow_generate_irn_on_confirmed": "on",
+    "compliance_allow_generate_irn_on_posted": "on",
+    "compliance_allow_regenerate_irn_after_cancel": "off",
+    "compliance_allow_regenerate_eway_after_cancel": "on",
+    "compliance_allow_cancel_irn_when_eway_active": "off",
 }
 
 

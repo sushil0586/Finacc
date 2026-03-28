@@ -27,6 +27,8 @@ ON_OFF = {"off", "on"}
 DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     # Mutation safety
     "delete_policy": "draft_only",      # draft_only | non_posted | never
+    "allow_edit_confirmed": "on",       # on | off
+    "allow_unpost_posted": "on",        # on | off
     # Confirm rules
     "confirm_lock_check": "hard",       # off | warn | hard
     "require_lines_on_confirm": "hard", # off | warn | hard
@@ -169,7 +171,7 @@ class PurchaseSettingsService:
                     raise ValueError("policy_controls.auto_adjust_credit_notes must be one of: off, on.")
                 normalized[key] = v
                 continue
-            if key in {"allow_revised_challan_remap", "statutory_auto_compute_interest_late_fee"}:
+            if key in {"allow_revised_challan_remap", "statutory_auto_compute_interest_late_fee", "allow_edit_confirmed", "allow_unpost_posted"}:
                 v = str(value).lower().strip()
                 if v not in ON_OFF:
                     raise ValueError(f"policy_controls.{key} must be one of: off, on.")

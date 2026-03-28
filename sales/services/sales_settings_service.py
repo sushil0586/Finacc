@@ -28,6 +28,8 @@ ON_OFF = {"off", "on"}
 
 DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "delete_policy": "draft_only",
+    "allow_edit_confirmed": "on",
+    "allow_unpost_posted": "on",
     "confirm_lock_check": "hard",
     "require_lines_on_confirm": "hard",
     "line_amount_mismatch": "hard",
@@ -38,6 +40,12 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "over_settlement_rule": "block",
     "auto_adjust_credit_notes": "off",
     "statutory_maker_checker": "off",
+    "auto_compliance_failure_mode": "warn",
+    "compliance_allow_generate_irn_on_confirmed": "on",
+    "compliance_allow_generate_irn_on_posted": "on",
+    "compliance_allow_regenerate_irn_after_cancel": "off",
+    "compliance_allow_regenerate_eway_after_cancel": "on",
+    "compliance_allow_cancel_irn_when_eway_active": "off",
 }
 
 
@@ -180,6 +188,20 @@ class SalesSettingsService:
                 v = str(value).lower().strip()
                 if v not in ON_OFF:
                     raise ValueError("policy_controls.auto_adjust_credit_notes must be one of: off, on.")
+                normalized[key] = v
+                continue
+            if key in {
+                "allow_edit_confirmed",
+                "allow_unpost_posted",
+                "compliance_allow_generate_irn_on_confirmed",
+                "compliance_allow_generate_irn_on_posted",
+                "compliance_allow_regenerate_irn_after_cancel",
+                "compliance_allow_regenerate_eway_after_cancel",
+                "compliance_allow_cancel_irn_when_eway_active",
+            }:
+                v = str(value).lower().strip()
+                if v not in ON_OFF:
+                    raise ValueError(f"policy_controls.{key} must be one of: off, on.")
                 normalized[key] = v
                 continue
 

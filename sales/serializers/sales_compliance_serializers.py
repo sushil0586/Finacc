@@ -103,15 +103,12 @@ class EnsureComplianceActionSerializer(serializers.Serializer):
         return attrs
 
 
-class GenerateEWayActionSerializer(serializers.Serializer):
-    transporter_id = serializers.CharField(required=False, allow_blank=True)
-    transporter_name = serializers.CharField(required=False, allow_blank=True)
-    transport_mode = serializers.IntegerField(required=False)
-    distance_km = serializers.IntegerField(required=False)
-    vehicle_no = serializers.CharField(required=False, allow_blank=True)
-    vehicle_type = serializers.IntegerField(required=False)
-    doc_no = serializers.CharField(required=False, allow_blank=True)
-    doc_date = serializers.DateField(required=False)
+class GenerateEWayActionSerializer(GenerateEWayRequestSerializer):
+    """
+    Use exactly the same validation contract as dedicated E-Way generate endpoints.
+    """
+
+    pass
 
 
 class GenerateIRNAndEWayActionSerializer(serializers.Serializer):

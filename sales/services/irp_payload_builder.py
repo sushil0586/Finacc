@@ -159,6 +159,32 @@ class IRPPayloadBuilder:
     def _reverse_charge_flag(inv) -> str:
         return "Y" if bool(getattr(inv, "is_reverse_charge", False)) else "N"
 
+    def _effective_line_tax_split(self, line) -> tuple[Decimal, Decimal, Decimal]:
+        """
+        For reverse-charge invoices our stored line tax can be zero by design.
+        IRP payload validation still expects tax amount consistency with GST rate,
+        so derive tax split from taxable value + GST rate for payload only.
+        """
+        inv = self.invoice
+        stored_cgst = q2(getattr(line, "cgst_amount", Decimal("0.00")))
+        stored_sgst = q2(getattr(line, "sgst_amount", Decimal("0.00")))
+        stored_igst = q2(getattr(line, "igst_amount", Decimal("0.00")))
+        if not bool(getattr(inv, "is_reverse_charge", False)):
+            return stored_cgst, stored_sgst, stored_igst
+
+        taxable = q2(getattr(line, "taxable_value", Decimal("0.00")))
+        gst_rate = q2(getattr(line, "gst_rate", Decimal("0.00")))
+        if taxable <= Decimal("0.00") or gst_rate <= Decimal("0.00"):
+            return Decimal("0.00"), Decimal("0.00"), Decimal("0.00")
+
+        tax_total = q2(taxable * gst_rate / Decimal("100.00"))
+        if bool(getattr(inv, "is_igst", False)):
+            return Decimal("0.00"), Decimal("0.00"), tax_total
+
+        cgst = q2(tax_total / Decimal("2.00"))
+        sgst = q2(tax_total - cgst)
+        return cgst, sgst, Decimal("0.00")
+
     def build(self) -> Dict[str, Any]:
         inv = self.invoice
 
@@ -418,15 +444,13 @@ class IRPPayloadBuilder:
 
             # Use service-computed values (best)
             ass_amt = q2(line.taxable_value)
-            cgst = q2(line.cgst_amount)
-            sgst = q2(line.sgst_amount)
-            igst = q2(line.igst_amount)
+            cgst, sgst, igst = self._effective_line_tax_split(line)
             cess = q2(line.cess_amount)
 
             disc = q2(line.discount_amount)
 
             # Required TotItemVal → line_total (computed by service)
-            tot_item_val = q2(line.line_total)
+            tot_item_val = q2(ass_amt + cgst + sgst + igst + cess)
 
             # HSN/SAC resolution: prefer line.hsn_sac_code, else product fields
             product = line.product
@@ -482,12 +506,22 @@ class IRPPayloadBuilder:
         inv = self.invoice
         lines = list(inv.lines.all())
 
-        ass = q2(sum((l.taxable_value for l in lines), Decimal("0.00")))
-        cgst = q2(sum((l.cgst_amount for l in lines), Decimal("0.00")))
-        sgst = q2(sum((l.sgst_amount for l in lines), Decimal("0.00")))
-        igst = q2(sum((l.igst_amount for l in lines), Decimal("0.00")))
-        cess = q2(sum((l.cess_amount for l in lines), Decimal("0.00")))
-        tot = q2(sum((l.line_total for l in lines), Decimal("0.00")))
+        ass = cgst = sgst = igst = cess = Decimal("0.00")
+        for line in lines:
+            ass_amt = q2(line.taxable_value)
+            cg, sg, ig = self._effective_line_tax_split(line)
+            ce = q2(line.cess_amount)
+            ass += ass_amt
+            cgst += cg
+            sgst += sg
+            igst += ig
+            cess += ce
+        ass = q2(ass)
+        cgst = q2(cgst)
+        sgst = q2(sgst)
+        igst = q2(igst)
+        cess = q2(cess)
+        tot = q2(ass + cgst + sgst + igst + cess)
 
         return {
             "AssVal": float(ass),
@@ -498,5 +532,8 @@ class IRPPayloadBuilder:
             "Discount": float(q2(getattr(inv, "total_discount", Decimal("0.00")))),
             "OthChrg": float(q2(getattr(inv, "total_other_charges", Decimal("0.00")))),
             "RndOffAmt": float(q2(getattr(inv, "round_off", Decimal("0.00")))),
-            "TotInvVal": float(q2(getattr(inv, "grand_total", None) or tot)),
+            "TotInvVal": float(
+                tot if bool(getattr(inv, "is_reverse_charge", False))
+                else q2(getattr(inv, "grand_total", None) or tot)
+            ),
         }

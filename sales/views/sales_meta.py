@@ -20,6 +20,8 @@ from sales.services.sales_choices_service import SalesChoicesService
 from core.invoice_ui_contracts import sales_invoice_ui_contract
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
+from sales.services.sales_compliance_service import SalesComplianceService
+from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from withholding.models import WithholdingSection, WithholdingTaxType
 
 
@@ -148,6 +150,12 @@ class SalesMetaBaseAPIView(APIView):
         )
 
     def _invoice_form_meta(self, entity_id: int, subentity_id: int | None):
+        custom_defs = InvoiceCustomFieldService.get_effective_definitions(
+            entity_id=entity_id,
+            module="sales_invoice",
+            subentity_id=subentity_id,
+            party_account_id=None,
+        )
         return {
             "entity_id": entity_id,
             "subentity_id": subentity_id,
@@ -157,6 +165,19 @@ class SalesMetaBaseAPIView(APIView):
             "customers": self._customers(entity_id),
             "charge_types": self._charge_types(entity_id),
             "tcs_sections": self._tcs_sections(),
+            "custom_field_definitions": [
+                {
+                    "id": d.id,
+                    "key": d.key,
+                    "label": d.label,
+                    "field_type": d.field_type,
+                    "is_required": d.is_required,
+                    "order_no": d.order_no,
+                    "help_text": d.help_text,
+                    "options_json": d.options_json,
+                }
+                for d in custom_defs
+            ],
             "ui_contract": sales_invoice_ui_contract(),
         }
 
@@ -187,20 +208,40 @@ class SalesMetaBaseAPIView(APIView):
         return qs
 
     def _invoice_action_flags(self, header: SalesInvoiceHeader):
+        policy = SalesSettingsService.get_policy(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        controls = policy.controls
+        allow_edit_confirmed = str(controls.get("allow_edit_confirmed", "on")).lower().strip() == "on"
+        allow_unpost_posted = str(controls.get("allow_unpost_posted", "on")).lower().strip() == "on"
+
         is_draft = int(header.status) == int(SalesInvoiceHeader.Status.DRAFT)
         is_confirmed = int(header.status) == int(SalesInvoiceHeader.Status.CONFIRMED)
         is_posted = int(header.status) == int(SalesInvoiceHeader.Status.POSTED)
         is_cancelled = int(header.status) == int(SalesInvoiceHeader.Status.CANCELLED)
+
+        can_edit = False
+        if is_draft:
+            can_edit = True
+        elif is_confirmed and allow_edit_confirmed:
+            can_edit = True
+
         return {
-            "can_edit": not is_posted and not is_cancelled,
+            "can_edit": can_edit and not is_cancelled,
             "can_confirm": is_draft,
             "can_post": is_confirmed,
             "can_cancel": is_draft or is_confirmed,
-            "can_reverse": is_posted,
+            "can_reverse": is_posted and allow_unpost_posted,
+            "can_unpost": is_posted and allow_unpost_posted,
             "can_rebuild_tax_summary": not is_cancelled,
             "status": int(header.status),
             "status_name": header.get_status_display(),
         }
+
+    def _compliance_action_flags(self, header: SalesInvoiceHeader):
+        return SalesComplianceService.compliance_action_flags(header)
 
     def _customer_block(self, header: SalesInvoiceHeader):
         customer = getattr(header, "customer", None)
@@ -236,7 +277,14 @@ class SalesInvoiceDetailFormMetaAPIView(SalesMetaBaseAPIView):
                 "invoice_id": invoice_id,
                 "invoice": SalesInvoiceHeaderSerializer(header, context={"request": request}).data,
                 "action_flags": self._invoice_action_flags(header),
+                "compliance_action_flags": self._compliance_action_flags(header),
                 "customer": self._customer_block(header),
+                "custom_field_defaults": InvoiceCustomFieldService.get_defaults_map(
+                    entity_id=entity_id,
+                    module="sales_invoice",
+                    party_account_id=header.customer_id,
+                    subentity_id=subentity_id,
+                ) if header.customer_id else {},
             }
         )
         return Response(payload)
@@ -331,6 +379,7 @@ class SalesInvoiceSummaryAPIView(SalesMetaBaseAPIView):
                     "tax_summaries": header.tax_summaries.count(),
                 },
                 "action_flags": self._invoice_action_flags(header),
+                "compliance_action_flags": self._compliance_action_flags(header),
             }
         )
 

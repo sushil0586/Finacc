@@ -12,6 +12,9 @@ from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.services.sales_compliance_service import SalesComplianceService
+from sales.services.sales_settings_service import SalesSettingsService
+from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer
 from sales.serializers.sales_compliance_serializers import (
     SalesEInvoiceArtifactReadSerializer,
@@ -148,6 +151,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
     customer_ledger_id = serializers.IntegerField(read_only=True)
     customer_partytype = serializers.CharField(source="customer.commercial_profile.partytype", read_only=True)
+    custom_fields = serializers.JSONField(source="custom_fields_json", required=False)
+    action_flags = serializers.SerializerMethodField()
+    compliance_action_flags = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesInvoiceHeader
@@ -232,6 +238,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             "reference",
             "remarks",
+            "custom_fields",
 
             "withholding_enabled",
             "tcs_section",
@@ -242,8 +249,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "charges",
             "tax_summaries",
             "navigation",
+            "action_flags",
             "einvoice_artifact",
             "eway_artifact",
+            "compliance_action_flags",
         ]
         read_only_fields = [
             "status",
@@ -280,8 +289,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             # nav + summaries
             "tax_summaries",
             "navigation",
+            "action_flags",
             "einvoice_artifact",
             "eway_artifact",
+            "compliance_action_flags",
             "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal",
         ]
         extra_kwargs = {
@@ -299,6 +310,37 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
     def get_navigation(self, obj):
         return SalesInvoiceNavService.get_prev_next_for_instance(obj)
+
+    def get_compliance_action_flags(self, obj):
+        return SalesComplianceService.compliance_action_flags(obj)
+
+    def get_action_flags(self, obj):
+        policy = SalesSettingsService.get_policy(
+            obj.entity_id,
+            obj.subentity_id,
+            entityfinid_id=getattr(obj, "entityfinid_id", None),
+        )
+        controls = policy.controls
+        allow_edit_confirmed = str(controls.get("allow_edit_confirmed", "on")).lower().strip() == "on"
+        allow_unpost_posted = str(controls.get("allow_unpost_posted", "on")).lower().strip() == "on"
+
+        is_draft = int(obj.status) == int(SalesInvoiceHeader.Status.DRAFT)
+        is_confirmed = int(obj.status) == int(SalesInvoiceHeader.Status.CONFIRMED)
+        is_posted = int(obj.status) == int(SalesInvoiceHeader.Status.POSTED)
+        is_cancelled = int(obj.status) == int(SalesInvoiceHeader.Status.CANCELLED)
+
+        can_edit = is_draft or (is_confirmed and allow_edit_confirmed)
+        return {
+            "can_edit": can_edit and not is_cancelled,
+            "can_confirm": is_draft,
+            "can_post": is_confirmed,
+            "can_cancel": is_draft or is_confirmed,
+            "can_reverse": is_posted and allow_unpost_posted,
+            "can_unpost": is_posted and allow_unpost_posted,
+            "can_rebuild_tax_summary": not is_cancelled,
+            "status": int(obj.status),
+            "status_name": obj.get_status_display(),
+        }
 
     def validate(self, attrs):
         # hard-block backend-controlled fields if UI tries to push them
@@ -343,6 +385,22 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         if ("einvoice_applicable_manual" in attrs or "eway_applicable_manual" in attrs) and not (attrs.get("compliance_override_reason") or "").strip():
             raise serializers.ValidationError({"compliance_override_reason": "Required when manual compliance override is provided."})
+
+        if "custom_fields_json" in attrs:
+            entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+            subentity = attrs.get("subentity") or getattr(self.instance, "subentity", None)
+            customer = attrs.get("customer") or getattr(self.instance, "customer", None)
+            if entity:
+                try:
+                    attrs["custom_fields_json"] = InvoiceCustomFieldService.validate_payload(
+                        entity_id=int(getattr(entity, "id", entity)),
+                        module="sales_invoice",
+                        payload=attrs.get("custom_fields_json") or {},
+                        subentity_id=int(getattr(subentity, "id", subentity)) if subentity else None,
+                        party_account_id=int(getattr(customer, "id", customer)) if customer else None,
+                    )
+                except ValueError as ex:
+                    raise serializers.ValidationError({"custom_fields": str(ex)})
 
         return attrs
 

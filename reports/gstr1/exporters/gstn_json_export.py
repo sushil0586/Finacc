@@ -42,6 +42,12 @@ class Gstr1GstnJsonExportService:
 
         payload = {
             "schema_version": "finacc.gstr1.filing_prep.v1",
+            "contracts": {
+                "reverse_charge": {
+                    "version": "gstr1.rcm.v1",
+                    "source": "table_rows.rcm_contract",
+                }
+            },
             "ret_period": ret_period,
             "scope": {
                 "entity": getattr(scope, "entity_id", None),
@@ -75,4 +81,3 @@ class Gstr1GstnJsonExportService:
             },
         }
         return _json_safe(payload)
-

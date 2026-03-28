@@ -238,6 +238,7 @@ class PurchaseInvoiceHeader(models.Model):
     gst_tds_status = models.IntegerField(choices=GstTdsStatus.choices, default=GstTdsStatus.NA, db_index=True)
     match_status = models.CharField(max_length=10, choices=MatchStatus.choices, default=MatchStatus.NA, db_index=True)
     match_notes = models.JSONField(default=dict, blank=True)
+    custom_fields_json = models.JSONField(default=dict, blank=True)
 
     # SaaS scope
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
