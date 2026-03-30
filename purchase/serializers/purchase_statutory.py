@@ -127,7 +127,8 @@ class PurchaseStatutoryChallanCreateInputSerializer(serializers.Serializer):
     payment_payload_json = serializers.JSONField(required=False)
     ack_document = serializers.FileField(required=False, allow_null=True)
     remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    lines = PurchaseStatutoryChallanCreateLineInputSerializer(many=True)
+    auto_populate = serializers.BooleanField(required=False, default=False)
+    lines = PurchaseStatutoryChallanCreateLineInputSerializer(many=True, required=False)
 
 
 class PurchaseStatutoryReturnLineSerializer(serializers.ModelSerializer):
@@ -276,4 +277,5 @@ class PurchaseStatutoryReturnCreateInputSerializer(serializers.Serializer):
     original_return_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     revision_no = serializers.IntegerField(min_value=0, required=False)
     remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    lines = PurchaseStatutoryReturnCreateLineInputSerializer(many=True)
+    auto_populate = serializers.BooleanField(required=False, default=False)
+    lines = PurchaseStatutoryReturnCreateLineInputSerializer(many=True, required=False)

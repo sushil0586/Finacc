@@ -222,14 +222,18 @@ class SalesInvoicePostingAdapter:
                 continue
 
             pid = getattr(ln, "product_id", None)
+            line_sales_ac = getattr(ln, "sales_account_id", None)
 
             # IMPORTANT:
             # Your ProductAccountResolver currently has purchase_account_id(pid).
             # For sales, we expect sales_account_id(pid).
             # If you don't have it yet, implement similarly in product_accounts.py.
             sales_ac = None
+            # For service invoices/CN/DN, prefer line-level sales_account.
+            if line_sales_ac:
+                sales_ac = int(line_sales_ac)
             if hasattr(prod_resolver, "sales_account_id"):
-                sales_ac = prod_resolver.sales_account_id(pid)
+                sales_ac = sales_ac or prod_resolver.sales_account_id(pid)
             sales_ac = sales_ac or default_sales_ac
             sales_ac = int(sales_ac)
 

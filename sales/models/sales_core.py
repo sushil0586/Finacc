@@ -294,9 +294,21 @@ class SalesInvoiceLine(EntityScopedModel):
     header = models.ForeignKey(SalesInvoiceHeader, on_delete=models.CASCADE, related_name="lines")
     line_no = models.PositiveIntegerField(default=1)
 
-    product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT, related_name="sales_lines")
+    product = models.ForeignKey(
+        "catalog.Product",
+        on_delete=models.PROTECT,
+        related_name="sales_lines",
+        null=True,
+        blank=True,
+    )
     productDesc = models.CharField(max_length=200, blank=True, default="")
-    uom = models.ForeignKey("catalog.UnitOfMeasure", on_delete=models.PROTECT, related_name="sales_lines")
+    uom = models.ForeignKey(
+        "catalog.UnitOfMeasure",
+        on_delete=models.PROTECT,
+        related_name="sales_lines",
+        null=True,
+        blank=True,
+    )
 
     hsn_sac_code = models.CharField(max_length=20, blank=True, default="")
     is_service = models.BooleanField(default=False)

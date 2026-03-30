@@ -17,6 +17,7 @@ from sales.services.sales_invoice_service import SalesInvoiceService
 
 class _SalesScopeMixin:
     permission_classes = [IsAuthenticated]
+    line_mode = None  # None | "service" | "goods"
 
     @staticmethod
     def _scope_filters(request):
@@ -40,10 +41,24 @@ class _SalesScopeMixin:
         return filters
 
     def _scoped_queryset(self):
-        return SalesInvoiceHeader.objects.filter(**self._scope_filters(self.request))
+        qs = SalesInvoiceHeader.objects.filter(**self._scope_filters(self.request))
+        line_mode = self._get_line_mode()
+        if line_mode == "service":
+            qs = qs.filter(lines__is_service=True).distinct()
+        elif line_mode == "goods":
+            qs = qs.filter(lines__is_service=False).distinct()
+        return qs
 
     def _get_scoped_header(self, pk: int) -> SalesInvoiceHeader:
         return get_object_or_404(self._scoped_queryset(), pk=pk)
+
+    def _get_line_mode(self) -> str | None:
+        if self.line_mode in ("service", "goods"):
+            return self.line_mode
+        raw = (self.request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
 
 
 class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView):
@@ -63,7 +78,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             .prefetch_related(
                 Prefetch(
                     "lines",
-                    queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no"),
+                    queryset=SalesInvoiceLine.objects.select_related("product", "uom", "sales_account").order_by("line_no"),
                 ),
                 Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
             )
@@ -101,14 +116,32 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         if search:
             qs = qs.filter(invoice_number__icontains=search)
 
+        line_mode = self._get_line_mode()
+        if line_mode == "service":
+            qs = qs.filter(lines__is_service=True).distinct()
+        elif line_mode == "goods":
+            qs = qs.filter(lines__is_service=False).distinct()
+
         return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["line_mode"] = self._get_line_mode()
+        return ctx
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            detail = getattr(e, "message_dict", None) or str(e)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdateAPIView):
     serializer_class = SalesInvoiceHeaderSerializer
 
     def get_queryset(self):
-        lines_qs = SalesInvoiceLine.objects.all().order_by("line_no")  # ✅ no only(), no select_related()
+        lines_qs = SalesInvoiceLine.objects.select_related("product", "uom", "sales_account").order_by("line_no")
 
         return (
             self._scoped_queryset()
@@ -122,12 +155,36 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             )
             .prefetch_related(
                 Prefetch("lines", queryset=lines_qs),
-                # ✅ load related product/uom via prefetch (separate queries, no select_related)
-                "lines__product",
-                "lines__uom",
                 Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
             )
         )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["line_mode"] = self._get_line_mode()
+        return ctx
+
+    def update(self, request, *args, **kwargs):
+        try:
+            return super().update(request, *args, **kwargs)
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            detail = getattr(e, "message_dict", None) or str(e)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+    def partial_update(self, request, *args, **kwargs):
+        try:
+            return super().partial_update(request, *args, **kwargs)
+        except (ValueError, DjangoValidationError, DRFValidationError) as e:
+            detail = getattr(e, "message_dict", None) or str(e)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class SalesServiceInvoiceListCreateAPIView(SalesInvoiceListCreateAPIView):
+    line_mode = "service"
+
+
+class SalesServiceInvoiceRetrieveUpdateAPIView(SalesInvoiceRetrieveUpdateAPIView):
+    line_mode = "service"
 
 
 class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):

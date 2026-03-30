@@ -3,12 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from django.db import transaction
+from django.db.models import Sum
+from django.db.models.functions import Coalesce
 
 from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger
 
 ZERO2 = Decimal("0.00")
 RATE_TOTAL = Decimal("2.0000")  # 2% total under Sec 51
 RATE_HALF  = Decimal("1.0000")  # 1% CGST, 1% SGST
+
+
+def normalize_contract_ref(value: str | None) -> str:
+    return str(value or "").strip().upper()
 
 def q2(x) -> Decimal:
     if x is None:
@@ -59,7 +65,7 @@ class GstTdsService:
         if not cfg or not cfg.enabled:
             return GstTdsComputed(False, "gst tds config disabled/missing", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
-        contract_ref = (getattr(inv, "gst_tds_contract_ref", "") or "").strip()
+        contract_ref = normalize_contract_ref(getattr(inv, "gst_tds_contract_ref", ""))
         if not contract_ref:
             return GstTdsComputed(False, "contract ref missing", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
@@ -68,15 +74,16 @@ class GstTdsService:
             return GstTdsComputed(False, "taxable base zero", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
         # Contract-wise threshold decision (ledger)
-        led = GstTdsContractLedger.objects.filter(
-            entity_id=inv.entity_id,
-            subentity_id=inv.subentity_id,
-            entityfinid_id=inv.entityfinid_id,
-            vendor_id=inv.vendor_id,
-            contract_ref=contract_ref,
-        ).first()
+        before = q2(
+            GstTdsContractLedger.objects.filter(
+                entity_id=inv.entity_id,
+                subentity_id=inv.subentity_id,
+                entityfinid_id=inv.entityfinid_id,
+                vendor_id=inv.vendor_id,
+                contract_ref__iexact=contract_ref,
+            ).aggregate(total=Coalesce(Sum("cumulative_taxable"), ZERO2)).get("total") or ZERO2
+        )
 
-        before = q2(led.cumulative_taxable) if led else q2(ZERO2)
         threshold = q2(cfg.threshold_amount)
         after = q2(before + base_full)
 
@@ -123,3 +130,120 @@ class GstTdsService:
 
         inv.gst_tds_status = (1 if res.eligible else 0)  # ELIGIBLE else NA
         # keep inv.gst_tds_reason as UI provided; do not overwrite
+
+    @staticmethod
+    def _scope_key_for_header(inv):
+        contract_ref = normalize_contract_ref(getattr(inv, "gst_tds_contract_ref", ""))
+        if not contract_ref:
+            return None
+        return (
+            int(getattr(inv, "entity_id", 0) or 0),
+            int(getattr(inv, "entityfinid_id", 0) or 0),
+            int(getattr(inv, "subentity_id", 0) or 0),
+            int(getattr(inv, "vendor_id", 0) or 0),
+            contract_ref,
+        )
+
+    @staticmethod
+    def sync_contract_ledger_for_scope(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id,
+        vendor_id: int,
+        contract_ref: str,
+    ) -> None:
+        from purchase.models.purchase_core import PurchaseInvoiceHeader
+
+        ref = normalize_contract_ref(contract_ref)
+        if not (entity_id and entityfinid_id and vendor_id and ref):
+            return
+
+        header_qs = PurchaseInvoiceHeader.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            vendor_id=vendor_id,
+            gst_tds_enabled=True,
+            gst_tds_contract_ref__iexact=ref,
+            status__in=[PurchaseInvoiceHeader.Status.CONFIRMED, PurchaseInvoiceHeader.Status.POSTED],
+        )
+        if subentity_id in (None, 0):
+            header_qs = header_qs.filter(subentity__isnull=True)
+            subentity_val = None
+        else:
+            header_qs = header_qs.filter(subentity_id=subentity_id)
+            subentity_val = subentity_id
+
+        totals = header_qs.aggregate(
+            taxable=Coalesce(Sum("total_taxable"), ZERO2),
+            tds=Coalesce(Sum("gst_tds_amount"), ZERO2),
+        )
+        taxable = q2(totals.get("taxable") or ZERO2)
+        tds = q2(totals.get("tds") or ZERO2)
+
+        ledger_qs = GstTdsContractLedger.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_val,
+            vendor_id=vendor_id,
+            contract_ref__iexact=ref,
+        )
+
+        if taxable <= ZERO2 and tds <= ZERO2:
+            ledger_qs.delete()
+            return
+
+        obj = ledger_qs.order_by("id").first()
+        if obj is None:
+            GstTdsContractLedger.objects.create(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_val,
+                vendor_id=vendor_id,
+                contract_ref=ref,
+                cumulative_taxable=taxable,
+                cumulative_tds=tds,
+            )
+            return
+
+        # Keep one canonical uppercase row per scope/contract and remove case-variant duplicates.
+        duplicate_ids = list(ledger_qs.exclude(id=obj.id).values_list("id", flat=True))
+        if duplicate_ids:
+            GstTdsContractLedger.objects.filter(id__in=duplicate_ids).delete()
+
+        if obj.contract_ref != ref:
+            obj.contract_ref = ref
+        obj.cumulative_taxable = taxable
+        obj.cumulative_tds = tds
+        obj.save(update_fields=["contract_ref", "cumulative_taxable", "cumulative_tds", "updated_at"])
+
+    @staticmethod
+    def sync_contract_ledger_for_header(inv, *, old_scope_key=None) -> None:
+        """
+        Keep GstTdsContractLedger consistent after header create/update/status transitions.
+        - old_scope_key is optional and should be passed when vendor/contract/subentity changes.
+        """
+        new_key = GstTdsService._scope_key_for_header(inv)
+        keys = []
+        if old_scope_key:
+            keys.append(old_scope_key)
+        if new_key:
+            keys.append(new_key)
+
+        # De-dupe while preserving order.
+        seen = set()
+        unique_keys = []
+        for key in keys:
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique_keys.append(key)
+
+        for entity_id, entityfinid_id, subentity_id, vendor_id, contract_ref in unique_keys:
+            GstTdsService.sync_contract_ledger_for_scope(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=None if int(subentity_id or 0) == 0 else subentity_id,
+                vendor_id=vendor_id,
+                contract_ref=contract_ref,
+            )

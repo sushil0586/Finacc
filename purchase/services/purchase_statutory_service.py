@@ -15,6 +15,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallan,
     PurchaseStatutoryChallanLine,
+    PurchaseStatutoryForm16AOfficialDocument,
     PurchaseStatutoryReturn,
     PurchaseStatutoryReturnLine,
 )
@@ -34,6 +35,51 @@ class StatutoryResult:
 
 
 class PurchaseStatutoryService:
+    @staticmethod
+    def _form16a_certificate_data(
+        *,
+        filing: PurchaseStatutoryReturn,
+        issue: Dict[str, object],
+    ) -> Dict[str, object]:
+        line_rows = []
+        for ln in filing.lines.select_related("header", "challan").all():
+            line_rows.append(
+                {
+                    "invoice_no": getattr(ln.header, "purchase_number", "") if ln.header_id else "",
+                    "bill_date": getattr(ln.header, "bill_date", None) if ln.header_id else None,
+                    "section_code": ln.section_snapshot_code or "",
+                    "pan": ln.deductee_pan_snapshot or "",
+                    "gstin": ln.deductee_gstin_snapshot or "",
+                    "challan_no": getattr(ln.challan, "challan_no", "") if ln.challan_id else "",
+                    "cin": ln.cin_snapshot or "",
+                    "amount": str(q2(ln.amount)),
+                }
+            )
+        return {
+            "filing_id": filing.id,
+            "return_code": filing.return_code,
+            "period_from": str(filing.period_from),
+            "period_to": str(filing.period_to),
+            "issue_no": issue.get("issue_no"),
+            "issue_code": issue.get("issue_code"),
+            "issued_on": issue.get("issued_on"),
+            "line_count": len(line_rows),
+            "total_amount": str(q2(sum((q2(r.get("amount") or 0) for r in line_rows), ZERO2))),
+            "lines": line_rows,
+        }
+
+    @staticmethod
+    def _is_form16a_eligible_return(filing: PurchaseStatutoryReturn) -> bool:
+        if filing.tax_type != PurchaseStatutoryReturn.TaxType.IT_TDS:
+            return False
+        code = (filing.return_code or "").strip().upper()
+        if code not in {"26Q", "27Q"}:
+            return False
+        return int(filing.status) in (
+            int(PurchaseStatutoryReturn.Status.FILED),
+            int(PurchaseStatutoryReturn.Status.REVISED),
+        )
+
     @staticmethod
     def _clean_text(value: Optional[str]) -> Optional[str]:
         return (value or "").strip() or None
@@ -1168,11 +1214,7 @@ class PurchaseStatutoryService:
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
         )
-        if subentity_id is None:
-            header_qs = header_qs.filter(subentity__isnull=True)
-            challan_qs = challan_qs.filter(subentity__isnull=True)
-            return_qs = return_qs.filter(subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             header_qs = header_qs.filter(subentity_id=subentity_id)
             challan_qs = challan_qs.filter(subentity_id=subentity_id)
             return_qs = return_qs.filter(subentity_id=subentity_id)
@@ -1258,9 +1300,7 @@ class PurchaseStatutoryService:
             bill_date__lte=period_to,
             status=PurchaseInvoiceHeader.Status.POSTED,
         ).select_related("tds_section")
-        if subentity_id is None:
-            headers = headers.filter(subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             headers = headers.filter(subentity_id=subentity_id)
 
         mapped_rows = (
@@ -1274,14 +1314,13 @@ class PurchaseStatutoryService:
             .values("header_id")
             .annotate(total=Sum("amount"))
         )
-        if subentity_id is None:
-            mapped_rows = mapped_rows.filter(challan__subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             mapped_rows = mapped_rows.filter(challan__subentity_id=subentity_id)
         mapped_by_header = {int(r["header_id"]): q2(r["total"]) for r in mapped_rows}
 
         lines: List[Dict[str, object]] = []
         total_amount = ZERO2
+        section_totals: Dict[str, Decimal] = {}
         for h in headers:
             if tax_type == PurchaseStatutoryChallan.TaxType.IT_TDS:
                 base_amount = q2(getattr(h, "tds_amount", ZERO2))
@@ -1320,13 +1359,27 @@ class PurchaseStatutoryService:
                 }
             )
             total_amount = q2(total_amount + eligible)
+            section_key = section_code or "UNSPECIFIED"
+            section_totals[section_key] = q2(section_totals.get(section_key, ZERO2) + eligible)
 
         return {
             "lines": lines,
+            "prefill_lines": [
+                {
+                    "header_id": int(row["header_id"]),
+                    "section_id": row.get("section_id"),
+                    "amount": row["amount"],
+                }
+                for row in lines
+            ],
             "totals": {
                 "line_count": len(lines),
                 "amount": str(total_amount),
             },
+            "section_totals": [
+                {"section_code": code, "amount": str(amount)}
+                for code, amount in sorted(section_totals.items(), key=lambda item: item[0])
+            ],
         }
 
     @staticmethod
@@ -1358,9 +1411,7 @@ class PurchaseStatutoryService:
                 challan__challan_date__lte=period_to,
             )
         )
-        if subentity_id is None:
-            challan_lines_qs = challan_lines_qs.filter(challan__subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             challan_lines_qs = challan_lines_qs.filter(challan__subentity_id=subentity_id)
 
         consumed_rows = (
@@ -1375,9 +1426,7 @@ class PurchaseStatutoryService:
             .values("header_id", "challan_id")
             .annotate(total=Sum("amount"))
         )
-        if subentity_id is None:
-            consumed_rows = consumed_rows.filter(filing__subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             consumed_rows = consumed_rows.filter(filing__subentity_id=subentity_id)
         consumed_map = {
             (int(r["header_id"]), int(r["challan_id"])): q2(r["total"])
@@ -1386,6 +1435,7 @@ class PurchaseStatutoryService:
 
         lines: List[Dict[str, object]] = []
         total_amount = ZERO2
+        section_totals: Dict[str, Decimal] = {}
         for cl in challan_lines_qs:
             key = (int(cl.header_id), int(cl.challan_id))
             used = q2(consumed_map.get(key, ZERO2))
@@ -1419,13 +1469,38 @@ class PurchaseStatutoryService:
                 }
             )
             total_amount = q2(total_amount + eligible)
+            section_key = section_code or "UNSPECIFIED"
+            section_totals[section_key] = q2(section_totals.get(section_key, ZERO2) + eligible)
 
         return {
             "lines": lines,
+            "prefill_lines": [
+                {
+                    "header_id": int(row["header_id"]),
+                    "challan_id": row.get("challan_id"),
+                    "amount": row["amount"],
+                    "section_snapshot_code": row.get("section_snapshot_code") or "",
+                    "section_snapshot_desc": row.get("section_snapshot_desc") or "",
+                    "deductee_residency_snapshot": row.get("deductee_residency_snapshot"),
+                    "deductee_country_snapshot": row.get("deductee_country_snapshot"),
+                    "deductee_country_code_snapshot": row.get("deductee_country_code_snapshot") or "",
+                    "deductee_country_name_snapshot": row.get("deductee_country_name_snapshot") or "",
+                    "deductee_tax_id_snapshot": row.get("deductee_tax_id_snapshot") or "",
+                    "deductee_pan_snapshot": row.get("deductee_pan_snapshot") or "",
+                    "deductee_gstin_snapshot": row.get("deductee_gstin_snapshot") or "",
+                    "cin_snapshot": row.get("cin_snapshot") or "",
+                    "metadata_json": row.get("metadata_json") or {},
+                }
+                for row in lines
+            ],
             "totals": {
                 "line_count": len(lines),
                 "amount": str(total_amount),
             },
+            "section_totals": [
+                {"section_code": code, "amount": str(amount)}
+                for code, amount in sorted(section_totals.items(), key=lambda item: item[0])
+            ],
         }
 
     @staticmethod
@@ -1460,9 +1535,7 @@ class PurchaseStatutoryService:
             tax_type=tax_type,
             status=PurchaseStatutoryReturn.Status.FILED,
         )
-        if subentity_id is None:
-            filed_returns = filed_returns.filter(subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             filed_returns = filed_returns.filter(subentity_id=subentity_id)
         filed_returns = filed_returns.filter(period_to__gte=period_from, period_from__lte=period_to)
 
@@ -1536,13 +1609,8 @@ class PurchaseStatutoryService:
     @transaction.atomic
     def issue_form16a(*, filing_id: int, issued_by_id: Optional[int], issue_date=None, remarks: Optional[str] = None) -> Dict[str, object]:
         filing = PurchaseStatutoryReturn.objects.select_for_update().prefetch_related("lines").get(pk=filing_id)
-        if filing.tax_type != PurchaseStatutoryReturn.TaxType.IT_TDS:
-            raise ValueError("Form16A is applicable only for IT_TDS returns.")
-        if int(filing.status) not in (
-            int(PurchaseStatutoryReturn.Status.FILED),
-            int(PurchaseStatutoryReturn.Status.REVISED),
-        ):
-            raise ValueError("Form16A can be issued only for filed/revised returns.")
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("Form16A is allowed only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
 
         payload = dict(filing.filed_payload_json or {})
         issues = payload.get("form16a_issues")
@@ -1557,6 +1625,7 @@ class PurchaseStatutoryService:
             "issued_on": str(issue_dt),
             "issued_by": issued_by_id,
             "line_count": int(filing.lines.count()),
+            "official_document_uploaded": False,
             "remarks": PurchaseStatutoryService._clean_text(remarks),
         }
         issues.append(issue_row)
@@ -1575,13 +1644,80 @@ class PurchaseStatutoryService:
         return {"filing_id": filing.id, "issue": issue_row}
 
     @staticmethod
-    def list_form16a_issues(*, filing_id: int) -> Dict[str, object]:
-        filing = PurchaseStatutoryReturn.objects.get(pk=filing_id)
+    @transaction.atomic
+    def attach_form16a_official_document(
+        *,
+        filing_id: int,
+        issue_no: int,
+        document,
+        uploaded_by_id: Optional[int],
+        source: Optional[str] = "TRACES",
+        certificate_no: Optional[str] = None,
+        remarks: Optional[str] = None,
+    ) -> Dict[str, object]:
+        filing = PurchaseStatutoryReturn.objects.select_for_update().get(pk=filing_id)
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("Official Form16A upload is allowed only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
+
         payload = dict(filing.filed_payload_json or {})
         issues = payload.get("form16a_issues")
         if not isinstance(issues, list):
             issues = []
-        return {"filing_id": filing.id, "issues": issues}
+        issue = next((i for i in issues if int(i.get("issue_no") or 0) == int(issue_no)), None)
+        if not issue:
+            raise ValueError("Issue number not found for this return.")
+
+        doc_obj, _ = PurchaseStatutoryForm16AOfficialDocument.objects.update_or_create(
+            filing_id=filing_id,
+            issue_no=issue_no,
+            defaults={
+                "document": document,
+                "source": (source or "TRACES").strip() or "TRACES",
+                "certificate_no": PurchaseStatutoryService._clean_text(certificate_no),
+                "remarks": PurchaseStatutoryService._clean_text(remarks),
+                "uploaded_by_id": uploaded_by_id,
+                "uploaded_at": timezone.now(),
+            },
+        )
+        issue["official_document_uploaded"] = True
+        issue["official_document_source"] = doc_obj.source
+        issue["official_document_uploaded_at"] = doc_obj.uploaded_at.isoformat()
+        issue["official_document_id"] = doc_obj.id
+        payload["form16a_issues"] = issues
+        filing.filed_payload_json = payload
+        filing.save(update_fields=["filed_payload_json", "updated_at"])
+        return {
+            "filing_id": filing_id,
+            "issue_no": issue_no,
+            "official_document_id": doc_obj.id,
+            "source": doc_obj.source,
+        }
+
+    @staticmethod
+    def list_form16a_issues(*, filing_id: int) -> Dict[str, object]:
+        filing = PurchaseStatutoryReturn.objects.get(pk=filing_id)
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("Form16A list is available only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
+        payload = dict(filing.filed_payload_json or {})
+        issues = payload.get("form16a_issues")
+        if not isinstance(issues, list):
+            issues = []
+        official_docs = {
+            int(d.issue_no): d
+            for d in PurchaseStatutoryForm16AOfficialDocument.objects.filter(filing_id=filing_id)
+        }
+        enriched = []
+        for issue in issues:
+            row = dict(issue)
+            no = int(row.get("issue_no") or 0)
+            doc = official_docs.get(no)
+            row["official_document_uploaded"] = bool(doc)
+            if doc:
+                row["official_document_source"] = doc.source
+                row["official_document_id"] = doc.id
+                row["official_document_uploaded_at"] = doc.uploaded_at.isoformat() if doc.uploaded_at else None
+            enriched.append(row)
+        return {"filing_id": filing.id, "issues": enriched}
 
     @staticmethod
     @transaction.atomic
@@ -1737,6 +1873,8 @@ class PurchaseStatutoryService:
     @staticmethod
     def form16a_download_payload(*, filing_id: int, issue_no: int) -> Dict[str, object]:
         filing = PurchaseStatutoryReturn.objects.get(pk=filing_id)
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("Form16A download is available only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
         payload = dict(filing.filed_payload_json or {})
         issues = payload.get("form16a_issues")
         if not isinstance(issues, list):
@@ -1744,8 +1882,21 @@ class PurchaseStatutoryService:
         issue = next((i for i in issues if int(i.get("issue_no") or 0) == int(issue_no)), None)
         if not issue:
             raise ValueError("Requested Form16A issue version not found.")
+        certificate_data = PurchaseStatutoryService._form16a_certificate_data(filing=filing, issue=issue)
+        official_doc = PurchaseStatutoryForm16AOfficialDocument.objects.filter(
+            filing_id=filing_id, issue_no=issue_no
+        ).first()
+        if official_doc and official_doc.document:
+            return {
+                "mode": "file",
+                "file_field": official_doc.document,
+                "filename": official_doc.document.name.split("/")[-1] or f"form16a_{filing_id}_{issue_no}.pdf",
+                "certificate_data": certificate_data,
+            }
         return {
+            "mode": "text",
             "filename": f"form16a_{filing_id}_{issue_no}.txt",
+            "certificate_data": certificate_data,
             "content": (
                 f"Form16A\n"
                 f"Return ID: {filing.id}\n"
@@ -1784,9 +1935,7 @@ class PurchaseStatutoryService:
             bill_date__lte=period_to,
             status=PurchaseInvoiceHeader.Status.POSTED,
         )
-        if subentity_id is None:
-            invoice_qs = invoice_qs.filter(subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             invoice_qs = invoice_qs.filter(subentity_id=subentity_id)
         posted_ids = list(invoice_qs.values_list("id", flat=True))
         if not posted_ids:
@@ -1798,9 +1947,7 @@ class PurchaseStatutoryService:
             txn_type__in=[TxnType.PURCHASE, TxnType.PURCHASE_CREDIT_NOTE, TxnType.PURCHASE_DEBIT_NOTE],
             txn_id__in=posted_ids,
         )
-        if subentity_id is None:
-            entry_qs = entry_qs.filter(subentity__isnull=True)
-        else:
+        if subentity_id is not None:
             entry_qs = entry_qs.filter(subentity_id=subentity_id)
         entry_ids = set(entry_qs.values_list("txn_id", flat=True))
         missing = list(invoice_qs.exclude(id__in=entry_ids).values("id", "purchase_number", "bill_date", "grand_total"))

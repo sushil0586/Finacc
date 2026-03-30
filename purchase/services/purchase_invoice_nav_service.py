@@ -51,6 +51,7 @@ class PurchaseInvoiceNavService:
         doc_type: int,
         doc_code: str,
         allowed_statuses: Sequence[int],
+        line_mode: Optional[str] = None,
     ):
         filters: Dict[str, Any] = {
             "entity_id": entity_id,
@@ -66,11 +67,16 @@ class PurchaseInvoiceNavService:
         else:
             filters["subentity_id"] = subentity_id
 
-        return (
+        qs = (
             PurchaseInvoiceHeader.objects
             .filter(**filters)
             .only("id", "doc_no", "purchase_number", "status", "bill_date")
         )
+        if line_mode == "service":
+            qs = qs.filter(lines__is_service=True).distinct()
+        elif line_mode == "goods":
+            qs = qs.filter(lines__is_service=False).distinct()
+        return qs
 
     @staticmethod
     def _empty_item() -> Dict[str, Any]:
@@ -94,6 +100,7 @@ class PurchaseInvoiceNavService:
         instance: PurchaseInvoiceHeader,
         *,
         allowed_statuses: Optional[Sequence[int]] = None,
+        line_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         allowed_statuses = allowed_statuses or PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES
 
@@ -104,11 +111,29 @@ class PurchaseInvoiceNavService:
             doc_type=int(instance.doc_type),
             doc_code=str(instance.doc_code),
             allowed_statuses=allowed_statuses,
+            line_mode=line_mode,
         )
 
         # ✅ strictly by id, within scope
         prev_obj = qs.filter(id__lt=instance.id).order_by("-id").first()
         next_obj = qs.filter(id__gt=instance.id).order_by("id").first()
+
+        # If mode-scoped neighbors are missing, fall back to same scope across all line modes.
+        # Frontend can auto-redirect when crossing goods/service pages.
+        if line_mode in ("service", "goods") and (not prev_obj or not next_obj):
+            all_mode_qs = PurchaseInvoiceNavService._scope_qs(
+                entity_id=instance.entity_id,
+                entityfinid_id=instance.entityfinid_id,
+                subentity_id=instance.subentity_id,
+                doc_type=int(instance.doc_type),
+                doc_code=str(instance.doc_code),
+                allowed_statuses=allowed_statuses,
+                line_mode=None,
+            )
+            if not prev_obj:
+                prev_obj = all_mode_qs.filter(id__lt=instance.id).order_by("-id").first()
+            if not next_obj:
+                next_obj = all_mode_qs.filter(id__gt=instance.id).order_by("id").first()
 
         return {
             "previous": PurchaseInvoiceNavService._to_item(prev_obj),

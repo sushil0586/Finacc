@@ -1345,6 +1345,7 @@ class SalesInvoiceService:
         """
         for fld in [
             "product",
+            "productDesc",
             "uom",
             "hsn_sac_code",
             "is_service",
@@ -1991,11 +1992,19 @@ class SalesInvoiceService:
 
         # ---- mark posted ----
         header.status = SalesInvoiceHeader.Status.POSTED
+        header.is_posting_reversed = False
+        header.reversed_at = None
+        header.reversed_by = None
+        header.reverse_reason = ""
         header.posted_at = timezone.now()
         header.posted_by = user
         header.updated_by = user
         header.save(update_fields=[
             "status",
+            "is_posting_reversed",
+            "reversed_at",
+            "reversed_by",
+            "reverse_reason",
             "posted_at",
             "posted_by",
             "updated_by",
@@ -2049,8 +2058,6 @@ class SalesInvoiceService:
         allow_unpost = str(controls.get("allow_unpost_posted", "on")).lower().strip()
         if allow_unpost == "off":
             raise ValueError("Unpost after posting is disabled by sales policy.")
-        if bool(getattr(header, "is_posting_reversed", False)):
-            return header
 
         txn_type = cls._txn_type_for_header(header)
         entry = (

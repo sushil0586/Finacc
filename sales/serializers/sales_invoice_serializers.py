@@ -24,7 +24,7 @@ from sales.serializers.sales_compliance_serializers import (
 
 
 class SalesInvoiceLineSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source="product.productname", read_only=True)
+    product_name = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
 
     gstRateAmount = serializers.SerializerMethodField()
@@ -95,6 +95,46 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             return str(igst)
 
         return str(cgst + sgst)
+
+    def get_product_name(self, obj) -> str:
+        product = getattr(obj, "product", None)
+        if product is not None and getattr(product, "productname", None):
+            return str(product.productname)
+        account_obj = getattr(obj, "sales_account", None)
+        if account_obj is not None and getattr(account_obj, "accountname", None):
+            return str(account_obj.accountname)
+        return ""
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not (data.get("productDesc") or "").strip():
+            # Backward-compatible fallback for older rows where description was not saved.
+            product_obj = getattr(instance, "product", None)
+            fallback = getattr(product_obj, "productdesc", "") if product_obj is not None else ""
+            data["productDesc"] = str(fallback or "")
+        return data
+
+    def validate(self, attrs):
+        product = attrs.get("product", getattr(self.instance, "product", None))
+        sales_account = attrs.get("sales_account", getattr(self.instance, "sales_account", None))
+        is_service = attrs.get("is_service", getattr(self.instance, "is_service", None))
+        product_desc = (attrs.get("productDesc", getattr(self.instance, "productDesc", "")) or "").strip()
+
+        # Service-style line support:
+        # allow no product, but enforce either service account mapping
+        # or a product reference.
+        if product is None:
+            if sales_account is None:
+                raise serializers.ValidationError(
+                    {"sales_account": "sales_account is required when product is not provided."}
+                )
+            if not product_desc:
+                raise serializers.ValidationError(
+                    {"productDesc": "Description is required when product is not provided."}
+                )
+            attrs["is_service"] = True if is_service in (None, False) else bool(is_service)
+
+        return attrs
 
 
 class SalesTaxSummarySerializer(serializers.ModelSerializer):
@@ -309,7 +349,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         }
 
     def get_navigation(self, obj):
-        return SalesInvoiceNavService.get_prev_next_for_instance(obj)
+        return SalesInvoiceNavService.get_prev_next_for_instance(
+            obj,
+            line_mode=self.context.get("line_mode"),
+        )
 
     def get_compliance_action_flags(self, obj):
         return SalesComplianceService.compliance_action_flags(obj)
@@ -385,6 +428,22 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         if ("einvoice_applicable_manual" in attrs or "eway_applicable_manual" in attrs) and not (attrs.get("compliance_override_reason") or "").strip():
             raise serializers.ValidationError({"compliance_override_reason": "Required when manual compliance override is provided."})
+
+        line_mode = self.context.get("line_mode")
+        if line_mode in ("service", "goods"):
+            lines_for_mode_check = attrs.get("lines")
+            if lines_for_mode_check is None:
+                lines_for_mode_check = (getattr(self, "initial_data", {}) or {}).get("lines") or []
+            for idx, row in enumerate(lines_for_mode_check or [], start=1):
+                # For service mode, treat account-only lines as service even if client omitted is_service.
+                product_id = row.get("product")
+                has_account = row.get("sales_account") not in (None, "", 0)
+                inferred_service = (product_id in (None, "", 0)) and has_account
+                is_service = bool(row.get("is_service")) or inferred_service
+                if line_mode == "service" and not is_service:
+                    raise serializers.ValidationError({"lines": [f"Line {idx}: service invoice accepts only service lines."]})
+                if line_mode == "goods" and is_service:
+                    raise serializers.ValidationError({"lines": [f"Line {idx}: goods invoice accepts only goods lines."]})
 
         if "custom_fields_json" in attrs:
             entity = attrs.get("entity") or getattr(self.instance, "entity", None)

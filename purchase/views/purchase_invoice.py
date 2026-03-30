@@ -1,8 +1,11 @@
 from rest_framework import generics, permissions, filters
+from rest_framework import status
+from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
 from django.db.models import Prefetch
 from rest_framework.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
 from purchase.models.purchase_core import PurchaseInvoiceLine
 from purchase.serializers.purchase_invoice import PurchaseInvoiceSearchSerializer
 from purchase.filters import PurchaseInvoiceSearchFilter
@@ -21,6 +24,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = PurchaseInvoiceHeaderSerializer
     permission_classes = [permissions.IsAuthenticated]
+    line_mode = None  # None | "service" | "goods"
 
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = [
@@ -55,6 +59,14 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
         return entity_id, entityfinid_id, subentity_id
 
+    def _get_line_mode(self):
+        if self.line_mode in ("service", "goods"):
+            return self.line_mode
+        raw = (self.request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
+
     def get_serializer_class(self):
         if self.request.method.upper() == "GET":
             return PurchaseInvoiceListSerializer
@@ -74,12 +86,17 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
                 base_qs = base_qs.filter(subentity_id=subentity_id)
 
         if self.request.method.upper() == "GET":
+            line_mode = self._get_line_mode()
+            if line_mode == "service":
+                base_qs = base_qs.filter(lines__is_service=True).distinct()
+            elif line_mode == "goods":
+                base_qs = base_qs.filter(lines__is_service=False).distinct()
             return base_qs
 
         return base_qs.prefetch_related(
             Prefetch(
                 "lines",
-                queryset=PurchaseInvoiceLine.objects.select_related("product", "uom")
+                queryset=PurchaseInvoiceLine.objects.select_related("product", "uom", "purchase_account")
             ),
             "tax_summaries",
             "charges",
@@ -87,6 +104,7 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
+        ctx["line_mode"] = self._get_line_mode()
         if self.request.method.upper() == "GET":
             # List response should avoid expensive per-row preview/navigation queries.
             ctx["skip_preview_numbers"] = True
@@ -96,10 +114,18 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except (ValueError, DjangoValidationError, ValidationError) as exc:
+            detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = PurchaseInvoiceHeaderSerializer
     permission_classes = [permissions.IsAuthenticated]
+    line_mode = None  # None | "service" | "goods"
 
     def _scope_ids(self):
         entity = self.request.query_params.get("entity")
@@ -116,6 +142,14 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
         return entity_id, entityfinid_id, subentity_id
 
+    def _get_line_mode(self):
+        if self.line_mode in ("service", "goods"):
+            return self.line_mode
+        raw = (self.request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
+
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
         qs = (
@@ -130,15 +164,26 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             .prefetch_related(
                 Prefetch(
                     "lines",
-                    queryset=PurchaseInvoiceLine.objects.select_related("product", "uom")
+                    queryset=PurchaseInvoiceLine.objects.select_related("product", "uom", "purchase_account")
                 ),
                 "tax_summaries",
                 "charges",
             )
         )
         if subentity_id is not None:
-            return qs.filter(subentity_id=subentity_id)
+            qs = qs.filter(subentity_id=subentity_id)
+
+        line_mode = self._get_line_mode()
+        if line_mode == "service":
+            qs = qs.filter(lines__is_service=True).distinct()
+        elif line_mode == "goods":
+            qs = qs.filter(lines__is_service=False).distinct()
         return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["line_mode"] = self._get_line_mode()
+        return ctx
 
     def perform_destroy(self, instance):
         policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
@@ -149,6 +194,20 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
         if policy.delete_policy == "non_posted" and int(instance.status) == int(PurchaseInvoiceHeader.Status.POSTED):
             raise ValidationError({"detail": "Posted purchase invoices cannot be deleted."})
         super().perform_destroy(instance)
+
+    def update(self, request, *args, **kwargs):
+        try:
+            return super().update(request, *args, **kwargs)
+        except (ValueError, DjangoValidationError, ValidationError) as exc:
+            detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+    def partial_update(self, request, *args, **kwargs):
+        try:
+            return super().partial_update(request, *args, **kwargs)
+        except (ValueError, DjangoValidationError, ValidationError) as exc:
+            detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
 class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
     """
@@ -235,3 +294,11 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
         if subentity_id is not None:
             return qs.filter(subentity_id=subentity_id)
         return qs
+
+
+class PurchaseServiceInvoiceListCreateAPIView(PurchaseInvoiceListCreateAPIView):
+    line_mode = "service"
+
+
+class PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView(PurchaseInvoiceRetrieveUpdateDestroyAPIView):
+    line_mode = "service"

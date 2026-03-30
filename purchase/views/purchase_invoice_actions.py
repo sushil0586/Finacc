@@ -6,6 +6,7 @@ from rest_framework.exceptions import ValidationError
 from purchase.models.purchase_core import DocType
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.serializers.purchase_actions import ItcBlockSerializer, ItcClaimSerializer, Match2BSerializer
+from gst_tds.models import GstTdsContractLedger
 
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
@@ -18,6 +19,48 @@ def _raise_validation_error(err: ValueError) -> None:
     raise ValidationError({"non_field_errors": [str(payload)]})
 
 
+def _gst_tds_contract_summary_block(header):
+    ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip()
+    vendor_id = getattr(header, "vendor_id", None)
+    if not ref or not vendor_id:
+        return None
+    qs = GstTdsContractLedger.objects.filter(
+        entity_id=getattr(header, "entity_id", None),
+        entityfinid_id=getattr(header, "entityfinid_id", None),
+        subentity_id=getattr(header, "subentity_id", None),
+        vendor_id=vendor_id,
+        contract_ref=ref,
+    )
+    row = qs.first()
+    if row is None:
+        return {
+            "contract_ref": ref,
+            "exists": False,
+            "cumulative_taxable": "0.00",
+            "cumulative_tds": "0.00",
+            "last_updated_at": None,
+        }
+    return {
+        "contract_ref": ref,
+        "exists": True,
+        "cumulative_taxable": str(row.cumulative_taxable or 0),
+        "cumulative_tds": str(row.cumulative_tds or 0),
+        "last_updated_at": row.updated_at,
+    }
+
+
+def _response_payload(message: str, header):
+    data = PurchaseInvoiceHeaderSerializer(header).data
+    summary = _gst_tds_contract_summary_block(header)
+    if summary is not None:
+        data["gst_tds_contract_summary"] = summary
+    return {
+        "message": message,
+        "data": data,
+        "gst_tds_contract_summary": summary,
+    }
+
+
 class PurchaseInvoiceConfirmAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -26,10 +69,7 @@ class PurchaseInvoiceConfirmAPIView(APIView):
             result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({
-            "message": result.message,
-            "data": PurchaseInvoiceHeaderSerializer(result.header).data
-        })
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoicePostAPIView(APIView):
@@ -40,10 +80,7 @@ class PurchaseInvoicePostAPIView(APIView):
             result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({
-            "message": result.message,
-            "data": PurchaseInvoiceHeaderSerializer(result.header).data
-        })
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoiceUnpostAPIView(APIView):
@@ -55,10 +92,7 @@ class PurchaseInvoiceUnpostAPIView(APIView):
             result = PurchaseInvoiceActions.unpost(pk, unposted_by_id=request.user.id, reason=reason)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({
-            "message": result.message,
-            "data": PurchaseInvoiceHeaderSerializer(result.header).data
-        })
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoiceCancelAPIView(APIView):
@@ -70,10 +104,7 @@ class PurchaseInvoiceCancelAPIView(APIView):
             result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({
-            "message": result.message,
-            "data": PurchaseInvoiceHeaderSerializer(result.header).data
-        })
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
@@ -84,10 +115,7 @@ class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
             result = PurchaseInvoiceActions.rebuild_tax_summary(pk)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({
-            "message": result.message,
-            "data": PurchaseInvoiceHeaderSerializer(result.header).data
-        })
+        return Response(_response_payload(result.message, result.header))
 
 
 # ---- Create CN/DN ----
@@ -104,7 +132,7 @@ class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
         except ValueError as e:
             _raise_validation_error(e)
         return Response(
-            {"message": res.message, "data": PurchaseInvoiceHeaderSerializer(res.header).data},
+            _response_payload(res.message, res.header),
             status=status.HTTP_201_CREATED,
         )
 
@@ -121,7 +149,7 @@ class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
         except ValueError as e:
             _raise_validation_error(e)
         return Response(
-            {"message": res.message, "data": PurchaseInvoiceHeaderSerializer(res.header).data},
+            _response_payload(res.message, res.header),
             status=status.HTTP_201_CREATED,
         )
 
@@ -137,7 +165,7 @@ class PurchaseInvoiceITCBlockAPIView(APIView):
             result = PurchaseInvoiceActions.mark_itc_blocked(pk, reason=ser.validated_data["reason"])
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoiceITCPendingAPIView(APIView):
@@ -147,7 +175,7 @@ class PurchaseInvoiceITCPendingAPIView(APIView):
             result = PurchaseInvoiceActions.mark_itc_pending(pk)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoiceITCClaimAPIView(APIView):
@@ -159,7 +187,7 @@ class PurchaseInvoiceITCClaimAPIView(APIView):
             result = PurchaseInvoiceActions.mark_itc_claimed(pk, period=ser.validated_data["period"])
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response(_response_payload(result.message, result.header))
 
 
 class PurchaseInvoiceITCReverseAPIView(APIView):
@@ -170,7 +198,7 @@ class PurchaseInvoiceITCReverseAPIView(APIView):
             result = PurchaseInvoiceActions.mark_itc_reversed(pk, reason=reason)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response(_response_payload(result.message, result.header))
 
 
 # ---- GSTR-2B ----
@@ -184,4 +212,4 @@ class PurchaseInvoice2BMatchStatusAPIView(APIView):
             result = PurchaseInvoiceActions.update_2b_match_status(pk, match_status=ser.validated_data["match_status"])
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": PurchaseInvoiceHeaderSerializer(result.header).data})
+        return Response(_response_payload(result.message, result.header))

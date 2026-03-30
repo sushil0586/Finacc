@@ -23,6 +23,8 @@ from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavSer
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
+from gst_tds.models import GstTdsContractLedger
+from gst_tds.services.gst_tds_service import normalize_contract_ref
 
 
 DEC2 = Decimal("0.01")
@@ -45,9 +47,13 @@ def q4(x) -> Decimal:
     return (Decimal(x or 0)).quantize(DEC4, rounding=ROUND_HALF_UP)
 
 
+def _norm_text(value) -> str:
+    return str(value or "").strip().lower()
+
+
 class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
-    product_name = serializers.CharField(source="product.productname", read_only=True)
+    product_name = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
 
@@ -57,6 +63,7 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "id",
             "line_no",
             "product",
+            "purchase_account",
             "product_desc",
             "is_service",
             "hsn_sac",
@@ -106,14 +113,47 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "itc_block_reason": {"help_text": "Backend may auto-fill when ITC is not eligible."},
         }
 
+    def get_product_name(self, obj) -> str:
+        product = getattr(obj, "product", None)
+        if product is not None and getattr(product, "productname", None):
+            return str(product.productname)
+        account_obj = getattr(obj, "purchase_account", None)
+        if account_obj is not None and getattr(account_obj, "accountname", None):
+            return str(account_obj.accountname)
+        return ""
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not (data.get("product_desc") or "").strip():
+            product_obj = getattr(instance, "product", None)
+            fallback = getattr(product_obj, "productdesc", "") if product_obj is not None else ""
+            data["product_desc"] = str(fallback or "")
+        return data
+
     def validate(self, attrs):
         qty = q4(attrs.get("qty"))
         rate = q2(attrs.get("rate"))
+        product = attrs.get("product")
+        purchase_account = attrs.get("purchase_account")
+        product_desc = (attrs.get("product_desc") or "").strip()
 
         if qty <= 0:
             raise serializers.ValidationError({"qty": "Qty must be > 0"})
         if rate < 0:
             raise serializers.ValidationError({"rate": "Rate cannot be negative"})
+
+        # Service-style line support:
+        # allow no product, but require purchase_account + description.
+        if product is None:
+            if purchase_account is None:
+                raise serializers.ValidationError(
+                    {"purchase_account": "purchase_account is required when product is not provided."}
+                )
+            if not product_desc:
+                raise serializers.ValidationError(
+                    {"product_desc": "Description is required when product is not provided."}
+                )
+            attrs["is_service"] = True
 
         free_qty = q4(attrs.get("free_qty"))
         if free_qty < 0:
@@ -185,6 +225,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     gst_tds_cgst_rate = serializers.SerializerMethodField()
     gst_tds_sgst_rate = serializers.SerializerMethodField()
     gst_tds_igst_rate = serializers.SerializerMethodField()
+    gst_tds_contract_summary = serializers.SerializerMethodField()
 
     def get_status_name(self, obj):
         return obj.get_status_display()
@@ -207,10 +248,45 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         is_inter = (int(getattr(obj, "tax_regime", 1)) == int(obj.TaxRegime.INTER)) or bool(getattr(obj, "is_igst", False))
         return str(q4(RATE_TOTAL)) if is_inter else "0.0000"
 
+    def get_gst_tds_contract_summary(self, obj):
+        ref = (getattr(obj, "gst_tds_contract_ref", "") or "").strip()
+        vendor_id = getattr(obj, "vendor_id", None)
+        if not ref or not vendor_id:
+            return None
+        row = (
+            GstTdsContractLedger.objects.filter(
+                entity_id=getattr(obj, "entity_id", None),
+                entityfinid_id=getattr(obj, "entityfinid_id", None),
+                subentity_id=getattr(obj, "subentity_id", None),
+                vendor_id=vendor_id,
+                contract_ref=ref,
+            )
+            .only("contract_ref", "cumulative_taxable", "cumulative_tds", "updated_at")
+            .first()
+        )
+        if row is None:
+            return {
+                "contract_ref": ref,
+                "exists": False,
+                "cumulative_taxable": "0.00",
+                "cumulative_tds": "0.00",
+                "last_updated_at": None,
+            }
+        return {
+            "contract_ref": ref,
+            "exists": True,
+            "cumulative_taxable": str(row.cumulative_taxable or 0),
+            "cumulative_tds": str(row.cumulative_tds or 0),
+            "last_updated_at": row.updated_at,
+        }
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self.context.get("skip_navigation", False):
-            data["navigation"] = PurchaseInvoiceNavService.get_prev_next_for_instance(instance)
+            data["navigation"] = PurchaseInvoiceNavService.get_prev_next_for_instance(
+                instance,
+                line_mode=self.context.get("line_mode"),
+            )
         return data
 
     class Meta:
@@ -325,6 +401,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "gst_tds_cgst_rate",
             "gst_tds_sgst_rate",
             "gst_tds_igst_rate",
+            "gst_tds_contract_summary",
 
             "lines",
             "charges",
@@ -476,6 +553,15 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         # Mixed taxability policy
         lines = attrs.get("lines", None)
+        line_mode = self.context.get("line_mode")
+        if lines is not None and line_mode in ("service", "goods"):
+            for idx, ln in enumerate(lines, start=1):
+                is_service = bool(ln.get("is_service"))
+                if line_mode == "service" and not is_service:
+                    raise serializers.ValidationError({"lines": [f"Line {idx}: service invoice accepts only service lines."]})
+                if line_mode == "goods" and is_service:
+                    raise serializers.ValidationError({"lines": [f"Line {idx}: goods invoice accepts only goods lines."]})
+
         if lines is not None and entity:
             ent_id = entity.id if hasattr(entity, "id") else entity
             sub_id = subentity.id if hasattr(subentity, "id") else subentity
@@ -540,11 +626,6 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             attrs["vendor_tds_notes"] = None
         else:
             tds_section = attrs.get("tds_section", getattr(inst, "tds_section", None))
-            manual_keys = ("tds_rate", "tds_base_amount", "tds_amount")
-            manual_payload_present = any(k in attrs for k in manual_keys)
-            if manual_payload_present and "tds_is_manual" not in attrs:
-                # UX-safe behavior: if UI sends manual fields but forgets toggle, treat as manual.
-                attrs["tds_is_manual"] = True
 
             tds_is_manual = attrs.get("tds_is_manual", getattr(inst, "tds_is_manual", False))
             vendor_tds_declared = attrs.get("vendor_tds_declared", getattr(inst, "vendor_tds_declared", False))
@@ -554,10 +635,12 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"tds_section": "TDS section is required when withholding_enabled is true."})
 
             if not tds_is_manual:
-                # auto: ignore client values
-                attrs.pop("tds_rate", None)
-                attrs.pop("tds_base_amount", None)
-                attrs.pop("tds_amount", None)
+                # Auto mode must not accept manual IT-TDS overrides.
+                manual_keys = ("tds_rate", "tds_base_amount", "tds_amount")
+                if any(k in attrs for k in manual_keys):
+                    raise serializers.ValidationError(
+                        {"tds_is_manual": "Set tds_is_manual=true to provide manual TDS values."}
+                    )
                 attrs.pop("tds_reason", None)
             else:
                 rate = q4(Decimal(str(attrs.get("tds_rate", "0.0000") or "0.0000")))
@@ -616,6 +699,19 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             contract_ref = (attrs.get("gst_tds_contract_ref") if "gst_tds_contract_ref" in attrs else getattr(inst, "gst_tds_contract_ref", "")) or ""
             if not str(contract_ref).strip():
                 raise serializers.ValidationError({"gst_tds_contract_ref": "Contract reference is required when gst_tds_enabled is true."})
+            canonical_contract_ref = normalize_contract_ref(contract_ref)
+            attrs["gst_tds_contract_ref"] = canonical_contract_ref
+            contract_ref_norm = _norm_text(canonical_contract_ref)
+            vendor_name = attrs.get("vendor_name", getattr(inst, "vendor_name", ""))
+            if not vendor_name and attrs.get("vendor"):
+                try:
+                    vendor_name = getattr(attrs["vendor"], "accountname", "") or ""
+                except Exception:
+                    vendor_name = ""
+            if contract_ref_norm and contract_ref_norm == _norm_text(vendor_name):
+                raise serializers.ValidationError(
+                    {"gst_tds_contract_ref": "Use an actual contract reference. Vendor name is not allowed."}
+                )
 
             manual_keys = (
                 "gst_tds_rate",
@@ -625,21 +721,15 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 "gst_tds_igst_amount",
                 "gst_tds_amount",
             )
-            manual_payload_present = any(k in attrs for k in manual_keys)
-            if manual_payload_present and "gst_tds_is_manual" not in attrs:
-                # UX-safe behavior: if UI sends manual fields but forgets toggle, treat as manual.
-                attrs["gst_tds_is_manual"] = True
 
             gst_manual = attrs.get("gst_tds_is_manual", getattr(inst, "gst_tds_is_manual", False))
             vendor_gst_declared = attrs.get("vendor_gst_tds_declared", getattr(inst, "vendor_gst_tds_declared", False))
 
             if not gst_manual:
-                attrs.pop("gst_tds_rate", None)
-                attrs.pop("gst_tds_base_amount", None)
-                attrs.pop("gst_tds_cgst_amount", None)
-                attrs.pop("gst_tds_sgst_amount", None)
-                attrs.pop("gst_tds_igst_amount", None)
-                attrs.pop("gst_tds_amount", None)
+                if any(k in attrs for k in manual_keys):
+                    raise serializers.ValidationError(
+                        {"gst_tds_is_manual": "Set gst_tds_is_manual=true to provide manual GST-TDS values."}
+                    )
                 attrs.pop("gst_tds_status", None)
             else:
                 for f in ("gst_tds_rate", "gst_tds_base_amount", "gst_tds_amount"):

@@ -39,9 +39,15 @@ class WithholdingResolver:
         qs = EntityWithholdingConfig.objects.filter(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
-            subentity_id=subentity_id,
             effective_from__lte=doc_date,
-        ).order_by("-effective_from")
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True).order_by("-effective_from", "-id")
+        else:
+            # Prefer subentity-specific config; fallback to entity-level (subentity NULL).
+            qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True)).order_by(
+                "-subentity_id", "-effective_from", "-id"
+            )
         return qs.first()
 
     @staticmethod
