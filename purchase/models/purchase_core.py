@@ -301,6 +301,13 @@ class PurchaseInvoiceLine(models.Model):
     line_no = models.PositiveIntegerField()
 
     product = models.ForeignKey(Product, on_delete=models.PROTECT, null=True, blank=True)
+    purchase_account = models.ForeignKey(
+        account,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_invoice_lines",
+    )
     product_desc = models.CharField(max_length=500, null=True, blank=True)
     is_service = models.BooleanField(default=False)
     hsn_sac = models.CharField(max_length=10, null=True, blank=True)

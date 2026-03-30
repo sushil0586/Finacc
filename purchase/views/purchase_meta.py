@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch, Q
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from rest_framework import serializers
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,6 +24,7 @@ from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerialize
 from purchase.services.purchase_choice_service import PurchaseChoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from core.invoice_ui_contracts import purchase_invoice_ui_contract
+from gst_tds.models import GstTdsContractLedger
 from withholding.models import EntityWithholdingConfig, WithholdingSection, WithholdingTaxType
 
 
@@ -50,6 +53,12 @@ class PurchaseMetaBaseAPIView(APIView):
         if subentity_id == 0:
             subentity_id = None
         return entity_id, entityfinid_id, subentity_id
+
+    def _parse_line_mode(self, request) -> str | None:
+        raw = (request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
 
     def _financial_years(self, entity_id: int):
         return list(
@@ -161,13 +170,18 @@ class PurchaseMetaBaseAPIView(APIView):
             cfg_qs = cfg_qs.filter(subentity__isnull=True).order_by("-effective_from", "-id")
         return cfg_qs.first()
 
-    def _invoice_form_meta(self, entity_id: int, subentity_id: int | None):
+    def _invoice_form_meta(self, entity_id: int, subentity_id: int | None, entityfinid_id: int | None = None):
         custom_defs = InvoiceCustomFieldService.get_effective_definitions(
             entity_id=entity_id,
             module="purchase_invoice",
             subentity_id=subentity_id,
             party_account_id=None,
         )
+        cfg = self._resolve_withholding_config(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+        ) if entityfinid_id else None
         return {
             "entity_id": entity_id,
             "subentity_id": subentity_id,
@@ -190,10 +204,24 @@ class PurchaseMetaBaseAPIView(APIView):
                 }
                 for d in custom_defs
             ],
+            "withholding_defaults": {
+                "default_tds_section": getattr(cfg, "default_tds_section_id", None),
+                "default_tds_section_code": (
+                    getattr(getattr(cfg, "default_tds_section", None), "section_code", None)
+                    if cfg is not None
+                    else None
+                ),
+            },
             "ui_contract": purchase_invoice_ui_contract(),
         }
 
-    def _invoice_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
+    def _invoice_queryset(
+        self,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: int | None,
+        line_mode: str | None = None,
+    ):
         qs = (
             PurchaseInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
             .select_related(
@@ -209,13 +237,17 @@ class PurchaseMetaBaseAPIView(APIView):
                 "tds_section",
             )
             .prefetch_related(
-                Prefetch("lines", queryset=PurchaseInvoiceLine.objects.select_related("product", "uom")),
+                Prefetch("lines", queryset=PurchaseInvoiceLine.objects.select_related("product", "uom", "purchase_account")),
                 "tax_summaries",
                 "charges",
             )
         )
         if subentity_id is not None:
-            return qs.filter(subentity_id=subentity_id)
+            qs = qs.filter(subentity_id=subentity_id)
+        if line_mode == "service":
+            qs = qs.filter(lines__is_service=True).distinct()
+        elif line_mode == "goods":
+            qs = qs.filter(lines__is_service=False).distinct()
         return qs
 
     def _invoice_action_flags(self, header: PurchaseInvoiceHeader):
@@ -269,6 +301,48 @@ class PurchaseMetaBaseAPIView(APIView):
             "pan": account_pan(vendor),
         }
 
+    def _gst_tds_contract_summary(
+        self,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: int | None,
+        vendor_id: int | None,
+        contract_ref: str | None,
+    ) -> dict | None:
+        if not vendor_id or not contract_ref:
+            return None
+        ref = (contract_ref or "").strip()
+        if not ref:
+            return None
+
+        qs = GstTdsContractLedger.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            vendor_id=vendor_id,
+            contract_ref=ref,
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        row = qs.first()
+        if row is None:
+            return {
+                "contract_ref": ref,
+                "exists": False,
+                "cumulative_taxable": "0.00",
+                "cumulative_tds": "0.00",
+                "last_updated_at": None,
+            }
+        return {
+            "contract_ref": ref,
+            "exists": True,
+            "cumulative_taxable": str(row.cumulative_taxable or 0),
+            "cumulative_tds": str(row.cumulative_tds or 0),
+            "last_updated_at": row.updated_at,
+        }
+
 
 class PurchaseInvoiceFormMetaAPIView(PurchaseMetaBaseAPIView):
     """
@@ -276,8 +350,8 @@ class PurchaseInvoiceFormMetaAPIView(PurchaseMetaBaseAPIView):
     """
 
     def get(self, request):
-        entity_id, _, subentity_id = self._parse_scope(request, require_entityfinid=False)
-        return Response(self._invoice_form_meta(entity_id, subentity_id))
+        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=False)
+        return Response(self._invoice_form_meta(entity_id, subentity_id, entityfinid_id=entityfinid_id))
 
 
 class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
@@ -288,14 +362,29 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
         invoice_id = self._parse_int(request.query_params.get("invoice"), "invoice", required=True)
+        line_mode = self._parse_line_mode(request)
 
-        header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id).get(pk=invoice_id)
+        try:
+            header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=invoice_id)
+        except ObjectDoesNotExist:
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=invoice_id).first()
+            if fallback is not None and line_mode in ("service", "goods"):
+                actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
+                if actual_mode != line_mode:
+                    raise serializers.ValidationError(
+                        {
+                            "detail": f"Invoice belongs to '{actual_mode}' mode.",
+                            "expected_line_mode": actual_mode,
+                            "invoice_id": invoice_id,
+                        }
+                    )
+            raise NotFound("Purchase invoice not found for current scope/mode.")
         invoice_data = PurchaseInvoiceHeaderSerializer(
             header,
-            context={"request": request},
+            context={"request": request, "line_mode": line_mode},
         ).data
 
-        payload = self._invoice_form_meta(entity_id, subentity_id)
+        payload = self._invoice_form_meta(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         payload.update(
             {
                 "entityfinid_id": entityfinid_id,
@@ -303,6 +392,13 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
                 "invoice": invoice_data,
                 "action_flags": self._invoice_action_flags(header),
                 "vendor": self._vendor_block(header),
+                "gst_tds_contract_summary": self._gst_tds_contract_summary(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    vendor_id=header.vendor_id,
+                    contract_ref=header.gst_tds_contract_ref,
+                ),
                 "custom_field_defaults": InvoiceCustomFieldService.get_defaults_map(
                     entity_id=entity_id,
                     module="purchase_invoice",
@@ -441,7 +537,22 @@ class PurchaseInvoiceSummaryAPIView(PurchaseMetaBaseAPIView):
 
     def get(self, request, pk: int):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
-        header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id).get(pk=pk)
+        line_mode = self._parse_line_mode(request)
+        try:
+            header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=pk)
+        except ObjectDoesNotExist:
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=pk).first()
+            if fallback is not None and line_mode in ("service", "goods"):
+                actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
+                if actual_mode != line_mode:
+                    raise serializers.ValidationError(
+                        {
+                            "detail": f"Invoice belongs to '{actual_mode}' mode.",
+                            "expected_line_mode": actual_mode,
+                            "invoice_id": pk,
+                        }
+                    )
+            raise NotFound("Purchase invoice not found for current scope/mode.")
         line_count = header.lines.count()
         charge_count = header.charges.count()
         tax_summary_count = header.tax_summaries.count()
@@ -473,6 +584,13 @@ class PurchaseInvoiceSummaryAPIView(PurchaseMetaBaseAPIView):
                     "charges": charge_count,
                     "tax_summaries": tax_summary_count,
                 },
+                "gst_tds_contract_summary": self._gst_tds_contract_summary(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    vendor_id=header.vendor_id,
+                    contract_ref=header.gst_tds_contract_ref,
+                ),
                 "action_flags": self._invoice_action_flags(header),
             }
         )

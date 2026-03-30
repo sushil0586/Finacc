@@ -250,7 +250,12 @@ class PurchaseInvoicePostingAdapter:
                 continue
 
             pid = getattr(ln, "product_id", None)
-            purchase_ac = prod_resolver.purchase_account_id(pid) or default_purchase_ac or misc_exp_ac
+            purchase_ac = (
+                getattr(ln, "purchase_account_id", None)
+                or prod_resolver.purchase_account_id(pid)
+                or default_purchase_ac
+                or misc_exp_ac
+            )
             purchase_ac = int(purchase_ac)
 
             # base polarity: invoice/DN Dr, CN Cr

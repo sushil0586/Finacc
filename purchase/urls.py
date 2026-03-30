@@ -3,6 +3,8 @@ from django.urls import path
 from purchase.views.purchase_invoice import (
     PurchaseInvoiceListCreateAPIView,
     PurchaseInvoiceRetrieveUpdateDestroyAPIView,
+    PurchaseServiceInvoiceListCreateAPIView,
+    PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView,
     PurchaseInvoiceSearchAPIView,
 )
 
@@ -62,6 +64,7 @@ from purchase.views.purchase_statutory import (
     PurchaseStatutoryChallanEligibleLinesAPIView,
     PurchaseStatutoryChallanDetailAPIView,
     PurchaseStatutoryChallanExportAPIView,
+    PurchaseStatutoryChallanPreviewNoAPIView,
     PurchaseStatutoryReturnListCreateAPIView,
     PurchaseStatutoryReturnFileAPIView,
     PurchaseStatutoryReturnCancelAPIView,
@@ -75,12 +78,16 @@ from purchase.views.purchase_statutory import (
     PurchaseStatutoryReturnNsdlExportAPIView,
     PurchaseStatutoryReturnForm16AIssueAPIView,
     PurchaseStatutoryReturnForm16ADownloadAPIView,
+    PurchaseStatutoryReturnForm16AOfficialUploadAPIView,
+    PurchaseStatutoryCaPackExportAPIView,
 )
 
 urlpatterns = [
     # CRUD
     path("purchase-invoices/", PurchaseInvoiceListCreateAPIView.as_view(), name="purchase-invoice-list-create"),
     path("purchase-invoices/<int:pk>/", PurchaseInvoiceRetrieveUpdateDestroyAPIView.as_view(), name="purchase-invoice-rud"),
+    path("purchase-service-invoices/", PurchaseServiceInvoiceListCreateAPIView.as_view(), name="purchase-service-invoice-list-create"),
+    path("purchase-service-invoices/<int:pk>/", PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView.as_view(), name="purchase-service-invoice-rud"),
 
     # Actions
     path("purchase-invoices/<int:pk>/confirm/", PurchaseInvoiceConfirmAPIView.as_view(), name="purchase-invoice-confirm"),
@@ -88,6 +95,11 @@ urlpatterns = [
     path("purchase-invoices/<int:pk>/unpost/", PurchaseInvoiceUnpostAPIView.as_view(), name="purchase-invoice-unpost"),
     path("purchase-invoices/<int:pk>/cancel/", PurchaseInvoiceCancelAPIView.as_view(), name="purchase-invoice-cancel"),
     path("purchase-invoices/<int:pk>/rebuild-tax-summary/", PurchaseInvoiceRebuildTaxSummaryAPIView.as_view(), name="purchase-invoice-rebuild-tax-summary"),
+    path("purchase-service-invoices/<int:pk>/confirm/", PurchaseInvoiceConfirmAPIView.as_view(), name="purchase-service-invoice-confirm"),
+    path("purchase-service-invoices/<int:pk>/post/", PurchaseInvoicePostAPIView.as_view(), name="purchase-service-invoice-post"),
+    path("purchase-service-invoices/<int:pk>/unpost/", PurchaseInvoiceUnpostAPIView.as_view(), name="purchase-service-invoice-unpost"),
+    path("purchase-service-invoices/<int:pk>/cancel/", PurchaseInvoiceCancelAPIView.as_view(), name="purchase-service-invoice-cancel"),
+    path("purchase-service-invoices/<int:pk>/rebuild-tax-summary/", PurchaseInvoiceRebuildTaxSummaryAPIView.as_view(), name="purchase-service-invoice-rebuild-tax-summary"),
     path("charge-types/", PurchaseChargeTypeListCreateAPIView.as_view(), name="purchase-charge-type-list"),
     path("charge-types/<int:pk>/", PurchaseChargeTypeRetrieveUpdateAPIView.as_view(), name="purchase-charge-type-detail"),
     path("tds-sections/", PurchaseTdsSectionListAPIView.as_view(), name="purchase-tds-sections-list"),
@@ -95,6 +107,8 @@ urlpatterns = [
     # CN/DN from Invoice
     path("purchase-invoices/<int:pk>/create-credit-note/", PurchaseInvoiceCreateCreditNoteAPIView.as_view(), name="purchase-invoice-create-credit-note"),
     path("purchase-invoices/<int:pk>/create-debit-note/", PurchaseInvoiceCreateDebitNoteAPIView.as_view(), name="purchase-invoice-create-debit-note"),
+    path("purchase-service-invoices/<int:pk>/create-credit-note/", PurchaseInvoiceCreateCreditNoteAPIView.as_view(), name="purchase-service-invoice-create-credit-note"),
+    path("purchase-service-invoices/<int:pk>/create-debit-note/", PurchaseInvoiceCreateDebitNoteAPIView.as_view(), name="purchase-service-invoice-create-debit-note"),
 
     # ITC actions
     path("purchase-invoices/<int:pk>/itc/block/", PurchaseInvoiceITCBlockAPIView.as_view(), name="purchase-invoice-itc-block"),
@@ -117,6 +131,7 @@ urlpatterns = [
     path("statutory/challans/", PurchaseStatutoryChallanListCreateAPIView.as_view(), name="purchase-statutory-challan-list-create"),
     path("statutory/challans/export", PurchaseStatutoryChallanExportAPIView.as_view(), name="purchase-statutory-challan-export"),
     path("statutory/challans/export/", PurchaseStatutoryChallanExportAPIView.as_view(), name="purchase-statutory-challan-export-slash"),
+    path("statutory/challans/preview-no/", PurchaseStatutoryChallanPreviewNoAPIView.as_view(), name="purchase-statutory-challan-preview-no"),
     path("statutory/challans/eligible-lines/", PurchaseStatutoryChallanEligibleLinesAPIView.as_view(), name="purchase-statutory-challan-eligible-lines"),
     path("statutory/challans/<int:pk>/", PurchaseStatutoryChallanDetailAPIView.as_view(), name="purchase-statutory-challan-detail"),
     path("statutory/challans/<int:pk>/deposit/", PurchaseStatutoryChallanDepositAPIView.as_view(), name="purchase-statutory-challan-deposit"),
@@ -133,9 +148,11 @@ urlpatterns = [
     path("statutory/returns/<int:pk>/nsdl-export/", PurchaseStatutoryReturnNsdlExportAPIView.as_view(), name="purchase-statutory-return-nsdl-export"),
     path("statutory/returns/<int:pk>/form16a/", PurchaseStatutoryReturnForm16AIssueAPIView.as_view(), name="purchase-statutory-return-form16a"),
     path("statutory/returns/<int:pk>/form16a/<int:issue_no>/download/", PurchaseStatutoryReturnForm16ADownloadAPIView.as_view(), name="purchase-statutory-return-form16a-download"),
+    path("statutory/returns/<int:pk>/form16a/<int:issue_no>/official-upload/", PurchaseStatutoryReturnForm16AOfficialUploadAPIView.as_view(), name="purchase-statutory-return-form16a-official-upload"),
     path("statutory/summary/", PurchaseStatutorySummaryAPIView.as_view(), name="purchase-statutory-summary"),
     path("statutory/reconciliation-exceptions/", PurchaseStatutoryReconciliationExceptionsAPIView.as_view(), name="purchase-statutory-reconciliation-exceptions"),
     path("statutory/reconciliation-gl/", PurchaseStatutoryGlReconciliationAPIView.as_view(), name="purchase-statutory-reconciliation-gl"),
+    path("statutory/export/ca-pack/", PurchaseStatutoryCaPackExportAPIView.as_view(), name="purchase-statutory-ca-pack-export"),
     path("settings/", PurchaseSettingsAPIView.as_view(), name="purchase-settings"),
     path("choices/", PurchaseCompiledChoicesAPIView.as_view(), name="purchase-compiled-choices"),
     path("meta/invoice-form/", PurchaseInvoiceFormMetaAPIView.as_view(), name="purchase-invoice-form-meta"),
@@ -146,6 +163,8 @@ urlpatterns = [
     path("meta/withholding/", PurchaseWithholdingMetaAPIView.as_view(), name="purchase-withholding-meta"),
     path("meta/statutory/", PurchaseStatutoryMetaAPIView.as_view(), name="purchase-statutory-meta"),
     path("purchase-invoices/<int:pk>/summary/", PurchaseInvoiceSummaryAPIView.as_view(), name="purchase-invoice-summary"),
+    path("purchase-service-invoices/search/", PurchaseServiceInvoiceListCreateAPIView.as_view(), name="purchase-service-invoice-search"),
+    path("purchase-service-invoices/<int:pk>/summary/", PurchaseInvoiceSummaryAPIView.as_view(), name="purchase-service-invoice-summary"),
     path("ap/meta/", PurchaseApMetaAPIView.as_view(), name="purchase-ap-meta"),
     path("ap/meta/settlement-form/", PurchaseApSettlementFormMetaAPIView.as_view(), name="purchase-ap-settlement-form-meta"),
     path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),

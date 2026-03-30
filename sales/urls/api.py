@@ -14,6 +14,8 @@ from sales.views.eway_views import (
 from sales.views.sales_invoice_views import (
     SalesInvoiceListCreateAPIView,
     SalesInvoiceRetrieveUpdateAPIView,
+    SalesServiceInvoiceListCreateAPIView,
+    SalesServiceInvoiceRetrieveUpdateAPIView,
     SalesInvoiceConfirmAPIView,
     SalesInvoicePostAPIView,
     SalesInvoiceCancelAPIView,
@@ -60,13 +62,22 @@ from sales.views.sales_ar import (
 
 urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
+    path("invoices/search/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-search"),
     path("invoices/<int:pk>/", SalesInvoiceRetrieveUpdateAPIView.as_view(), name="sales-invoice-detail"),
+    path("service-invoices/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-list-create"),
+    path("service-invoices/search/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-search"),
+    path("service-invoices/<int:pk>/", SalesServiceInvoiceRetrieveUpdateAPIView.as_view(), name="sales-service-invoice-detail"),
 
     path("invoices/<int:pk>/confirm/", SalesInvoiceConfirmAPIView.as_view(), name="sales-invoice-confirm"),
     path("invoices/<int:pk>/post/", SalesInvoicePostAPIView.as_view(), name="sales-invoice-post"),
     path("invoices/<int:pk>/cancel/", SalesInvoiceCancelAPIView.as_view(), name="sales-invoice-cancel"),
     path("invoices/<int:pk>/reverse/", SalesInvoiceReverseAPIView.as_view(), name="sales-invoice-reverse"),
     path("invoices/<int:pk>/settlement/", SalesInvoiceSettlementAPIView.as_view(), name="sales-invoice-settlement"),
+    path("service-invoices/<int:pk>/confirm/", SalesInvoiceConfirmAPIView.as_view(), name="sales-service-invoice-confirm"),
+    path("service-invoices/<int:pk>/post/", SalesInvoicePostAPIView.as_view(), name="sales-service-invoice-post"),
+    path("service-invoices/<int:pk>/cancel/", SalesInvoiceCancelAPIView.as_view(), name="sales-service-invoice-cancel"),
+    path("service-invoices/<int:pk>/reverse/", SalesInvoiceReverseAPIView.as_view(), name="sales-service-invoice-reverse"),
+    path("service-invoices/<int:pk>/settlement/", SalesInvoiceSettlementAPIView.as_view(), name="sales-service-invoice-settlement"),
 
     path("choices/", SalesChoicesAPIView.as_view(), name="sales-choices"),
     path("settings/", SalesSettingsAPIView.as_view(), name="sales-settings"),

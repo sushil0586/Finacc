@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch, Q
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import serializers
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -61,6 +63,12 @@ class SalesMetaBaseAPIView(APIView):
         if subentity_id == 0:
             subentity_id = None
         return entity_id, entityfinid_id, subentity_id
+
+    def _parse_line_mode(self, request) -> str | None:
+        raw = (request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
 
     def _financial_years(self, entity_id: int):
         return list(
@@ -181,7 +189,13 @@ class SalesMetaBaseAPIView(APIView):
             "ui_contract": sales_invoice_ui_contract(),
         }
 
-    def _invoice_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
+    def _invoice_queryset(
+        self,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: int | None,
+        line_mode: str | None = None,
+    ):
         qs = (
             SalesInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
             .select_related(
@@ -198,13 +212,20 @@ class SalesMetaBaseAPIView(APIView):
                 "tcs_section",
             )
             .prefetch_related(
-                Prefetch("lines", queryset=SalesInvoiceLine.objects.select_related("product", "uom").order_by("line_no")),
+                Prefetch(
+                    "lines",
+                    queryset=SalesInvoiceLine.objects.select_related("product", "uom", "sales_account").order_by("line_no"),
+                ),
                 Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
                 "charges",
             )
         )
         if subentity_id is not None:
-            return qs.filter(subentity_id=subentity_id)
+            qs = qs.filter(subentity_id=subentity_id)
+        if line_mode == "service":
+            qs = qs.filter(lines__is_service=True).distinct()
+        elif line_mode == "goods":
+            qs = qs.filter(lines__is_service=False).distinct()
         return qs
 
     def _invoice_action_flags(self, header: SalesInvoiceHeader):
@@ -269,13 +290,31 @@ class SalesInvoiceDetailFormMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
         invoice_id = self._parse_int(request.query_params.get("invoice"), "invoice", required=True)
-        header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id).get(pk=invoice_id)
+        line_mode = self._parse_line_mode(request)
+        try:
+            header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=invoice_id)
+        except ObjectDoesNotExist:
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=invoice_id).first()
+            if fallback is not None and line_mode in ("service", "goods"):
+                actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
+                if actual_mode != line_mode:
+                    raise serializers.ValidationError(
+                        {
+                            "detail": f"Invoice belongs to '{actual_mode}' mode.",
+                            "expected_line_mode": actual_mode,
+                            "invoice_id": invoice_id,
+                        }
+                    )
+            raise NotFound("Sales invoice not found for current scope/mode.")
         payload = self._invoice_form_meta(entity_id, subentity_id)
         payload.update(
             {
                 "entityfinid_id": entityfinid_id,
                 "invoice_id": invoice_id,
-                "invoice": SalesInvoiceHeaderSerializer(header, context={"request": request}).data,
+                "invoice": SalesInvoiceHeaderSerializer(
+                    header,
+                    context={"request": request, "line_mode": line_mode},
+                ).data,
                 "action_flags": self._invoice_action_flags(header),
                 "compliance_action_flags": self._compliance_action_flags(header),
                 "customer": self._customer_block(header),
@@ -346,7 +385,22 @@ class SalesInvoiceLinesMetaAPIView(SalesMetaBaseAPIView):
 class SalesInvoiceSummaryAPIView(SalesMetaBaseAPIView):
     def get(self, request, pk: int):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
-        header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id).get(pk=pk)
+        line_mode = self._parse_line_mode(request)
+        try:
+            header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=pk)
+        except ObjectDoesNotExist:
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=pk).first()
+            if fallback is not None and line_mode in ("service", "goods"):
+                actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
+                if actual_mode != line_mode:
+                    raise serializers.ValidationError(
+                        {
+                            "detail": f"Invoice belongs to '{actual_mode}' mode.",
+                            "expected_line_mode": actual_mode,
+                            "invoice_id": pk,
+                        }
+                    )
+            raise NotFound("Sales invoice not found for current scope/mode.")
         return Response(
             {
                 "invoice_id": header.id,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from gst_tds.services.gst_tds_service import GstTdsService
+from gst_tds.services.gst_tds_service import GstTdsService, normalize_contract_ref
 from purchase.models.purchase_addons import PurchaseChargeLine, PurchaseChargeType
 
 
@@ -103,7 +103,7 @@ class PurchaseInvoiceService:
         """
         if not getattr(header, "gst_tds_enabled", False):
             header.gst_tds_is_manual = False
-            header.gst_tds_contract_ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip() or ""
+            header.gst_tds_contract_ref = normalize_contract_ref(getattr(header, "gst_tds_contract_ref", ""))
             header.gst_tds_reason = (getattr(header, "gst_tds_reason", None) or None)
             header.gst_tds_rate = q4(Decimal("0.0000"))
             header.gst_tds_base_amount = q2(ZERO2)
@@ -115,7 +115,8 @@ class PurchaseInvoiceService:
             return
 
         # contract ref required
-        contract_ref = (getattr(header, "gst_tds_contract_ref", "") or "").strip()
+        contract_ref = normalize_contract_ref(getattr(header, "gst_tds_contract_ref", ""))
+        header.gst_tds_contract_ref = contract_ref
         if not contract_ref:
             return  # keep NA (or raise in serializer)
 
@@ -422,6 +423,16 @@ class PurchaseInvoiceService:
         # NOTE: we will validate amounts AFTER we compute authoritative values
         # Here we only check regime consistency if amounts were provided and obviously wrong.
         for i, ln in enumerate(lines, start=1):
+            product_id = ln.get("product")
+            purchase_account_id = ln.get("purchase_account")
+            product_desc = (ln.get("product_desc") or "").strip()
+            if not product_id:
+                if not purchase_account_id:
+                    raise ValueError(f"Line {i}: purchase_account is required when product is not provided.")
+                if not product_desc:
+                    raise ValueError(f"Line {i}: product_desc is required when product is not provided.")
+                ln["is_service"] = True
+
             # qty sanity
             qty = q4(ln.get("qty"))
             if qty <= 0:
@@ -1314,11 +1325,13 @@ class PurchaseInvoiceService:
 
         # ✅ tax summary now includes charges
         PurchaseInvoiceService.rebuild_tax_summary(header)
+        GstTdsService.sync_contract_ledger_for_header(header)
         return header
 
     @staticmethod
     @transaction.atomic
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
+        old_scope_key = GstTdsService._scope_key_for_header(instance)
         lines_provided = "lines" in validated_data
         lines_client = validated_data.pop("lines", None)
         # Never allow replacing allocated numbering from update payload.
@@ -1412,4 +1425,5 @@ class PurchaseInvoiceService:
         instance.save(update_fields=update_fields)
 
         PurchaseInvoiceService.rebuild_tax_summary(instance)
+        GstTdsService.sync_contract_ledger_for_header(instance, old_scope_key=old_scope_key)
         return instance

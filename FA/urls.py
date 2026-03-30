@@ -53,6 +53,7 @@ urlpatterns = [
     path("api/sales/", include("sales.urls.api")),
     path("api/posting/", include("posting.urls")),
     path("api/", include("withholding.urls")),
+    path("api/gst-tds/", include("gst_tds.urls")),
 
     re_path(r'^swagger(?P<format>\.json|\.yaml)$',  # use re_path + raw string
             schema_view.without_ui(cache_timeout=0),

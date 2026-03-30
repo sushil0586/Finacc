@@ -255,3 +255,38 @@ class PurchaseStatutoryReturnLine(TrackingModel):
 
     def __str__(self) -> str:
         return f"ReturnLine({self.filing_id}, {self.header_id}, {self.amount})"
+
+
+class PurchaseStatutoryForm16AOfficialDocument(TrackingModel):
+    filing = models.ForeignKey(
+        PurchaseStatutoryReturn,
+        on_delete=models.CASCADE,
+        related_name="form16a_official_documents",
+    )
+    issue_no = models.PositiveIntegerField(db_index=True)
+    source = models.CharField(max_length=20, default="TRACES")
+    certificate_no = models.CharField(max_length=100, null=True, blank=True)
+    remarks = models.CharField(max_length=255, null=True, blank=True)
+    document = models.FileField(upload_to="purchase/statutory/form16a/")
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_statutory_form16a_uploaded",
+    )
+    uploaded_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("filing", "issue_no"),
+                name="uq_pur_form16a_official_filing_issue",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["filing", "issue_no"], name="ix_pur_form16a_filing_issue"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Form16AOfficial({self.filing_id}, issue={self.issue_no})"

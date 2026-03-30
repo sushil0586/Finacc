@@ -17,6 +17,7 @@ from purchase.models.purchase_core import (
 from posting.adapters.purchase_invoice import PurchaseInvoicePostingAdapter, PurchaseInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
 from posting.services.posting_service import PostingService, JLInput, IMInput
+from gst_tds.services.gst_tds_service import GstTdsService
 
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -172,6 +173,7 @@ class PurchaseInvoiceActions:
                 h.confirmed_by_id = confirmed_by_id
                 h.confirmed_at = timezone.now()
                 h.save(update_fields=["confirmed_by", "confirmed_at"])
+            GstTdsService.sync_contract_ledger_for_header(h)
             return ActionResult(h, "Already confirmed (number ensured).")
 
         # Otherwise confirm now
@@ -182,6 +184,7 @@ class PurchaseInvoiceActions:
             h.save(update_fields=["status", "confirmed_at", "confirmed_by"])
         else:
             h.save(update_fields=["status", "confirmed_at"])
+        GstTdsService.sync_contract_ledger_for_header(h)
         return ActionResult(h, "Confirmed.")
 
 
@@ -234,6 +237,7 @@ class PurchaseInvoiceActions:
 
         # AP open-item sync for payable tracking (invoice/CN/DN).
         PurchaseApService.sync_open_item_for_header(h)
+        GstTdsService.sync_contract_ledger_for_header(h)
 
         return ActionResult(h, "Posted successfully.")
 
@@ -241,6 +245,7 @@ class PurchaseInvoiceActions:
     @transaction.atomic
     def unpost(pk: int, unposted_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        old_scope_key = GstTdsService._scope_key_for_header(h)
         purchase_doc = PurchaseInvoiceActions._purchase_doc_label(h)
         if int(h.status) != int(Status.POSTED):
             raise ValueError("Only posted purchase documents can be unposted.")
@@ -389,12 +394,14 @@ class PurchaseInvoiceActions:
         h.posted_at = None
         h.posted_by_id = None
         h.save(update_fields=["status", "posted_at", "posted_by"])
+        GstTdsService.sync_contract_ledger_for_header(h, old_scope_key=old_scope_key)
         return ActionResult(h, "Unposted successfully.")
 
     @staticmethod
     @transaction.atomic
     def cancel(pk: int, cancelled_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
+        old_scope_key = GstTdsService._scope_key_for_header(h)
 
         if int(h.status) == int(Status.POSTED):
             raise ValueError("Posted document cannot be cancelled. Create a Credit Note instead.")
@@ -409,6 +416,7 @@ class PurchaseInvoiceActions:
             h.save(update_fields=["status", "cancelled_at", "cancelled_by", "cancel_reason"])
         else:
             h.save(update_fields=["status", "cancelled_at", "cancel_reason"])
+        GstTdsService.sync_contract_ledger_for_header(h, old_scope_key=old_scope_key)
         return ActionResult(h, "Cancelled.")
 
     @staticmethod
