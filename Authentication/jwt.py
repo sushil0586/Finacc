@@ -1,5 +1,4 @@
 from rest_framework.authentication import get_authorization_header, BaseAuthentication
-
 from rest_framework import exceptions
 import jwt
 from django.conf import settings
@@ -7,24 +6,13 @@ from django.utils import timezone
 from Authentication.models import AuthSession, User
 from Authentication.services import AuthSettings, AuthTokenService
 
+
 class JwtAuthentication(BaseAuthentication):
 
     def authenticate(self, request):
-        auth_header = get_authorization_header(request)
-        if not auth_header:
-            return None
-        try:
-            auth_data = auth_header.decode("utf-8").strip()
-        except Exception:
-            raise exceptions.AuthenticationFailed("Invalid authorization header.")
-
-        auth_token = auth_data.split(" ")
-        if len(auth_token) != 2:
-            raise exceptions.AuthenticationFailed("Token not valid")
-
-        token = auth_token[1].strip()
+        token = self._token_from_header(request) or self._token_from_cookie(request)
         if not token:
-            raise exceptions.AuthenticationFailed("Token not valid")
+            return None
 
         try:
             payload = AuthTokenService.decode_access_token(token)
@@ -59,9 +47,22 @@ class JwtAuthentication(BaseAuthentication):
         except User.DoesNotExist:
             raise exceptions.AuthenticationFailed("User does not exist")
 
+    def _token_from_header(self, request) -> str | None:
+        auth_header = get_authorization_header(request)
+        if not auth_header:
+            return None
+        try:
+            auth_data = auth_header.decode("utf-8").strip()
+        except Exception:
+            raise exceptions.AuthenticationFailed("Invalid authorization header.")
 
+        parts = auth_data.split(" ")
+        if len(parts) != 2:
+            raise exceptions.AuthenticationFailed("Token not valid")
 
+        token = parts[1].strip()
+        return token or None
 
-
-
-
+    def _token_from_cookie(self, request) -> str | None:
+        cookie_name = getattr(settings, "AUTH_COOKIE_NAME", "fa_access")
+        return request.COOKIES.get(cookie_name) or None

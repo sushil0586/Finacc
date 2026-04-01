@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import re
 
 from django.db.models import Q, Sum
+from django.db import transaction
 from rest_framework.exceptions import ValidationError
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
@@ -37,6 +39,59 @@ from withholding.serializers import (
     build_preview_payload,
 )
 from withholding.services import compute_withholding_preview, q2, upsert_tcs_computation
+from financial.profile_access import account_pan
+
+
+def _safe_int(raw):
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValidationError({"detail": "Query parameter must be an integer."})
+
+
+def _safe_bool(raw) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _expand_fy_values(raw: str) -> list[str]:
+    value = (raw or "").strip()
+    if not value:
+        return []
+
+    def _token(start_year: int) -> str:
+        return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+    out: list[str] = [value]
+    m_short = re.match(r"^(\d{4})-(\d{2})$", value)
+    if m_short:
+        start = int(m_short.group(1))
+        end_2 = int(m_short.group(2))
+        end_full = (start // 100) * 100 + end_2
+        if end_full < start:
+            end_full += 100
+        if end_full == start + 1:
+            token = _token(start)
+            if token not in out:
+                out.insert(0, token)
+            return out
+        if end_full > start + 1 and (end_full - start) <= 5:
+            candidates = [_token(y) for y in range(start, end_full)]
+            return list(dict.fromkeys(candidates + out))
+        return out
+
+    m_full = re.match(r"^(\d{4})-(\d{4})$", value)
+    if m_full:
+        start = int(m_full.group(1))
+        end_full = int(m_full.group(2))
+        if end_full == start + 1:
+            token = _token(start)
+            return list(dict.fromkeys([token] + out))
+        if end_full > start + 1 and (end_full - start) <= 5:
+            candidates = [_token(y) for y in range(start, end_full)]
+            return list(dict.fromkeys(candidates + out))
+    return out
 
 
 class TcsSectionListCreateAPIView(generics.ListCreateAPIView):
@@ -217,7 +272,7 @@ class TcsComputationListAPIView(generics.ListAPIView):
             qs = qs.filter(entity_id=int(entity_id))
         fy = (self.request.query_params.get("fy") or "").strip()
         if fy:
-            qs = qs.filter(fiscal_year=fy)
+            qs = qs.filter(fiscal_year__in=_expand_fy_values(fy))
         quarter = (self.request.query_params.get("quarter") or "").strip().upper()
         if quarter:
             qs = qs.filter(quarter=quarter)
@@ -227,25 +282,67 @@ class TcsComputationListAPIView(generics.ListAPIView):
 class TcsCollectionListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TcsCollectionSerializer
-    queryset = TcsCollection.objects.all().order_by("-collection_date", "-id")
+
+    def get_queryset(self):
+        qs = TcsCollection.objects.select_related("computation").all().order_by("-collection_date", "-id")
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None:
+            qs = qs.filter(computation__entity_id=entity_id)
+        fy = (self.request.query_params.get("fy") or "").strip()
+        if fy:
+            qs = qs.filter(computation__fiscal_year__in=_expand_fy_values(fy))
+        quarter = (self.request.query_params.get("quarter") or "").strip().upper()
+        if quarter:
+            qs = qs.filter(computation__quarter=quarter)
+        return qs
+
+    def perform_create(self, serializer):
+        row = serializer.save()
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None and int(row.computation.entity_id) != int(entity_id):
+            raise ValidationError({"detail": "collection computation does not belong to the requested entity scope."})
 
 
 class TcsCollectionRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TcsCollectionSerializer
-    queryset = TcsCollection.objects.all()
+
+    def get_queryset(self):
+        qs = TcsCollection.objects.select_related("computation").all()
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None:
+            qs = qs.filter(computation__entity_id=entity_id)
+        return qs
 
 
 class TcsDepositListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TcsDepositSerializer
-    queryset = TcsDeposit.objects.all().order_by("-challan_date", "-id")
+
+    def get_queryset(self):
+        qs = TcsDeposit.objects.all().order_by("-challan_date", "-id")
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None:
+            qs = qs.filter(entity_id=entity_id)
+        fy = (self.request.query_params.get("fy") or "").strip()
+        if fy:
+            qs = qs.filter(financial_year__in=_expand_fy_values(fy))
+        month = _safe_int(self.request.query_params.get("month"))
+        if month is not None:
+            qs = qs.filter(month=month)
+        return qs
 
 
 class TcsDepositRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TcsDepositSerializer
-    queryset = TcsDeposit.objects.all()
+
+    def get_queryset(self):
+        qs = TcsDeposit.objects.all()
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None:
+            qs = qs.filter(entity_id=entity_id)
+        return qs
 
 
 class TcsDepositAllocateAPIView(APIView):
@@ -270,24 +367,45 @@ class TcsDepositAllocateAPIView(APIView):
         except (TcsCollection.DoesNotExist, ValueError, TypeError):
             return Response({"detail": "Invalid collection_id."}, status=status.HTTP_400_BAD_REQUEST)
 
+        if deposit.status == TcsDeposit.Status.FILED:
+            return Response({"detail": "Cannot allocate against a filed deposit."}, status=status.HTTP_400_BAD_REQUEST)
+        if collection.status == TcsCollection.Status.CANCELLED:
+            return Response({"detail": "Cannot allocate a cancelled collection."}, status=status.HTTP_400_BAD_REQUEST)
+        if int(collection.computation.entity_id) != int(deposit.entity_id):
+            return Response({"detail": "Collection and deposit must belong to the same entity."}, status=status.HTTP_400_BAD_REQUEST)
+        if (collection.computation.fiscal_year or "").strip() and (deposit.financial_year or "").strip():
+            if str(collection.computation.fiscal_year).strip() != str(deposit.financial_year).strip():
+                return Response({"detail": "Collection and deposit financial year mismatch."}, status=status.HTTP_400_BAD_REQUEST)
+
         alloc_amount = q2(Decimal(allocated_amount))
         if alloc_amount <= Decimal("0.00"):
             return Response({"detail": "allocated_amount must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
 
-        total_alloc = (
-            TcsDepositAllocation.objects.filter(deposit=deposit)
-            .aggregate(v=Sum("allocated_amount"))
-            .get("v")
-            or Decimal("0.00")
-        )
-        if q2(total_alloc + alloc_amount) > q2(deposit.total_deposit_amount):
-            return Response({"detail": "Allocation exceeds deposit balance."}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            locked_deposit = TcsDeposit.objects.select_for_update().get(pk=deposit.pk)
+            total_alloc = (
+                TcsDepositAllocation.objects.filter(deposit=locked_deposit)
+                .aggregate(v=Sum("allocated_amount"))
+                .get("v")
+                or Decimal("0.00")
+            )
+            if q2(total_alloc + alloc_amount) > q2(locked_deposit.total_deposit_amount):
+                return Response({"detail": "Allocation exceeds deposit balance."}, status=status.HTTP_400_BAD_REQUEST)
 
-        row = TcsDepositAllocation.objects.create(
-            deposit=deposit,
-            collection=collection,
-            allocated_amount=alloc_amount,
-        )
+            collection_alloc_total = (
+                TcsDepositAllocation.objects.filter(collection=collection)
+                .aggregate(v=Sum("allocated_amount"))
+                .get("v")
+                or Decimal("0.00")
+            )
+            if q2(collection_alloc_total + alloc_amount) > q2(collection.tcs_collected_amount):
+                return Response({"detail": "Allocation exceeds collection amount."}, status=status.HTTP_400_BAD_REQUEST)
+
+            row = TcsDepositAllocation.objects.create(
+                deposit=locked_deposit,
+                collection=collection,
+                allocated_amount=alloc_amount,
+            )
         return Response(TcsDepositAllocationSerializer(row).data, status=status.HTTP_201_CREATED)
 
 
@@ -304,10 +422,26 @@ class TcsReturn27EqListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = TcsQuarterlyReturnSerializer
 
     def get_queryset(self):
-        return TcsQuarterlyReturn.objects.filter(form_name="27EQ").order_by("-id")
+        qs = TcsQuarterlyReturn.objects.filter(form_name="27EQ").order_by("-id")
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None:
+            qs = qs.filter(entity_id=entity_id)
+        fy = (self.request.query_params.get("fy") or "").strip()
+        if fy:
+            qs = qs.filter(fy__in=_expand_fy_values(fy))
+        quarter = (self.request.query_params.get("quarter") or "").strip().upper()
+        if quarter:
+            qs = qs.filter(quarter=quarter)
+        return qs
 
     def perform_create(self, serializer):
-        serializer.save(form_name="27EQ")
+        entity = serializer.validated_data.get("entity")
+        fy = (serializer.validated_data.get("fy") or "").strip()
+        quarter = (serializer.validated_data.get("quarter") or "").strip().upper()
+        snapshot = serializer.validated_data.get("json_snapshot")
+        if not snapshot and entity and fy and quarter:
+            snapshot = _build_tcs_27eq_snapshot(entity_id=int(entity.id), fy=fy, quarter=quarter)
+        serializer.save(form_name="27EQ", json_snapshot=snapshot)
 
 
 class TcsReturn27EqRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -315,7 +449,51 @@ class TcsReturn27EqRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
     serializer_class = TcsQuarterlyReturnSerializer
 
     def get_queryset(self):
-        return TcsQuarterlyReturn.objects.filter(form_name="27EQ")
+        qs = TcsQuarterlyReturn.objects.filter(form_name="27EQ")
+        entity_id = _safe_int(self.request.query_params.get("entity_id"))
+        if entity_id is not None:
+            qs = qs.filter(entity_id=entity_id)
+        return qs
+
+    def perform_update(self, serializer):
+        entity = serializer.validated_data.get("entity") or serializer.instance.entity
+        fy = (serializer.validated_data.get("fy") or serializer.instance.fy or "").strip()
+        quarter = (serializer.validated_data.get("quarter") or serializer.instance.quarter or "").strip().upper()
+        snapshot = serializer.validated_data.get("json_snapshot")
+        if not snapshot and entity and fy and quarter:
+            snapshot = _build_tcs_27eq_snapshot(entity_id=int(entity.id), fy=fy, quarter=quarter)
+        serializer.save(form_name="27EQ", json_snapshot=snapshot)
+
+
+class TcsReturn27EqPrefillAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        entity_id = _safe_int(request.query_params.get("entity_id"))
+        fy = (request.query_params.get("fy") or "").strip()
+        quarter = (request.query_params.get("quarter") or "").strip().upper()
+        if entity_id is None:
+            raise ValidationError({"entity_id": ["This query param is required."]})
+        if not fy:
+            raise ValidationError({"fy": ["This query param is required."]})
+        if quarter not in {"Q1", "Q2", "Q3", "Q4"}:
+            raise ValidationError({"quarter": ["quarter must be one of Q1/Q2/Q3/Q4."]})
+
+        snapshot = _build_tcs_27eq_snapshot(entity_id=entity_id, fy=fy, quarter=quarter)
+        existing = (
+            TcsQuarterlyReturn.objects.filter(entity_id=entity_id, fy__in=_expand_fy_values(fy), quarter=quarter, form_name="27EQ")
+            .order_by("-id")
+            .first()
+        )
+        return Response(
+            {
+                "entity_id": entity_id,
+                "fy": fy,
+                "quarter": quarter,
+                "snapshot": snapshot,
+                "existing_return": TcsQuarterlyReturnSerializer(existing).data if existing else None,
+            }
+        )
 
 
 class TcsReportLedgerAPIView(APIView):
@@ -328,7 +506,7 @@ class TcsReportLedgerAPIView(APIView):
             qs = qs.filter(entity_id=int(entity_id))
         fy = (request.query_params.get("fy") or "").strip()
         if fy:
-            qs = qs.filter(fiscal_year=fy)
+            qs = qs.filter(fiscal_year__in=_expand_fy_values(fy))
 
         out = qs.values("section__section_code").annotate(
             total_base=Sum("tcs_base_amount"),
@@ -365,16 +543,19 @@ class TcsReportFilingPackAPIView(APIView):
 
         entity_id = int(entity_id)
         months = self._quarter_months(quarter)
+        exceptions_only = _safe_bool(request.query_params.get("exceptions_only"))
+        pending_only = _safe_bool(request.query_params.get("pending_only"))
 
+        fy_candidates = _expand_fy_values(fy)
         computations = (
             TcsComputation.objects.select_related("party_account", "section")
             .prefetch_related("collections__deposit_allocations__deposit")
-            .filter(entity_id=entity_id, fiscal_year=fy, quarter=quarter)
+            .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
             .order_by("doc_date", "id")
         )
 
-        deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year=fy, month__in=months).order_by("challan_date", "id")
-        return_row = TcsQuarterlyReturn.objects.filter(entity_id=entity_id, fy=fy, quarter=quarter, form_name="27EQ").order_by("-id").first()
+        deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months).order_by("challan_date", "id")
+        return_row = TcsQuarterlyReturn.objects.filter(entity_id=entity_id, fy__in=fy_candidates, quarter=quarter, form_name="27EQ").order_by("-id").first()
 
         rows = []
         section_totals = {}
@@ -386,7 +567,7 @@ class TcsReportFilingPackAPIView(APIView):
             party = comp.party_account
             section = comp.section
             party_name = (getattr(party, "legalname", None) or getattr(party, "accountname", None) or "").strip()
-            pan = (getattr(party, "pan", None) or "").strip()
+            pan = (account_pan(party) or getattr(party, "pan", None) or "").strip()
 
             comp_collections = list(comp.collections.all().order_by("collection_date", "id"))
             if not comp_collections:
@@ -465,11 +646,21 @@ class TcsReportFilingPackAPIView(APIView):
                         "deposit_mismatch": q2(comp_alloc_total) != q2(comp_collected_total),
                         "reversal_case": row["is_reversal"],
                     }
+                    if exceptions_only and not any(bool(v) for v in row["exceptions"].values()):
+                        continue
+                    if pending_only and not (
+                        row["exceptions"]["not_collected"]
+                        or row["exceptions"]["not_deposited"]
+                        or row["exceptions"]["partially_allocated"]
+                        or row["exceptions"]["deposit_mismatch"]
+                    ):
+                        continue
                     rows.append(row)
 
         total_deposited = q2(deposits.aggregate(v=Sum("total_deposit_amount")).get("v") or Decimal("0.00"))
         pending_collection = q2(total_tcs - total_collected)
         pending_deposit = q2(total_collected - total_deposited)
+        exception_row_count = sum(1 for r in rows if any(bool(v) for v in (r.get("exceptions") or {}).values()))
 
         return Response(
             {
@@ -484,11 +675,89 @@ class TcsReportFilingPackAPIView(APIView):
                     "pending_collection": q2(pending_collection),
                     "pending_deposit": q2(pending_deposit),
                     "return_status": return_row.status if return_row else "NOT_CREATED",
+                    "row_count": len(rows),
+                    "exception_row_count": exception_row_count,
                 },
                 "rows": rows,
                 "section_summary": list(section_totals.values()),
             }
         )
+
+
+def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
+    quarter = (quarter or "").strip().upper()
+    months = TcsReportFilingPackAPIView._quarter_months(quarter)
+    fy_candidates = _expand_fy_values(fy)
+    computations = (
+        TcsComputation.objects.select_related("party_account", "section")
+        .prefetch_related("collections__deposit_allocations")
+        .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
+    )
+    deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months)
+
+    total_base = q2(computations.aggregate(v=Sum("tcs_base_amount")).get("v") or Decimal("0.00"))
+    total_tcs = q2(computations.aggregate(v=Sum("tcs_amount")).get("v") or Decimal("0.00"))
+    total_collected = q2(
+        TcsCollection.objects.filter(computation__in=computations).exclude(status=TcsCollection.Status.CANCELLED).aggregate(v=Sum("tcs_collected_amount")).get("v")
+        or Decimal("0.00")
+    )
+    total_deposited = q2(deposits.aggregate(v=Sum("total_deposit_amount")).get("v") or Decimal("0.00"))
+
+    missing_pan_count = 0
+    missing_section_count = 0
+    not_collected_count = 0
+    not_deposited_count = 0
+    partially_allocated_count = 0
+    deposit_mismatch_count = 0
+
+    for comp in computations:
+        pan = (account_pan(comp.party_account) or getattr(comp.party_account, "pan", None) or "").strip()
+        if not pan:
+            missing_pan_count += 1
+        if not comp.section_id:
+            missing_section_count += 1
+
+        comp_collected_total = Decimal("0.00")
+        comp_alloc_total = Decimal("0.00")
+        for col in comp.collections.all():
+            if col.status == TcsCollection.Status.CANCELLED:
+                continue
+            comp_collected_total += q2(col.tcs_collected_amount or Decimal("0.00"))
+            comp_alloc_total += q2(col.deposit_allocations.aggregate(v=Sum("allocated_amount")).get("v") or Decimal("0.00"))
+
+        comp_tcs = q2(comp.tcs_amount or Decimal("0.00"))
+        if comp_tcs > Decimal("0.00") and comp_collected_total <= Decimal("0.00"):
+            not_collected_count += 1
+        if comp_collected_total > Decimal("0.00") and comp_alloc_total <= Decimal("0.00"):
+            not_deposited_count += 1
+        if comp_alloc_total > Decimal("0.00") and comp_alloc_total < comp_collected_total:
+            partially_allocated_count += 1
+        if q2(comp_alloc_total) != q2(comp_collected_total):
+            deposit_mismatch_count += 1
+
+    return {
+        "entity_id": entity_id,
+        "fy": fy,
+        "quarter": quarter,
+        "totals": {
+            "total_base": total_base,
+            "total_tcs": total_tcs,
+            "total_collected": total_collected,
+            "total_deposited": total_deposited,
+            "pending_collection": q2(total_tcs - total_collected),
+            "pending_deposit": q2(total_collected - total_deposited),
+        },
+        "counts": {
+            "computations": computations.count(),
+            "deposits": deposits.count(),
+            "missing_pan": missing_pan_count,
+            "missing_section": missing_section_count,
+            "not_collected": not_collected_count,
+            "not_deposited": not_deposited_count,
+            "partially_allocated": partially_allocated_count,
+            "deposit_mismatch": deposit_mismatch_count,
+        },
+    }
 
 
 class GstTcsEcoProfileListCreateAPIView(generics.ListCreateAPIView):

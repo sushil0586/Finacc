@@ -1,5 +1,6 @@
 import logging
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import permissions, response, status
 from rest_framework.exceptions import AuthenticationFailed
@@ -43,6 +44,34 @@ def _client_ip(request):
     if forwarded_for:
         return forwarded_for.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR")
+
+
+def _set_auth_cookies(response, access_token, refresh_token, session):
+    """Attach httpOnly JWT cookies to a response."""
+    cookie_kwargs = dict(
+        httponly=settings.AUTH_COOKIE_HTTPONLY,
+        secure=settings.AUTH_COOKIE_SECURE,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        path=settings.AUTH_COOKIE_PATH,
+    )
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        value=access_token,
+        max_age=int((session.expires_at - session.issued_at).total_seconds()),
+        **cookie_kwargs,
+    )
+    response.set_cookie(
+        key=settings.AUTH_REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=int((session.refresh_expires_at - session.issued_at).total_seconds()),
+        **cookie_kwargs,
+    )
+
+
+def _clear_auth_cookies(response):
+    """Remove auth cookies from the browser."""
+    response.delete_cookie(settings.AUTH_COOKIE_NAME, path=settings.AUTH_COOKIE_PATH)
+    response.delete_cookie(settings.AUTH_REFRESH_COOKIE_NAME, path=settings.AUTH_COOKIE_PATH)
 
 
 class AuthApiView(ListAPIView):
@@ -178,9 +207,6 @@ class LoginApiView(GenericAPIView):
         data = {
             "email": user.email,
             "id": user.id,
-            "token": access_token,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
             "token_type": "Bearer",
             "expires_in": int((session.expires_at - session.issued_at).total_seconds()),
             "refresh_expires_in": int((session.refresh_expires_at - session.issued_at).total_seconds()),
@@ -194,7 +220,9 @@ class LoginApiView(GenericAPIView):
                 "is_active": user.is_active,
             },
         }
-        return response.Response(data, status=status.HTTP_200_OK)
+        resp = response.Response(data, status=status.HTTP_200_OK)
+        _set_auth_cookies(resp, access_token, refresh_token, session)
+        return resp
 
 
 class ChangePasswordView(UpdateAPIView):
@@ -249,6 +277,10 @@ class LogoutApiView(GenericAPIView):
         if not token and auth_header.startswith("Bearer "):
             token = auth_header.split(" ", 1)[1].strip()
 
+        # Fall back to httpOnly access cookie
+        if not token:
+            token = request.COOKIES.get(settings.AUTH_COOKIE_NAME)
+
         if not token:
             raise AuthenticationFailed("Token is required for logout.")
 
@@ -262,7 +294,9 @@ class LogoutApiView(GenericAPIView):
             details={"session_key": session.session_key},
         )
 
-        return Response({"message": "Logged out successfully."}, status=status.HTTP_200_OK)
+        resp = Response({"message": "Logged out successfully."}, status=status.HTTP_200_OK)
+        _clear_auth_cookies(resp)
+        return resp
 
 
 class RefreshTokenApiView(GenericAPIView):
@@ -274,18 +308,23 @@ class RefreshTokenApiView(GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # Cookie takes priority; fall back to request body for backwards compat
+        refresh_token_value = (
+            request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
+            or serializer.validated_data.get("refresh_token", "")
+        )
+        if not refresh_token_value:
+            raise AuthenticationFailed("Refresh token is required.")
+
         session, access_token, refresh_token = AuthTokenService.rotate_refresh_token(
-            serializer.validated_data["refresh_token"],
+            refresh_token_value,
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
             ip_address=_client_ip(request),
         )
         user = session.user
 
-        return Response(
+        resp = Response(
             {
-                "token": access_token,
-                "access_token": access_token,
-                "refresh_token": refresh_token,
                 "token_type": "Bearer",
                 "expires_in": int((session.expires_at - session.issued_at).total_seconds()),
                 "refresh_expires_in": int((session.refresh_expires_at - session.issued_at).total_seconds()),
@@ -301,6 +340,8 @@ class RefreshTokenApiView(GenericAPIView):
             },
             status=status.HTTP_200_OK,
         )
+        _set_auth_cookies(resp, access_token, refresh_token, session)
+        return resp
 
 
 class ForgotPasswordApiView(GenericAPIView):

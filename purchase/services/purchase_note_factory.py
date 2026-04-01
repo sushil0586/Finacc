@@ -73,6 +73,7 @@ class PurchaseNoteFactory:
         *,
         invoice_id: int,
         note_type: int,
+        note_reason: str = "qty_return",
         created_by_id: int | None = None,
     ) -> NoteCreateResult:
         src = (
@@ -96,6 +97,7 @@ class PurchaseNoteFactory:
             raise ValueError("note_type must be CREDIT_NOTE or DEBIT_NOTE.")
 
         sign = PurchaseNoteFactory._sign_for_note(note_type)
+        is_qty_return = (note_reason == PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
 
         # Pick a doc_code series for the note (usually separate series PCN / PDN)
         settings = PurchaseSettingsService.get_settings(src.entity_id, src.subentity_id)
@@ -168,6 +170,10 @@ class PurchaseNoteFactory:
 
             status=Status.DRAFT,
 
+            # CN/DN reason — drives inventory impact
+            note_reason=note_reason,
+            affects_inventory=is_qty_return,
+
             # scope
             subentity=src.subentity,
             entity=src.entity,
@@ -192,7 +198,8 @@ class PurchaseNoteFactory:
                     hsn_sac=ln.hsn_sac,
 
                     uom=ln.uom,
-                    qty=ln.qty,   # qty stays positive
+                    # price_diff notes carry qty=0: no inventory reversal needed
+                    qty=ln.qty if is_qty_return else 0,
                     rate=ln.rate,
 
                     taxability=ln.taxability,

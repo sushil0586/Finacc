@@ -59,6 +59,11 @@ class PurchaseInvoiceHeader(models.Model):
         REVERSED = 3, "Reversed"
         BLOCKED = 4, "Blocked (17(5)/etc)"
 
+    class NoteReason(models.TextChoices):
+        QUANTITY_RETURN = "qty_return", "Quantity Return"
+        PRICE_DIFFERENCE = "price_diff", "Price Difference"
+        OTHER = "other", "Other"
+
     class GstTdsStatus(models.IntegerChoices):
         NA = 0, "Not Applicable"
         ELIGIBLE = 1, "Eligible"
@@ -233,7 +238,20 @@ class PurchaseInvoiceHeader(models.Model):
     vendor_gst_tds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
     vendor_gst_tds_notes = models.CharField(max_length=255, null=True, blank=True)
 
-    
+    # CN/DN reason — controls inventory impact and UI behaviour
+    note_reason = models.CharField(
+        max_length=20,
+        choices=NoteReason.choices,
+        null=True,
+        blank=True,
+        help_text="Applicable for Credit Note / Debit Note only",
+    )
+    affects_inventory = models.BooleanField(
+        default=False,
+        help_text="If True, posting will reverse/add inventory movement for this CN/DN",
+    )
+
+
 
     gst_tds_status = models.IntegerField(choices=GstTdsStatus.choices, default=GstTdsStatus.NA, db_index=True)
     match_status = models.CharField(max_length=10, choices=MatchStatus.choices, default=MatchStatus.NA, db_index=True)

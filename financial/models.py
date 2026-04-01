@@ -271,7 +271,7 @@ class accounttype(TrackingModel):
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):
-        return f"{self.accounttypename} "
+        return f"{self.accounttypename}"
 
     class Meta:
         constraints = [
@@ -422,15 +422,15 @@ class account(TrackingModel):
 
     accountcode = models.IntegerField(verbose_name=_("Account Code"), null=True, blank=True, db_index=True)
 
-    accountname = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Account Name"), db_index=True)
+    accountname = models.CharField(max_length=200, null=True, blank=True, verbose_name=_("Account Name"), db_index=True)
     legalname = models.CharField(max_length=255, null=True, blank=True)
 
     contraaccount = models.ForeignKey(
         "self",
         null=True,
         blank=True,
-        on_delete=models.CASCADE,
-        verbose_name=_("conta account"),
+        on_delete=models.PROTECT,
+        verbose_name=_("contra account"),
     )
 
     dateofreg = models.DateTimeField(verbose_name="Date of Registration", null=True, blank=True)
