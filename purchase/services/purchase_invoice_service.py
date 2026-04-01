@@ -433,9 +433,10 @@ class PurchaseInvoiceService:
                     raise ValueError(f"Line {i}: product_desc is required when product is not provided.")
                 ln["is_service"] = True
 
-            # qty sanity
+            # qty sanity — price_diff notes send qty=0 intentionally
             qty = q4(ln.get("qty"))
-            if qty <= 0:
+            note_reason = attrs.get("note_reason") or ""
+            if qty <= 0 and note_reason != "price_diff":
                 raise ValueError(f"Line {i}: qty must be > 0")
 
             free_qty = q4(ln.get("free_qty", ZERO4))

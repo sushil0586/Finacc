@@ -1,5 +1,6 @@
 from django.db.models import Prefetch, Q
-from rest_framework import permissions, status
+from django.db import IntegrityError
+from rest_framework import permissions, serializers, status
 from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -28,6 +29,28 @@ from financial.services import build_ledger_balance_rows, create_account_with_sy
 
 def _include_inactive(request):
     return str(request.query_params.get("include_inactive", "")).lower() in {"1", "true", "yes"}
+
+
+def _active_filter_value(request):
+    raw = str(request.query_params.get("isactive", "")).strip().lower()
+    if raw in {"1", "true", "yes", "active"}:
+        return True
+    if raw in {"0", "false", "no", "inactive"}:
+        return False
+    if raw in {"all", "*"}:
+        return None
+    return None
+
+
+def _apply_active_filter(qs, request):
+    active_flag = _active_filter_value(request)
+    if active_flag is True:
+        return qs.filter(isactive=True)
+    if active_flag is False:
+        return qs.filter(isactive=False)
+    if _include_inactive(request):
+        return qs
+    return qs.filter(isactive=True)
 
 
 def _linked_account_id(ledger):
@@ -84,14 +107,16 @@ class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
         qs = accounttype.objects.all()
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
-        if not _include_inactive(self.request):
-            qs = qs.filter(isactive=True)
+        qs = _apply_active_filter(qs, self.request)
         if q:
             qs = qs.filter(Q(accounttypename__icontains=q) | Q(accounttypecode__icontains=q))
         return qs.order_by("accounttypename")
 
     def perform_create(self, serializer):
-        serializer.save(createdby=self.request.user)
+        try:
+            serializer.save(createdby=self.request.user)
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "Duplicate account type code/name for this entity."})
 
 
 class ShippingDetailsListCreateAPIView(ListCreateAPIView):
@@ -219,6 +244,12 @@ class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
     def get_queryset(self):
         return accounttype.objects.all()
 
+    def perform_update(self, serializer):
+        try:
+            serializer.save()
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "Duplicate account type code/name for this entity."})
+
 
 class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -230,8 +261,7 @@ class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
         qs = accountHead.objects.select_related("accountheadsr", "accounttype")
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
-        if not _include_inactive(self.request):
-            qs = qs.filter(isactive=True)
+        qs = _apply_active_filter(qs, self.request)
         if q:
             filters = Q(name__icontains=q) | Q(description__icontains=q)
             if q.isdigit():
@@ -240,7 +270,10 @@ class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
         return qs.order_by("code", "name")
 
     def perform_create(self, serializer):
-        serializer.save(createdby=self.request.user)
+        try:
+            serializer.save(createdby=self.request.user)
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "Duplicate account head code/name for this entity."})
 
 
 class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
@@ -249,6 +282,12 @@ class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
 
     def get_queryset(self):
         return accountHead.objects.select_related("accountheadsr", "accounttype")
+
+    def perform_update(self, serializer):
+        try:
+            serializer.save()
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "Duplicate account head code/name for this entity."})
 
 
 class LedgerListCreateAPIView(ListCreateAPIView):
@@ -268,8 +307,7 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         )
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
-        if not _include_inactive(self.request):
-            qs = qs.filter(isactive=True)
+        qs = _apply_active_filter(qs, self.request)
         if q:
             filters = Q(name__icontains=q) | Q(legal_name__icontains=q)
             if q.isdigit():

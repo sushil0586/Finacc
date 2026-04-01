@@ -137,7 +137,13 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
         purchase_account = attrs.get("purchase_account")
         product_desc = (attrs.get("product_desc") or "").strip()
 
-        if qty <= 0:
+        # For price_diff notes qty is intentionally 0 — skip the check.
+        # Read note_reason from parent's initial_data (available before parent validate() runs).
+        root = self.root
+        note_reason = ""
+        if root is not None and hasattr(root, "initial_data"):
+            note_reason = root.initial_data.get("note_reason") or ""
+        if qty <= 0 and note_reason != "price_diff":
             raise serializers.ValidationError({"qty": "Qty must be > 0"})
         if rate < 0:
             raise serializers.ValidationError({"rate": "Rate cannot be negative"})
@@ -403,6 +409,10 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "gst_tds_igst_rate",
             "gst_tds_contract_summary",
 
+            # CN/DN reason
+            "note_reason",
+            "affects_inventory",
+
             "lines",
             "charges",
         ]
@@ -527,6 +537,23 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         if inst and inst.status in (Status.POSTED, Status.CANCELLED):
             raise serializers.ValidationError("Cannot edit a POSTED or CANCELLED purchase document.")
+
+        # note_reason / affects_inventory are only meaningful on CN/DN
+        doc_type = attrs.get("doc_type") or getattr(inst, "doc_type", None)
+        note_reason = attrs.get("note_reason") or getattr(inst, "note_reason", None)
+        is_note = doc_type in (
+            PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+        )
+        if not is_note:
+            attrs["note_reason"] = None
+            attrs["affects_inventory"] = False
+        elif note_reason:
+            # keep affects_inventory consistent with note_reason; frontend may also send it
+            attrs["affects_inventory"] = (note_reason == PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
+
+        # propagate note_reason into context so nested line serializer can skip qty>0 check
+        self.context["note_reason"] = note_reason or ""
 
         # Lock period validation
         if entity and bill_date:
@@ -897,6 +924,9 @@ class PurchaseInvoiceSearchSerializer(serializers.ModelSerializer):
             "itc_claim_period",
             "itc_block_reason",
 
+            "note_reason",
+            "affects_inventory",
+
             "total_taxable",
             "total_gst",
             "round_off",
@@ -955,6 +985,8 @@ class PurchaseInvoiceListSerializer(serializers.ModelSerializer):
             "gst_tds_enabled",
             "gst_tds_amount",
             "match_status",
+            "note_reason",
+            "affects_inventory",
             "entity",
             "entityfinid",
             "subentity",

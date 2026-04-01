@@ -538,6 +538,75 @@ class _CsvJsonRenderer(JSONRenderer):
     format = "csv"
 
 
+def _xlsx_response_from_rows(*, rows, filename: str, sheet_name: str, headers: list[str]) -> HttpResponse:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    ws.append(headers)
+    for row in rows:
+        ws.append([row.get(h) for h in headers])
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    ws.freeze_panes = "A2"
+    for col_idx, header in enumerate(headers, start=1):
+        col = get_column_letter(col_idx)
+        max_len = len(str(header))
+        for r in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+            value = r[0].value
+            if value is None:
+                continue
+            max_len = max(max_len, len(str(value)))
+        ws.column_dimensions[col].width = min(max(12, max_len + 2), 42)
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    response = HttpResponse(
+        out.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def _pdf_response_from_rows(*, rows, filename: str, title: str, headers: list[str]) -> HttpResponse:
+    out = BytesIO()
+    c = canvas.Canvas(out, pagesize=A4)
+    width, height = A4
+    y = height - 40
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(40, y, title)
+    y -= 18
+    c.setFont("Helvetica", 9)
+    c.drawString(40, y, f"Generated on {timezone.localtime().strftime('%Y-%m-%d %H:%M:%S')}")
+    y -= 18
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(40, y, " | ".join(headers))
+    y -= 10
+    c.line(40, y, width - 40, y)
+    y -= 10
+    c.setFont("Helvetica", 8)
+    for row in rows:
+        if y < 50:
+            c.showPage()
+            y = height - 40
+            c.setFont("Helvetica-Bold", 8)
+            c.drawString(40, y, " | ".join(headers))
+            y -= 10
+            c.line(40, y, width - 40, y)
+            y -= 10
+            c.setFont("Helvetica", 8)
+        line = " | ".join(str(row.get(h) or "") for h in headers)
+        c.drawString(40, y, line[:200])
+        y -= 10
+    c.showPage()
+    c.save()
+    out.seek(0)
+    response = HttpResponse(out.getvalue(), content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
 class PurchaseStatutoryChallanDetailAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -707,20 +776,33 @@ class PurchaseStatutoryChallanExportAPIView(APIView):
         tax_type = request.query_params.get("tax_type")
         if tax_type:
             qs = qs.filter(tax_type=tax_type)
+        headers = [
+            "id", "tax_type", "challan_no", "challan_date", "period_from", "period_to",
+            "amount", "interest_amount", "late_fee_amount", "penalty_amount", "status", "cin_no", "bsr_code",
+        ]
         rows = list(qs.order_by("-challan_date", "-id").values(
             "id", "tax_type", "challan_no", "challan_date", "period_from", "period_to",
             "amount", "interest_amount", "late_fee_amount", "penalty_amount", "status", "cin_no", "bsr_code"
         ))
 
-        if fmt in ("xlsx", "pdf"):
-            # lightweight fallback without external dependencies
-            return Response(
-                {"format": fmt, "rows": rows, "note": "Structured export payload. File rendering can be done by frontend/report engine."}
+        if fmt == "xlsx":
+            return _xlsx_response_from_rows(
+                rows=rows,
+                filename="purchase_statutory_challans.xlsx",
+                sheet_name="challans",
+                headers=headers,
+            )
+        if fmt == "pdf":
+            return _pdf_response_from_rows(
+                rows=rows,
+                filename="purchase_statutory_challans.pdf",
+                title="Purchase Statutory Challans",
+                headers=headers,
             )
 
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="purchase_statutory_challans.csv"'
-        writer = csv.DictWriter(response, fieldnames=list(rows[0].keys()) if rows else ["id"])
+        writer = csv.DictWriter(response, fieldnames=headers)
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
@@ -747,20 +829,33 @@ class PurchaseStatutoryReturnExportAPIView(APIView):
         tax_type = request.query_params.get("tax_type")
         if tax_type:
             qs = qs.filter(tax_type=tax_type)
+        headers = [
+            "id", "tax_type", "return_code", "period_from", "period_to",
+            "amount", "interest_amount", "late_fee_amount", "penalty_amount", "status", "ack_no", "arn_no",
+        ]
         rows = list(qs.order_by("-period_to", "-id").values(
             "id", "tax_type", "return_code", "period_from", "period_to",
             "amount", "interest_amount", "late_fee_amount", "penalty_amount", "status", "ack_no", "arn_no"
         ))
 
-        if fmt in ("xlsx", "pdf"):
-            # lightweight fallback without external dependencies
-            return Response(
-                {"format": fmt, "rows": rows, "note": "Structured export payload. File rendering can be done by frontend/report engine."}
+        if fmt == "xlsx":
+            return _xlsx_response_from_rows(
+                rows=rows,
+                filename="purchase_statutory_returns.xlsx",
+                sheet_name="returns",
+                headers=headers,
+            )
+        if fmt == "pdf":
+            return _pdf_response_from_rows(
+                rows=rows,
+                filename="purchase_statutory_returns.pdf",
+                title="Purchase Statutory Returns",
+                headers=headers,
             )
 
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="purchase_statutory_returns.csv"'
-        writer = csv.DictWriter(response, fieldnames=list(rows[0].keys()) if rows else ["id"])
+        writer = csv.DictWriter(response, fieldnames=headers)
         writer.writeheader()
         for r in rows:
             writer.writerow(r)

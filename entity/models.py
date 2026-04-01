@@ -390,6 +390,9 @@ class EntityComplianceProfile(TrackingModel):
     msme_category = models.CharField(max_length=20, choices=Entity.MsmeCategory.choices, null=True, blank=True)
     createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
+    def __str__(self):
+        return f"Compliance Profile - {self.entity}"
+
 
 class EntityOwnershipV2(TrackingModel):
     class OwnershipType(models.TextChoices):
@@ -558,6 +561,9 @@ class SubEntityCapability(TrackingModel):
     can_stock = models.BooleanField(default=True)
     can_bank = models.BooleanField(default=True)
 
+    def __str__(self):
+        return f"Capability - {self.subentity}"
+
 
 class UserEntityContext(TrackingModel):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="entity_contexts")
@@ -565,6 +571,9 @@ class UserEntityContext(TrackingModel):
     entityfinid = models.ForeignKey("EntityFinancialYear", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     subentity = models.ForeignKey("SubEntity", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    def __str__(self):
+        return f"{self.user} @ {self.entity}"
 
     class Meta:
         constraints = [

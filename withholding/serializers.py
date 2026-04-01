@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import re
 
+from django.db.models import Sum
 from rest_framework import serializers
 
 from withholding.models import (
@@ -24,6 +26,24 @@ from withholding.services import (
     determine_fy_quarter,
     q2,
 )
+
+
+def _is_valid_fy_label(value: str) -> bool:
+    raw = (value or "").strip()
+    m_short = re.match(r"^(\d{4})-(\d{2})$", raw)
+    if m_short:
+        start = int(m_short.group(1))
+        end_2 = int(m_short.group(2))
+        end_full = (start // 100) * 100 + end_2
+        if end_full < start:
+            end_full += 100
+        return end_full == (start + 1)
+    m_full = re.match(r"^(\d{4})-(\d{4})$", raw)
+    if m_full:
+        start = int(m_full.group(1))
+        end_full = int(m_full.group(2))
+        return end_full == (start + 1)
+    return False
 
 
 class WithholdingSectionSerializer(serializers.ModelSerializer):
@@ -147,11 +167,57 @@ class TcsComputationSerializer(serializers.ModelSerializer):
 
 
 class TcsCollectionSerializer(serializers.ModelSerializer):
+    status = serializers.ChoiceField(
+        choices=list(TcsCollection.Status.choices) + [("CLOSED", "Closed")],
+        required=False,
+    )
+
     def validate_status(self, value):
         v = (value or "").strip().upper()
         if v == "CLOSED":
             return TcsCollection.Status.ALLOCATED
         return v
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        instance = getattr(self, "instance", None)
+        computation = data.get("computation") or getattr(instance, "computation", None)
+        collection_date = data.get("collection_date") or getattr(instance, "collection_date", None)
+        amount_received = data.get("amount_received")
+        if amount_received is None and instance is not None:
+            amount_received = instance.amount_received
+        tcs_collected_amount = data.get("tcs_collected_amount")
+        if tcs_collected_amount is None and instance is not None:
+            tcs_collected_amount = instance.tcs_collected_amount
+
+        if computation is None:
+            return data
+
+        if computation.status == TcsComputation.Status.REVERSED:
+            raise serializers.ValidationError({"computation": "Cannot collect TCS for a reversed computation."})
+        if q2(computation.tcs_amount or Decimal("0.00")) <= Decimal("0.00"):
+            raise serializers.ValidationError({"computation": "Collection is allowed only when computed TCS amount is greater than 0."})
+        if collection_date and computation.doc_date and collection_date < computation.doc_date:
+            raise serializers.ValidationError({"collection_date": "Collection date cannot be before computation document date."})
+
+        amount_received = q2(amount_received or Decimal("0.00"))
+        tcs_collected_amount = q2(tcs_collected_amount or Decimal("0.00"))
+        if tcs_collected_amount <= Decimal("0.00"):
+            raise serializers.ValidationError({"tcs_collected_amount": "Collected amount must be greater than 0."})
+        if amount_received < tcs_collected_amount:
+            raise serializers.ValidationError({"tcs_collected_amount": "TCS collected amount cannot exceed amount received."})
+
+        existing_total = (
+            TcsCollection.objects.filter(computation=computation)
+            .exclude(pk=getattr(instance, "pk", None))
+            .exclude(status=TcsCollection.Status.CANCELLED)
+            .aggregate(v=Sum("tcs_collected_amount"))
+            .get("v")
+            or Decimal("0.00")
+        )
+        if q2(existing_total + tcs_collected_amount) > q2(computation.tcs_amount):
+            raise serializers.ValidationError({"tcs_collected_amount": "Total collections cannot exceed computed TCS amount."})
+        return data
 
     class Meta:
         model = TcsCollection
@@ -171,6 +237,42 @@ class TcsCollectionSerializer(serializers.ModelSerializer):
 
 
 class TcsDepositSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        instance = getattr(self, "instance", None)
+
+        entity = data.get("entity") or getattr(instance, "entity", None)
+        financial_year = (data.get("financial_year") or getattr(instance, "financial_year", "") or "").strip()
+        month = data.get("month")
+        if month is None and instance is not None:
+            month = instance.month
+        challan_no = (data.get("challan_no") or getattr(instance, "challan_no", "") or "").strip()
+        total_deposit_amount = data.get("total_deposit_amount")
+        if total_deposit_amount is None and instance is not None:
+            total_deposit_amount = instance.total_deposit_amount
+
+        if month is not None and (int(month) < 1 or int(month) > 12):
+            raise serializers.ValidationError({"month": "Month must be between 1 and 12."})
+        if financial_year and not _is_valid_fy_label(financial_year):
+            raise serializers.ValidationError({"financial_year": "Financial year must be like 2025-26 (single-year span)."})
+
+        if q2(total_deposit_amount or Decimal("0.00")) <= Decimal("0.00"):
+            raise serializers.ValidationError({"total_deposit_amount": "Deposit amount must be greater than 0."})
+
+        if entity is not None and financial_year and challan_no:
+            clash_qs = TcsDeposit.objects.filter(
+                entity=entity,
+                financial_year=financial_year,
+                challan_no__iexact=challan_no,
+            )
+            if instance is not None:
+                clash_qs = clash_qs.exclude(pk=instance.pk)
+            if clash_qs.exists():
+                raise serializers.ValidationError(
+                    {"challan_no": "Challan number already exists for this entity and financial year."}
+                )
+        return data
+
     class Meta:
         model = TcsDeposit
         fields = [
@@ -200,6 +302,55 @@ class TcsDepositAllocationSerializer(serializers.ModelSerializer):
 
 
 class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        instance = getattr(self, "instance", None)
+        fy = (data.get("fy") or getattr(instance, "fy", "") or "").strip()
+        quarter = (data.get("quarter") or getattr(instance, "quarter", "") or "").strip().upper()
+        form_name = (data.get("form_name") or getattr(instance, "form_name", "") or "").strip().upper()
+        return_type = data.get("return_type") or getattr(instance, "return_type", TcsQuarterlyReturn.ReturnType.ORIGINAL)
+        entity = data.get("entity") or getattr(instance, "entity", None)
+
+        if quarter and quarter not in {"Q1", "Q2", "Q3", "Q4"}:
+            raise serializers.ValidationError({"quarter": "Quarter must be one of Q1, Q2, Q3, Q4."})
+        if fy and not _is_valid_fy_label(fy):
+            raise serializers.ValidationError({"fy": "FY must be like 2025-26 (single-year span)."})
+        if form_name and form_name != "27EQ":
+            raise serializers.ValidationError({"form_name": "Only form 27EQ is supported in this endpoint."})
+        status_value = data.get("status") or getattr(instance, "status", None)
+        ack_no = (data.get("ack_no") if "ack_no" in data else getattr(instance, "ack_no", "")) or ""
+        filed_on = data.get("filed_on") if "filed_on" in data else getattr(instance, "filed_on", None)
+        if status_value == TcsQuarterlyReturn.Status.FILED:
+            if not str(ack_no).strip():
+                raise serializers.ValidationError({"ack_no": "ack_no is required when return status is FILED."})
+            if filed_on is None:
+                raise serializers.ValidationError({"filed_on": "filed_on is required when return status is FILED."})
+        if return_type == TcsQuarterlyReturn.ReturnType.ORIGINAL and entity and fy and quarter:
+            clash_qs = TcsQuarterlyReturn.objects.filter(
+                entity=entity,
+                fy=fy,
+                quarter=quarter,
+                form_name="27EQ",
+                return_type=TcsQuarterlyReturn.ReturnType.ORIGINAL,
+            )
+            if instance is not None:
+                clash_qs = clash_qs.exclude(pk=instance.pk)
+            if clash_qs.exists():
+                raise serializers.ValidationError(
+                    {"return_type": "Original 27EQ return already exists for this entity/FY/quarter. Use Correction return."}
+                )
+        if return_type == TcsQuarterlyReturn.ReturnType.CORRECTION and entity and fy and quarter:
+            has_original = TcsQuarterlyReturn.objects.filter(
+                entity=entity,
+                fy=fy,
+                quarter=quarter,
+                form_name="27EQ",
+                return_type=TcsQuarterlyReturn.ReturnType.ORIGINAL,
+            ).exclude(pk=getattr(instance, "pk", None)).exists()
+            if not has_original:
+                raise serializers.ValidationError({"return_type": "Correction return requires an existing Original return."})
+        return data
+
     class Meta:
         model = TcsQuarterlyReturn
         fields = [

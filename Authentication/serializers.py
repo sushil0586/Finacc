@@ -186,7 +186,8 @@ class LogoutSerializer(serializers.Serializer):
 
 
 class RefreshTokenSerializer(serializers.Serializer):
-    refresh_token = serializers.CharField()
+    # Optional — cookie takes priority; body token kept for backwards compat
+    refresh_token = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class ForgotPasswordSerializer(serializers.Serializer):

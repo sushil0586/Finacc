@@ -178,7 +178,8 @@ class PurchaseInvoicePostingAdapter:
             post_inventory = affects_inventory
             inventory_move_type = "OUT"
         elif is_debit_note:
-            post_inventory = False  # default DN is financial only
+            post_inventory = affects_inventory  # DN with qty_return also moves inventory
+            inventory_move_type = "IN"          # DN adds back goods to inventory
 
         # ---- static accounts ----
         resolver = StaticAccountResolver(entity_id)
