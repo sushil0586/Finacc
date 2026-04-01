@@ -155,7 +155,7 @@ class UserEntitiesV2View(APIView):
         entity_map = {}
         now = timezone.now()
         assignments = (
-            UserRoleAssignment.objects.filter(user=user, isactive=True)
+            UserRoleAssignment.objects.filter(user=user, isactive=True, role__isactive=True)
             .filter(
                 Q(effective_from__isnull=True) | Q(effective_from__lte=now),
                 Q(effective_to__isnull=True) | Q(effective_to__gte=now),
@@ -178,6 +178,29 @@ class UserEntitiesV2View(APIView):
                 "email": user.email,
                 "role": primary_role["name"] if primary_role else assignment.role.name,
                 "roleid": primary_role["id"] if primary_role else assignment.role_id,
+                "roles": roles,
+                "default_entityfinid": default_entityfinid,
+                "default_subentity": default_subentity,
+                "default_subentity_id": default_subentity,
+            }
+
+        # Include entities owned by the user even if explicit RBAC assignments
+        # are not present yet (common right after onboarding).
+        owned_entities = Entity.objects.filter(isactive=True, createdby=user).order_by("entityname", "id")
+        for entity in owned_entities:
+            if entity.id in entity_map:
+                continue
+            entity_ids.append(entity.id)
+            roles = EffectivePermissionService.role_summaries_for_user(user, entity.id)
+            primary_role = next((role for role in roles if role.get("is_primary")), roles[0] if roles else None)
+            default_entityfinid, default_subentity = _resolve_user_context(user, entity)
+            entity_map[entity.id] = {
+                "entityid": entity.id,
+                "entityname": entity.entityname,
+                "gstno": _primary_gst(entity),
+                "email": user.email,
+                "role": primary_role["name"] if primary_role else "Owner",
+                "roleid": primary_role["id"] if primary_role else 0,
                 "roles": roles,
                 "default_entityfinid": default_entityfinid,
                 "default_subentity": default_subentity,

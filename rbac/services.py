@@ -106,6 +106,12 @@ class EffectivePermissionService:
         if RBACDevelopmentAccess.allow_all():
             return Entity.objects.filter(id=entity_id).first()
 
+        # Entity creator should retain access even when explicit RBAC
+        # assignments are not available yet (e.g. fresh onboarding flows).
+        owned = Entity.objects.filter(id=entity_id, createdby_id=user.id).first()
+        if owned:
+            return owned
+
         active_assignment_entity_ids = EffectivePermissionService.active_assignments_queryset(
             user,
             entity_id,
