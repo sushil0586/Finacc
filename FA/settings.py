@@ -132,15 +132,14 @@ WSGI_APPLICATION = 'FA.wsgi.application'
 # Database
 # ---------------------------------------------------------------------------
 DATABASES = {
-   'default': {
-       'ENGINE': 'django.db.backends.postgresql',
-       'NAME': 'finacc',
-       'USER': 'finaccuser',
-       'PASSWORD': 'Ansh@1789',
-       'HOST': 'localhost',
-       'PORT': '5432',
-
-   }
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('DB_NAME', default='FA'),
+        'USER': config('DB_USER', default='postgres'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST', default='localhost'),
+        'PORT': config('DB_PORT', default=''),
+    }
 }
 
 # ---------------------------------------------------------------------------
