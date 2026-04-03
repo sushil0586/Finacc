@@ -39,6 +39,7 @@ from purchase.views.purchase_invoice_actions import (
     PurchaseInvoiceCreateCreditNoteAPIView,
     PurchaseInvoiceCreateDebitNoteAPIView,
     PurchaseInvoiceITCBlockAPIView,
+    PurchaseInvoiceITCUnblockAPIView,
     PurchaseInvoiceITCPendingAPIView,
     PurchaseInvoiceITCClaimAPIView,
     PurchaseInvoiceITCReverseAPIView,
@@ -73,6 +74,7 @@ from purchase.views.purchase_statutory import (
     PurchaseStatutoryReturnDetailAPIView,
     PurchaseStatutoryReturnExportAPIView,
     PurchaseStatutorySummaryAPIView,
+    PurchaseStatutoryItcStatusRegisterAPIView,
     PurchaseStatutoryReconciliationExceptionsAPIView,
     PurchaseStatutoryGlReconciliationAPIView,
     PurchaseStatutoryReturnNsdlExportAPIView,
@@ -80,6 +82,11 @@ from purchase.views.purchase_statutory import (
     PurchaseStatutoryReturnForm16ADownloadAPIView,
     PurchaseStatutoryReturnForm16AOfficialUploadAPIView,
     PurchaseStatutoryCaPackExportAPIView,
+)
+from purchase.views.purchase_gstr2b import (
+    PurchaseGstr2bImportBatchListCreateAPIView,
+    PurchaseGstr2bImportBatchRowsAPIView,
+    PurchaseGstr2bImportBatchMatchAPIView,
 )
 
 urlpatterns = [
@@ -112,12 +119,19 @@ urlpatterns = [
 
     # ITC actions
     path("purchase-invoices/<int:pk>/itc/block/", PurchaseInvoiceITCBlockAPIView.as_view(), name="purchase-invoice-itc-block"),
+    path("purchase-invoices/<int:pk>/itc/unblock/", PurchaseInvoiceITCUnblockAPIView.as_view(), name="purchase-invoice-itc-unblock"),
     path("purchase-invoices/<int:pk>/itc/pending/", PurchaseInvoiceITCPendingAPIView.as_view(), name="purchase-invoice-itc-pending"),
     path("purchase-invoices/<int:pk>/itc/claim/", PurchaseInvoiceITCClaimAPIView.as_view(), name="purchase-invoice-itc-claim"),
     path("purchase-invoices/<int:pk>/itc/reverse/", PurchaseInvoiceITCReverseAPIView.as_view(), name="purchase-invoice-itc-reverse"),
+    path("purchase-service-invoices/<int:pk>/itc/block/", PurchaseInvoiceITCBlockAPIView.as_view(), name="purchase-service-invoice-itc-block"),
+    path("purchase-service-invoices/<int:pk>/itc/unblock/", PurchaseInvoiceITCUnblockAPIView.as_view(), name="purchase-service-invoice-itc-unblock"),
+    path("purchase-service-invoices/<int:pk>/itc/pending/", PurchaseInvoiceITCPendingAPIView.as_view(), name="purchase-service-invoice-itc-pending"),
+    path("purchase-service-invoices/<int:pk>/itc/claim/", PurchaseInvoiceITCClaimAPIView.as_view(), name="purchase-service-invoice-itc-claim"),
+    path("purchase-service-invoices/<int:pk>/itc/reverse/", PurchaseInvoiceITCReverseAPIView.as_view(), name="purchase-service-invoice-itc-reverse"),
 
     # GSTR-2B
     path("purchase-invoices/<int:pk>/gstr2b/status/", PurchaseInvoice2BMatchStatusAPIView.as_view(), name="purchase-invoice-2b-status"),
+    path("purchase-service-invoices/<int:pk>/gstr2b/status/", PurchaseInvoice2BMatchStatusAPIView.as_view(), name="purchase-service-invoice-2b-status"),
      
     # Read-only lists
     path("purchase-lines/", PurchaseInvoiceLinesListAPIView.as_view(), name="purchase-lines-list"),
@@ -150,6 +164,7 @@ urlpatterns = [
     path("statutory/returns/<int:pk>/form16a/<int:issue_no>/download/", PurchaseStatutoryReturnForm16ADownloadAPIView.as_view(), name="purchase-statutory-return-form16a-download"),
     path("statutory/returns/<int:pk>/form16a/<int:issue_no>/official-upload/", PurchaseStatutoryReturnForm16AOfficialUploadAPIView.as_view(), name="purchase-statutory-return-form16a-official-upload"),
     path("statutory/summary/", PurchaseStatutorySummaryAPIView.as_view(), name="purchase-statutory-summary"),
+    path("statutory/itc-status-register/", PurchaseStatutoryItcStatusRegisterAPIView.as_view(), name="purchase-statutory-itc-status-register"),
     path("statutory/reconciliation-exceptions/", PurchaseStatutoryReconciliationExceptionsAPIView.as_view(), name="purchase-statutory-reconciliation-exceptions"),
     path("statutory/reconciliation-gl/", PurchaseStatutoryGlReconciliationAPIView.as_view(), name="purchase-statutory-reconciliation-gl"),
     path("statutory/export/ca-pack/", PurchaseStatutoryCaPackExportAPIView.as_view(), name="purchase-statutory-ca-pack-export"),
@@ -168,5 +183,8 @@ urlpatterns = [
     path("ap/meta/", PurchaseApMetaAPIView.as_view(), name="purchase-ap-meta"),
     path("ap/meta/settlement-form/", PurchaseApSettlementFormMetaAPIView.as_view(), name="purchase-ap-settlement-form-meta"),
     path("purchase-invoices/search/", PurchaseInvoiceSearchAPIView.as_view(), name="purchase-invoice-search"),
+    path("gstr2b/import-batches/", PurchaseGstr2bImportBatchListCreateAPIView.as_view(), name="purchase-gstr2b-import-batch-list-create"),
+    path("gstr2b/import-batches/<int:pk>/rows/", PurchaseGstr2bImportBatchRowsAPIView.as_view(), name="purchase-gstr2b-import-batch-rows"),
+    path("gstr2b/import-batches/<int:pk>/match/", PurchaseGstr2bImportBatchMatchAPIView.as_view(), name="purchase-gstr2b-import-batch-match"),
 
 ]

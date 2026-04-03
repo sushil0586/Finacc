@@ -16,6 +16,8 @@ DEFAULT_POLICY_CONTROLS = {
     "require_lines_on_confirm": "hard",
     "itc_action_status_gate": "hard",
     "two_b_action_status_gate": "hard",
+    "itc_claim_requires_2b": "off",   # off | warn | hard
+    "itc_claim_allowed_2b_statuses": "matched,partial",  # csv: na,not_checked,matched,mismatched,not_in_2b,partial
     "line_amount_mismatch": "hard",
     "invoice_match_mode": "off",          # off | two_way | three_way
     "invoice_match_enforcement": "off",   # off | warn | hard
@@ -35,6 +37,20 @@ DEFAULT_POLICY_CONTROLS = {
     "gst_tds_interest_rate_monthly": "1.50",
     "gst_tds_late_fee_per_day": "100.00",
     "gst_tds_late_fee_cap_factor": "1.00",
+    "it_tds_challan_due_day": "7",
+    "gst_tds_challan_due_day": "10",
+    "gst_tds_return_due_day": "10",
+    "it_tds_return_q1_due_month": "7",
+    "it_tds_return_q1_due_day": "31",
+    "it_tds_return_q2_due_month": "10",
+    "it_tds_return_q2_due_day": "31",
+    "it_tds_return_q3_due_month": "1",
+    "it_tds_return_q3_due_day": "31",
+    "it_tds_return_q4_due_month": "5",
+    "it_tds_return_q4_due_day": "31",
+    "vendor_gstin_format_rule": "hard",
+    "withholding_pan_required_rule": "hard",
+    "withholding_pan_format_rule": "hard",
 }
 
 

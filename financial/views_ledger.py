@@ -357,32 +357,34 @@ class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView)
             "account_profile__compliance_profile",
         )
 
+    def _auto_managed_response(self, account_id, action):
+        return Response(
+            {
+                "detail": "This ledger is auto-managed from the Account page.",
+                "error": "This ledger is auto-managed from the Account page.",
+                "code": "ledger_auto_managed",
+                "account_id": account_id,
+                "action": action,
+                "redirect": {
+                    "route_name": "financial-master-accounts",
+                    "hint": "Open the linked account and edit there.",
+                },
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         account_id = _linked_account_id(instance)
         if account_id:
-            return Response(
-                {
-                    "error": "This ledger is auto-managed from the Account page. Edit the linked account instead.",
-                    "code": "ledger_auto_managed",
-                    "account_id": account_id,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return self._auto_managed_response(account_id, "edit_linked_account")
         return super().update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         account_id = _linked_account_id(instance)
         if account_id:
-            return Response(
-                {
-                    "error": "This ledger is auto-managed from the Account page. Deactivate the linked account instead.",
-                    "code": "ledger_auto_managed",
-                    "account_id": account_id,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return self._auto_managed_response(account_id, "deactivate_linked_account")
         return super().destroy(request, *args, **kwargs)
 
 

@@ -8,6 +8,7 @@ from reports.schemas.common import build_report_envelope
 from reports.schemas.financial_reports import FinancialReportScopeSerializer, LedgerBookScopeSerializer
 from reports.services.financial.meta import REPORT_DEFAULTS, build_financial_report_meta
 from reports.services.financial.ledger_book import build_ledger_book
+from reports.services.financial.reporting_policy import resolve_financial_reporting_policy
 from reports.services.financial.statements import build_balance_sheet, build_profit_and_loss
 from reports.services.financial.trial_balance import build_trial_balance
 
@@ -60,7 +61,10 @@ class FinancialReportsMetaAPIView(APIView):
         entity_id = request.query_params.get("entity")
         if not entity_id:
             return Response({"detail": "entity is required."}, status=400)
-        return Response(build_financial_report_meta(int(entity_id)))
+        entity_id = int(entity_id)
+        payload = build_financial_report_meta(entity_id)
+        payload["reporting_policy"] = resolve_financial_reporting_policy(entity_id)
+        return Response(payload)
 
 
 class TrialBalanceAPIView(_BaseFinancialReportAPIView):
@@ -123,6 +127,7 @@ class LedgerBookAPIView(_BaseFinancialReportAPIView):
 class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
     def get(self, request):
         scope = self.get_scope(request)
+        reporting_policy = resolve_financial_reporting_policy(scope["entity"])
         data = build_profit_and_loss(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -141,6 +146,7 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=scope.get("period_by"),
+            reporting_policy=reporting_policy,
         )
         return Response(
             build_report_envelope(
@@ -156,6 +162,7 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
 class BalanceSheetAPIView(_BaseFinancialReportAPIView):
     def get(self, request):
         scope = self.get_scope(request)
+        reporting_policy = resolve_financial_reporting_policy(scope["entity"])
         data = build_balance_sheet(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -174,6 +181,7 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=scope.get("period_by"),
+            reporting_policy=reporting_policy,
         )
         return Response(
             build_report_envelope(

@@ -208,6 +208,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "doc_no",
             "invoice_number",
             "original_invoice",
+            "note_reason",
+            "affects_inventory",
 
             "status",
             "status_name",
@@ -428,6 +430,33 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         if ("einvoice_applicable_manual" in attrs or "eway_applicable_manual" in attrs) and not (attrs.get("compliance_override_reason") or "").strip():
             raise serializers.ValidationError({"compliance_override_reason": "Required when manual compliance override is provided."})
+
+        # note_reason / affects_inventory are only meaningful on CN/DN
+        inst = self.instance
+        doc_type = attrs.get("doc_type") or getattr(inst, "doc_type", None)
+        note_reason = attrs.get("note_reason") or getattr(inst, "note_reason", None)
+        affects_inventory_provided = "affects_inventory" in attrs
+        is_note = doc_type in (
+            SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            SalesInvoiceHeader.DocType.DEBIT_NOTE,
+        )
+        if not is_note:
+            attrs["note_reason"] = None
+            attrs["affects_inventory"] = False
+        elif note_reason:
+            if note_reason == SalesInvoiceHeader.NoteReason.QUANTITY_RETURN:
+                attrs["affects_inventory"] = True
+            elif note_reason == SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE:
+                attrs["affects_inventory"] = False
+            else:
+                if affects_inventory_provided:
+                    attrs["affects_inventory"] = bool(attrs.get("affects_inventory"))
+                elif "note_reason" in attrs:
+                    attrs["affects_inventory"] = False
+                else:
+                    attrs["affects_inventory"] = bool(getattr(inst, "affects_inventory", False))
+        elif "note_reason" in attrs:
+            attrs["affects_inventory"] = False
 
         line_mode = self.context.get("line_mode")
         if line_mode in ("service", "goods"):

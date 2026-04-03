@@ -180,6 +180,7 @@ class LegacyMenuCompatibilityService:
             MenuPermission.objects.filter(
                 permission__code__in=permission_codes,
                 isactive=True,
+                relation_type=MenuPermission.RELATION_VISIBILITY,
                 menu__isactive=True,
             ).values_list("menu_id", flat=True)
         )

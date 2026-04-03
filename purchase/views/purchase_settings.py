@@ -40,6 +40,29 @@ PURCHASE_SETTINGS_SCHEMA = [
     {"name": "default_workflow_action", "label": "Default Workflow", "type": "choice", "group": "workflow", "choices": _choice_payload(PurchaseSettings.DefaultWorkflowAction.choices)},
     {"name": "auto_derive_tax_regime", "label": "Auto Derive Tax Regime", "type": "boolean", "group": "tax"},
     {"name": "enforce_2b_before_itc_claim", "label": "Enforce 2B Before ITC Claim", "type": "boolean", "group": "tax"},
+    {"name": "itc_claim_requires_2b", "label": "ITC Claim Requires 2B", "type": "choice", "group": "tax", "choices": [{"value": "off", "label": "Off"}, {"value": "warn", "label": "Warn"}, {"value": "hard", "label": "Hard Block"}]},
+    {"name": "itc_claim_allowed_2b_statuses", "label": "ITC Claim Allowed 2B Statuses", "type": "multi_select", "group": "tax", "choices": [
+        {"value": "matched", "label": "Matched"},
+        {"value": "partial", "label": "Partial / Needs Review"},
+        {"value": "not_checked", "label": "Not Checked"},
+        {"value": "mismatched", "label": "Mismatched"},
+        {"value": "not_in_2b", "label": "Not in 2B"},
+        {"value": "na", "label": "Not Applicable"},
+    ]},
+    {"name": "it_tds_challan_due_day", "label": "IT-TDS Challan Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "gst_tds_challan_due_day", "label": "GST-TDS Challan Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "gst_tds_return_due_day", "label": "GST-TDS Return Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q1_due_month", "label": "IT-TDS Q1 Return Due Month", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q1_due_day", "label": "IT-TDS Q1 Return Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q2_due_month", "label": "IT-TDS Q2 Return Due Month", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q2_due_day", "label": "IT-TDS Q2 Return Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q3_due_month", "label": "IT-TDS Q3 Return Due Month", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q3_due_day", "label": "IT-TDS Q3 Return Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q4_due_month", "label": "IT-TDS Q4 Return Due Month", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "it_tds_return_q4_due_day", "label": "IT-TDS Q4 Return Due Day", "type": "integer", "group": "statutory_due_dates"},
+    {"name": "vendor_gstin_format_rule", "label": "Vendor GSTIN Format Rule", "type": "choice", "group": "compliance_validation", "choices": [{"value": "off", "label": "Off"}, {"value": "warn", "label": "Warn"}, {"value": "hard", "label": "Hard Block"}]},
+    {"name": "withholding_pan_required_rule", "label": "PAN Required for IT-TDS", "type": "choice", "group": "compliance_validation", "choices": [{"value": "off", "label": "Off"}, {"value": "warn", "label": "Warn"}, {"value": "hard", "label": "Hard Block"}]},
+    {"name": "withholding_pan_format_rule", "label": "PAN Format Rule for IT-TDS", "type": "choice", "group": "compliance_validation", "choices": [{"value": "off", "label": "Off"}, {"value": "warn", "label": "Warn"}, {"value": "hard", "label": "Hard Block"}]},
     {"name": "allow_mixed_taxability_in_one_bill", "label": "Allow Mixed Taxability In One Bill", "type": "boolean", "group": "tax"},
     {"name": "post_gst_tds_on_invoice", "label": "Post GST/TDS On Invoice", "type": "boolean", "group": "tax"},
     {"name": "enable_round_off", "label": "Enable Round Off", "type": "boolean", "group": "rounding"},
@@ -298,6 +321,23 @@ class PurchaseSettingsAPIView(APIView):
                 "default_workflow_action": settings_obj.default_workflow_action,
                 "auto_derive_tax_regime": settings_obj.auto_derive_tax_regime,
                 "enforce_2b_before_itc_claim": settings_obj.enforce_2b_before_itc_claim,
+                "itc_claim_requires_2b": policy.controls.get("itc_claim_requires_2b", "off"),
+                "itc_claim_allowed_2b_statuses": policy.controls.get("itc_claim_allowed_2b_statuses", "matched,partial"),
+                "itc_claim_allowed_2b_statuses_list": sorted(list(policy.itc_claim_allowed_2b_statuses)),
+                "it_tds_challan_due_day": policy.controls.get("it_tds_challan_due_day", "7"),
+                "gst_tds_challan_due_day": policy.controls.get("gst_tds_challan_due_day", "10"),
+                "gst_tds_return_due_day": policy.controls.get("gst_tds_return_due_day", "10"),
+                "it_tds_return_q1_due_month": policy.controls.get("it_tds_return_q1_due_month", "7"),
+                "it_tds_return_q1_due_day": policy.controls.get("it_tds_return_q1_due_day", "31"),
+                "it_tds_return_q2_due_month": policy.controls.get("it_tds_return_q2_due_month", "10"),
+                "it_tds_return_q2_due_day": policy.controls.get("it_tds_return_q2_due_day", "31"),
+                "it_tds_return_q3_due_month": policy.controls.get("it_tds_return_q3_due_month", "1"),
+                "it_tds_return_q3_due_day": policy.controls.get("it_tds_return_q3_due_day", "31"),
+                "it_tds_return_q4_due_month": policy.controls.get("it_tds_return_q4_due_month", "5"),
+                "it_tds_return_q4_due_day": policy.controls.get("it_tds_return_q4_due_day", "31"),
+                "vendor_gstin_format_rule": policy.controls.get("vendor_gstin_format_rule", "hard"),
+                "withholding_pan_required_rule": policy.controls.get("withholding_pan_required_rule", "hard"),
+                "withholding_pan_format_rule": policy.controls.get("withholding_pan_format_rule", "hard"),
                 "allow_mixed_taxability_in_one_bill": settings_obj.allow_mixed_taxability_in_one_bill,
                 "round_grand_total_to": settings_obj.round_grand_total_to,
                 "enable_round_off": settings_obj.enable_round_off,
@@ -333,7 +373,80 @@ class PurchaseSettingsAPIView(APIView):
             raise ValidationError({"detail": "Expected an object payload."})
 
         nested_settings = request.data.get("settings") if isinstance(request.data.get("settings"), dict) else None
-        settings_updates = nested_settings if nested_settings is not None else request.data
+        settings_updates = dict(nested_settings if nested_settings is not None else request.data)
+
+        # UI-friendly ITC/2B controls are mapped into policy_controls for persistence.
+        if (
+            "itc_claim_requires_2b" in settings_updates
+            or "itc_claim_allowed_2b_statuses" in settings_updates
+            or "itc_claim_allowed_2b_statuses_list" in settings_updates
+            or "it_tds_challan_due_day" in settings_updates
+            or "gst_tds_challan_due_day" in settings_updates
+            or "gst_tds_return_due_day" in settings_updates
+            or "it_tds_return_q1_due_month" in settings_updates
+            or "it_tds_return_q1_due_day" in settings_updates
+            or "it_tds_return_q2_due_month" in settings_updates
+            or "it_tds_return_q2_due_day" in settings_updates
+            or "it_tds_return_q3_due_month" in settings_updates
+            or "it_tds_return_q3_due_day" in settings_updates
+            or "it_tds_return_q4_due_month" in settings_updates
+            or "it_tds_return_q4_due_day" in settings_updates
+            or "vendor_gstin_format_rule" in settings_updates
+            or "withholding_pan_required_rule" in settings_updates
+            or "withholding_pan_format_rule" in settings_updates
+        ):
+            policy_controls = dict(settings_updates.get("policy_controls") or {})
+            if "itc_claim_requires_2b" in settings_updates:
+                policy_controls["itc_claim_requires_2b"] = settings_updates.get("itc_claim_requires_2b")
+
+            raw = settings_updates.get("itc_claim_allowed_2b_statuses_list", settings_updates.get("itc_claim_allowed_2b_statuses"))
+            if raw is not None:
+                if isinstance(raw, (list, tuple, set)):
+                    tokens = [str(x).strip().lower() for x in raw if str(x).strip()]
+                else:
+                    tokens = [part.strip().lower() for part in str(raw or "").split(",") if part.strip()]
+                policy_controls["itc_claim_allowed_2b_statuses"] = ",".join(tokens)
+
+            for key in (
+                "it_tds_challan_due_day",
+                "gst_tds_challan_due_day",
+                "gst_tds_return_due_day",
+                "it_tds_return_q1_due_month",
+                "it_tds_return_q1_due_day",
+                "it_tds_return_q2_due_month",
+                "it_tds_return_q2_due_day",
+                "it_tds_return_q3_due_month",
+                "it_tds_return_q3_due_day",
+                "it_tds_return_q4_due_month",
+                "it_tds_return_q4_due_day",
+                "vendor_gstin_format_rule",
+                "withholding_pan_required_rule",
+                "withholding_pan_format_rule",
+            ):
+                if key in settings_updates:
+                    policy_controls[key] = settings_updates.get(key)
+
+            settings_updates["policy_controls"] = policy_controls
+
+        # remove UI-only projection keys from direct settings save map
+        settings_updates.pop("itc_claim_requires_2b", None)
+        settings_updates.pop("itc_claim_allowed_2b_statuses", None)
+        settings_updates.pop("itc_claim_allowed_2b_statuses_list", None)
+        settings_updates.pop("it_tds_challan_due_day", None)
+        settings_updates.pop("gst_tds_challan_due_day", None)
+        settings_updates.pop("gst_tds_return_due_day", None)
+        settings_updates.pop("it_tds_return_q1_due_month", None)
+        settings_updates.pop("it_tds_return_q1_due_day", None)
+        settings_updates.pop("it_tds_return_q2_due_month", None)
+        settings_updates.pop("it_tds_return_q2_due_day", None)
+        settings_updates.pop("it_tds_return_q3_due_month", None)
+        settings_updates.pop("it_tds_return_q3_due_day", None)
+        settings_updates.pop("it_tds_return_q4_due_month", None)
+        settings_updates.pop("it_tds_return_q4_due_day", None)
+        settings_updates.pop("vendor_gstin_format_rule", None)
+        settings_updates.pop("withholding_pan_required_rule", None)
+        settings_updates.pop("withholding_pan_format_rule", None)
+
         self._validate_settings_updates(settings_updates)
 
         try:

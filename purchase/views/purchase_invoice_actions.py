@@ -2,10 +2,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
+from django.http import Http404
 
 from purchase.models.purchase_core import DocType
+from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
-from purchase.serializers.purchase_actions import ItcBlockSerializer, ItcClaimSerializer, Match2BSerializer
+from purchase.serializers.purchase_actions import ItcBlockSerializer, ItcUnblockSerializer, ItcClaimSerializer, Match2BSerializer
 from gst_tds.models import GstTdsContractLedger
 
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
@@ -17,6 +19,44 @@ def _raise_validation_error(err: ValueError) -> None:
     if isinstance(payload, dict):
         raise ValidationError(payload)
     raise ValidationError({"non_field_errors": [str(payload)]})
+
+
+def _parse_scope(request, *, required: bool = True):
+    payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    entity = request.query_params.get("entity") or payload.get("entity")
+    entityfinid = request.query_params.get("entityfinid") or payload.get("entityfinid")
+    subentity = request.query_params.get("subentity")
+    if subentity is None:
+        subentity = payload.get("subentity")
+
+    if required and (entity in (None, "", "null") or entityfinid in (None, "", "null")):
+        raise ValidationError({"detail": "entity and entityfinid are required."})
+    if entity in (None, "", "null") and entityfinid in (None, "", "null"):
+        return None, None, None
+
+    try:
+        entity_id = int(entity)
+        entityfinid_id = int(entityfinid)
+        subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+    except (TypeError, ValueError):
+        raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+    return entity_id, entityfinid_id, subentity_id
+
+
+def _assert_invoice_scope(pk: int, request):
+    entity_id, entityfinid_id, subentity_id = _parse_scope(request, required=True)
+    header = (
+        PurchaseInvoiceHeader.objects
+        .only("id", "entity_id", "entityfinid_id", "subentity_id")
+        .filter(pk=pk)
+        .first()
+    )
+    if not header:
+        raise Http404("Purchase invoice not found.")
+    if int(header.entity_id or 0) != int(entity_id or 0) or int(header.entityfinid_id or 0) != int(entityfinid_id or 0):
+        raise ValidationError({"detail": "Invoice scope mismatch with entity/entityfinid."})
+    if subentity_id is not None and int(header.subentity_id or 0) != int(subentity_id or 0):
+        raise ValidationError({"detail": "Invoice subentity mismatch for requested scope."})
 
 
 def _gst_tds_contract_summary_block(header):
@@ -65,6 +105,7 @@ class PurchaseInvoiceConfirmAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         try:
             result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
         except ValueError as e:
@@ -76,6 +117,7 @@ class PurchaseInvoicePostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         try:
             result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
         except ValueError as e:
@@ -87,6 +129,7 @@ class PurchaseInvoiceUnpostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PurchaseInvoiceActions.unpost(pk, unposted_by_id=request.user.id, reason=reason)
@@ -99,6 +142,7 @@ class PurchaseInvoiceCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
@@ -111,6 +155,7 @@ class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         try:
             result = PurchaseInvoiceActions.rebuild_tax_summary(pk)
         except ValueError as e:
@@ -123,6 +168,7 @@ class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
 class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         try:
             res = PurchaseNoteFactory.create_note_from_invoice(
                 invoice_id=pk,
@@ -140,6 +186,7 @@ class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
 class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         try:
             res = PurchaseNoteFactory.create_note_from_invoice(
                 invoice_id=pk,
@@ -159,10 +206,15 @@ class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
 class PurchaseInvoiceITCBlockAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         ser = ItcBlockSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
-            result = PurchaseInvoiceActions.mark_itc_blocked(pk, reason=ser.validated_data["reason"])
+            result = PurchaseInvoiceActions.mark_itc_blocked(
+                pk,
+                reason=ser.validated_data["reason"],
+                acted_by_id=request.user.id,
+            )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -171,8 +223,23 @@ class PurchaseInvoiceITCBlockAPIView(APIView):
 class PurchaseInvoiceITCPendingAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         try:
-            result = PurchaseInvoiceActions.mark_itc_pending(pk)
+            result = PurchaseInvoiceActions.mark_itc_pending(pk, acted_by_id=request.user.id)
+        except ValueError as e:
+            _raise_validation_error(e)
+        return Response(_response_payload(result.message, result.header))
+
+
+class PurchaseInvoiceITCUnblockAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
+        ser = ItcUnblockSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        reason = (ser.validated_data.get("reason") or "").strip() or None
+        try:
+            result = PurchaseInvoiceActions.mark_itc_unblocked(pk, reason=reason, acted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -181,10 +248,15 @@ class PurchaseInvoiceITCPendingAPIView(APIView):
 class PurchaseInvoiceITCClaimAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         ser = ItcClaimSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
-            result = PurchaseInvoiceActions.mark_itc_claimed(pk, period=ser.validated_data["period"])
+            result = PurchaseInvoiceActions.mark_itc_claimed(
+                pk,
+                period=ser.validated_data["period"],
+                acted_by_id=request.user.id,
+            )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -193,9 +265,10 @@ class PurchaseInvoiceITCClaimAPIView(APIView):
 class PurchaseInvoiceITCReverseAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         reason = (request.data.get("reason") or "").strip() or None
         try:
-            result = PurchaseInvoiceActions.mark_itc_reversed(pk, reason=reason)
+            result = PurchaseInvoiceActions.mark_itc_reversed(pk, reason=reason, acted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -206,10 +279,15 @@ class PurchaseInvoiceITCReverseAPIView(APIView):
 class PurchaseInvoice2BMatchStatusAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
+        _assert_invoice_scope(pk, request)
         ser = Match2BSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
-            result = PurchaseInvoiceActions.update_2b_match_status(pk, match_status=ser.validated_data["match_status"])
+            result = PurchaseInvoiceActions.update_2b_match_status(
+                pk,
+                match_status=ser.validated_data["match_status"],
+                acted_by_id=request.user.id,
+            )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))

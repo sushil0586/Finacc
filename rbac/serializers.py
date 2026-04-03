@@ -195,7 +195,12 @@ class MenuAdminSerializer(serializers.ModelSerializer):
         )
 
     def get_permission_ids(self, obj):
-        return list(obj.menu_permissions.filter(isactive=True).values_list("permission_id", flat=True))
+        return list(
+            obj.menu_permissions.filter(
+                isactive=True,
+                relation_type=MenuPermission.RELATION_VISIBILITY,
+            ).values_list("permission_id", flat=True)
+        )
 
     def validate_code(self, value):
         qs = Menu.objects.filter(code__iexact=value)
@@ -230,7 +235,12 @@ class MenuAdminTreeSerializer(serializers.ModelSerializer):
         )
 
     def get_permission_ids(self, obj):
-        return list(obj.menu_permissions.filter(isactive=True).values_list("permission_id", flat=True))
+        return list(
+            obj.menu_permissions.filter(
+                isactive=True,
+                relation_type=MenuPermission.RELATION_VISIBILITY,
+            ).values_list("permission_id", flat=True)
+        )
 
     def get_children(self, obj):
         serializer = MenuAdminTreeSerializer(

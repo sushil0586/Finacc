@@ -39,6 +39,32 @@ class ActionResult:
 
 class PurchaseInvoiceActions:
     @staticmethod
+    def _log_itc_action(
+        *,
+        header: PurchaseInvoiceHeader,
+        action_type: str,
+        acted_by_id: Optional[int] = None,
+        from_status: Optional[int] = None,
+        to_status: Optional[int] = None,
+        period: Optional[str] = None,
+        reason: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        PurchaseItcAction = apps.get_model("purchase", "PurchaseItcAction")
+        payload = {
+            "header_id": header.id,
+            "action_type": action_type,
+            "period": period or None,
+            "from_status": from_status,
+            "to_status": to_status,
+            "reason": (reason or "").strip() or None,
+            "notes": (notes or "").strip() or None,
+        }
+        if acted_by_id:
+            payload["acted_by_id"] = acted_by_id
+        PurchaseItcAction.objects.create(**payload)
+
+    @staticmethod
     def _purchase_doc_label(h: PurchaseInvoiceHeader) -> str:
         return str(getattr(h, "purchase_number", None) or f"{getattr(h, 'doc_code', '')}-{getattr(h, 'doc_no', '')}").strip("-")
 
@@ -75,6 +101,24 @@ class PurchaseInvoiceActions:
                 raise ValueError(message)
 
     @staticmethod
+    def _two_b_status_token(value: int) -> str:
+        mapping = {
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.NA): "na",
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED): "not_checked",
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED): "matched",
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.MISMATCHED): "mismatched",
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_IN_2B): "not_in_2b",
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.PARTIAL): "partial",
+        }
+        return mapping.get(int(value), "not_checked")
+
+    @staticmethod
+    def _two_b_status_label(value: int) -> str:
+        try:
+            return PurchaseInvoiceHeader.Gstr2bMatchStatus(int(value)).label
+        except Exception:
+            return str(value)
+
     def _get(pk: int) -> PurchaseInvoiceHeader:
         return (
             PurchaseInvoiceHeader.objects
@@ -309,15 +353,6 @@ class PurchaseInvoiceActions:
                 txn_id=h.id,
             )
         )
-        old_ims = list(
-            InventoryMove.objects.filter(
-                entity_id=h.entity_id,
-                entityfin_id=h.entityfinid_id,
-                subentity_id=h.subentity_id,
-                txn_type=txn_type,
-                txn_id=h.id,
-            )
-        )
 
         jl_inputs: list[JLInput] = []
         for jl in old_jls:
@@ -330,25 +365,6 @@ class PurchaseInvoiceActions:
                     amount=jl.amount,
                     description=f"Reversal: {jl.description or ''}".strip(),
                     detail_id=jl.detail_id,
-                )
-            )
-
-        im_inputs: list[IMInput] = []
-        for im in old_ims:
-            im_inputs.append(
-                IMInput(
-                    product_id=im.product_id,
-                    qty=im.qty,
-                    base_qty=im.base_qty,
-                    uom_id=im.uom_id,
-                    base_uom_id=im.base_uom_id,
-                    uom_factor=im.uom_factor,
-                    unit_cost=im.unit_cost,
-                    move_type=PurchaseInvoiceActions._reverse_move_type(im.move_type),
-                    cost_source=im.cost_source,
-                    cost_meta={"reversal_of_txn": f"{txn_type}#{h.id}"},
-                    detail_id=im.detail_id,
-                    location_id=im.location_id,
                 )
             )
 
@@ -365,7 +381,10 @@ class PurchaseInvoiceActions:
             posting_date=h.posting_date or h.bill_date,
             narration=f"Reversal for {h.purchase_number or h.id}",
             jl_inputs=jl_inputs,
-            im_inputs=im_inputs,
+            # Unpost should clear prior inventory impact for this transaction.
+            # PostingService deletes existing rows by txn locator before inserting fresh rows.
+            # Keeping this empty prevents net stock drift after unpost.
+            im_inputs=[],
             use_advisory_lock=True,
             mark_posted=True,
         )
@@ -432,7 +451,7 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def mark_itc_blocked(pk: int, reason: str) -> ActionResult:
+    def mark_itc_blocked(pk: int, reason: str, acted_by_id: Optional[int] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
         PurchaseInvoiceActions._assert_action_allowed_by_level(
             h=h,
@@ -440,10 +459,19 @@ class PurchaseInvoiceActions:
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
 
+        from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.BLOCKED
         h.is_itc_eligible = False
         h.itc_block_reason = (reason or "").strip()[:200] or "Blocked"
         h.save(update_fields=["itc_claim_status", "is_itc_eligible", "itc_block_reason"])
+        PurchaseInvoiceActions._log_itc_action(
+            header=h,
+            action_type="BLOCK",
+            acted_by_id=acted_by_id,
+            from_status=from_status,
+            to_status=int(ItcClaimStatus.BLOCKED),
+            reason=h.itc_block_reason,
+        )
 
         # rebuild summary for ITC eligible/ineligible buckets
         PurchaseInvoiceService.rebuild_tax_summary(h)
@@ -452,7 +480,7 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def mark_itc_pending(pk: int) -> ActionResult:
+    def mark_itc_pending(pk: int, acted_by_id: Optional[int] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
         PurchaseInvoiceActions._assert_action_allowed_by_level(
             h=h,
@@ -460,16 +488,63 @@ class PurchaseInvoiceActions:
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
 
+        from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.PENDING
         h.itc_claim_period = None
         h.itc_claimed_at = None
         h.save(update_fields=["itc_claim_status", "itc_claim_period", "itc_claimed_at"])
+        PurchaseInvoiceActions._log_itc_action(
+            header=h,
+            action_type="SET_PENDING",
+            acted_by_id=acted_by_id,
+            from_status=from_status,
+            to_status=int(ItcClaimStatus.PENDING),
+        )
 
         return ActionResult(h, "ITC marked as Pending.")
 
     @staticmethod
     @transaction.atomic
-    def mark_itc_claimed(pk: int, period: str) -> ActionResult:
+    def mark_itc_unblocked(pk: int, reason: Optional[str] = None, acted_by_id: Optional[int] = None) -> ActionResult:
+        h = PurchaseInvoiceActions._get(pk)
+        PurchaseInvoiceActions._assert_action_allowed_by_level(
+            h=h,
+            level_key="itc_action_status_gate",
+            message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
+        )
+
+        from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
+        h.is_itc_eligible = True
+        h.itc_claim_status = ItcClaimStatus.PENDING
+        h.itc_claim_period = None
+        h.itc_claimed_at = None
+        # Clear previous block reason unless caller wants to keep an audit marker.
+        h.itc_block_reason = (reason or "").strip()[:200] or None
+        h.save(
+            update_fields=[
+                "is_itc_eligible",
+                "itc_claim_status",
+                "itc_claim_period",
+                "itc_claimed_at",
+                "itc_block_reason",
+            ]
+        )
+        PurchaseInvoiceActions._log_itc_action(
+            header=h,
+            action_type="UNBLOCK",
+            acted_by_id=acted_by_id,
+            from_status=from_status,
+            to_status=int(ItcClaimStatus.PENDING),
+            reason=(reason or "").strip()[:200] or None,
+        )
+
+        PurchaseInvoiceService.rebuild_tax_summary(h)
+
+        return ActionResult(h, "ITC unblocked and moved to Pending.")
+
+    @staticmethod
+    @transaction.atomic
+    def mark_itc_claimed(pk: int, period: str, acted_by_id: Optional[int] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
         PurchaseInvoiceActions._assert_action_allowed_by_level(
             h=h,
@@ -480,16 +555,64 @@ class PurchaseInvoiceActions:
         if not h.is_itc_eligible:
             raise ValueError("Cannot claim ITC: document is not ITC-eligible.")
 
+        try:
+            year = int(str(period)[:4])
+            month = int(str(period)[5:7])
+        except Exception:
+            raise ValueError("ITC claim period must be in YYYY-MM format.")
+        if month < 1 or month > 12:
+            raise ValueError("ITC claim period must be in YYYY-MM format.")
+        today = timezone.localdate()
+        current_period = (today.year * 100) + today.month
+        requested_period = (year * 100) + month
+        if requested_period > current_period:
+            raise ValueError("ITC claim period cannot be in the future month.")
+
+        policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
+        gate = getattr(policy, "itc_claim_2b_gate", None)
+        if gate not in {"off", "warn", "hard"}:
+            gate = "hard" if bool(getattr(policy, "enforce_2b_before_itc_claim", False)) else "off"
+
+        allowed_tokens = set(getattr(policy, "itc_claim_allowed_2b_statuses", {"matched", "partial"}) or {"matched", "partial"})
+        if not allowed_tokens:
+            allowed_tokens = {"matched", "partial"}
+
+        status_token = PurchaseInvoiceActions._two_b_status_token(int(getattr(h, "gstr2b_match_status", PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED)))
+        status_label = PurchaseInvoiceActions._two_b_status_label(int(getattr(h, "gstr2b_match_status", PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED)))
+
+        warning_msg = ""
+        if gate != "off" and status_token not in allowed_tokens:
+            allowed_text = ", ".join(sorted(allowed_tokens))
+            msg = (
+                f"GSTR-2B status '{status_label}' is not allowed for ITC claim by policy. "
+                f"Allowed statuses: {allowed_text}."
+            )
+            if gate == "hard":
+                raise ValueError(msg)
+            warning_msg = msg
+
+        from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.CLAIMED
         h.itc_claim_period = period
         h.itc_claimed_at = timezone.now()
         h.save(update_fields=["itc_claim_status", "itc_claim_period", "itc_claimed_at"])
+        PurchaseInvoiceActions._log_itc_action(
+            header=h,
+            action_type="CLAIM",
+            acted_by_id=acted_by_id,
+            from_status=from_status,
+            to_status=int(ItcClaimStatus.CLAIMED),
+            period=period,
+            notes=warning_msg or None,
+        )
 
+        if warning_msg:
+            return ActionResult(h, f"ITC marked as Claimed with warning: {warning_msg}")
         return ActionResult(h, "ITC marked as Claimed.")
 
     @staticmethod
     @transaction.atomic
-    def mark_itc_reversed(pk: int, reason: Optional[str] = None) -> ActionResult:
+    def mark_itc_reversed(pk: int, reason: Optional[str] = None, acted_by_id: Optional[int] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
         PurchaseInvoiceActions._assert_action_allowed_by_level(
             h=h,
@@ -497,10 +620,19 @@ class PurchaseInvoiceActions:
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
 
+        from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.REVERSED
         if reason:
             h.itc_block_reason = reason[:200]
         h.save(update_fields=["itc_claim_status", "itc_block_reason"])
+        PurchaseInvoiceActions._log_itc_action(
+            header=h,
+            action_type="REVERSE",
+            acted_by_id=acted_by_id,
+            from_status=from_status,
+            to_status=int(ItcClaimStatus.REVERSED),
+            reason=reason,
+        )
 
         # rebuild summary for ITC eligible/ineligible buckets
         PurchaseInvoiceService.rebuild_tax_summary(h)
@@ -513,13 +645,30 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def update_2b_match_status(pk: int, match_status: int) -> ActionResult:
+    def update_2b_match_status(pk: int, match_status: int, acted_by_id: Optional[int] = None) -> ActionResult:
         h = PurchaseInvoiceActions._get(pk)
         PurchaseInvoiceActions._assert_action_allowed_by_level(
             h=h,
             level_key="two_b_action_status_gate",
             message="2B action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
-        h.gstr2b_match_status = match_status
+        valid_values = {int(choice.value) for choice in PurchaseInvoiceHeader.Gstr2bMatchStatus}
+        if int(match_status) not in valid_values:
+            raise ValueError(
+                f"Invalid GSTR-2B match_status '{match_status}'."
+            )
+        old_status = int(getattr(h, "gstr2b_match_status", PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED))
+        h.gstr2b_match_status = int(match_status)
         h.save(update_fields=["gstr2b_match_status"])
+        PurchaseInvoiceActions._log_itc_action(
+            header=h,
+            action_type="ADJUST",
+            acted_by_id=acted_by_id,
+            reason=(
+                f"2B status changed: "
+                f"{PurchaseInvoiceActions._two_b_status_label(old_status)} -> "
+                f"{PurchaseInvoiceActions._two_b_status_label(int(match_status))}"
+            ),
+            notes="GSTR-2B status update",
+        )
         return ActionResult(h, "GSTR-2B match status updated.")

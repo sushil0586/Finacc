@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+import re
 from gst_tds.services.gst_tds_service import GstTdsService, normalize_contract_ref
 from purchase.models.purchase_addons import PurchaseChargeLine, PurchaseChargeType
 
@@ -11,8 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
 from django.db.models import Max, Q
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
-from financial.profile_access import account_gstno, account_partytype
+from financial.gstin import validate_financial_gstin
+from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -54,6 +57,7 @@ RATE_TOTAL = Decimal("2.0000")   # 2%
 RATE_HALF = Decimal("1.0000")    # 1% + 1%
 TWOPLACES = Decimal("0.01")
 TDS_TOLERANCE = Decimal("0.02")  # 2 paisa tolerance
+PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
 
 def q2r(x: Decimal) -> Decimal:
@@ -296,6 +300,29 @@ class PurchaseInvoiceService:
         if not vendor:
             return
 
+        entity_obj = attrs.get("entity") or (instance.entity if instance else None)
+        subentity_obj = attrs.get("subentity") or (instance.subentity if instance else None)
+        entity_id = getattr(entity_obj, "id", entity_obj)
+        subentity_id = getattr(subentity_obj, "id", subentity_obj)
+        policy = PurchaseSettingsService.get_policy(entity_id, subentity_id) if entity_id else None
+        controls = getattr(policy, "controls", {}) if policy else {}
+
+        def _level(key: str, default: str = "hard") -> str:
+            raw = str((controls or {}).get(key, default)).strip().lower()
+            return raw if raw in {"off", "warn", "hard"} else default
+
+        def _handle(level: str, field: str, message: str) -> None:
+            if level == "hard":
+                raise ValueError(message)
+            if level == "warn":
+                notes = dict(attrs.get("match_notes") or (getattr(instance, "match_notes", {}) if instance else {}) or {})
+                warnings = list(notes.get("compliance_warnings") or [])
+                warnings.append(message)
+                notes["compliance_warnings"] = warnings
+                attrs["match_notes"] = notes
+                if str(attrs.get("match_status") or (getattr(instance, "match_status", "na") if instance else "na")).lower() == "na":
+                    attrs["match_status"] = getattr(PurchaseInvoiceHeader.MatchStatus, "WARN", "warn")
+
         partytype = (account_partytype(vendor) or "").strip()
         allowed_partytypes = {"", "Vendor", "Both", "Bank"}
         if partytype not in allowed_partytypes:
@@ -306,6 +333,38 @@ class PurchaseInvoiceService:
 
         if not getattr(vendor, "ledger_id", None):
             raise ValueError("Selected vendor account does not have a linked ledger.")
+
+        gstin_level = _level("vendor_gstin_format_rule", "hard")
+        raw_gstin = (
+            attrs.get("vendor_gstin")
+            or (instance.vendor_gstin if instance else None)
+            or account_gstno(vendor)
+            or ""
+        )
+        gstin = str(raw_gstin or "").strip().upper()
+        if gstin:
+            try:
+                attrs["vendor_gstin"] = validate_financial_gstin(gstin)
+            except DjangoValidationError:
+                _handle(gstin_level, "vendor_gstin", "Vendor GSTIN format is invalid.")
+
+        withholding_enabled = bool(attrs.get("withholding_enabled", getattr(instance, "withholding_enabled", False)))
+        if withholding_enabled:
+            pan_required_level = _level("withholding_pan_required_rule", "hard")
+            pan_format_level = _level("withholding_pan_format_rule", "hard")
+            pan = str(account_pan(vendor) or "").strip().upper()
+            if not pan:
+                _handle(
+                    pan_required_level,
+                    "vendor_pan",
+                    "Vendor PAN is required when Income-tax TDS is enabled.",
+                )
+            elif not PAN_RE.fullmatch(pan):
+                _handle(
+                    pan_format_level,
+                    "vendor_pan",
+                    "Vendor PAN format is invalid for Income-tax TDS.",
+                )
 
     @staticmethod
     def apply_vendor_ledger(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
@@ -433,10 +492,9 @@ class PurchaseInvoiceService:
                     raise ValueError(f"Line {i}: product_desc is required when product is not provided.")
                 ln["is_service"] = True
 
-            # qty sanity — price_diff notes send qty=0 intentionally
+            # qty sanity
             qty = q4(ln.get("qty"))
-            note_reason = attrs.get("note_reason") or ""
-            if qty <= 0 and note_reason != "price_diff":
+            if qty <= 0:
                 raise ValueError(f"Line {i}: qty must be > 0")
 
             free_qty = q4(ln.get("free_qty", ZERO4))

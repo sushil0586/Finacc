@@ -137,13 +137,7 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
         purchase_account = attrs.get("purchase_account")
         product_desc = (attrs.get("product_desc") or "").strip()
 
-        # For price_diff notes qty is intentionally 0 — skip the check.
-        # Read note_reason from parent's initial_data (available before parent validate() runs).
-        root = self.root
-        note_reason = ""
-        if root is not None and hasattr(root, "initial_data"):
-            note_reason = root.initial_data.get("note_reason") or ""
-        if qty <= 0 and note_reason != "price_diff":
+        if qty <= 0:
             raise serializers.ValidationError({"qty": "Qty must be > 0"})
         if rate < 0:
             raise serializers.ValidationError({"rate": "Rate cannot be negative"})
@@ -227,6 +221,8 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     def get_vendor_ledger_id(self, obj):
         return getattr(obj, "vendor_ledger_id", None) or getattr(getattr(obj, "vendor_ledger", None), "id", None)
     status_name = serializers.SerializerMethodField()
+    gstr2b_match_status_name = serializers.CharField(source="get_gstr2b_match_status_display", read_only=True)
+    itc_claim_status_name = serializers.CharField(source="get_itc_claim_status_display", read_only=True)
 
     gst_tds_cgst_rate = serializers.SerializerMethodField()
     gst_tds_sgst_rate = serializers.SerializerMethodField()
@@ -336,6 +332,12 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             "is_reverse_charge",
             "is_itc_eligible",
+            "gstr2b_match_status",
+            "gstr2b_match_status_name",
+            "itc_claim_status",
+            "itc_claim_status_name",
+            "itc_claim_period",
+            "itc_claimed_at",
             "itc_block_reason",
 
             "total_taxable",
@@ -541,6 +543,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         # note_reason / affects_inventory are only meaningful on CN/DN
         doc_type = attrs.get("doc_type") or getattr(inst, "doc_type", None)
         note_reason = attrs.get("note_reason") or getattr(inst, "note_reason", None)
+        affects_inventory_provided = "affects_inventory" in attrs
         is_note = doc_type in (
             PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
             PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
@@ -549,8 +552,19 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             attrs["note_reason"] = None
             attrs["affects_inventory"] = False
         elif note_reason:
-            # keep affects_inventory consistent with note_reason; frontend may also send it
-            attrs["affects_inventory"] = (note_reason == PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
+            # Keep inventory behavior deterministic by note reason.
+            # For "other", caller may explicitly choose accounting-only vs inventory reversal.
+            if note_reason == PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN:
+                attrs["affects_inventory"] = True
+            elif note_reason == PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE:
+                attrs["affects_inventory"] = False
+            else:
+                if affects_inventory_provided:
+                    attrs["affects_inventory"] = bool(attrs.get("affects_inventory"))
+                elif "note_reason" in attrs:
+                    attrs["affects_inventory"] = False
+                else:
+                    attrs["affects_inventory"] = bool(getattr(inst, "affects_inventory", False))
 
         # propagate note_reason into context so nested line serializer can skip qty>0 check
         self.context["note_reason"] = note_reason or ""

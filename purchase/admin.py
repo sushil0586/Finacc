@@ -30,6 +30,7 @@ from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallanLine,
     PurchaseStatutoryReturn,
     PurchaseStatutoryReturnLine,
+    PurchaseStatutoryForm16AOfficialDocument,
 )
 from purchase.models.gstr2b_models import (
     Gstr2bImportBatch,
@@ -834,6 +835,40 @@ class PurchaseStatutoryReturnLineAdmin(admin.ModelAdmin):
     )
     list_filter = ("filing__tax_type", "filing__status")
     search_fields = ("filing__return_code", "header__purchase_number", "header__supplier_invoice_number")
+
+
+@admin.register(PurchaseStatutoryForm16AOfficialDocument)
+class PurchaseStatutoryForm16AOfficialDocumentAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "filing",
+        "issue_no",
+        "source",
+        "certificate_no",
+        "document_name",
+        "uploaded_by",
+        "uploaded_at",
+    )
+    list_filter = ("source", "uploaded_at", "filing__tax_type", "filing__entity", "filing__entityfinid", "filing__subentity")
+    search_fields = (
+        "filing__return_code",
+        "filing__ack_no",
+        "filing__arn_no",
+        "certificate_no",
+        "remarks",
+        "document",
+        "uploaded_by__username",
+        "uploaded_by__email",
+    )
+    raw_id_fields = ("filing", "uploaded_by")
+    readonly_fields = ("uploaded_at", "uploaded_by")
+    ordering = ("-uploaded_at", "-id")
+
+    @admin.display(description="Document")
+    def document_name(self, obj: PurchaseStatutoryForm16AOfficialDocument):
+        if not obj.document:
+            return "-"
+        return obj.document.name.rsplit("/", 1)[-1]
 
 
 @admin.register(Gstr2bImportBatch)

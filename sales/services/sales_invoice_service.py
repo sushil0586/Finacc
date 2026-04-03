@@ -2083,15 +2083,6 @@ class SalesInvoiceService:
                 txn_id=header.id,
             )
         )
-        old_ims = list(
-            InventoryMove.objects.filter(
-                entity_id=header.entity_id,
-                entityfin_id=header.entityfinid_id,
-                subentity_id=header.subentity_id,
-                txn_type=txn_type,
-                txn_id=header.id,
-            )
-        )
 
         jl_inputs: list[JLInput] = []
         for jl in old_jls:
@@ -2103,25 +2094,6 @@ class SalesInvoiceService:
                     amount=q2(jl.amount),
                     description=f"Reversal: {jl.description or ''}".strip(),
                     detail_id=jl.detail_id,
-                )
-            )
-
-        im_inputs: list[IMInput] = []
-        for im in old_ims:
-            im_inputs.append(
-                IMInput(
-                    product_id=im.product_id,
-                    qty=q4(im.qty),
-                    base_qty=q4(im.base_qty),
-                    uom_id=im.uom_id,
-                    base_uom_id=im.base_uom_id,
-                    uom_factor=im.uom_factor,
-                    unit_cost=q4(im.unit_cost),
-                    move_type=cls._reverse_move_type(im.move_type),
-                    cost_source=im.cost_source,
-                    cost_meta={"reversal_of_txn": f"{txn_type}#{header.id}"},
-                    detail_id=im.detail_id,
-                    location_id=im.location_id,
                 )
             )
 
@@ -2138,7 +2110,10 @@ class SalesInvoiceService:
             posting_date=header.posting_date or header.bill_date,
             narration=f"Reversal for {header.invoice_number or header.id}",
             jl_inputs=jl_inputs,
-            im_inputs=im_inputs,
+            # Unpost should clear prior inventory impact for this transaction.
+            # PostingService deletes existing rows by txn locator before inserting fresh rows.
+            # Keeping this empty prevents net stock drift after unpost.
+            im_inputs=[],
             use_advisory_lock=True,
             mark_posted=True,
         )
