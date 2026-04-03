@@ -198,8 +198,7 @@ class PurchaseNoteFactory:
                     hsn_sac=ln.hsn_sac,
 
                     uom=ln.uom,
-                    # price_diff notes carry qty=0: no inventory reversal needed
-                    qty=ln.qty if is_qty_return else 0,
+                    qty=ln.qty,
                     rate=ln.rate,
 
                     taxability=ln.taxability,

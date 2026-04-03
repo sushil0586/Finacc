@@ -204,6 +204,8 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
                 "cess_percent": "0.00",
                 "cess_amount": "0.00",
                 "line_total": "0.00",
+                "purchase_account": self.vendor.id,
+                "product_desc": "Manual purchase line",
                 "is_itc_eligible": False,
                 "itc_block_reason": "",
             }

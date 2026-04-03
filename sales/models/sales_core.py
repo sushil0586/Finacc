@@ -73,6 +73,11 @@ class SalesInvoiceHeader(EntityScopedModel):
         PARTIAL = 2, "Partial"
         SETTLED = 3, "Settled"
 
+    class NoteReason(models.TextChoices):
+        QUANTITY_RETURN = "qty_return", "Quantity Return"
+        PRICE_DIFFERENCE = "price_diff", "Price Difference"
+        OTHER = "other", "Other"
+
     # -------------------------
     # Identity / numbering
     # -------------------------
@@ -91,6 +96,17 @@ class SalesInvoiceHeader(EntityScopedModel):
         blank=True,
         on_delete=models.PROTECT,
         related_name="adjustment_documents",
+    )
+    note_reason = models.CharField(
+        max_length=20,
+        choices=NoteReason.choices,
+        null=True,
+        blank=True,
+        help_text="Applicable for Credit Note / Debit Note only",
+    )
+    affects_inventory = models.BooleanField(
+        default=False,
+        help_text="For CN/DN: whether inventory movement should be posted.",
     )
 
 

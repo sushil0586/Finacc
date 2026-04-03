@@ -241,6 +241,11 @@ class FinancialSettings(TrackingModel):
     enforce_gst_uniqueness = models.BooleanField(default=True)
     enforce_pan_uniqueness = models.BooleanField(default=True)
     require_gst_for_registered_parties = models.BooleanField(default=False)
+    reporting_policy = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Entity-level reporting policy overrides (SaaS configurable).",
+    )
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):

@@ -23,6 +23,7 @@ ALLOCATION_POLICIES = {"manual", "fifo"}
 CREDIT_NOTE_CONSUMPTION_MODES = {"off", "fifo", "reference_only", "reference_then_fifo"}
 OVER_SETTLEMENT_RULES = {"block", "warn"}
 ON_OFF = {"off", "on"}
+TWO_B_STATUS_TOKENS = {"na", "not_checked", "matched", "mismatched", "not_in_2b", "partial"}
 
 DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     # Mutation safety
@@ -35,6 +36,8 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     # Action gating
     "itc_action_status_gate": "hard",   # off | warn | hard
     "two_b_action_status_gate": "hard", # off | warn | hard
+    "itc_claim_requires_2b": "off",  # off | warn | hard
+    "itc_claim_allowed_2b_statuses": "matched,partial",  # csv tokens
     # Validation strictness
     "line_amount_mismatch": "hard",     # off | warn | hard
     # Match hooks
@@ -55,6 +58,20 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "gst_tds_interest_rate_monthly": "1.50",
     "gst_tds_late_fee_per_day": "100.00",
     "gst_tds_late_fee_cap_factor": "1.00",
+    "it_tds_challan_due_day": "7",
+    "gst_tds_challan_due_day": "10",
+    "gst_tds_return_due_day": "10",
+    "it_tds_return_q1_due_month": "7",
+    "it_tds_return_q1_due_day": "31",
+    "it_tds_return_q2_due_month": "10",
+    "it_tds_return_q2_due_day": "31",
+    "it_tds_return_q3_due_month": "1",
+    "it_tds_return_q3_due_day": "31",
+    "it_tds_return_q4_due_month": "5",
+    "it_tds_return_q4_due_day": "31",
+    "vendor_gstin_format_rule": "hard",
+    "withholding_pan_required_rule": "hard",
+    "withholding_pan_format_rule": "hard",
 }
 
 
@@ -99,6 +116,28 @@ class PurchasePolicy:
     def post_gst_tds_on_invoice(self) -> bool:
         return bool(getattr(self.settings, "post_gst_tds_on_invoice", False))
 
+    @property
+    def itc_claim_2b_gate(self) -> str:
+        raw = self.controls.get("itc_claim_requires_2b")
+        if raw is None:
+            return "hard" if self.enforce_2b_before_itc_claim else "off"
+        val = str(raw).lower().strip()
+        if val not in ENFORCEMENT_LEVELS:
+            return "hard" if self.enforce_2b_before_itc_claim else "off"
+        return val
+
+    @property
+    def itc_claim_allowed_2b_statuses(self) -> set[str]:
+        raw = self.controls.get("itc_claim_allowed_2b_statuses", "matched,partial")
+        if isinstance(raw, (list, tuple, set)):
+            tokens = {str(x).strip().lower() for x in raw if str(x).strip()}
+        else:
+            tokens = {part.strip().lower() for part in str(raw).split(",") if part.strip()}
+        clean = {token for token in tokens if token in TWO_B_STATUS_TOKENS}
+        if not clean:
+            return {"matched", "partial"}
+        return clean
+
     def level(self, key: str, default: str = "hard") -> str:
         val = str(self.controls.get(key, default)).lower().strip()
         return val if val in ENFORCEMENT_LEVELS else default
@@ -125,6 +164,17 @@ class PurchaseSettingsService:
             "gst_tds_interest_rate_monthly",
             "gst_tds_late_fee_per_day",
             "gst_tds_late_fee_cap_factor",
+            "it_tds_challan_due_day",
+            "gst_tds_challan_due_day",
+            "gst_tds_return_due_day",
+            "it_tds_return_q1_due_month",
+            "it_tds_return_q1_due_day",
+            "it_tds_return_q2_due_month",
+            "it_tds_return_q2_due_day",
+            "it_tds_return_q3_due_month",
+            "it_tds_return_q3_due_day",
+            "it_tds_return_q4_due_month",
+            "it_tds_return_q4_due_day",
         }
         for key, value in raw.items():
             if key not in DEFAULT_POLICY_CONTROLS:
@@ -176,6 +226,19 @@ class PurchaseSettingsService:
                 if v not in ON_OFF:
                     raise ValueError(f"policy_controls.{key} must be one of: off, on.")
                 normalized[key] = v
+                continue
+            if key == "itc_claim_allowed_2b_statuses":
+                if isinstance(value, (list, tuple, set)):
+                    tokens = [str(x).strip().lower() for x in value if str(x).strip()]
+                else:
+                    tokens = [part.strip().lower() for part in str(value).split(",") if part.strip()]
+                bad = [token for token in tokens if token not in TWO_B_STATUS_TOKENS]
+                if bad:
+                    raise ValueError(
+                        "policy_controls.itc_claim_allowed_2b_statuses has invalid value(s): "
+                        + ", ".join(sorted(set(bad)))
+                    )
+                normalized[key] = ",".join(tokens)
                 continue
             if key in numeric_keys:
                 try:

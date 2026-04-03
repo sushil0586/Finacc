@@ -86,6 +86,8 @@ class PaymentVendorBillOpenItemListAPIView(generics.ListAPIView):
             row["allocation_sequence"] = enrich.get("allocation_sequence")
             row["is_allocatable"] = enrich.get("is_allocatable", False)
             row["reference_invoice_header_id"] = enrich.get("reference_invoice_header_id")
+            row["credit_note_details"] = enrich.get("credit_note_details", [])
+            row["credit_adjustment_reason"] = enrich.get("credit_adjustment_reason", "")
             if open_flag:
                 allocatable = Decimal(str(row.get("allocatable_amount") or "0"))
                 if allocatable <= Decimal("0"):

@@ -25,6 +25,7 @@ from sales.services.sales_choices_service import SalesChoicesService
 from sales.services.sales_settings_service import SalesSettingsService
 from vouchers.models.voucher_config import VoucherSettings
 from vouchers.services.voucher_settings_service import VoucherSettingsService
+from reports.services.financial.reporting_policy import resolve_financial_reporting_policy
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -197,6 +198,10 @@ class SettingsHubAPIView(APIView):
 
     def _financial_payload(self, entity_id: int):
         settings = self._financial_settings(entity_id)
+        reporting_policy = resolve_financial_reporting_policy(entity_id)
+        pl_policy = reporting_policy.get("profit_loss", {})
+        bs_policy = reporting_policy.get("balance_sheet", {})
+
         return self._settings_payload(
             "Financial",
             settings={
@@ -204,6 +209,9 @@ class SettingsHubAPIView(APIView):
                 "enforce_gst_uniqueness": settings.enforce_gst_uniqueness,
                 "enforce_pan_uniqueness": settings.enforce_pan_uniqueness,
                 "require_gst_for_registered_parties": settings.require_gst_for_registered_parties,
+                "pl_accounting_only_notes_disclosure": pl_policy.get("accounting_only_notes_disclosure", "summary"),
+                "pl_accounting_only_notes_split": pl_policy.get("accounting_only_notes_split", "purchase_sales"),
+                "bs_include_accounting_only_notes_disclosure": bs_policy.get("include_accounting_only_notes_disclosure", True),
             },
             schema=_with_help([
                 {
@@ -216,19 +224,76 @@ class SettingsHubAPIView(APIView):
                 {"name": "enforce_gst_uniqueness", "label": "Enforce GST Uniqueness", "type": "boolean", "group": "validations"},
                 {"name": "enforce_pan_uniqueness", "label": "Enforce PAN Uniqueness", "type": "boolean", "group": "validations"},
                 {"name": "require_gst_for_registered_parties", "label": "Require GST For Registered Parties", "type": "boolean", "group": "validations"},
+                {
+                    "name": "pl_accounting_only_notes_disclosure",
+                    "label": "P&L Accounting-only CN/DN Disclosure",
+                    "type": "choice",
+                    "group": "reporting",
+                    "choices": [
+                        {"value": "off", "label": "Off"},
+                        {"value": "summary", "label": "Summary"},
+                    ],
+                },
+                {
+                    "name": "pl_accounting_only_notes_split",
+                    "label": "P&L Disclosure Split",
+                    "type": "choice",
+                    "group": "reporting",
+                    "choices": [
+                        {"value": "purchase_sales", "label": "Purchase vs Sales"},
+                        {"value": "combined", "label": "Combined"},
+                    ],
+                },
+                {
+                    "name": "bs_include_accounting_only_notes_disclosure",
+                    "label": "Balance Sheet: Include Disclosure",
+                    "type": "boolean",
+                    "group": "reporting",
+                },
             ], {
                 "opening_balance_edit_mode": "Controls when opening balances can still be edited.",
                 "enforce_gst_uniqueness": "Prevents duplicate GST numbers within the entity.",
                 "enforce_pan_uniqueness": "Prevents duplicate PAN numbers within the entity.",
                 "require_gst_for_registered_parties": "Forces GST entry when party is marked registered.",
+                "pl_accounting_only_notes_disclosure": "Show or hide accounting-only CN/DN impact disclosure on Profit and Loss.",
+                "pl_accounting_only_notes_split": "Display accounting-only CN/DN disclosure as combined or purchase-vs-sales split.",
+                "bs_include_accounting_only_notes_disclosure": "Carry the accounting-only CN/DN disclosure into Balance Sheet response.",
             }),
             scope_subentity=False,
             capabilities={
                 "has_lock_periods": False,
                 "has_choice_overrides": False,
-                "has_policy_controls": False,
+                "has_policy_controls": True,
                 "has_doc_number_preview": False,
             },
+            policy_control_schema=[
+                {
+                    "name": "pl_accounting_only_notes_disclosure",
+                    "label": "P&L Accounting-only CN/DN Disclosure",
+                    "type": "choice",
+                    "choices": [
+                        {"value": "off", "label": "Off"},
+                        {"value": "summary", "label": "Summary"},
+                    ],
+                    "default": "summary",
+                },
+                {
+                    "name": "pl_accounting_only_notes_split",
+                    "label": "P&L Disclosure Split",
+                    "type": "choice",
+                    "choices": [
+                        {"value": "purchase_sales", "label": "Purchase vs Sales"},
+                        {"value": "combined", "label": "Combined"},
+                    ],
+                    "default": "purchase_sales",
+                },
+                {
+                    "name": "bs_include_accounting_only_notes_disclosure",
+                    "label": "Balance Sheet: Include Disclosure",
+                    "type": "boolean",
+                    "default": True,
+                },
+            ],
         )
 
     def _sales_payload(self, entity_id: int, entityfinid_id: Optional[int], subentity_id: Optional[int]):
@@ -315,6 +380,9 @@ class SettingsHubAPIView(APIView):
                 "default_workflow_action": settings.default_workflow_action,
                 "auto_derive_tax_regime": settings.auto_derive_tax_regime,
                 "enforce_2b_before_itc_claim": settings.enforce_2b_before_itc_claim,
+                "itc_claim_requires_2b": policy.controls.get("itc_claim_requires_2b", "off"),
+                "itc_claim_allowed_2b_statuses": policy.controls.get("itc_claim_allowed_2b_statuses", "matched,partial"),
+                "itc_claim_allowed_2b_statuses_list": sorted(list(policy.itc_claim_allowed_2b_statuses)),
                 "allow_mixed_taxability_in_one_bill": settings.allow_mixed_taxability_in_one_bill,
                 "round_grand_total_to": settings.round_grand_total_to,
                 "enable_round_off": settings.enable_round_off,
@@ -326,10 +394,21 @@ class SettingsHubAPIView(APIView):
                 {"name": "default_doc_code_cn", "label": "Credit Note Doc Code", "type": "string", "group": "numbering"},
                 {"name": "default_doc_code_dn", "label": "Debit Note Doc Code", "type": "string", "group": "numbering"},
                 {"name": "default_workflow_action", "label": "Default Workflow", "type": "choice", "group": "workflow", "choices": _choice_payload(PurchaseSettings.DefaultWorkflowAction.choices)},
+                {"name": "itc_claim_requires_2b", "label": "ITC Claim Requires 2B", "type": "choice", "group": "compliance", "choices": [{"value": "off", "label": "Off"}, {"value": "warn", "label": "Warn"}, {"value": "hard", "label": "Hard Block"}]},
+                {"name": "itc_claim_allowed_2b_statuses", "label": "ITC Claim Allowed 2B Statuses", "type": "multi_select", "group": "compliance", "choices": [
+                    {"value": "matched", "label": "Matched"},
+                    {"value": "partial", "label": "Partial / Needs Review"},
+                    {"value": "not_checked", "label": "Not Checked"},
+                    {"value": "mismatched", "label": "Mismatched"},
+                    {"value": "not_in_2b", "label": "Not in 2B"},
+                    {"value": "na", "label": "Not Applicable"},
+                ]},
                 {"name": "policy_controls", "label": "Advanced Policy Controls", "type": "json", "group": "advanced"},
             ], {
                 "default_doc_code_invoice": "Default document code used when creating purchase invoices.",
                 "default_workflow_action": "Defines whether save keeps draft, confirms, or posts immediately.",
+                "itc_claim_requires_2b": "Policy gate for ITC claim based on GSTR-2B status (off/warn/hard).",
+                "itc_claim_allowed_2b_statuses": "Comma-separated allowed statuses: matched,partial,not_checked,mismatched,not_in_2b,na.",
                 "policy_controls": "Advanced purchase governance flags for matching, settlement, and compliance.",
             }),
             scope_subentity=True,
@@ -529,6 +608,33 @@ class SettingsHubAPIView(APIView):
                 for key in {"opening_balance_edit_mode", "enforce_gst_uniqueness", "enforce_pan_uniqueness", "require_gst_for_registered_parties"}:
                     if key in settings_updates:
                         setattr(settings, key, settings_updates[key])
+
+                policy = dict(settings.reporting_policy or {})
+                pl_policy = dict(policy.get("profit_loss") or {})
+                bs_policy = dict(policy.get("balance_sheet") or {})
+
+                if "pl_accounting_only_notes_disclosure" in settings_updates:
+                    pl_policy["accounting_only_notes_disclosure"] = str(settings_updates.get("pl_accounting_only_notes_disclosure") or "summary").strip().lower()
+                if "pl_accounting_only_notes_split" in settings_updates:
+                    pl_policy["accounting_only_notes_split"] = str(settings_updates.get("pl_accounting_only_notes_split") or "purchase_sales").strip().lower()
+                if "bs_include_accounting_only_notes_disclosure" in settings_updates:
+                    bs_policy["include_accounting_only_notes_disclosure"] = bool(settings_updates.get("bs_include_accounting_only_notes_disclosure"))
+
+                if pl_policy:
+                    policy["profit_loss"] = pl_policy
+                if bs_policy:
+                    policy["balance_sheet"] = bs_policy
+
+                if any(
+                    key in settings_updates
+                    for key in {
+                        "pl_accounting_only_notes_disclosure",
+                        "pl_accounting_only_notes_split",
+                        "bs_include_accounting_only_notes_disclosure",
+                    }
+                ):
+                    settings.reporting_policy = policy
+
                 settings.save()
                 continue
 
@@ -567,7 +673,29 @@ class SettingsHubAPIView(APIView):
                 continue
 
             if module_key == "purchase":
-                PurchaseSettingsService.upsert_settings(entity_id=entity_id, subentity_id=subentity_id, updates=settings_updates)
+                purchase_updates = dict(settings_updates)
+                if (
+                    "itc_claim_requires_2b" in purchase_updates
+                    or "itc_claim_allowed_2b_statuses" in purchase_updates
+                    or "itc_claim_allowed_2b_statuses_list" in purchase_updates
+                ):
+                    policy_controls = dict(purchase_updates.get("policy_controls") or {})
+                    if "itc_claim_requires_2b" in purchase_updates:
+                        policy_controls["itc_claim_requires_2b"] = purchase_updates.get("itc_claim_requires_2b")
+
+                    raw = purchase_updates.get("itc_claim_allowed_2b_statuses_list", purchase_updates.get("itc_claim_allowed_2b_statuses"))
+                    if raw is not None:
+                        if isinstance(raw, (list, tuple, set)):
+                            tokens = [str(x).strip().lower() for x in raw if str(x).strip()]
+                        else:
+                            tokens = [part.strip().lower() for part in str(raw or "").split(",") if part.strip()]
+                        policy_controls["itc_claim_allowed_2b_statuses"] = ",".join(tokens)
+                    purchase_updates["policy_controls"] = policy_controls
+                purchase_updates.pop("itc_claim_requires_2b", None)
+                purchase_updates.pop("itc_claim_allowed_2b_statuses", None)
+                purchase_updates.pop("itc_claim_allowed_2b_statuses_list", None)
+
+                PurchaseSettingsService.upsert_settings(entity_id=entity_id, subentity_id=subentity_id, updates=purchase_updates)
                 if "lock_periods" in payload:
                     self._replace_lock_periods(PurchaseLockPeriod, payload.get("lock_periods") or [], entity_id=entity_id, subentity_id=subentity_id)
                 if "choice_overrides" in payload:

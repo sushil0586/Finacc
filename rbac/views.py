@@ -373,8 +373,11 @@ class RoleAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
     serializer_class = RoleAdminSerializer
 
     def get_queryset(self):
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            return Role.objects.none()
         return (
-            Role.objects.filter(role_level=Role.LEVEL_ENTITY)
+            Role.objects.filter(role_level=Role.LEVEL_ENTITY, entity=entity)
             .select_related("entity")
             .annotate(
                 permission_count=Count("role_permissions", filter=Q(role_permissions__isactive=True), distinct=True),
@@ -404,7 +407,12 @@ class RoleAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
 
 class RolePermissionsStateView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Role.objects.filter(role_level=Role.LEVEL_ENTITY).select_related("entity")
+
+    def get_queryset(self):
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            return Role.objects.none()
+        return Role.objects.filter(role_level=Role.LEVEL_ENTITY, entity=entity).select_related("entity")
 
     def get(self, request, *args, **kwargs):
         role = self.get_object()
@@ -454,11 +462,14 @@ class RolePermissionsStateView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIVi
         return self.get(request, *args, **kwargs)
 
 
-class MenuAdminListCreateView(ListCreateAPIView):
+class MenuAdminListCreateView(RBACEntityAccessMixin, ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = MenuAdminSerializer
 
     def get_queryset(self):
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            return Menu.objects.none()
         queryset = Menu.objects.select_related("parent").order_by("depth", "parent_id", "sort_order", "name")
         parent_id = self.request.query_params.get("parent")
         if parent_id == "null":
@@ -471,9 +482,13 @@ class MenuAdminListCreateView(ListCreateAPIView):
         return queryset
 
     def perform_create(self, serializer):
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            raise ValidationError(error_response.data)
         menu = serializer.save()
         RBACAuditService.log(
             actor=self.request.user,
+            entity=entity,
             object_type="menu",
             object_id=menu.id,
             action=RBACAuditLog.ACTION_CREATE,
@@ -485,7 +500,12 @@ class MenuAdminListCreateView(ListCreateAPIView):
 class MenuAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = MenuAdminSerializer
-    queryset = Menu.objects.select_related("parent")
+
+    def get_queryset(self):
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            return Menu.objects.none()
+        return Menu.objects.select_related("parent")
 
     def perform_update(self, serializer):
         original = self.get_object()
@@ -496,8 +516,10 @@ class MenuAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
         changes = {"parent_id": menu.parent_id}
         if previous_parent_id != menu.parent_id:
             message = f"Moved menu {menu.code}."
+        entity, _ = self._entity_from_request(self.request)
         RBACAuditService.log(
             actor=self.request.user,
+            entity=entity,
             object_type="menu",
             object_id=menu.id,
             action=action,
@@ -516,6 +538,9 @@ class MenuPermissionsStateView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIVi
     queryset = Menu.objects.select_related("parent")
 
     def get(self, request, *args, **kwargs):
+        entity, error_response = self._entity_from_request(request)
+        if error_response:
+            return error_response
         menu = self.get_object()
         relation_type = request.query_params.get("relation_type", MenuPermission.RELATION_VISIBILITY)
         payload = {
@@ -534,6 +559,9 @@ class MenuPermissionsStateView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIVi
         return Response(serializer.data)
 
     def put(self, request, *args, **kwargs):
+        entity, error_response = self._entity_from_request(request)
+        if error_response:
+            return error_response
         menu = self.get_object()
         serializer = MenuPermissionBulkSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -559,6 +587,7 @@ class MenuPermissionsStateView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIVi
         )
         RBACAuditService.log(
             actor=request.user,
+            entity=entity,
             object_type="menu",
             object_id=menu.id,
             action=RBACAuditLog.ACTION_UPDATE,
@@ -570,11 +599,14 @@ class MenuPermissionsStateView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIVi
         return self.get(request, *args, **kwargs)
 
 
-class MenuAdminTreeView(ListAPIView):
+class MenuAdminTreeView(RBACEntityAccessMixin, ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = MenuAdminTreeSerializer
 
     def get_queryset(self):
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            return Menu.objects.none()
         return Menu.objects.filter(parent__isnull=True, isactive=True).order_by("sort_order", "name")
 
 

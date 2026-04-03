@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from calendar import monthrange
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional
 
@@ -19,6 +20,7 @@ from purchase.models.purchase_statutory import (
     PurchaseStatutoryReturn,
     PurchaseStatutoryReturnLine,
 )
+from purchase.models.itc_models import PurchaseItcAction
 
 Q2 = Decimal("0.01")
 ZERO2 = Decimal("0.00")
@@ -241,33 +243,124 @@ class PurchaseStatutoryService:
             raise ValueError(f"Maker-checker control: {action_label} must be done by a different user.")
 
     @staticmethod
-    def _next_month_7th(dt: date) -> date:
-        if dt.month == 12:
-            return date(dt.year + 1, 1, 7)
-        return date(dt.year, dt.month + 1, 7)
+    def _int_control(
+        entity_id: int,
+        subentity_id: Optional[int],
+        key: str,
+        default: int,
+        *,
+        min_value: int,
+        max_value: int,
+    ) -> int:
+        controls = PurchaseStatutoryService._policy_controls(entity_id, subentity_id)
+        raw = controls.get(key, default)
+        try:
+            value = int(str(raw))
+        except Exception:
+            value = int(default)
+        if value < min_value:
+            return min_value
+        if value > max_value:
+            return max_value
+        return value
 
     @staticmethod
-    def _due_date_for_challan(tax_type: str, period_to: Optional[date], challan_date: Optional[date]) -> date:
+    def _safe_date(year: int, month: int, day: int) -> date:
+        safe_day = min(max(int(day), 1), monthrange(year, month)[1])
+        return date(year, month, safe_day)
+
+    @staticmethod
+    def _next_month_day(dt: date, day: int) -> date:
+        if dt.month == 12:
+            return PurchaseStatutoryService._safe_date(dt.year + 1, 1, day)
+        return PurchaseStatutoryService._safe_date(dt.year, dt.month + 1, day)
+
+    @staticmethod
+    def _due_date_for_challan(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        period_to: Optional[date],
+        challan_date: Optional[date],
+    ) -> date:
         base = period_to or challan_date or timezone.localdate()
-        if tax_type in (PurchaseStatutoryChallan.TaxType.IT_TDS, PurchaseStatutoryChallan.TaxType.GST_TDS):
-            return PurchaseStatutoryService._next_month_7th(base)
+        if tax_type == PurchaseStatutoryChallan.TaxType.IT_TDS:
+            due_day = PurchaseStatutoryService._int_control(
+                entity_id,
+                subentity_id,
+                "it_tds_challan_due_day",
+                7,
+                min_value=1,
+                max_value=31,
+            )
+            return PurchaseStatutoryService._next_month_day(base, due_day)
+        if tax_type == PurchaseStatutoryChallan.TaxType.GST_TDS:
+            due_day = PurchaseStatutoryService._int_control(
+                entity_id,
+                subentity_id,
+                "gst_tds_challan_due_day",
+                10,
+                min_value=1,
+                max_value=31,
+            )
+            return PurchaseStatutoryService._next_month_day(base, due_day)
         return base
 
     @staticmethod
-    def _due_date_for_return(tax_type: str, return_code: str, period_to: date) -> date:
+    def _due_date_for_return(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        return_code: str,
+        period_to: date,
+    ) -> date:
         code = (return_code or "").strip().upper()
         if tax_type == PurchaseStatutoryReturn.TaxType.IT_TDS and code in {"26Q", "27Q"}:
             y = int(period_to.year)
             m = int(period_to.month)
             if m in (4, 5, 6):
-                return date(y, 7, 31)
+                due_month = PurchaseStatutoryService._int_control(
+                    entity_id, subentity_id, "it_tds_return_q1_due_month", 7, min_value=1, max_value=12
+                )
+                due_day = PurchaseStatutoryService._int_control(
+                    entity_id, subentity_id, "it_tds_return_q1_due_day", 31, min_value=1, max_value=31
+                )
+                return PurchaseStatutoryService._safe_date(y, due_month, due_day)
             if m in (7, 8, 9):
-                return date(y, 10, 31)
+                due_month = PurchaseStatutoryService._int_control(
+                    entity_id, subentity_id, "it_tds_return_q2_due_month", 10, min_value=1, max_value=12
+                )
+                due_day = PurchaseStatutoryService._int_control(
+                    entity_id, subentity_id, "it_tds_return_q2_due_day", 31, min_value=1, max_value=31
+                )
+                return PurchaseStatutoryService._safe_date(y, due_month, due_day)
             if m in (10, 11, 12):
-                return date(y + 1, 1, 31)
-            return date(y, 5, 31)  # Jan-Mar quarter
+                due_month = PurchaseStatutoryService._int_control(
+                    entity_id, subentity_id, "it_tds_return_q3_due_month", 1, min_value=1, max_value=12
+                )
+                due_day = PurchaseStatutoryService._int_control(
+                    entity_id, subentity_id, "it_tds_return_q3_due_day", 31, min_value=1, max_value=31
+                )
+                return PurchaseStatutoryService._safe_date(y + 1, due_month, due_day)
+            due_month = PurchaseStatutoryService._int_control(
+                entity_id, subentity_id, "it_tds_return_q4_due_month", 5, min_value=1, max_value=12
+            )
+            due_day = PurchaseStatutoryService._int_control(
+                entity_id, subentity_id, "it_tds_return_q4_due_day", 31, min_value=1, max_value=31
+            )
+            return PurchaseStatutoryService._safe_date(y, due_month, due_day)
         if tax_type == PurchaseStatutoryReturn.TaxType.GST_TDS:
-            return PurchaseStatutoryService._next_month_7th(period_to)
+            due_day = PurchaseStatutoryService._int_control(
+                entity_id,
+                subentity_id,
+                "gst_tds_return_due_day",
+                10,
+                min_value=1,
+                max_value=31,
+            )
+            return PurchaseStatutoryService._next_month_day(period_to, due_day)
         return period_to
 
     @staticmethod
@@ -649,6 +742,8 @@ class PurchaseStatutoryService:
         deposited_date = PurchaseStatutoryService._coerce_date(deposited_on, field_name="deposited_on") or timezone.localdate()
         if c.interest_amount <= ZERO2 and c.late_fee_amount <= ZERO2 and c.penalty_amount <= ZERO2:
             due_on = PurchaseStatutoryService._due_date_for_challan(
+                entity_id=int(c.entity_id),
+                subentity_id=c.subentity_id,
                 tax_type=c.tax_type,
                 period_to=c.period_to,
                 challan_date=c.challan_date,
@@ -1126,6 +1221,8 @@ class PurchaseStatutoryService:
         filing_date = PurchaseStatutoryService._coerce_date(filed_on, field_name="filed_on") or timezone.localdate()
         if f.interest_amount <= ZERO2 and f.late_fee_amount <= ZERO2 and f.penalty_amount <= ZERO2:
             due_on = PurchaseStatutoryService._due_date_for_return(
+                entity_id=int(f.entity_id),
+                subentity_id=f.subentity_id,
                 tax_type=f.tax_type,
                 return_code=f.return_code,
                 period_to=f.period_to,
@@ -1274,6 +1371,170 @@ class PurchaseStatutoryService:
             "pending_filing": str(q2(q2(deposited) - q2(filed))),
             "draft_challan": str(q2(draft_challan)),
             "draft_return": str(q2(draft_return)),
+        }
+
+    @staticmethod
+    def itc_status_register(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        date_from=None,
+        date_to=None,
+        itc_claim_status: Optional[int] = None,
+        gstr2b_match_status: Optional[int] = None,
+        include_cancelled: bool = False,
+    ) -> Dict[str, object]:
+        start_date = PurchaseStatutoryService._coerce_date(date_from, field_name="date_from")
+        end_date = PurchaseStatutoryService._coerce_date(date_to, field_name="date_to")
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("date_from cannot be greater than date_to.")
+
+        qs = PurchaseInvoiceHeader.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+        ).select_related("vendor")
+
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        if start_date:
+            qs = qs.filter(bill_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(bill_date__lte=end_date)
+        if not include_cancelled:
+            qs = qs.exclude(status=PurchaseInvoiceHeader.Status.CANCELLED)
+        if itc_claim_status is not None:
+            qs = qs.filter(itc_claim_status=int(itc_claim_status))
+        if gstr2b_match_status is not None:
+            qs = qs.filter(gstr2b_match_status=int(gstr2b_match_status))
+
+        qs = qs.order_by("-bill_date", "-id")
+        headers = list(qs)
+        header_ids = [int(h.id) for h in headers]
+
+        latest_action_by_header: Dict[int, Dict[str, object]] = {}
+        if header_ids:
+            actions = (
+                PurchaseItcAction.objects
+                .filter(header_id__in=header_ids)
+                .select_related("acted_by")
+                .order_by("header_id", "-acted_at", "-id")
+            )
+            for act in actions:
+                hid = int(act.header_id)
+                if hid in latest_action_by_header:
+                    continue
+                user_obj = getattr(act, "acted_by", None)
+                user_name = (
+                    getattr(user_obj, "username", None)
+                    or getattr(user_obj, "email", None)
+                    or (str(getattr(user_obj, "id")) if user_obj else None)
+                )
+                latest_action_by_header[hid] = {
+                    "action_type": act.action_type,
+                    "acted_at": act.acted_at,
+                    "acted_by": user_name,
+                    "reason": act.reason,
+                }
+
+        rows: List[Dict[str, object]] = []
+        total_eligible_tax = ZERO2
+        total_ineligible_tax = ZERO2
+
+        status_counter: Dict[str, int] = {
+            "pending": 0,
+            "claimed": 0,
+            "blocked": 0,
+            "reversed": 0,
+            "na": 0,
+        }
+        match_counter: Dict[str, int] = {
+            "matched": 0,
+            "partial": 0,
+            "mismatched": 0,
+            "not_in_2b": 0,
+            "not_checked": 0,
+            "na": 0,
+        }
+
+        for h in headers:
+            action = latest_action_by_header.get(int(h.id)) or {}
+            eligible_tax = q2(getattr(h, "total_gst", ZERO2)) if bool(getattr(h, "is_itc_eligible", False)) else ZERO2
+            ineligible_tax = ZERO2 if bool(getattr(h, "is_itc_eligible", False)) else q2(getattr(h, "total_gst", ZERO2))
+            total_eligible_tax = q2(total_eligible_tax + eligible_tax)
+            total_ineligible_tax = q2(total_ineligible_tax + ineligible_tax)
+
+            itc_key = (
+                str(getattr(h, "get_itc_claim_status_display", lambda: "NA")())
+                .strip()
+                .lower()
+                .replace(" ", "_")
+            )
+            if "pending" in itc_key:
+                status_counter["pending"] += 1
+            elif "claimed" in itc_key:
+                status_counter["claimed"] += 1
+            elif "blocked" in itc_key:
+                status_counter["blocked"] += 1
+            elif "reversed" in itc_key:
+                status_counter["reversed"] += 1
+            else:
+                status_counter["na"] += 1
+
+            match_key = int(getattr(h, "gstr2b_match_status", PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED))
+            if match_key == int(PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED):
+                match_counter["matched"] += 1
+            elif match_key == int(PurchaseInvoiceHeader.Gstr2bMatchStatus.PARTIAL):
+                match_counter["partial"] += 1
+            elif match_key == int(PurchaseInvoiceHeader.Gstr2bMatchStatus.MISMATCHED):
+                match_counter["mismatched"] += 1
+            elif match_key == int(PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_IN_2B):
+                match_counter["not_in_2b"] += 1
+            elif match_key == int(PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED):
+                match_counter["not_checked"] += 1
+            else:
+                match_counter["na"] += 1
+
+            rows.append(
+                {
+                    "header_id": int(h.id),
+                    "purchase_number": h.purchase_number or f"{h.doc_code}-{h.doc_no}",
+                    "bill_date": h.bill_date,
+                    "vendor_name": h.vendor_name or "",
+                    "vendor_gstin": h.vendor_gstin or "",
+                    "doc_type": int(h.doc_type or 0),
+                    "doc_type_name": h.get_doc_type_display(),
+                    "status": int(h.status or 0),
+                    "status_name": h.get_status_display(),
+                    "is_itc_eligible": bool(h.is_itc_eligible),
+                    "itc_claim_status": int(h.itc_claim_status or 0),
+                    "itc_claim_status_name": h.get_itc_claim_status_display(),
+                    "itc_claim_period": h.itc_claim_period,
+                    "itc_claimed_at": h.itc_claimed_at,
+                    "itc_block_reason": h.itc_block_reason or "",
+                    "gstr2b_match_status": int(h.gstr2b_match_status or 0),
+                    "gstr2b_match_status_name": h.get_gstr2b_match_status_display(),
+                    "total_taxable": str(q2(getattr(h, "total_taxable", ZERO2))),
+                    "total_gst": str(q2(getattr(h, "total_gst", ZERO2))),
+                    "itc_eligible_tax": str(eligible_tax),
+                    "itc_ineligible_tax": str(ineligible_tax),
+                    "last_itc_action": action.get("action_type"),
+                    "last_itc_action_at": action.get("acted_at"),
+                    "last_itc_action_by": action.get("acted_by"),
+                    "last_itc_action_reason": action.get("reason"),
+                }
+            )
+
+        return {
+            "count": len(rows),
+            "rows": rows,
+            "summary": {
+                "invoice_count": len(rows),
+                "total_eligible_tax": str(total_eligible_tax),
+                "total_ineligible_tax": str(total_ineligible_tax),
+                "itc_status_counts": status_counter,
+                "gstr2b_status_counts": match_counter,
+            },
         }
 
     @staticmethod

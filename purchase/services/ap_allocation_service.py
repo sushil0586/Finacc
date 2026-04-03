@@ -91,6 +91,9 @@ class PurchaseApAllocationService:
                 "allocatable_amount": ZERO2,
                 "allocation_sequence": idx,
                 "reference_invoice_header_id": getattr(getattr(item, "header", None), "ref_document_id", None),
+                "document_number": item.purchase_number or item.supplier_invoice_number or "",
+                "supplier_invoice_number": item.supplier_invoice_number or "",
+                "_credit_note_details": [],
             }
             rows.append(row)
             if raw <= ZERO2:
@@ -101,7 +104,7 @@ class PurchaseApAllocationService:
                 row["allocatable_amount"] = raw
                 positives.append(row)
 
-        def apply_credit_to_positive(target_row: Dict, amt: Decimal) -> Decimal:
+        def apply_credit_to_positive(target_row: Dict, amt: Decimal, source_row: Optional[Dict] = None) -> Decimal:
             if amt <= ZERO2:
                 return ZERO2
             available = q2(target_row["allocatable_amount"])
@@ -110,6 +113,17 @@ class PurchaseApAllocationService:
             use = min(available, amt)
             target_row["credit_adjusted_amount"] = q2(target_row["credit_adjusted_amount"] + use)
             target_row["allocatable_amount"] = q2(available - use)
+            if source_row and use > ZERO2:
+                target_row.setdefault("_credit_note_details", []).append(
+                    {
+                        "open_item_id": source_row.get("id"),
+                        "header_id": source_row.get("header_id"),
+                        "doc_type": source_row.get("doc_type"),
+                        "document_number": source_row.get("document_number") or "",
+                        "supplier_invoice_number": source_row.get("supplier_invoice_number") or "",
+                        "applied_amount": q2(use),
+                    }
+                )
             return q2(amt - use)
 
         if mode != "off" and negatives:
@@ -125,19 +139,33 @@ class PurchaseApAllocationService:
                 if mode in {"reference_only", "reference_then_fifo"} and ref_header_id:
                     target = positives_by_header.get(ref_header_id)
                     if target:
-                        remaining_credit = apply_credit_to_positive(target, remaining_credit)
+                        remaining_credit = apply_credit_to_positive(target, remaining_credit, neg)
 
                 if mode in {"fifo", "reference_then_fifo"} and remaining_credit > ZERO2:
                     for p in positives_fifo:
                         if remaining_credit <= ZERO2:
                             break
-                        remaining_credit = apply_credit_to_positive(p, remaining_credit)
+                        remaining_credit = apply_credit_to_positive(p, remaining_credit, neg)
 
         for row in rows:
             row["raw_outstanding_amount"] = q2(row["raw_outstanding_amount"])
             row["credit_adjusted_amount"] = q2(row["credit_adjusted_amount"])
             row["allocatable_amount"] = q2(row["allocatable_amount"])
             row["is_allocatable"] = bool(row["allocatable_amount"] > ZERO2)
+            credit_details = row.pop("_credit_note_details", [])
+            row["credit_note_details"] = credit_details
+            if row["credit_adjusted_amount"] > ZERO2 and credit_details:
+                refs = [d.get("document_number") for d in credit_details if d.get("document_number")]
+                refs_text = ", ".join(refs[:5])
+                if len(refs) > 5:
+                    refs_text += ", ..."
+                row["credit_adjustment_reason"] = (
+                    f"Adjusted by linked credit note(s): {refs_text}" if refs_text else "Adjusted by linked credit note(s)."
+                )
+            elif row["credit_adjusted_amount"] > ZERO2:
+                row["credit_adjustment_reason"] = "Adjusted by linked credit note(s)."
+            else:
+                row["credit_adjustment_reason"] = ""
 
         return rows
 

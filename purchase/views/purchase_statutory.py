@@ -499,6 +499,47 @@ class PurchaseStatutorySummaryAPIView(APIView):
         return Response({"summary": summary})
 
 
+class PurchaseStatutoryItcStatusRegisterAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_statutory_view(request, entity_id)
+
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        include_cancelled = str(request.query_params.get("include_cancelled", "false")).strip().lower() in {"1", "true", "yes", "y"}
+
+        itc_claim_status_raw = request.query_params.get("itc_claim_status")
+        gstr2b_status_raw = request.query_params.get("gstr2b_match_status")
+
+        def _optional_int(value, field_name: str):
+            if value in (None, "", "null"):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                raise ValidationError({"detail": f"{field_name} must be an integer."})
+
+        itc_claim_status = _optional_int(itc_claim_status_raw, "itc_claim_status")
+        gstr2b_match_status = _optional_int(gstr2b_status_raw, "gstr2b_match_status")
+
+        try:
+            payload = PurchaseStatutoryService.itc_status_register(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                date_from=date_from or None,
+                date_to=date_to or None,
+                itc_claim_status=itc_claim_status,
+                gstr2b_match_status=gstr2b_match_status,
+                include_cancelled=include_cancelled,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response(payload)
+
+
 class PurchaseStatutoryGlReconciliationAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

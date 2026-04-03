@@ -4,10 +4,13 @@ from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.db.models import Q, Sum
+from django.db.models import Count, Q, Sum
 
 from financial.models import Ledger
+from purchase.models.purchase_core import PurchaseInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader
 from reports.services.balance_sheet import _inventory_value_asof
+from reports.services.financial.reporting_policy import FINANCIAL_REPORTING_POLICY_DEFAULTS
 from reports.selectors.financial import (
     journal_lines_for_scope,
     normalize_scope_ids,
@@ -271,6 +274,155 @@ def _raw_profit_loss_rows(
     return entity_id, entityfin_id, subentity_id, from_date, to_date, rows
 
 
+
+def _as_decimal(value):
+    return Decimal(str(value or "0.00"))
+
+
+def _profit_loss_policy(reporting_policy):
+    base = FINANCIAL_REPORTING_POLICY_DEFAULTS.get("profit_loss", {})
+    cfg = ((reporting_policy or {}).get("profit_loss") or {})
+
+    disclosure_mode = str(cfg.get("accounting_only_notes_disclosure", base.get("accounting_only_notes_disclosure", "summary"))).strip().lower()
+    if disclosure_mode not in {"off", "summary"}:
+        disclosure_mode = "summary"
+
+    split_mode = str(cfg.get("accounting_only_notes_split", base.get("accounting_only_notes_split", "purchase_sales"))).strip().lower()
+    if split_mode not in {"combined", "purchase_sales"}:
+        split_mode = "purchase_sales"
+
+    return {
+        "accounting_only_notes_disclosure": disclosure_mode,
+        "accounting_only_notes_split": split_mode,
+    }
+
+
+def _balance_sheet_policy(reporting_policy):
+    base = FINANCIAL_REPORTING_POLICY_DEFAULTS.get("balance_sheet", {})
+    cfg = ((reporting_policy or {}).get("balance_sheet") or {})
+    return {
+        "include_accounting_only_notes_disclosure": bool(
+            cfg.get(
+                "include_accounting_only_notes_disclosure",
+                base.get("include_accounting_only_notes_disclosure", True),
+            )
+        )
+    }
+
+
+def _accounting_only_note_disclosure(
+    *,
+    entity_id,
+    entityfin_id,
+    subentity_id,
+    from_date,
+    to_date,
+    split_mode,
+):
+    sales_filters = {
+        "entity_id": entity_id,
+        "status": SalesInvoiceHeader.Status.POSTED,
+        "doc_type__in": [SalesInvoiceHeader.DocType.CREDIT_NOTE, SalesInvoiceHeader.DocType.DEBIT_NOTE],
+        "affects_inventory": False,
+    }
+    purchase_filters = {
+        "entity_id": entity_id,
+        "status": PurchaseInvoiceHeader.Status.POSTED,
+        "doc_type__in": [PurchaseInvoiceHeader.DocType.CREDIT_NOTE, PurchaseInvoiceHeader.DocType.DEBIT_NOTE],
+        "affects_inventory": False,
+    }
+
+    if entityfin_id:
+        sales_filters["entityfinid_id"] = entityfin_id
+        purchase_filters["entityfinid_id"] = entityfin_id
+    if subentity_id:
+        sales_filters["subentity_id"] = subentity_id
+        purchase_filters["subentity_id"] = subentity_id
+    if from_date:
+        sales_filters["bill_date__gte"] = from_date
+        purchase_filters["bill_date__gte"] = from_date
+    if to_date:
+        sales_filters["bill_date__lte"] = to_date
+        purchase_filters["bill_date__lte"] = to_date
+
+    sales_qs = SalesInvoiceHeader.objects.filter(**sales_filters)
+    purchase_qs = PurchaseInvoiceHeader.objects.filter(**purchase_filters)
+
+    sales_stats = sales_qs.aggregate(
+        credit_count=Count("id", filter=Q(doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE)),
+        credit_amount=Sum("total_taxable_value", filter=Q(doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE), default=Decimal("0.00")),
+        debit_count=Count("id", filter=Q(doc_type=SalesInvoiceHeader.DocType.DEBIT_NOTE)),
+        debit_amount=Sum("total_taxable_value", filter=Q(doc_type=SalesInvoiceHeader.DocType.DEBIT_NOTE), default=Decimal("0.00")),
+    )
+    purchase_stats = purchase_qs.aggregate(
+        credit_count=Count("id", filter=Q(doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE)),
+        credit_amount=Sum("total_taxable", filter=Q(doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE), default=Decimal("0.00")),
+        debit_count=Count("id", filter=Q(doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE)),
+        debit_amount=Sum("total_taxable", filter=Q(doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE), default=Decimal("0.00")),
+    )
+
+    sales_credit_amount = _as_decimal(sales_stats.get("credit_amount"))
+    sales_debit_amount = _as_decimal(sales_stats.get("debit_amount"))
+    purchase_credit_amount = _as_decimal(purchase_stats.get("credit_amount"))
+    purchase_debit_amount = _as_decimal(purchase_stats.get("debit_amount"))
+
+    sales_credit_count = int(sales_stats.get("credit_count") or 0)
+    sales_debit_count = int(sales_stats.get("debit_count") or 0)
+    purchase_credit_count = int(purchase_stats.get("credit_count") or 0)
+    purchase_debit_count = int(purchase_stats.get("debit_count") or 0)
+
+    total_count = sales_credit_count + sales_debit_count + purchase_credit_count + purchase_debit_count
+    total_amount = sales_credit_amount + sales_debit_amount + purchase_credit_amount + purchase_debit_amount
+
+    # Profit impact estimate using taxable amount basis only:
+    # + purchase CN (expense reduction), + sales DN (income increase),
+    # - purchase DN (expense increase), - sales CN (income reduction).
+    estimated_profit_impact = (
+        purchase_credit_amount
+        + sales_debit_amount
+        - purchase_debit_amount
+        - sales_credit_amount
+    )
+
+    breakdown = {
+        "purchase": {
+            "credit_notes": {"count": purchase_credit_count, "taxable_amount": f"{purchase_credit_amount:.2f}"},
+            "debit_notes": {"count": purchase_debit_count, "taxable_amount": f"{purchase_debit_amount:.2f}"},
+            "estimated_profit_impact": f"{(purchase_credit_amount - purchase_debit_amount):.2f}",
+        },
+        "sales": {
+            "credit_notes": {"count": sales_credit_count, "taxable_amount": f"{sales_credit_amount:.2f}"},
+            "debit_notes": {"count": sales_debit_count, "taxable_amount": f"{sales_debit_amount:.2f}"},
+            "estimated_profit_impact": f"{(sales_debit_amount - sales_credit_amount):.2f}",
+        },
+    }
+
+    if split_mode == "combined":
+        breakdown = {
+            "credit_notes": {
+                "count": purchase_credit_count + sales_credit_count,
+                "taxable_amount": f"{(purchase_credit_amount + sales_credit_amount):.2f}",
+            },
+            "debit_notes": {
+                "count": purchase_debit_count + sales_debit_count,
+                "taxable_amount": f"{(purchase_debit_amount + sales_debit_amount):.2f}",
+            },
+        }
+
+    return {
+        "code": "accounting_only_notes",
+        "label": "Accounting-only CN/DN impact",
+        "basis": "Posted purchase/sales credit-debit notes with affects_inventory=false",
+        "amount_basis_field": "total_taxable",
+        "split_mode": split_mode,
+        "totals": {
+            "count": total_count,
+            "taxable_amount": f"{total_amount:.2f}",
+            "estimated_profit_impact": f"{estimated_profit_impact:.2f}",
+        },
+        "breakdown": breakdown,
+    }
+
 def _iter_period_ranges(start_date, end_date, period_by):
     cursor = start_date
     while cursor <= end_date:
@@ -303,6 +455,7 @@ def _build_profit_loss_snapshot(
     stock_valuation_mode,
     stock_valuation_method,
     include_pagination=True,
+    reporting_policy=None,
 ):
     entity_id, entityfin_id, subentity_id, from_date, to_date, rows = _raw_profit_loss_rows(
         entity_id=entity_id,
@@ -377,6 +530,18 @@ def _build_profit_loss_snapshot(
     adjusted_expense = total_expense + abs(min(stock_adjustment, Decimal("0.00")))
     net_profit = adjusted_income - adjusted_expense
 
+    pl_policy = _profit_loss_policy(reporting_policy)
+    accounting_only_notes = None
+    if pl_policy["accounting_only_notes_disclosure"] == "summary":
+        accounting_only_notes = _accounting_only_note_disclosure(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            from_date=from_date,
+            to_date=to_date,
+            split_mode=pl_policy["accounting_only_notes_split"],
+        )
+
     effective_page = 1 if not include_pagination else page
     effective_page_size = max(len(income_source), len(expense_source), 1) if not include_pagination else page_size
     income_rows, income_count = _build_side_rows(
@@ -421,6 +586,10 @@ def _build_profit_loss_snapshot(
             "expense_rows": expense_count,
             "opening_inventory_valuation": f"{stock_context['opening_inventory']:.2f}",
             "closing_inventory_valuation": f"{stock_context['closing_inventory']:.2f}",
+            "accounting_only_notes_count": (accounting_only_notes or {}).get("totals", {}).get("count", 0),
+            "accounting_only_notes_taxable_amount": (accounting_only_notes or {}).get("totals", {}).get("taxable_amount", "0.00"),
+            "accounting_only_notes_estimated_profit_impact": (accounting_only_notes or {}).get("totals", {}).get("estimated_profit_impact", "0.00"),
+            "profit_note": "Net profit is book profit and includes accounting-only CN/DN impact.",
         },
         "stock_valuation": {
             "requested_mode": stock_context["requested_mode"],
@@ -434,6 +603,9 @@ def _build_profit_loss_snapshot(
             "notes": stock_context["notes"],
         },
     }
+    if accounting_only_notes:
+        snapshot["disclosures"] = [accounting_only_notes]
+
     if include_pagination:
         snapshot["pagination"] = {
             "page": page,
@@ -461,6 +633,7 @@ def build_profit_and_loss(
     period_by=None,
     stock_valuation_mode="auto",
     stock_valuation_method="fifo",
+    reporting_policy=None,
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = _resolve_balance_sheet_window(entityfin_id, from_date, to_date, as_of_date)
@@ -506,6 +679,7 @@ def build_profit_and_loss(
         stock_valuation_mode=stock_valuation_mode,
         stock_valuation_method=stock_valuation_method,
         include_pagination=True,
+        reporting_policy=reporting_policy,
     )
 
     response = {
@@ -522,6 +696,11 @@ def build_profit_and_loss(
             "sort_by": sort_by,
             "sort_order": sort_order,
             "search": search,
+            "applied_policy": {
+                "profit_loss": _profit_loss_policy(reporting_policy),
+            },
+            "net_profit_basis": "book_profit",
+            "accounting_only_notes_included_in_net_profit": True,
         },
     }
 
@@ -544,6 +723,7 @@ def build_profit_and_loss(
                 stock_valuation_mode=stock_valuation_mode,
                 stock_valuation_method=stock_valuation_method,
                 include_pagination=False,
+                reporting_policy=reporting_policy,
             )
             period_snapshot["period_key"] = (
                 f"{period_end.year}-Q{((period_end.month - 1) // 3) + 1}"
@@ -757,6 +937,7 @@ def _build_snapshot(
     stock_valuation_mode,
     stock_valuation_method,
     include_pagination=True,
+    reporting_policy=None,
 ):
     entity_id, entityfin_id, subentity_id, from_date, to_date, rows = _raw_balance_rows(
         entity_id=entity_id,
@@ -814,9 +995,12 @@ def _build_snapshot(
         to_date=to_date,
         stock_valuation_mode=stock_valuation_mode,
         stock_valuation_method=stock_valuation_method,
+        reporting_policy=reporting_policy,
     )
     net_profit = Decimal(pnl["totals"]["net_profit"])
     raw_income = Decimal(pnl["totals"].get("raw_income", pnl["totals"]["income"]))
+    bs_policy = _balance_sheet_policy(reporting_policy)
+    pnl_disclosures = list(pnl.get("disclosures") or [])
     raw_expense = Decimal(pnl["totals"].get("raw_expense", pnl["totals"]["expense"]))
     raw_net_profit = raw_income - raw_expense
     if net_profit > 0:
@@ -916,6 +1100,8 @@ def _build_snapshot(
             "notes": stock_context["notes"],
         },
     }
+    if bs_policy.get("include_accounting_only_notes_disclosure") and pnl_disclosures:
+        snapshot["disclosures"] = pnl_disclosures
     if include_pagination:
         snapshot["pagination"] = {
             "page": page,
@@ -973,6 +1159,7 @@ def build_balance_sheet(
     period_by=None,
     stock_valuation_mode="auto",
     stock_valuation_method="fifo",
+    reporting_policy=None,
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = _resolve_balance_sheet_window(entityfin_id, from_date, to_date, as_of_date)
@@ -1018,6 +1205,7 @@ def build_balance_sheet(
         stock_valuation_mode=stock_valuation_mode,
         stock_valuation_method=stock_valuation_method,
         include_pagination=True,
+        reporting_policy=reporting_policy,
     )
 
     response = {
@@ -1034,6 +1222,10 @@ def build_balance_sheet(
             "sort_by": sort_by,
             "sort_order": sort_order,
             "search": search,
+            "applied_policy": {
+                "balance_sheet": _balance_sheet_policy(reporting_policy),
+            },
+            "net_profit_source": "profit_loss.book_profit",
         },
     }
 
@@ -1056,6 +1248,7 @@ def build_balance_sheet(
                 stock_valuation_mode=stock_valuation_mode,
                 stock_valuation_method=stock_valuation_method,
                 include_pagination=False,
+                reporting_policy=reporting_policy,
             )
             period_snapshot["period_key"] = (
                 f"{period_end.year}-Q{((period_end.month - 1) // 3) + 1}"

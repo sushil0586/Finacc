@@ -205,6 +205,70 @@ class PurchaseGstTdsTests(SimpleTestCase):
         self.assertEqual(header.match_status, "warn")
 
 
+class PurchaseVendorComplianceValidationTests(SimpleTestCase):
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_service.account_partytype")
+    @patch("purchase.services.purchase_invoice_service.account_gstno")
+    def test_invalid_vendor_gstin_hard_rule_blocks(self, mock_gstno, mock_partytype, mock_policy):
+        vendor = SimpleNamespace(ledger_id=10, isactive=True)
+        mock_partytype.return_value = "Vendor"
+        mock_gstno.return_value = None
+        mock_policy.return_value = SimpleNamespace(controls={"vendor_gstin_format_rule": "hard"})
+
+        attrs = {
+            "entity": 1,
+            "subentity": None,
+            "vendor": vendor,
+            "vendor_gstin": "INVALID-GSTIN",
+            "withholding_enabled": False,
+        }
+        with self.assertRaisesMessage(ValueError, "Vendor GSTIN format is invalid."):
+            PurchaseInvoiceService.validate_vendor_account(attrs)
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_service.account_partytype")
+    @patch("purchase.services.purchase_invoice_service.account_gstno")
+    def test_invalid_vendor_gstin_warn_rule_sets_match_warning(self, mock_gstno, mock_partytype, mock_policy):
+        vendor = SimpleNamespace(ledger_id=10, isactive=True)
+        mock_partytype.return_value = "Vendor"
+        mock_gstno.return_value = None
+        mock_policy.return_value = SimpleNamespace(controls={"vendor_gstin_format_rule": "warn"})
+
+        attrs = {
+            "entity": 1,
+            "subentity": None,
+            "vendor": vendor,
+            "vendor_gstin": "INVALID-GSTIN",
+            "withholding_enabled": False,
+        }
+        PurchaseInvoiceService.validate_vendor_account(attrs)
+
+        self.assertIn("compliance_warnings", attrs.get("match_notes", {}))
+        self.assertEqual(attrs.get("match_status"), "warn")
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_service.account_partytype")
+    @patch("purchase.services.purchase_invoice_service.account_pan")
+    def test_withholding_pan_required_hard_rule_blocks_when_pan_missing(self, mock_pan, mock_partytype, mock_policy):
+        vendor = SimpleNamespace(ledger_id=10, isactive=True)
+        mock_partytype.return_value = "Vendor"
+        mock_pan.return_value = ""
+        mock_policy.return_value = SimpleNamespace(
+            controls={
+                "withholding_pan_required_rule": "hard",
+                "withholding_pan_format_rule": "hard",
+            }
+        )
+        attrs = {
+            "entity": 1,
+            "subentity": None,
+            "vendor": vendor,
+            "withholding_enabled": True,
+        }
+        with self.assertRaisesMessage(ValueError, "Vendor PAN is required when Income-tax TDS is enabled."):
+            PurchaseInvoiceService.validate_vendor_account(attrs)
+
+
 class PurchaseApiSmokeTests(APITestCase):
     def setUp(self):
         user_model = get_user_model()
@@ -444,6 +508,33 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
                 amount=Decimal("6.00"),
             )
 
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._policy_controls")
+    def test_due_date_for_gst_tds_uses_configurable_day(self, mock_controls):
+        mock_controls.return_value = {"gst_tds_challan_due_day": "12"}
+        due = PurchaseStatutoryService._due_date_for_challan(
+            entity_id=1,
+            subentity_id=None,
+            tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS,
+            period_to=date(2026, 4, 30),
+            challan_date=None,
+        )
+        self.assertEqual(due, date(2026, 5, 12))
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._policy_controls")
+    def test_due_date_for_it_tds_return_q4_uses_configurable_month_day(self, mock_controls):
+        mock_controls.return_value = {
+            "it_tds_return_q4_due_month": "6",
+            "it_tds_return_q4_due_day": "15",
+        }
+        due = PurchaseStatutoryService._due_date_for_return(
+            entity_id=1,
+            subentity_id=None,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="26Q",
+            period_to=date(2026, 3, 31),
+        )
+        self.assertEqual(due, date(2026, 6, 15))
+
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
     @patch("purchase.services.purchase_statutory_service.PurchaseInvoiceHeader.objects")
@@ -543,8 +634,10 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["message"], "Settlement cancelled with reversal.")
 
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_summary")
-    def test_statutory_summary_endpoint_returns_200(self, mock_summary):
+    def test_statutory_summary_endpoint_returns_200(self, mock_summary, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.invoice.view"}
         mock_summary.return_value = {
             "deducted": "10.00",
             "deposited": "8.00",
@@ -558,14 +651,139 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("summary", resp.data)
 
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_exceptions")
-    def test_statutory_reconciliation_exceptions_endpoint_returns_200(self, mock_fn):
+    def test_statutory_reconciliation_exceptions_endpoint_returns_200(self, mock_fn, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.invoice.view"}
         mock_fn.return_value = {"exceptions": {}}
         resp = self.client.get(
             "/api/purchase/statutory/reconciliation-exceptions/?entity=1&entityfinid=1&tax_type=IT_TDS&period_from=2026-04-01&period_to=2026-04-30"
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("exceptions", resp.data)
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.itc_status_register")
+    def test_statutory_itc_status_register_endpoint_returns_200(self, mock_fn, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.invoice.view"}
+        mock_fn.return_value = {
+            "count": 1,
+            "rows": [
+                {
+                    "header_id": 10,
+                    "purchase_number": "PINV-10",
+                    "itc_claim_status_name": "Pending",
+                    "gstr2b_match_status_name": "Not Checked",
+                }
+            ],
+            "summary": {"invoice_count": 1},
+        }
+        resp = self.client.get(
+            "/api/purchase/statutory/itc-status-register/?entity=1&entityfinid=1&date_from=2026-04-01&date_to=2026-04-30"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 1)
+        self.assertIn("summary", resp.data)
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.mark_itc_claimed")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    def test_purchase_service_invoice_itc_claim_endpoint_returns_200(self, _mock_scope, mock_action, mock_serializer):
+        mock_action.return_value = SimpleNamespace(message="ok", header=SimpleNamespace(id=9))
+        mock_serializer.return_value.data = {"id": 9}
+        resp = self.client.post(
+            "/api/purchase/purchase-service-invoices/9/itc/claim/?entity=1&entityfinid=1",
+            {"period": "2026-04"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["message"], "ok")
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.mark_itc_unblocked")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    def test_purchase_service_invoice_itc_unblock_endpoint_returns_200(self, _mock_scope, mock_action, mock_serializer):
+        mock_action.return_value = SimpleNamespace(message="unblocked", header=SimpleNamespace(id=9))
+        mock_serializer.return_value.data = {"id": 9}
+        resp = self.client.post(
+            "/api/purchase/purchase-service-invoices/9/itc/unblock/?entity=1&entityfinid=1",
+            {"reason": "GSTR-2B updated"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["message"], "unblocked")
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.update_2b_match_status")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    def test_purchase_service_invoice_2b_status_endpoint_returns_200(self, _mock_scope, mock_action, mock_serializer):
+        mock_action.return_value = SimpleNamespace(message="ok", header=SimpleNamespace(id=10))
+        mock_serializer.return_value.data = {"id": 10, "gstr2b_match_status": 2}
+        resp = self.client.post(
+            "/api/purchase/purchase-service-invoices/10/gstr2b/status/?entity=1&entityfinid=1",
+            {"match_status": 2},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["data"]["id"], 10)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.attach_form16a_official_document")
+    def test_statutory_form16a_official_upload_endpoint_returns_201(self, mock_attach):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        mock_attach.return_value = {"filing_id": 1, "issue_no": 2, "source": "TRACES"}
+        doc = SimpleUploadedFile("form16a.pdf", b"%PDF-1.4\nfake", content_type="application/pdf")
+        resp = self.client.post(
+            "/api/purchase/statutory/returns/1/form16a/2/official-upload/",
+            {"document": doc, "source": "TRACES"},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["message"], "Official Form16A document uploaded.")
+
+    def test_purchase_service_invoice_search_alias_endpoint_returns_200(self):
+        resp = self.client.get("/api/purchase/purchase-service-invoices/search/?entity=1&entityfinid=1")
+        # Alias route should at least resolve (it may reject request params with 400).
+        self.assertNotEqual(resp.status_code, 404)
+
+    @patch("purchase.views.purchase_gstr2b.PurchaseGstr2bService.create_batch")
+    @patch("purchase.views.purchase_gstr2b.Gstr2bImportBatchSerializer")
+    def test_gstr2b_import_batch_create_returns_201(self, mock_ser, mock_create):
+        mock_create.return_value = SimpleNamespace(id=12)
+        mock_ser.return_value.data = {"id": 12, "period": "2026-04"}
+        resp = self.client.post(
+            "/api/purchase/gstr2b/import-batches/",
+            {
+                "entity": 1,
+                "entityfinid": 1,
+                "period": "2026-04",
+                "source": "gstr2b",
+                "rows": [
+                    {
+                        "supplier_gstin": "29ABCDE1234F1Z5",
+                        "supplier_invoice_number": "INV-1",
+                        "taxable_value": "100.00",
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["data"]["id"], 12)
+
+    @patch("purchase.views.purchase_gstr2b.PurchaseGstr2bService.auto_match_batch")
+    def test_gstr2b_import_batch_match_returns_200(self, mock_match):
+        mock_match.return_value = SimpleNamespace(
+            batch=SimpleNamespace(id=15),
+            total_rows=10,
+            matched=7,
+            partial=2,
+            multiple=1,
+            not_matched=0,
+        )
+        resp = self.client.post("/api/purchase/gstr2b/import-batches/15/match/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["matched"], 7)
 
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.generate_nsdl_payload")
     def test_statutory_nsdl_export_endpoint_returns_200(self, mock_fn):
