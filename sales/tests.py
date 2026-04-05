@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 
 from sales.models import SalesInvoiceHeader, SalesSettings
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.compliance_error_catalog_service import ComplianceErrorCatalogService
 from sales.services.eway_payload_builder import EWayInput, build_generate_eway_payload
@@ -15,6 +16,70 @@ from sales.services.providers.mastergst import _extract_error
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_skips_when_entity_config_disables_tcs(self, mocked_get_cfg):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=False, apply_tcs_206c1h=False)
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(section_code="206C(1)", rate_default=Decimal("0.1000")),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+        self.assertFalse(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "DISABLED")
+
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_disables_206c1h_by_config(self, mocked_get_cfg):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=False)
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(section_code="206C(1H)", rate_default=Decimal("0.1000")),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "DISABLED_206C_1H_BY_CONFIG")
+
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_skips_payment_based_section_in_invoice_context(self, mocked_get_cfg):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=True)
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(section_code="194N", base_rule=4, rate_default=Decimal("2.0000")),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_APPLICABLE_BASE_RULE_CONTEXT")
+
     def test_reverse_move_type(self):
         self.assertEqual(SalesInvoiceService._reverse_move_type("IN"), "OUT")
         self.assertEqual(SalesInvoiceService._reverse_move_type("OUT"), "IN")

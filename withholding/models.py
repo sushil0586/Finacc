@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from django.db import models
 from django.core.validators import MinValueValidator
+from django.utils import timezone
 
 
 class TaxLawType(models.TextChoices):
@@ -24,6 +25,12 @@ class WithholdingTaxType(models.IntegerChoices):
     TCS = 2, "TCS"
 
 
+class ResidencyStatus(models.TextChoices):
+    RESIDENT = "resident", "Resident"
+    NON_RESIDENT = "non_resident", "Non Resident"
+    UNKNOWN = "unknown", "Unknown"
+
+
 class WithholdingBaseRule(models.IntegerChoices):
     INVOICE_VALUE_EXCL_GST = 1, "Invoice value excl GST"
     INVOICE_VALUE_INCL_GST = 2, "Invoice value incl GST"
@@ -43,7 +50,6 @@ class WithholdingSection(models.Model):
     sub_type = models.CharField(max_length=24, choices=TcsSubType.choices, null=True, blank=True, db_index=True)
     section_code = models.CharField(max_length=16, db_index=True)  # "194C", "194Q", "206C(1)"
     description = models.CharField(max_length=255)
-
     base_rule = models.PositiveSmallIntegerField(
         choices=WithholdingBaseRule.choices,
         default=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
@@ -63,6 +69,14 @@ class WithholdingSection(models.Model):
         max_digits=7, decimal_places=4, null=True, blank=True,
         validators=[MinValueValidator(Decimal("0.0000"))],
     )
+    higher_rate_206ab = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+        help_text="Higher rate to apply when deductee is specified person under section 206AB.",
+    )
 
     # Optional: structured conditions (goods/service, resident etc.)
     applicability_json = models.JSONField(null=True, blank=True)
@@ -73,7 +87,7 @@ class WithholdingSection(models.Model):
     is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta:
-        unique_together = (("tax_type", "section_code", "effective_from"),)
+        unique_together = (("tax_type", "section_code", "base_rule", "effective_from"),)
         indexes = [
             models.Index(fields=["tax_type", "section_code"]),
             models.Index(fields=["tax_type", "is_active"]),
@@ -81,6 +95,46 @@ class WithholdingSection(models.Model):
 
     def __str__(self) -> str:
         return f"{self.get_tax_type_display()} {self.section_code} ({self.effective_from})"
+
+
+class WithholdingSectionPolicyAudit(models.Model):
+    class Action(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        UPDATED = "UPDATED", "Updated"
+        DELETED = "DELETED", "Deleted"
+
+    section = models.ForeignKey(
+        WithholdingSection,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="policy_audits",
+        db_index=True,
+    )
+    action = models.CharField(max_length=16, choices=Action.choices, db_index=True)
+    changed_by = models.ForeignKey(
+        "Authentication.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="withholding_policy_audits",
+        db_index=True,
+    )
+    changed_fields_json = models.JSONField(null=True, blank=True)
+    before_snapshot_json = models.JSONField(null=True, blank=True)
+    after_snapshot_json = models.JSONField(null=True, blank=True)
+    source = models.CharField(max_length=32, default="api", db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "withholding_section_policy_audit"
+        indexes = [
+            models.Index(fields=["section", "created_at"], name="ix_wh_policy_audit_sec_dt"),
+            models.Index(fields=["action", "created_at"], name="ix_wh_policy_audit_action_dt"),
+        ]
+
+    def __str__(self) -> str:
+        return f"WithholdingPolicyAudit(section={self.section_id}, action={self.action})"
 
 
 class PartyTaxProfile(models.Model):
@@ -99,6 +153,9 @@ class PartyTaxProfile(models.Model):
     is_pan_available = models.BooleanField(default=False)
 
     is_exempt_withholding = models.BooleanField(default=False)
+    is_specified_person_206ab = models.BooleanField(default=False)
+    specified_person_valid_from = models.DateField(null=True, blank=True)
+    specified_person_valid_to = models.DateField(null=True, blank=True)
 
     lower_deduction_rate = models.DecimalField(
         max_digits=7, decimal_places=4, null=True, blank=True,
@@ -111,6 +168,80 @@ class PartyTaxProfile(models.Model):
 
     def __str__(self) -> str:
         return f"TaxProfile({self.party_account_id})"
+
+
+class EntityPartyTaxProfile(models.Model):
+    """
+    Entity-scoped withholding policy overrides for a party.
+    Keeps global PAN master in PartyTaxProfile while allowing tenant-level behavior.
+    """
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, db_index=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, db_index=True)
+    party_account = models.ForeignKey("financial.account", on_delete=models.CASCADE, db_index=True)
+
+    is_exempt_withholding = models.BooleanField(default=False)
+    is_specified_person_206ab = models.BooleanField(default=False)
+    specified_person_valid_from = models.DateField(null=True, blank=True)
+    specified_person_valid_to = models.DateField(null=True, blank=True)
+    residency_status = models.CharField(
+        max_length=24,
+        choices=ResidencyStatus.choices,
+        default=ResidencyStatus.UNKNOWN,
+        db_index=True,
+    )
+    tax_identifier = models.CharField(max_length=64, null=True, blank=True)
+    declaration_reference = models.CharField(max_length=64, null=True, blank=True)
+    treaty_article = models.CharField(max_length=64, null=True, blank=True)
+    treaty_rate = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+    treaty_valid_from = models.DateField(null=True, blank=True)
+    treaty_valid_to = models.DateField(null=True, blank=True)
+    surcharge_rate = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+    cess_rate = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+
+    lower_deduction_rate = models.DecimalField(
+        max_digits=7, decimal_places=4, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+    lower_deduction_valid_from = models.DateField(null=True, blank=True)
+    lower_deduction_valid_to = models.DateField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "subentity", "party_account"],
+                name="uq_wh_entity_party_profile",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "subentity", "party_account", "is_active"], name="ix_wh_ent_party_profile"),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"EntityPartyTaxProfile(entity={self.entity_id}, sub={self.subentity_id}, "
+            f"party={self.party_account_id})"
+        )
 
 
 class EntityWithholdingConfig(models.Model):
@@ -137,6 +268,9 @@ class EntityWithholdingConfig(models.Model):
 
     apply_194q = models.BooleanField(default=False)
     apply_tcs_206c1h = models.BooleanField(default=False)  # keep for history
+    tcs_206c1h_prev_fy_turnover = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    tcs_206c1h_turnover_limit = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("100000000.00"))
+    tcs_206c1h_force_eligible = models.BooleanField(null=True, blank=True, help_text="Optional manual override for 206C(1H) turnover eligibility.")
 
     effective_from = models.DateField(db_index=True)
 
@@ -151,6 +285,77 @@ class EntityWithholdingConfig(models.Model):
 
     def __str__(self) -> str:
         return f"WithholdingConfig(entity={self.entity_id}, fy={self.entityfin_id}, sub={self.subentity_id})"
+
+
+class EntityTcsThresholdOpening(models.Model):
+    """
+    Opening cumulative base support for migration-safe threshold logic.
+    """
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, db_index=True)
+    entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, db_index=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, db_index=True)
+    party_account = models.ForeignKey("financial.account", on_delete=models.CASCADE, db_index=True)
+    section = models.ForeignKey(
+        WithholdingSection,
+        on_delete=models.CASCADE,
+        db_index=True,
+        limit_choices_to={"tax_type": WithholdingTaxType.TCS},
+    )
+    opening_base_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    effective_from = models.DateField(default=timezone.localdate, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "entityfin", "party_account", "section", "is_active"], name="ix_tcs_opening_lookup"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "entityfin", "subentity", "party_account", "section", "effective_from"],
+                name="uq_tcs_opening_entity_fin_sub_party_sec_eff",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"TcsOpening(entity={self.entity_id}, fin={self.entityfin_id}, sub={self.subentity_id}, "
+            f"party={self.party_account_id}, sec={self.section_id}, amt={self.opening_base_amount})"
+        )
+
+
+class EntityWithholdingSectionPostingMap(models.Model):
+    """
+    SaaS-safe mapping of withholding section to tenant-specific payable account/ledger.
+    """
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, db_index=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, db_index=True)
+    section = models.ForeignKey(WithholdingSection, on_delete=models.CASCADE, db_index=True)
+    payable_account = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
+    payable_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
+    effective_from = models.DateField(default=timezone.localdate, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "section", "subentity", "is_active"], name="ix_wh_sec_map_lookup"),
+            models.Index(fields=["entity", "effective_from"], name="ix_wh_sec_map_eff"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "subentity", "section", "effective_from"],
+                name="uq_wh_sec_map_entity_sub_sec_eff",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"EntitySectionMap(entity={self.entity_id}, sub={self.subentity_id}, "
+            f"section={self.section_id}, account={self.payable_account_id})"
+        )
 
 
 class TcsComputation(models.Model):

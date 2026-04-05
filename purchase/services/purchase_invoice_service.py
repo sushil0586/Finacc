@@ -16,6 +16,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from financial.gstin import validate_financial_gstin
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from withholding.models import WithholdingBaseRule
+from withholding.services import WithholdingResolver
 
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -913,9 +915,31 @@ class PurchaseInvoiceService:
 
         # ✅ MANUAL MODE
         if bool(getattr(header, "tds_is_manual", False)):
+            cfg = WithholdingResolver.get_entity_config(
+                entity_id=header.entity_id,
+                entityfin_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                doc_date=header.bill_date or timezone.localdate(),
+            )
+            if cfg and not bool(getattr(cfg, "enable_tds", True)):
+                raise ValueError("TDS is disabled in withholding configuration for this scope/date.")
+
             # In manual mode, explicit section is mandatory.
             if not header.tds_section_id:
                 raise ValueError("TDS section is required when withholding_enabled is true.")
+            section = getattr(header, "tds_section", None)
+            if section is not None and int(getattr(section, "base_rule", 0) or 0) not in {
+                int(WithholdingBaseRule.INVOICE_VALUE_EXCL_GST),
+                int(WithholdingBaseRule.INVOICE_VALUE_INCL_GST),
+            }:
+                raise ValueError("Selected TDS section is not invoice-based for purchase invoice context.")
+            if section is not None:
+                applicable, applicability_reason, _ = WithholdingResolver.evaluate_section_applicability(
+                    section=section,
+                    party_account_id=getattr(header, "vendor_id", None),
+                )
+                if not applicable:
+                    raise ValueError(applicability_reason or "Selected TDS section is not applicable for this vendor.")
 
             rate = q4(getattr(header, "tds_rate", None) or Decimal("0.0000"))
             base = q2(getattr(header, "tds_base_amount", None) or ZERO2)

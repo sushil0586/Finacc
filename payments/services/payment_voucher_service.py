@@ -14,6 +14,15 @@ from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.services.ap_allocation_service import PurchaseApAllocationService
 from purchase.models.purchase_ap import VendorBillOpenItem
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter, PaymentVoucherPostingConfig
+from posting.common.static_accounts import StaticAccountCodes
+from posting.services.static_accounts import StaticAccountService
+from withholding.models import (
+    EntityWithholdingSectionPostingMap,
+    WithholdingBaseRule,
+    WithholdingSection,
+    WithholdingTaxType,
+)
+from withholding.services import compute_withholding_preview
 
 from payments.models.payment_core import (
     PaymentVoucherHeader,
@@ -38,6 +47,8 @@ class PaymentVoucherResult:
 
 
 class PaymentVoucherService:
+    AUTO_WITHHOLDING_TDS_REMARK = "__AUTO_WITHHOLDING_TDS__"
+
     @staticmethod
     def _as_pk(value: Any) -> Any:
         if value in (None, ""):
@@ -186,6 +197,218 @@ class PaymentVoucherService:
             else:
                 total = q2(total + amt)
         return total
+
+    @staticmethod
+    def _sum_allocation_rows(allocations: Iterable[Dict[str, Any]]) -> Decimal:
+        total = ZERO2
+        for row in allocations or []:
+            total = q2(total + q2(row.get("settled_amount") or ZERO2))
+        return total
+
+    @staticmethod
+    def _extract_runtime_withholding_config(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        data = payload if isinstance(payload, dict) else {}
+        wh = data.get("withholding")
+        return wh if isinstance(wh, dict) else {}
+
+    @staticmethod
+    def _build_runtime_withholding_snapshot(*, enabled: bool, mode: str, section_id: Optional[int], base_amount: Decimal, rate: Decimal, amount: Decimal, reason: Optional[str], reason_code: Optional[str]) -> Dict[str, Any]:
+        return {
+            "enabled": bool(enabled),
+            "mode": mode,
+            "section_id": section_id,
+            "base_amount": str(q2(base_amount)),
+            "rate": str(q2(rate)),
+            "amount": str(q2(amount)),
+            "reason": reason or "",
+            "reason_code": reason_code or "",
+        }
+
+    @classmethod
+    def _resolve_runtime_tds_target_accounts(
+        cls,
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        section: Optional[WithholdingSection],
+    ) -> tuple[int, Optional[int], str]:
+        mapped_account_id, mapped_ledger_id = cls._resolve_entity_runtime_tds_mapping(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            section=section,
+        )
+        if mapped_account_id:
+            return int(mapped_account_id), (int(mapped_ledger_id) if mapped_ledger_id else None), "ENTITY_MAP"
+        account_id = StaticAccountService.get_account_id(int(entity_id), StaticAccountCodes.TDS_PAYABLE, required=True)
+        ledger_id = StaticAccountService.get_ledger_id(int(entity_id), StaticAccountCodes.TDS_PAYABLE, required=False)
+        return int(account_id), (int(ledger_id) if ledger_id else None), "STATIC_FALLBACK"
+
+    @staticmethod
+    def _resolve_entity_runtime_tds_mapping(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        section: Optional[WithholdingSection],
+    ) -> tuple[Optional[int], Optional[int]]:
+        section_id = getattr(section, "id", None)
+        if not section_id:
+            return None, None
+
+        base_qs = EntityWithholdingSectionPostingMap.objects.filter(
+            entity_id=int(entity_id),
+            section_id=int(section_id),
+            is_active=True,
+        ).select_related("payable_account")
+
+        row = None
+        if subentity_id:
+            row = (
+                base_qs.filter(subentity_id=int(subentity_id))
+                .order_by("-effective_from", "-id")
+                .first()
+            )
+        if not row:
+            row = (
+                base_qs.filter(subentity_id__isnull=True)
+                .order_by("-effective_from", "-id")
+                .first()
+            )
+        if not row:
+            return None, None
+
+        account_id = int(row.payable_account_id)
+        ledger_id = row.payable_ledger_id or getattr(getattr(row, "payable_account", None), "ledger_id", None) or None
+        return account_id, (int(ledger_id) if ledger_id else None)
+
+    @classmethod
+    def _apply_runtime_withholding_to_adjustments(
+        cls,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        paid_to_id: int,
+        voucher_date,
+        cash_paid_amount: Decimal,
+        allocations: List[Dict[str, Any]],
+        adjustments: List[Dict[str, Any]],
+        workflow_payload: Optional[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        payload = dict(workflow_payload or {})
+        config = cls._extract_runtime_withholding_config(payload)
+        enabled = bool(config.get("enabled", False))
+
+        rows = [dict(r or {}) for r in (adjustments or [])]
+        runtime_rows = [r for r in rows if str(r.get("remarks") or "").strip() == cls.AUTO_WITHHOLDING_TDS_REMARK]
+        non_runtime_rows = [r for r in rows if str(r.get("remarks") or "").strip() != cls.AUTO_WITHHOLDING_TDS_REMARK]
+
+        if not enabled:
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=False,
+                mode="OFF",
+                section_id=None,
+                base_amount=ZERO2,
+                rate=ZERO2,
+                amount=ZERO2,
+                reason="Runtime withholding disabled.",
+                reason_code="DISABLED",
+            )
+            return non_runtime_rows, payload
+
+        section_id = config.get("section_id")
+        try:
+            section_id = int(section_id) if section_id not in (None, "", 0, "0") else None
+        except Exception:
+            section_id = None
+        if not section_id:
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=True,
+                mode="AUTO",
+                section_id=None,
+                base_amount=ZERO2,
+                rate=ZERO2,
+                amount=ZERO2,
+                reason="No withholding section selected.",
+                reason_code="NO_SECTION",
+            )
+            return non_runtime_rows, payload
+
+        base_amount = cls._sum_allocation_rows(allocations)
+        if base_amount <= ZERO2:
+            base_amount = q2(cash_paid_amount)
+
+        mode = str(config.get("mode") or "AUTO").upper().strip()
+        section_obj: Optional[WithholdingSection] = None
+        if mode == "MANUAL":
+            rate = q2(config.get("manual_rate") or ZERO2)
+            amount = q2(config.get("manual_amount") or ZERO2)
+            if amount <= ZERO2:
+                amount = q2((base_amount * rate) / Decimal("100.00"))
+            reason = str(config.get("manual_reason") or "MANUAL")
+            reason_code = "MANUAL"
+            section_obj = (
+                WithholdingSection.objects.filter(id=section_id)
+                .only("id")
+                .first()
+            )
+        else:
+            preview = compute_withholding_preview(
+                entity_id=entity_id,
+                entityfin_id=entityfinid_id,
+                subentity_id=subentity_id,
+                party_account_id=paid_to_id,
+                tax_type=WithholdingTaxType.TDS,
+                explicit_section_id=section_id,
+                doc_date=voucher_date or timezone.localdate(),
+                taxable_total=base_amount,
+                gross_total=base_amount,
+                allowed_base_rules=[WithholdingBaseRule.PAYMENT_VALUE],
+            )
+            rate = q2(preview.rate or ZERO2)
+            amount = q2(preview.amount or ZERO2)
+            reason = preview.reason
+            reason_code = preview.reason_code
+            section_obj = getattr(preview, "section", None)
+
+        payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+            enabled=True,
+            mode=mode,
+            section_id=section_id,
+            base_amount=base_amount,
+            rate=rate,
+            amount=amount,
+            reason=reason,
+            reason_code=reason_code,
+        )
+
+        if amount <= ZERO2:
+            return non_runtime_rows, payload
+
+        account_id, ledger_id, mapping_source = cls._resolve_runtime_tds_target_accounts(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            section=section_obj,
+        )
+        allow_static_fallback = bool(config.get("allow_static_fallback", False))
+        if mapping_source == "STATIC_FALLBACK" and not allow_static_fallback:
+            raise ValueError(
+                "Runtime TDS mapping missing for selected section. "
+                "Please configure Entity Withholding Section Posting Map (entity/subentity + section)."
+            )
+
+        runtime_row = runtime_rows[0] if runtime_rows else {}
+        runtime_row.update(
+            {
+                "allocation": None,
+                "adj_type": PaymentVoucherAdjustment.AdjType.TDS,
+                "ledger_account": int(account_id),
+                "ledger": int(ledger_id) if ledger_id else None,
+                "amount": q2(amount),
+                "settlement_effect": PaymentVoucherAdjustment.Effect.PLUS,
+                "remarks": cls.AUTO_WITHHOLDING_TDS_REMARK,
+            }
+        )
+        return non_runtime_rows + [runtime_row], payload
 
     @staticmethod
     def _effective_settlement_amount(cash_paid_amount: Decimal, adjustment_total: Decimal) -> Decimal:
@@ -448,6 +671,38 @@ class PaymentVoucherService:
         if int(validated_data.get("status", PaymentVoucherHeader.Status.DRAFT)) != int(PaymentVoucherHeader.Status.DRAFT):
             validated_data["status"] = PaymentVoucherHeader.Status.DRAFT
 
+        allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
+        if (
+            not allocations
+            and allocation_policy == "fifo"
+            and validated_data.get("payment_type") == PaymentVoucherHeader.PaymentType.AGAINST_BILL
+        ):
+            base_effective = PaymentVoucherService._effective_settlement_amount(
+                q2(validated_data.get("cash_paid_amount", ZERO2)),
+                PaymentVoucherService._compute_adjustment_total(adjustments),
+            )
+            allocations = PaymentVoucherService._auto_fifo_allocations(
+                entity_id=validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data["entity"],
+                entityfinid_id=validated_data["entityfinid"].id if hasattr(validated_data.get("entityfinid"), "id") else validated_data["entityfinid"],
+                subentity_id=validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
+                vendor_id=validated_data["paid_to"].id if hasattr(validated_data.get("paid_to"), "id") else validated_data["paid_to"],
+                target_amount=base_effective,
+                controls=policy.controls,
+            )
+
+        adjustments, workflow_payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data["entity"],
+            entityfinid_id=validated_data["entityfinid"].id if hasattr(validated_data.get("entityfinid"), "id") else validated_data["entityfinid"],
+            subentity_id=validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
+            paid_to_id=validated_data["paid_to"].id if hasattr(validated_data.get("paid_to"), "id") else validated_data["paid_to"],
+            voucher_date=validated_data.get("voucher_date"),
+            cash_paid_amount=q2(validated_data.get("cash_paid_amount", ZERO2)),
+            allocations=allocations,
+            adjustments=adjustments,
+            workflow_payload=validated_data.get("workflow_payload"),
+        )
+        validated_data["workflow_payload"] = workflow_payload
+
         adjustment_total = PaymentVoucherService._compute_adjustment_total(adjustments)
         advance_total = PaymentVoucherService._sum_advance_adjustments(advance_adjustments)
         effective = PaymentVoucherService._effective_settlement_amount(
@@ -457,21 +712,6 @@ class PaymentVoucherService:
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
         validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
-
-        allocation_policy = str(policy.controls.get("allocation_policy", "manual")).lower().strip()
-        if (
-            not allocations
-            and allocation_policy == "fifo"
-            and validated_data.get("payment_type") == PaymentVoucherHeader.PaymentType.AGAINST_BILL
-        ):
-            allocations = PaymentVoucherService._auto_fifo_allocations(
-                entity_id=validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data["entity"],
-                entityfinid_id=validated_data["entityfinid"].id if hasattr(validated_data.get("entityfinid"), "id") else validated_data["entityfinid"],
-                subentity_id=validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
-                vendor_id=validated_data["paid_to"].id if hasattr(validated_data.get("paid_to"), "id") else validated_data["paid_to"],
-                target_amount=effective,
-                controls=policy.controls,
-            )
 
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
         total_support = q2(effective + advance_total)
@@ -580,6 +820,46 @@ class PaymentVoucherService:
             if ex <= 0:
                 raise ValueError({"exchange_rate": "exchange_rate must be > 0."})
             validated_data["exchange_rate"] = ex
+
+        workflow_payload = validated_data.get("workflow_payload")
+        if workflow_payload is None:
+            workflow_payload = dict(instance.workflow_payload or {})
+        has_runtime_withholding = isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("withholding"), dict)
+        if has_runtime_withholding:
+            runtime_allocations = allocations
+            if runtime_allocations is None:
+                runtime_allocations = [
+                    {"open_item": x.open_item_id, "settled_amount": x.settled_amount}
+                    for x in instance.allocations.all()
+                ]
+            runtime_adjustments = adjustments
+            if runtime_adjustments is None:
+                runtime_adjustments = [
+                    {
+                        "id": x.id,
+                        "allocation": x.allocation_id,
+                        "adj_type": x.adj_type,
+                        "ledger_account": x.ledger_account_id,
+                        "ledger": x.ledger_id,
+                        "amount": x.amount,
+                        "settlement_effect": x.settlement_effect,
+                        "remarks": x.remarks,
+                    }
+                    for x in instance.adjustments.all()
+                ]
+            runtime_adjustments, workflow_payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+                entity_id=instance.entity_id,
+                entityfinid_id=instance.entityfinid_id,
+                subentity_id=instance.subentity_id,
+                paid_to_id=PaymentVoucherService._as_pk(validated_data.get("paid_to", instance.paid_to_id)),
+                voucher_date=validated_data.get("voucher_date", instance.voucher_date),
+                cash_paid_amount=q2(validated_data.get("cash_paid_amount", instance.cash_paid_amount)),
+                allocations=runtime_allocations,
+                adjustments=runtime_adjustments,
+                workflow_payload=workflow_payload,
+            )
+            adjustments = runtime_adjustments
+            validated_data["workflow_payload"] = workflow_payload
 
         live_advance_for_cash_check = advance_adjustments
         if live_advance_for_cash_check is None:

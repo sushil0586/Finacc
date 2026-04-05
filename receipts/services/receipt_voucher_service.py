@@ -14,6 +14,16 @@ from sales.services.sales_ar_service import SalesArService
 from sales.models.sales_ar import CustomerBillOpenItem
 from sales.models import SalesAdvanceAdjustment
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter, ReceiptVoucherPostingConfig
+from posting.common.static_accounts import StaticAccountCodes
+from posting.services.static_accounts import StaticAccountService
+from withholding.models import (
+    EntityWithholdingSectionPostingMap,
+    TcsComputation,
+    WithholdingBaseRule,
+    WithholdingSection,
+    WithholdingTaxType,
+)
+from withholding.services import WithholdingResult, compute_withholding_preview, upsert_tcs_computation
 
 from receipts.models.receipt_core import (
     ReceiptVoucherHeader,
@@ -39,6 +49,8 @@ class ReceiptVoucherResult:
 
 
 class ReceiptVoucherService:
+    AUTO_WITHHOLDING_TCS_REMARK = "__AUTO_WITHHOLDING_TCS__"
+
     @staticmethod
     def _as_pk(value: Any) -> Any:
         if value in (None, ""):
@@ -75,6 +87,92 @@ class ReceiptVoucherService:
         rows: List[Dict[str, Any]] = list(rows_by_open_item.values())
         rows.extend(rows_without_open_item)
         return rows
+
+    @staticmethod
+    def _runtime_tcs_document_no(header: ReceiptVoucherHeader) -> str:
+        if (header.voucher_code or "").strip():
+            return str(header.voucher_code).strip()
+        doc_code = (header.doc_code or "RV").strip()
+        if header.doc_no:
+            return f"{doc_code}-{header.doc_no}"
+        return doc_code
+
+    @staticmethod
+    def _runtime_tcs_status_for_header(header: ReceiptVoucherHeader) -> str:
+        if bool(getattr(header, "is_cancelled", False)) or int(header.status or 0) == int(ReceiptVoucherHeader.Status.CANCELLED):
+            return TcsComputation.Status.REVERSED
+        if int(header.status or 0) == int(ReceiptVoucherHeader.Status.DRAFT):
+            return TcsComputation.Status.DRAFT
+        return TcsComputation.Status.CONFIRMED
+
+    @staticmethod
+    def _runtime_tcs_preview_from_header(header: ReceiptVoucherHeader) -> WithholdingResult:
+        payload = header.workflow_payload if isinstance(header.workflow_payload, dict) else {}
+        runtime = payload.get("withholding_runtime_result") if isinstance(payload.get("withholding_runtime_result"), dict) else {}
+        enabled = bool(runtime.get("enabled", False))
+        section_id_raw = runtime.get("section_id")
+        try:
+            section_id = int(section_id_raw) if section_id_raw not in (None, "", 0, "0") else None
+        except Exception:
+            section_id = None
+        section = None
+        if section_id:
+            section = WithholdingSection.objects.filter(id=section_id, tax_type=WithholdingTaxType.TCS).only("id", "section_code").first()
+
+        base_amount = q2(runtime.get("base_amount") or ZERO2)
+        rate = q2(runtime.get("rate") or ZERO2)
+        amount = q2(runtime.get("amount") or ZERO2)
+        reason = (runtime.get("reason") or "").strip() or None
+        reason_code = (runtime.get("reason_code") or "").strip() or None
+
+        if not enabled or not section or amount <= ZERO2:
+            return WithholdingResult(
+                enabled=False,
+                section=section,
+                rate=rate,
+                base_amount=base_amount,
+                amount=ZERO2,
+                reason=reason or "Runtime withholding disabled.",
+                reason_code=reason_code or "DISABLED",
+            )
+        return WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=rate,
+            base_amount=base_amount,
+            amount=amount,
+            reason=reason,
+            reason_code=reason_code,
+        )
+
+    @staticmethod
+    def _sync_runtime_tcs_computation(header: ReceiptVoucherHeader) -> None:
+        if not getattr(header, "id", None):
+            return
+        if not getattr(header, "entity_id", None) or not getattr(header, "entityfinid_id", None):
+            return
+
+        preview = ReceiptVoucherService._runtime_tcs_preview_from_header(header)
+        status = ReceiptVoucherService._runtime_tcs_status_for_header(header)
+        if not preview.enabled:
+            status = TcsComputation.Status.REVERSED
+
+        upsert_tcs_computation(
+            module_name="receipts",
+            document_type=(header.receipt_type or "receipt_voucher").strip().lower(),
+            document_id=int(header.id),
+            document_no=ReceiptVoucherService._runtime_tcs_document_no(header),
+            doc_date=header.voucher_date or timezone.localdate(),
+            entity_id=int(header.entity_id),
+            entityfin_id=int(header.entityfinid_id),
+            subentity_id=header.subentity_id,
+            party_account_id=header.received_from_id,
+            preview=preview,
+            status=status,
+            trigger_basis="RECEIPT",
+            override_reason=(preview.reason or "") if not preview.enabled else "",
+            overridden_by=None,
+        )
 
     @classmethod
     def _normalize_adjustments(cls, adjustments: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -535,6 +633,216 @@ class ReceiptVoucherService:
         return q2(q2(cash_received_amount) + q2(adjustment_total))
 
     @staticmethod
+    def _extract_runtime_withholding_config(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        data = payload if isinstance(payload, dict) else {}
+        wh = data.get("withholding")
+        return wh if isinstance(wh, dict) else {}
+
+    @staticmethod
+    def _build_runtime_withholding_snapshot(*, enabled: bool, mode: str, section_id: Optional[int], base_amount: Decimal, rate: Decimal, amount: Decimal, reason: Optional[str], reason_code: Optional[str]) -> Dict[str, Any]:
+        return {
+            "enabled": bool(enabled),
+            "mode": mode,
+            "section_id": section_id,
+            "base_amount": str(q2(base_amount)),
+            "rate": str(q2(rate)),
+            "amount": str(q2(amount)),
+            "reason": reason or "",
+            "reason_code": reason_code or "",
+        }
+
+    @staticmethod
+    def _resolve_entity_runtime_tcs_mapping(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        section: Optional[WithholdingSection],
+    ) -> tuple[Optional[int], Optional[int]]:
+        section_id = getattr(section, "id", None)
+        if not section_id:
+            return None, None
+
+        base_qs = EntityWithholdingSectionPostingMap.objects.filter(
+            entity_id=int(entity_id),
+            section_id=int(section_id),
+            is_active=True,
+        ).select_related("payable_account")
+
+        row = None
+        if subentity_id:
+            row = (
+                base_qs.filter(subentity_id=int(subentity_id))
+                .order_by("-effective_from", "-id")
+                .first()
+            )
+        if not row:
+            row = (
+                base_qs.filter(subentity_id__isnull=True)
+                .order_by("-effective_from", "-id")
+                .first()
+            )
+        if not row:
+            return None, None
+
+        account_id = int(row.payable_account_id)
+        ledger_id = row.payable_ledger_id or getattr(getattr(row, "payable_account", None), "ledger_id", None) or None
+        return account_id, (int(ledger_id) if ledger_id else None)
+
+    @classmethod
+    def _resolve_runtime_tcs_target_accounts(
+        cls,
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        section: Optional[WithholdingSection],
+    ) -> tuple[int, Optional[int], str]:
+        mapped_account_id, mapped_ledger_id = cls._resolve_entity_runtime_tcs_mapping(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            section=section,
+        )
+        if mapped_account_id:
+            return int(mapped_account_id), (int(mapped_ledger_id) if mapped_ledger_id else None), "ENTITY_MAP"
+        account_id = StaticAccountService.get_account_id(int(entity_id), StaticAccountCodes.TCS_PAYABLE, required=True)
+        ledger_id = StaticAccountService.get_ledger_id(int(entity_id), StaticAccountCodes.TCS_PAYABLE, required=False)
+        return int(account_id), (int(ledger_id) if ledger_id else None), "STATIC_FALLBACK"
+
+    @classmethod
+    def _apply_runtime_withholding_to_adjustments(
+        cls,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        received_from_id: int,
+        voucher_date,
+        voucher_id: Optional[int] = None,
+        receipt_type: Optional[str] = None,
+        cash_received_amount: Decimal,
+        allocations: List[Dict[str, Any]],
+        adjustments: List[Dict[str, Any]],
+        workflow_payload: Optional[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        payload = dict(workflow_payload or {})
+        config = cls._extract_runtime_withholding_config(payload)
+        enabled = bool(config.get("enabled", False))
+
+        rows = [dict(r or {}) for r in (adjustments or [])]
+        runtime_rows = [r for r in rows if str(r.get("remarks") or "").strip() == cls.AUTO_WITHHOLDING_TCS_REMARK]
+        non_runtime_rows = [r for r in rows if str(r.get("remarks") or "").strip() != cls.AUTO_WITHHOLDING_TCS_REMARK]
+
+        if not enabled:
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=False,
+                mode="OFF",
+                section_id=None,
+                base_amount=ZERO2,
+                rate=ZERO2,
+                amount=ZERO2,
+                reason="Runtime withholding disabled.",
+                reason_code="DISABLED",
+            )
+            return non_runtime_rows, payload
+
+        section_id = config.get("section_id")
+        try:
+            section_id = int(section_id) if section_id not in (None, "", 0, "0") else None
+        except Exception:
+            section_id = None
+        if not section_id:
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=True,
+                mode="AUTO",
+                section_id=None,
+                base_amount=ZERO2,
+                rate=ZERO2,
+                amount=ZERO2,
+                reason="No withholding section selected.",
+                reason_code="NO_SECTION",
+            )
+            return non_runtime_rows, payload
+
+        base_amount = cls._sum_allocations(allocations)
+        if base_amount <= ZERO2:
+            base_amount = q2(cash_received_amount)
+
+        mode = str(config.get("mode") or "AUTO").upper().strip()
+        section_obj: Optional[WithholdingSection] = None
+        if mode == "MANUAL":
+            rate = q2(config.get("manual_rate") or ZERO2)
+            amount = q2(config.get("manual_amount") or ZERO2)
+            if amount <= ZERO2:
+                amount = q2((base_amount * rate) / Decimal("100.00"))
+            reason = str(config.get("manual_reason") or "MANUAL")
+            reason_code = "MANUAL"
+            section_obj = (
+                WithholdingSection.objects.filter(id=section_id)
+                .only("id")
+                .first()
+            )
+        else:
+            preview = compute_withholding_preview(
+                entity_id=entity_id,
+                entityfin_id=entityfinid_id,
+                subentity_id=subentity_id,
+                party_account_id=received_from_id,
+                tax_type=WithholdingTaxType.TCS,
+                explicit_section_id=section_id,
+                doc_date=voucher_date or timezone.localdate(),
+                taxable_total=base_amount,
+                gross_total=base_amount,
+                allowed_base_rules=[WithholdingBaseRule.RECEIPT_VALUE],
+                module_name="receipts",
+                document_type=(receipt_type or "receipt_voucher").strip().lower() if receipt_type else "receipt_voucher",
+                document_id=voucher_id,
+            )
+            rate = q2(preview.rate or ZERO2)
+            amount = q2(preview.amount or ZERO2)
+            reason = preview.reason
+            reason_code = preview.reason_code
+            section_obj = getattr(preview, "section", None)
+
+        payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+            enabled=True,
+            mode=mode,
+            section_id=section_id,
+            base_amount=base_amount,
+            rate=rate,
+            amount=amount,
+            reason=reason,
+            reason_code=reason_code,
+        )
+
+        if amount <= ZERO2:
+            return non_runtime_rows, payload
+
+        account_id, ledger_id, mapping_source = cls._resolve_runtime_tcs_target_accounts(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            section=section_obj,
+        )
+        allow_static_fallback = bool(config.get("allow_static_fallback", False))
+        if mapping_source == "STATIC_FALLBACK" and not allow_static_fallback:
+            raise ValueError(
+                "Runtime TCS mapping missing for selected section. "
+                "Please configure Entity Withholding Section Posting Map (entity/subentity + section)."
+            )
+
+        runtime_row = runtime_rows[0] if runtime_rows else {}
+        runtime_row.update(
+            {
+                "allocation": None,
+                "adj_type": ReceiptVoucherAdjustment.AdjType.TCS,
+                "ledger_account": int(account_id),
+                "ledger": int(ledger_id) if ledger_id else None,
+                "amount": q2(amount),
+                "settlement_effect": ReceiptVoucherAdjustment.Effect.PLUS,
+                "remarks": cls.AUTO_WITHHOLDING_TCS_REMARK,
+            }
+        )
+        return non_runtime_rows + [runtime_row], payload
+
+    @staticmethod
     def _validate_allocations(
         voucher: ReceiptVoucherHeader,
         allocations: List[Dict[str, Any]],
@@ -757,6 +1065,22 @@ class ReceiptVoucherService:
         if int(validated_data.get("status", ReceiptVoucherHeader.Status.DRAFT)) != int(ReceiptVoucherHeader.Status.DRAFT):
             validated_data["status"] = ReceiptVoucherHeader.Status.DRAFT
 
+        workflow_payload = validated_data.get("workflow_payload")
+        adjustments, workflow_payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data["entity"],
+            entityfinid_id=validated_data["entityfinid"].id if hasattr(validated_data.get("entityfinid"), "id") else validated_data["entityfinid"],
+            subentity_id=validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity"),
+            received_from_id=validated_data["received_from"].id if hasattr(validated_data.get("received_from"), "id") else validated_data["received_from"],
+            voucher_date=validated_data.get("voucher_date"),
+            voucher_id=None,
+            receipt_type=validated_data.get("receipt_type"),
+            cash_received_amount=q2(validated_data.get("cash_received_amount", ZERO2)),
+            allocations=allocations,
+            adjustments=adjustments,
+            workflow_payload=workflow_payload,
+        )
+        validated_data["workflow_payload"] = workflow_payload
+
         adjustment_total = ReceiptVoucherService._compute_adjustment_total(adjustments)
         advance_total = ReceiptVoucherService._sum_advance_adjustments(advance_adjustments)
         effective = ReceiptVoucherService._effective_settlement_amount(
@@ -843,6 +1167,7 @@ class ReceiptVoucherService:
             ReceiptVoucherService.post_voucher(header.id)
 
         header.refresh_from_db()
+        ReceiptVoucherService._sync_runtime_tcs_computation(header)
         return header
 
     @staticmethod
@@ -883,6 +1208,48 @@ class ReceiptVoucherService:
             if ex <= 0:
                 raise ValueError({"exchange_rate": "exchange_rate must be > 0."})
             validated_data["exchange_rate"] = ex
+
+        workflow_payload = validated_data.get("workflow_payload")
+        if workflow_payload is None:
+            workflow_payload = dict(instance.workflow_payload or {})
+        has_runtime_withholding = isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("withholding"), dict)
+        if has_runtime_withholding:
+            runtime_allocations = allocations
+            if runtime_allocations is None:
+                runtime_allocations = [
+                    {"open_item": x.open_item_id, "settled_amount": x.settled_amount}
+                    for x in instance.allocations.all()
+                ]
+            runtime_adjustments = adjustments
+            if runtime_adjustments is None:
+                runtime_adjustments = [
+                    {
+                        "id": x.id,
+                        "allocation": x.allocation_id,
+                        "adj_type": x.adj_type,
+                        "ledger_account": x.ledger_account_id,
+                        "ledger": x.ledger_id,
+                        "amount": x.amount,
+                        "settlement_effect": x.settlement_effect,
+                        "remarks": x.remarks,
+                    }
+                    for x in instance.adjustments.all()
+                ]
+            runtime_adjustments, workflow_payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+                entity_id=instance.entity_id,
+                entityfinid_id=instance.entityfinid_id,
+                subentity_id=instance.subentity_id,
+                received_from_id=ReceiptVoucherService._as_pk(validated_data.get("received_from", instance.received_from_id)),
+                voucher_date=validated_data.get("voucher_date", instance.voucher_date),
+                voucher_id=instance.id,
+                receipt_type=str(validated_data.get("receipt_type", instance.receipt_type) or "receipt_voucher"),
+                cash_received_amount=q2(validated_data.get("cash_received_amount", instance.cash_received_amount)),
+                allocations=runtime_allocations,
+                adjustments=runtime_adjustments,
+                workflow_payload=workflow_payload,
+            )
+            adjustments = runtime_adjustments
+            validated_data["workflow_payload"] = workflow_payload
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
@@ -1052,6 +1419,7 @@ class ReceiptVoucherService:
                 "updated_at",
             ]
         )
+        ReceiptVoucherService._sync_runtime_tcs_computation(instance)
         return instance
 
     @staticmethod
@@ -1087,6 +1455,7 @@ class ReceiptVoucherService:
                 h.save(update_fields=["doc_code", "doc_no", "voucher_code", "approved_by", "updated_at"])
             else:
                 h.save(update_fields=["doc_code", "doc_no", "voucher_code", "updated_at"])
+            ReceiptVoucherService._sync_runtime_tcs_computation(h)
             return ReceiptVoucherResult(h, "Already confirmed.")
 
         h.status = ReceiptVoucherHeader.Status.CONFIRMED
@@ -1095,6 +1464,7 @@ class ReceiptVoucherService:
             h.save(update_fields=["doc_code", "doc_no", "voucher_code", "status", "approved_by", "updated_at"])
         else:
             h.save(update_fields=["doc_code", "doc_no", "voucher_code", "status", "updated_at"])
+        ReceiptVoucherService._sync_runtime_tcs_computation(h)
         return ReceiptVoucherResult(h, "Confirmed.")
 
     @staticmethod
@@ -1186,6 +1556,7 @@ class ReceiptVoucherService:
         if int(h.status) == int(ReceiptVoucherHeader.Status.CANCELLED):
             raise ValueError("Cannot post: voucher is cancelled.")
         if int(h.status) == int(ReceiptVoucherHeader.Status.POSTED):
+            ReceiptVoucherService._sync_runtime_tcs_computation(h)
             return ReceiptVoucherResult(h, "Already posted.")
 
         policy = ReceiptSettingsService.get_policy(h.entity_id, h.subentity_id)
@@ -1466,6 +1837,7 @@ class ReceiptVoucherService:
             h.save(update_fields=["status", "approved_at", "approved_by", "ap_settlement", "workflow_payload", "updated_at"])
         else:
             h.save(update_fields=["status", "approved_at", "ap_settlement", "workflow_payload", "updated_at"])
+        ReceiptVoucherService._sync_runtime_tcs_computation(h)
         msg = "Posted."
         if warnings:
             msg = f"Posted with warnings: {' | '.join(warnings)}"
@@ -1528,6 +1900,7 @@ class ReceiptVoucherService:
             {"action": "UNPOSTED", "at": timezone.now().isoformat(), "by": unposted_by_id or h.created_by_id},
         )
         h.save(update_fields=["status", "ap_settlement", "workflow_payload", "updated_at"])
+        ReceiptVoucherService._sync_runtime_tcs_computation(h)
         return ReceiptVoucherResult(h, "Unposted with reversal entry.")
 
     @staticmethod
@@ -1548,6 +1921,7 @@ class ReceiptVoucherService:
             {"action": "CANCELLED", "at": timezone.now().isoformat(), "by": cancelled_by_id, "reason": h.cancel_reason},
         )
         h.save(update_fields=["status", "is_cancelled", "cancel_reason", "cancelled_by", "cancelled_at", "workflow_payload", "updated_at"])
+        ReceiptVoucherService._sync_runtime_tcs_computation(h)
         return ReceiptVoucherResult(h, "Cancelled.")
 
 

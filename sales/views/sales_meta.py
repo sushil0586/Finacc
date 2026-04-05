@@ -24,7 +24,7 @@ from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.sales_compliance_service import SalesComplianceService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
-from withholding.models import WithholdingSection, WithholdingTaxType
+from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
 
 
 def _enum_choices_to_payload(enum_cls):
@@ -152,7 +152,14 @@ class SalesMetaBaseAPIView(APIView):
 
     def _tcs_sections(self):
         return list(
-            WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TCS, is_active=True)
+            WithholdingSection.objects.filter(
+                tax_type=WithholdingTaxType.TCS,
+                is_active=True,
+                base_rule__in=[
+                    int(WithholdingBaseRule.INVOICE_VALUE_EXCL_GST),
+                    int(WithholdingBaseRule.INVOICE_VALUE_INCL_GST),
+                ],
+            )
             .order_by("section_code", "id")
             .values("id", "section_code", "description", "rate_default", "threshold_default")
         )

@@ -204,6 +204,9 @@ def configs_template_payload(default_entity: int | None, default_entityfin: int 
                 "default_tcs_section": "",
                 "apply_194q": False,
                 "apply_tcs_206c1h": False,
+                "tcs_206c1h_prev_fy_turnover": "0.00",
+                "tcs_206c1h_turnover_limit": "100000000.00",
+                "tcs_206c1h_force_eligible": "",
                 "effective_from": "2026-04-01",
                 "rounding_places": 2,
             }
@@ -231,6 +234,13 @@ def configs_export_payload(entity_id: int | None = None, entityfin_id: int | Non
             "default_tcs_section": row.default_tcs_section_id or "",
             "apply_194q": row.apply_194q,
             "apply_tcs_206c1h": row.apply_tcs_206c1h,
+            "tcs_206c1h_prev_fy_turnover": str(row.tcs_206c1h_prev_fy_turnover or ""),
+            "tcs_206c1h_turnover_limit": str(row.tcs_206c1h_turnover_limit or ""),
+            "tcs_206c1h_force_eligible": (
+                ""
+                if row.tcs_206c1h_force_eligible is None
+                else bool(row.tcs_206c1h_force_eligible)
+            ),
             "effective_from": row.effective_from.isoformat() if row.effective_from else "",
             "rounding_places": row.rounding_places,
         }
@@ -292,6 +302,13 @@ def _config_payload(row: dict[str, Any], default_entity: int | None, default_ent
         "default_tcs_section": _to_int(row.get("default_tcs_section")),
         "apply_194q": _to_bool(row.get("apply_194q"), default=False),
         "apply_tcs_206c1h": _to_bool(row.get("apply_tcs_206c1h"), default=False),
+        "tcs_206c1h_prev_fy_turnover": _to_decimal(row.get("tcs_206c1h_prev_fy_turnover")) or Decimal("0.00"),
+        "tcs_206c1h_turnover_limit": _to_decimal(row.get("tcs_206c1h_turnover_limit")) or Decimal("100000000.00"),
+        "tcs_206c1h_force_eligible": (
+            None
+            if _normalize_text(row.get("tcs_206c1h_force_eligible")) in {"", "-", "--"}
+            else _to_bool(row.get("tcs_206c1h_force_eligible"), default=False)
+        ),
         "effective_from": _to_date_string(row.get("effective_from")),
         "rounding_places": _to_int(row.get("rounding_places")) or 2,
     }
@@ -419,4 +436,3 @@ def commit_configs_payload(
                 break
     summary["error_count"] = len(errors)
     return ImportResult(summary=summary, errors=errors)
-

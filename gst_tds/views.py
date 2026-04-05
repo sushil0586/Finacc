@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from entity.models import Entity, SubEntity, EntityFinancialYear
 from financial.models import account
-from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger
+from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger, GstTdsMasterRule
 from gst_tds.serializers import (
     EntityGstTdsConfigSerializer,
     GstTdsContractLedgerSerializer,
@@ -65,6 +65,7 @@ class GstTdsConfigAPIView(APIView):
                     "config": {
                         "entity": entity.id,
                         "subentity": subentity.id if subentity else None,
+                        "master_rule": None,
                         "enabled": False,
                         "threshold_amount": str(Decimal("250000.00")),
                         "enforce_pos_rule": True,
@@ -85,6 +86,7 @@ class GstTdsConfigAPIView(APIView):
         serializer = EntityGstTdsConfigSerializer(
             obj,
             data={
+                "master_rule": request.data.get("master_rule", getattr(obj, "master_rule_id", None)),
                 "enabled": request.data.get("enabled", getattr(obj, "enabled", False)),
                 "threshold_amount": request.data.get("threshold_amount", getattr(obj, "threshold_amount", Decimal("250000.00"))),
                 "enforce_pos_rule": request.data.get("enforce_pos_rule", getattr(obj, "enforce_pos_rule", True)),
@@ -92,6 +94,9 @@ class GstTdsConfigAPIView(APIView):
             partial=True,
         )
         serializer.is_valid(raise_exception=True)
+        master_rule_id = serializer.validated_data.get("master_rule")
+        if master_rule_id is not None:
+            get_object_or_404(GstTdsMasterRule, pk=getattr(master_rule_id, "id", master_rule_id))
         serializer.save(entity=entity, subentity=subentity)
         return Response({"message": "GST-TDS config saved.", "config": serializer.data}, status=status.HTTP_200_OK)
 

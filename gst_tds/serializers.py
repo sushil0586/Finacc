@@ -2,7 +2,25 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger
+from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger, GstTdsMasterRule
+
+
+class GstTdsMasterRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GstTdsMasterRule
+        fields = [
+            "id",
+            "code",
+            "label",
+            "section_code",
+            "total_rate",
+            "cgst_rate",
+            "sgst_rate",
+            "igst_rate",
+            "effective_from",
+            "effective_to",
+            "is_active",
+        ]
 
 
 class EntityGstTdsConfigSerializer(serializers.ModelSerializer):
@@ -19,6 +37,7 @@ class EntityGstTdsConfigSerializer(serializers.ModelSerializer):
             "id",
             "entity",
             "subentity",
+            "master_rule",
             "enabled",
             "threshold_amount",
             "enforce_pos_rule",

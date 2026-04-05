@@ -832,3 +832,108 @@ class PaymentVoucherPDFEndpointTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
 
+
+
+class ReceiptRuntimeWithholdingTests(SimpleTestCase):
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_adds_auto_tcs_adjustment(self, mock_preview, mock_get_account_id, mock_get_ledger_id):
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(rate=Decimal("1.0000"), amount=Decimal("10.00"), reason="auto", reason_code="OK")
+
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("100.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["adj_type"], "TCS")
+        self.assertEqual(adjustments[0]["settlement_effect"], "PLUS")
+        self.assertEqual(adjustments[0]["amount"], Decimal("10.00"))
+        self.assertEqual(adjustments[0]["remarks"], ReceiptVoucherService.AUTO_WITHHOLDING_TCS_REMARK)
+        self.assertIn("withholding_runtime_result", payload)
+
+    def test_runtime_withholding_disabled_removes_auto_row(self):
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("100.00"),
+            allocations=[],
+            adjustments=[
+                {"adj_type": "TCS", "amount": Decimal("5.00"), "remarks": ReceiptVoucherService.AUTO_WITHHOLDING_TCS_REMARK},
+                {"adj_type": "BANK_CHARGES", "amount": Decimal("2.00"), "remarks": "manual"},
+            ],
+            workflow_payload={"withholding": {"enabled": False}},
+        )
+
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["adj_type"], "BANK_CHARGES")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "DISABLED")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    def test_entity_mapping_overrides_section_and_static(
+        self,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+    ):
+        mock_resolve_entity.return_value = (888, 444)
+        section = SimpleNamespace(id=10)
+        account_id, ledger_id, source = ReceiptVoucherService._resolve_runtime_tcs_target_accounts(
+            entity_id=1,
+            subentity_id=17,
+            section=section,
+        )
+        self.assertEqual(account_id, 888)
+        self.assertEqual(ledger_id, 444)
+        self.assertEqual(source, "ENTITY_MAP")
+        mock_get_account_id.assert_not_called()
+        mock_get_ledger_id.assert_not_called()
+
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
+    def test_runtime_withholding_blocks_when_only_static_fallback_available(
+        self,
+        mock_resolve_entity,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+    ):
+        mock_resolve_entity.return_value = (None, None)
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            section=SimpleNamespace(id=10),
+            rate=Decimal("1.0000"),
+            amount=Decimal("10.00"),
+            reason="auto",
+            reason_code="OK",
+        )
+        with self.assertRaisesMessage(ValueError, "Runtime TCS mapping missing for selected section"):
+            ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+                entity_id=1,
+                entityfinid_id=1,
+                subentity_id=17,
+                received_from_id=55,
+                voucher_date=None,
+                cash_received_amount=Decimal("100.00"),
+                allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+                adjustments=[],
+                workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
+            )

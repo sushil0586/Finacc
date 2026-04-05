@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db.models import Prefetch, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -18,6 +19,7 @@ from receipts.services.receipt_settings_service import (
     ReceiptSettingsService,
 )
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerSettlement
+from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
 
 
 class ReceiptMetaBaseAPIView(APIView):
@@ -132,6 +134,28 @@ class ReceiptMetaBaseAPIView(APIView):
             )
         )
 
+    def _runtime_tcs_sections(self):
+        as_of = None
+        for key in ("voucher_date", "doc_date", "as_of_date"):
+            raw = self.request.query_params.get(key)
+            if raw:
+                as_of = parse_date(str(raw)[:10])
+                if as_of:
+                    break
+        if as_of is None:
+            as_of = timezone.localdate()
+        return list(
+            WithholdingSection.objects.filter(
+                tax_type=WithholdingTaxType.TCS,
+                is_active=True,
+                base_rule=WithholdingBaseRule.RECEIPT_VALUE,
+                effective_from__lte=as_of,
+            )
+            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of))
+            .order_by("section_code", "id")
+            .values("id", "section_code", "description", "rate_default", "threshold_default")
+        )
+
     def _voucher_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).select_related(
             "entity",
@@ -195,6 +219,7 @@ class ReceiptMetaBaseAPIView(APIView):
             "received_in_accounts": self._received_in_accounts(entity_id),
             "customers": self._customers(entity_id),
             "receipt_modes": self._receipt_modes(),
+            "runtime_tcs_sections": self._runtime_tcs_sections(),
             "settings": {
                 "default_doc_code_receipt": settings_obj.default_doc_code_receipt,
                 "default_workflow_action": settings_obj.default_workflow_action,
@@ -244,6 +269,7 @@ class ReceiptVoucherSearchMetaAPIView(ReceiptMetaBaseAPIView):
                 "subentities": self._subentities(entity_id),
                 "customers": self._customers(entity_id),
                 "receipt_modes": self._receipt_modes(),
+            "runtime_tcs_sections": self._runtime_tcs_sections(),
             }
         )
 
@@ -260,6 +286,7 @@ class ReceiptArMetaAPIView(ReceiptMetaBaseAPIView):
                 "subentities": self._subentities(entity_id),
                 "customers": self._customers(entity_id),
                 "receipt_modes": self._receipt_modes(),
+            "runtime_tcs_sections": self._runtime_tcs_sections(),
                 "receipt_types": [
                     {"value": value, "label": label}
                     for value, label in ReceiptVoucherHeader.ReceiptType.choices
@@ -298,6 +325,7 @@ class ReceiptArSettlementFormMetaAPIView(ReceiptMetaBaseAPIView):
                 "customers": self._customers(entity_id),
                 "received_in_accounts": self._received_in_accounts(entity_id),
                 "receipt_modes": self._receipt_modes(),
+            "runtime_tcs_sections": self._runtime_tcs_sections(),
                 "receipt_types": [
                     {"value": value, "label": label}
                     for value, label in ReceiptVoucherHeader.ReceiptType.choices

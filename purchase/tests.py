@@ -17,6 +17,7 @@ from posting.adapters.purchase_invoice import (
 )
 from posting.common.static_accounts import StaticAccountCodes
 from withholding.services import WithholdingResult
+from purchase.services.purchase_withholding_service import PurchaseWithholdingService
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
 from purchase.models.purchase_statutory import PurchaseStatutoryReturnLine
 
@@ -63,10 +64,60 @@ class PurchaseTdsApplyTests(SimpleTestCase):
         self.assertEqual(header.tds_amount, Decimal("0.00"))
         self.assertIsNone(header.tds_reason)
 
-    def test_manual_mode_requires_section(self):
+    @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
+    def test_manual_mode_requires_section(self, mock_get_cfg):
+        mock_get_cfg.return_value = None
         header = self._make_header(withholding_enabled=True, tds_is_manual=True, tds_section_id=None)
 
         with self.assertRaisesMessage(ValueError, "TDS section is required when withholding_enabled is true."):
+            PurchaseInvoiceService._apply_tds(header=header)
+
+    @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
+    def test_manual_mode_rejects_non_invoice_based_section(self, mock_get_cfg):
+        mock_get_cfg.return_value = None
+        header = self._make_header(
+            withholding_enabled=True,
+            tds_is_manual=True,
+            tds_section_id=11,
+            tds_section=SimpleNamespace(base_rule=4),  # PAYMENT_VALUE
+            tds_rate=Decimal("1.0000"),
+            tds_base_amount=Decimal("1000.00"),
+            tds_amount=Decimal("10.00"),
+        )
+
+        with self.assertRaisesMessage(ValueError, "not invoice-based"):
+            PurchaseInvoiceService._apply_tds(header=header)
+
+    @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
+    def test_manual_mode_respects_tds_enabled_config(self, mock_get_cfg):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=False)
+        header = self._make_header(
+            withholding_enabled=True,
+            tds_is_manual=True,
+            tds_section_id=11,
+            tds_section=SimpleNamespace(base_rule=1),
+            tds_rate=Decimal("1.0000"),
+            tds_base_amount=Decimal("1000.00"),
+            tds_amount=Decimal("10.00"),
+        )
+        with self.assertRaisesMessage(ValueError, "TDS is disabled in withholding configuration"):
+            PurchaseInvoiceService._apply_tds(header=header)
+
+    @patch("purchase.services.purchase_invoice_service.WithholdingResolver.evaluate_section_applicability")
+    @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
+    def test_manual_mode_respects_section_applicability(self, mock_get_cfg, mock_eval_applicability):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_eval_applicability.return_value = (False, "Section not applicable for party residency 'resident'", "NOT_APPLICABLE_RESIDENCY")
+        header = self._make_header(
+            withholding_enabled=True,
+            tds_is_manual=True,
+            tds_section_id=11,
+            tds_section=SimpleNamespace(base_rule=1),
+            tds_rate=Decimal("1.0000"),
+            tds_base_amount=Decimal("1000.00"),
+            tds_amount=Decimal("10.00"),
+        )
+        with self.assertRaisesMessage(ValueError, "not applicable"):
             PurchaseInvoiceService._apply_tds(header=header)
 
     @patch("purchase.services.purchase_invoice_service.PurchaseWithholdingService.compute_tds")
@@ -267,6 +318,38 @@ class PurchaseVendorComplianceValidationTests(SimpleTestCase):
         }
         with self.assertRaisesMessage(ValueError, "Vendor PAN is required when Income-tax TDS is enabled."):
             PurchaseInvoiceService.validate_vendor_account(attrs)
+
+
+class PurchaseWithholdingBaseRuleTests(SimpleTestCase):
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_skips_payment_based_section_in_invoice_context(self, mock_get_cfg, mock_resolve_section):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=99,
+            section_code="194N",
+            base_rule=4,  # PAYMENT_VALUE
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=99,
+            vendor_id=10,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_APPLICABLE_BASE_RULE_CONTEXT")
 
 
 class PurchaseApiSmokeTests(APITestCase):
