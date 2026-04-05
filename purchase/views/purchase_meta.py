@@ -25,7 +25,12 @@ from purchase.services.purchase_choice_service import PurchaseChoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from core.invoice_ui_contracts import purchase_invoice_ui_contract
 from gst_tds.models import GstTdsContractLedger
-from withholding.models import EntityWithholdingConfig, WithholdingSection, WithholdingTaxType
+from withholding.models import (
+    EntityWithholdingConfig,
+    WithholdingBaseRule,
+    WithholdingSection,
+    WithholdingTaxType,
+)
 
 
 class PurchaseMetaBaseAPIView(APIView):
@@ -142,7 +147,14 @@ class PurchaseMetaBaseAPIView(APIView):
 
     def _tds_sections(self):
         return list(
-            WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TDS, is_active=True)
+            WithholdingSection.objects.filter(
+                tax_type=WithholdingTaxType.TDS,
+                is_active=True,
+                base_rule__in=[
+                    int(WithholdingBaseRule.INVOICE_VALUE_EXCL_GST),
+                    int(WithholdingBaseRule.INVOICE_VALUE_INCL_GST),
+                ],
+            )
             .order_by("section_code", "id")
             .values("id", "section_code", "description", "rate_default", "threshold_default")
         )

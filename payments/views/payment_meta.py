@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db.models import Prefetch, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -18,6 +19,7 @@ from payments.services.payment_settings_service import (
     PaymentSettingsService,
 )
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorSettlement
+from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
 
 
 class PaymentMetaBaseAPIView(APIView):
@@ -140,6 +142,28 @@ class PaymentMetaBaseAPIView(APIView):
             )
         )
 
+    def _runtime_tds_sections(self):
+        as_of = None
+        for key in ("voucher_date", "doc_date", "as_of_date"):
+            raw = self.request.query_params.get(key)
+            if raw:
+                as_of = parse_date(str(raw)[:10])
+                if as_of:
+                    break
+        if as_of is None:
+            as_of = timezone.localdate()
+        return list(
+            WithholdingSection.objects.filter(
+                tax_type=WithholdingTaxType.TDS,
+                is_active=True,
+                base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+                effective_from__lte=as_of,
+            )
+            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of))
+            .order_by("section_code", "id")
+            .values("id", "section_code", "description", "rate_default", "threshold_default")
+        )
+
     def _voucher_queryset(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
         qs = PaymentVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).select_related(
             "entity",
@@ -203,6 +227,7 @@ class PaymentMetaBaseAPIView(APIView):
             "paid_from_accounts": self._paid_from_accounts(entity_id),
             "vendors": self._vendors(entity_id),
             "payment_modes": self._payment_modes(),
+            "runtime_tds_sections": self._runtime_tds_sections(),
             "settings": {
                 "default_doc_code_payment": settings_obj.default_doc_code_payment,
                 "default_workflow_action": settings_obj.default_workflow_action,

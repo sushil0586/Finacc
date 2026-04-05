@@ -57,6 +57,13 @@ class GstTdsService:
         return EntityGstTdsConfig.objects.filter(entity_id=inv.entity_id, subentity__isnull=True).first()
 
     @staticmethod
+    def _master_rule_for_config(cfg):
+        rule = getattr(cfg, "master_rule", None)
+        if rule and getattr(rule, "is_active", False):
+            return rule
+        return None
+
+    @staticmethod
     def compute_for_invoice(inv) -> GstTdsComputed:
         if not getattr(inv, "gst_tds_enabled", False):
             return GstTdsComputed(False, "gst_tds_enabled false", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
@@ -64,6 +71,7 @@ class GstTdsService:
         cfg = GstTdsService._config_for(inv)
         if not cfg or not cfg.enabled:
             return GstTdsComputed(False, "gst tds config disabled/missing", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+        rule = GstTdsService._master_rule_for_config(cfg)
 
         contract_ref = normalize_contract_ref(getattr(inv, "gst_tds_contract_ref", ""))
         if not contract_ref:
@@ -102,16 +110,22 @@ class GstTdsService:
 
         # Determine split using your existing flags
         is_inter = (int(inv.tax_regime) == 2) or bool(getattr(inv, "is_igst", False))
+        total_rate = q4(getattr(rule, "total_rate", RATE_TOTAL) if rule else RATE_TOTAL)
+        igst_rate = q4(getattr(rule, "igst_rate", RATE_TOTAL) if rule else RATE_TOTAL)
+        cgst_rate = q4(getattr(rule, "cgst_rate", RATE_HALF) if rule else RATE_HALF)
+        sgst_rate = q4(getattr(rule, "sgst_rate", RATE_HALF) if rule else RATE_HALF)
 
-        total = q2(taxable_for_tds * q4(RATE_TOTAL) / Decimal("100.00"))
+        total = q2(taxable_for_tds * total_rate / Decimal("100.00"))
         if total <= ZERO2:
-            return GstTdsComputed(False, "computed tds zero", q4(RATE_TOTAL), taxable_for_tds, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(False, "computed tds zero", total_rate, taxable_for_tds, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
         if is_inter:
-            return GstTdsComputed(True, "eligible inter-state (IGST 2%)", q4(RATE_TOTAL), taxable_for_tds, q2(ZERO2), q2(ZERO2), total, total)
+            igst = q2(taxable_for_tds * igst_rate / Decimal("100.00"))
+            return GstTdsComputed(True, "eligible inter-state (IGST)", total_rate, taxable_for_tds, q2(ZERO2), q2(ZERO2), igst, igst)
 
-        half = q2(taxable_for_tds * q4(RATE_HALF) / Decimal("100.00"))
-        return GstTdsComputed(True, "eligible intra-state (CGST 1% + SGST 1%)", q4(RATE_TOTAL), taxable_for_tds, half, half, q2(ZERO2), q2(half + half))
+        cgst = q2(taxable_for_tds * cgst_rate / Decimal("100.00"))
+        sgst = q2(taxable_for_tds * sgst_rate / Decimal("100.00"))
+        return GstTdsComputed(True, "eligible intra-state (CGST + SGST)", total_rate, taxable_for_tds, cgst, sgst, q2(ZERO2), q2(cgst + sgst))
 
     @staticmethod
     def apply_to_header(inv) -> None:

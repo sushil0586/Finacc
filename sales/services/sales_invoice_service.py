@@ -12,7 +12,6 @@ from datetime import date
 from rest_framework.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from decimal import Decimal, ROUND_HALF_UP
-CUTOFF_DISABLE_206C_1H = date(2025, 4, 1)
 from typing import Dict, List, Optional, Tuple
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
@@ -366,32 +365,6 @@ class SalesInvoiceService:
         # Enabled => section must be selected (one at a time)
         if not header.tcs_section_id:
             raise ValueError("TCS section is required when withholding_enabled is true (only one allowed).")
-
-        # Guard: 206C(1H) disabled from 2025-04-01 onwards
-        sec = header.tcs_section
-        if sec and sec.section_code and sec.section_code.strip().upper() in {"206C(1H)", "206C1H"}:
-            bill_date = header.bill_date or timezone.localdate()
-            if bill_date >= CUTOFF_DISABLE_206C_1H:
-                preview = WithholdingResult(
-                    enabled=True,
-                    section=sec,
-                    rate=Decimal("0.0000"),
-                    base_amount=ZERO2,
-                    amount=ZERO2,
-                    reason="206C(1H) disabled from 2025-04-01",
-                )
-                header.tcs_section = None
-                header.tcs_rate = Decimal("0.0000")
-                header.tcs_base_amount = ZERO2
-                header.tcs_amount = ZERO2
-                header.tcs_reason = "206C(1H) disabled from 2025-04-01"
-                header.tcs_is_reversal = False
-                header.updated_by = user
-                header.save(update_fields=[
-                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal", "updated_by"
-                ])
-                cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
-                return
 
         # Compute using authoritative totals (AFTER compute_and_persist_totals)
         res = SalesWithholdingService.compute_tcs(

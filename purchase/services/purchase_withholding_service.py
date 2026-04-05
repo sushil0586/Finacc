@@ -8,7 +8,7 @@ from purchase.models.purchase_core import PurchaseInvoiceHeader
 from withholding.threshold_service import FyPartyThresholdService, ZERO2, q2
 
 
-from withholding.models import WithholdingTaxType
+from withholding.models import WithholdingBaseRule, WithholdingTaxType
 from withholding.services import (
     WithholdingResolver,
     WithholdingResult,
@@ -47,15 +47,31 @@ class PurchaseWithholdingService:
         if not section:
             return WithholdingResult(False, None, Decimal("0.0000"), ZERO2, ZERO2, "No TDS section")
 
-        party_profile = getattr(header, "vendor_tax_profile", None)  # if you prefetch/attach
-        if party_profile is None:
-            # best: query through Account.tax_profile
-            try:
-                party_profile = header.vendor.tax_profile  # type: ignore
-            except Exception:
-                party_profile = None
+        if int(getattr(section, "base_rule", 0) or 0) not in {
+            int(WithholdingBaseRule.INVOICE_VALUE_EXCL_GST),
+            int(WithholdingBaseRule.INVOICE_VALUE_INCL_GST),
+        }:
+            return WithholdingResult(
+                True,
+                section,
+                Decimal("0.0000"),
+                ZERO2,
+                ZERO2,
+                "Section base rule is not invoice-based for purchase invoice context.",
+                "NOT_APPLICABLE_BASE_RULE_CONTEXT",
+            )
 
-        rate, reason = WithholdingResolver.resolve_rate(section=section, party_profile=party_profile, doc_date=bill_date)
+        party_profile = WithholdingResolver.resolve_party_profile(
+            party_account_id=vendor_account_id or getattr(header, "vendor_id", None),
+        )
+
+        rate_resolution = WithholdingResolver.resolve_rate(
+            section=section,
+            party_profile=party_profile,
+            doc_date=bill_date,
+        )
+        rate = Decimal(rate_resolution.rate or 0)
+        reason = rate_resolution.reason
 
         # base
         if section.base_rule == 1:  # excl GST
@@ -66,7 +82,18 @@ class PurchaseWithholdingService:
             base = compute_base_amount_excl_gst(taxable_total=taxable_total)
 
         if base <= ZERO2 or rate <= Decimal("0.0000"):
-            return WithholdingResult(True, section, rate, base, ZERO2, reason)
+            return WithholdingResult(
+                True,
+                section,
+                rate,
+                base,
+                ZERO2,
+                reason,
+                rate_resolution.reason_code,
+                no_pan_applied=rate_resolution.no_pan_applied,
+                sec_206ab_applied=rate_resolution.sec_206ab_applied,
+                lower_rate_applied=rate_resolution.lower_rate_applied,
+            )
         
         if section.section_code.strip().upper() == "194Q":
             # threshold is 50L (or from section.threshold_default)
@@ -95,4 +122,15 @@ class PurchaseWithholdingService:
         
 
         amount = q2((base * rate) / Decimal("100.0"))
-        return WithholdingResult(True, section, rate, base, amount, reason)
+        return WithholdingResult(
+            True,
+            section,
+            rate,
+            base,
+            amount,
+            reason,
+            rate_resolution.reason_code,
+            no_pan_applied=rate_resolution.no_pan_applied,
+            sec_206ab_applied=rate_resolution.sec_206ab_applied,
+            lower_rate_applied=rate_resolution.lower_rate_applied,
+        )
