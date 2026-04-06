@@ -26,10 +26,28 @@ class Gstr2bImportRowSerializer(serializers.ModelSerializer):
             "cess",
             "matched_purchase",
             "match_status",
+            "match_review_comment",
+            "match_reviewed_by",
+            "match_reviewed_at",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "batch", "matched_purchase", "match_status", "created_at", "updated_at"]
+
+
+class Gstr2bImportRowReviewSerializer(serializers.Serializer):
+    match_status = serializers.ChoiceField(
+        choices=[
+            ("NOT_CHECKED", "Not Checked"),
+            ("NOT_MATCHED", "Not Matched"),
+            ("PARTIAL", "Partial"),
+            ("MATCHED", "Matched"),
+            ("MULTIPLE", "Multiple"),
+            ("REVIEWED", "Reviewed"),
+        ]
+    )
+    comment = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=1000)
+    matched_purchase = serializers.IntegerField(required=False, allow_null=True)
 
 
 class Gstr2bImportRowInputSerializer(serializers.Serializer):
@@ -79,4 +97,3 @@ class Gstr2bImportBatchCreateSerializer(serializers.Serializer):
     source = serializers.CharField(required=False, allow_blank=True, default="gstr2b")
     reference = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     rows = Gstr2bImportRowInputSerializer(many=True)
-

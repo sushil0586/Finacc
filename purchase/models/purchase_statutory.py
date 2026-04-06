@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import os
+from pathlib import Path
 
 from django.conf import settings
 from django.db import models
@@ -12,6 +14,35 @@ from .purchase_core import PurchaseInvoiceHeader
 
 User = settings.AUTH_USER_MODEL
 ZERO2 = Decimal("0.00")
+
+
+def _purchase_form16a_deductee_upload_to(instance, filename: str) -> str:
+    filing = getattr(instance, "filing", None)
+    entity_id = getattr(filing, "entity_id", None) or "unknown"
+    subentity_id = getattr(filing, "subentity_id", None) or "na"
+    filing_id = getattr(instance, "filing_id", None) or "unknown"
+    year = timezone.localdate().strftime("%Y")
+    month = timezone.localdate().strftime("%m")
+    raw_name = (filename or "document.pdf").replace("\\", "/")
+    name = os.path.basename(raw_name) or "document.pdf"
+    stem, ext = os.path.splitext(name)
+    safe_stem = (stem or "document")[:24]
+    safe_ext = (ext or ".pdf")[:10]
+    safe_name = f"{safe_stem}{safe_ext}"
+    template = getattr(
+        settings,
+        "PURCHASE_FORM16A_DEDUCTEE_UPLOAD_TEMPLATE",
+        "purchase/e{entity_id}/s{subentity_id}/r{filing_id}/f16a/d/{deductee_key}/{filename}",
+    )
+    return template.format(
+        entity_id=entity_id,
+        subentity_id=subentity_id,
+        filing_id=filing_id,
+        deductee_key=getattr(instance, "deductee_key", None) or "unknown",
+        year=year,
+        month=month,
+        filename=safe_name,
+    )
 
 
 class PurchaseStatutoryChallan(TrackingModel):
@@ -267,7 +298,7 @@ class PurchaseStatutoryForm16AOfficialDocument(TrackingModel):
     source = models.CharField(max_length=20, default="TRACES")
     certificate_no = models.CharField(max_length=100, null=True, blank=True)
     remarks = models.CharField(max_length=255, null=True, blank=True)
-    document = models.FileField(upload_to="purchase/statutory/form16a/")
+    document = models.FileField(upload_to="purchase/statutory/form16a/", max_length=255)
     uploaded_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
@@ -290,3 +321,83 @@ class PurchaseStatutoryForm16AOfficialDocument(TrackingModel):
 
     def __str__(self) -> str:
         return f"Form16AOfficial({self.filing_id}, issue={self.issue_no})"
+
+
+class PurchaseStatutoryForm16ACertificateDocument(TrackingModel):
+    filing = models.ForeignKey(
+        PurchaseStatutoryReturn,
+        on_delete=models.CASCADE,
+        related_name="form16a_certificate_documents",
+    )
+    return_line = models.OneToOneField(
+        PurchaseStatutoryReturnLine,
+        on_delete=models.CASCADE,
+        related_name="form16a_certificate_document",
+    )
+    source = models.CharField(max_length=20, default="TRACES")
+    certificate_no = models.CharField(max_length=100, null=True, blank=True)
+    remarks = models.CharField(max_length=255, null=True, blank=True)
+    document = models.FileField(upload_to="purchase/statutory/form16a/certificates/", max_length=255)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_statutory_form16a_certificate_uploaded",
+    )
+    uploaded_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("filing", "return_line"),
+                name="uq_pur_form16a_certificate_filing_line",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["filing"], name="ix_pur_form16a_cert_filing"),
+            models.Index(fields=["return_line"], name="ix_pur_form16a_cert_line"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Form16ACertificate({self.filing_id}, line={self.return_line_id})"
+
+
+class PurchaseStatutoryForm16ADeducteeDocument(TrackingModel):
+    filing = models.ForeignKey(
+        PurchaseStatutoryReturn,
+        on_delete=models.CASCADE,
+        related_name="form16a_deductee_documents",
+    )
+    deductee_key = models.CharField(max_length=40, db_index=True)
+    deductee_pan = models.CharField(max_length=16, null=True, blank=True, db_index=True)
+    deductee_tax_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    deductee_gstin = models.CharField(max_length=15, null=True, blank=True, db_index=True)
+    source = models.CharField(max_length=20, default="TRACES")
+    certificate_no = models.CharField(max_length=100, null=True, blank=True)
+    remarks = models.CharField(max_length=255, null=True, blank=True)
+    line_ids_json = models.JSONField(default=list, blank=True)
+    document = models.FileField(upload_to=_purchase_form16a_deductee_upload_to, max_length=255)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_statutory_form16a_deductee_uploaded",
+    )
+    uploaded_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("filing", "deductee_key"),
+                name="uq_pur_form16a_deductee_filing_key",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["filing"], name="ix_pur_form16a_deductee_filing"),
+            models.Index(fields=["deductee_key"], name="ix_pur_form16a_deductee_key"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Form16ADeductee({self.filing_id}, {self.deductee_key})"

@@ -554,6 +554,8 @@ class PurchaseInvoiceActions:
 
         if not h.is_itc_eligible:
             raise ValueError("Cannot claim ITC: document is not ITC-eligible.")
+        if bool(getattr(h, "is_reverse_charge", False)):
+            raise ValueError("RCM ITC should be claimed only after reverse-charge tax payment is tracked.")
 
         try:
             year = int(str(period)[:4])

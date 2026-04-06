@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import (
     ListAPIView,
     ListCreateAPIView,
@@ -24,6 +24,8 @@ from .serializers import (
     PermissionAdminSerializer,
     PermissionSerializer,
     PermissionGroupSerializer,
+    CreateUserWithAssignmentResponseSerializer,
+    CreateUserWithAssignmentSerializer,
     RBACAuditLogSerializer,
     RBACAdminBootstrapSerializer,
     RecursiveMenuSerializer,
@@ -33,6 +35,7 @@ from .serializers import (
     RoleTemplateApplySerializer,
     RoleSerializer,
     UserOptionSerializer,
+    UserSearchResultSerializer,
     UserRoleAssignmentAdminSerializer,
     MenuPermissionBulkSerializer,
     RolePermissionBulkSerializer,
@@ -90,6 +93,20 @@ class RBACEntityAccessMixin:
         if not entity:
             return None, Response({"detail": "You do not have access to this entity."}, status=status.HTTP_403_FORBIDDEN)
         return entity, None
+
+    def _has_any_permission(self, request, entity, permission_codes):
+        if getattr(entity, "createdby_id", None) == request.user.id:
+            return True
+        current_codes = EffectivePermissionService.permission_codes_for_user(request.user, entity.id)
+        return any(code in current_codes for code in permission_codes)
+
+    def _require_any_permission(self, request, entity, permission_codes):
+        if self._has_any_permission(request, entity, permission_codes):
+            return None
+        return Response(
+            {"detail": "You do not have permission to perform this action for this entity."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     def _soft_delete(self, obj, *, actor, message):
         obj.isactive = False
@@ -237,6 +254,9 @@ class RBACAdminBootstrapView(RBACEntityAccessMixin, APIView):
         entity, error_response = self._entity_from_request(request)
         if error_response:
             return error_response
+        permission_error = self._require_any_permission(request, entity, ("admin.user.view", "admin.role.view"))
+        if permission_error:
+            return permission_error
 
         roles = list(
             Role.objects.filter(entity=entity, isactive=True)
@@ -373,17 +393,28 @@ class RoleAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
     serializer_class = RoleAdminSerializer
 
     def get_queryset(self):
-        entity, error_response = self._entity_from_request(self.request)
-        if error_response:
-            return Role.objects.none()
-        return (
-            Role.objects.filter(role_level=Role.LEVEL_ENTITY, entity=entity)
+        entity_id = self.request.query_params.get("entity")
+        queryset = (
+            Role.objects.filter(role_level=Role.LEVEL_ENTITY)
             .select_related("entity")
             .annotate(
                 permission_count=Count("role_permissions", filter=Q(role_permissions__isactive=True), distinct=True),
                 assignment_count=Count("user_assignments", filter=Q(user_assignments__isactive=True), distinct=True),
             )
         )
+        if not entity_id:
+            return queryset
+
+        entity, error_response = self._entity_from_request(self.request)
+        if error_response:
+            return Role.objects.none()
+        return queryset.filter(entity=entity)
+
+    def get_object(self):
+        role = super().get_object()
+        if not EffectivePermissionService.entity_for_user(self.request.user, role.entity_id):
+            raise PermissionDenied("You do not have access to this entity.")
+        return role
 
     def perform_update(self, serializer):
         role = self.get_object()
@@ -618,6 +649,8 @@ class UserRoleAssignmentAdminListCreateView(RBACEntityAccessMixin, ListCreateAPI
         entity, error_response = self._entity_from_request(self.request)
         if error_response:
             return UserRoleAssignment.objects.none()
+        if self._require_any_permission(self.request, entity, ("admin.user.view",)):
+            return UserRoleAssignment.objects.none()
         queryset = (
             UserRoleAssignment.objects.filter(entity=entity)
             .select_related("user", "role", "entity", "subentity")
@@ -637,6 +670,9 @@ class UserRoleAssignmentAdminListCreateView(RBACEntityAccessMixin, ListCreateAPI
         entity, error_response = self._entity_from_request(self.request)
         if error_response:
             raise ValidationError(error_response.data)
+        permission_error = self._require_any_permission(self.request, entity, ("admin.user.create", "admin.user.update"))
+        if permission_error:
+            raise ValidationError(permission_error.data)
         assignment = serializer.save(entity=entity, assigned_by=self.request.user)
         RBACAuditService.log(
             actor=self.request.user,
@@ -653,6 +689,12 @@ class UserRoleAssignmentAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDes
     permission_classes = [IsAuthenticated]
     serializer_class = UserRoleAssignmentAdminSerializer
     queryset = UserRoleAssignment.objects.select_related("user", "role", "entity", "subentity")
+
+    def get_object(self):
+        assignment = super().get_object()
+        if not self._has_any_permission(self.request, assignment.entity, ("admin.user.update", "admin.user.delete")):
+            raise PermissionDenied("You do not have permission to perform this action for this entity.")
+        return assignment
 
     def perform_update(self, serializer):
         assignment = serializer.save()
@@ -676,6 +718,31 @@ class EntityUserOptionsView(RBACEntityAccessMixin, APIView):
         entity, error_response = self._entity_from_request(request)
         if error_response:
             return error_response
+        permission_error = self._require_any_permission(request, entity, ("admin.user.view", "admin.user.create"))
+        if permission_error:
+            return permission_error
+
+        search = (request.query_params.get("q") or "").strip()
+        if search:
+            users = (
+                User.objects.filter(is_active=True)
+                .filter(
+                    Q(email__icontains=search)
+                    | Q(username__icontains=search)
+                    | Q(first_name__icontains=search)
+                    | Q(last_name__icontains=search)
+                )
+                .annotate(
+                    entity_assignment_count=Count(
+                        "rbac_role_assignments",
+                        filter=Q(rbac_role_assignments__entity=entity, rbac_role_assignments__isactive=True),
+                        distinct=True,
+                    )
+                )
+                .order_by("first_name", "email")[:25]
+            )
+            serializer = UserSearchResultSerializer(users, many=True)
+            return Response(serializer.data)
 
         user_ids = set(UserRoleAssignment.objects.filter(entity=entity).values_list("user_id", flat=True))
         users = User.objects.filter(id__in=user_ids, is_active=True).order_by("first_name", "email")
@@ -776,6 +843,9 @@ class BulkAssignmentView(RBACEntityAccessMixin, APIView):
         entity, error_response = self._entity_from_request(request)
         if error_response:
             return error_response
+        permission_error = self._require_any_permission(request, entity, ("admin.user.create", "admin.user.update"))
+        if permission_error:
+            return permission_error
 
         serializer = BulkAssignmentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -795,6 +865,8 @@ class BulkAssignmentView(RBACEntityAccessMixin, APIView):
                 subentity_id=serializer.validated_data.get("subentity"),
                 defaults={
                     "assigned_by": request.user,
+                    "effective_from": serializer.validated_data.get("effective_from"),
+                    "effective_to": serializer.validated_data.get("effective_to"),
                     "is_primary": serializer.validated_data["is_primary"],
                     "scope_data": serializer.validated_data.get("scope_data", {}),
                     "isactive": serializer.validated_data["isactive"],
@@ -804,6 +876,8 @@ class BulkAssignmentView(RBACEntityAccessMixin, APIView):
                 created_ids.append(assignment.id)
             else:
                 assignment.is_primary = serializer.validated_data["is_primary"]
+                assignment.effective_from = serializer.validated_data.get("effective_from")
+                assignment.effective_to = serializer.validated_data.get("effective_to")
                 assignment.scope_data = serializer.validated_data.get("scope_data", {})
                 assignment.isactive = serializer.validated_data["isactive"]
                 assignment.assigned_by = request.user
@@ -828,6 +902,38 @@ class BulkAssignmentView(RBACEntityAccessMixin, APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class CreateUserWithAssignmentView(RBACEntityAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        entity, error_response = self._entity_from_request(request)
+        if error_response:
+            return error_response
+        permission_error = self._require_any_permission(request, entity, ("admin.user.create",))
+        if permission_error:
+            return permission_error
+
+        serializer = CreateUserWithAssignmentSerializer(
+            data=request.data,
+            context={"entity": entity, "actor": request.user},
+        )
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        RBACAuditService.log(
+            actor=request.user,
+            entity=entity,
+            object_type="assignment",
+            object_id=result["assignment"].id,
+            action=RBACAuditLog.ACTION_ASSIGN,
+            message=f"Created user {result['user'].email} and assigned role {result['assignment'].role.name}.",
+            changes={"role_id": result["assignment"].role_id, "user_id": result["user"].id},
+        )
+
+        output = CreateUserWithAssignmentResponseSerializer(result)
+        return Response(output.data, status=status.HTTP_201_CREATED)
 
 
 class AuditLogListView(RBACEntityAccessMixin, ListAPIView):

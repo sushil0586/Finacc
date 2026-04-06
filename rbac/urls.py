@@ -15,6 +15,7 @@ urlpatterns = [
     path("me/menus", views.UserMenusView.as_view(), name="me-menus"),
     path("admin/bootstrap", views.RBACAdminBootstrapView.as_view(), name="admin-bootstrap"),
     path("admin/users", views.EntityUserOptionsView.as_view(), name="admin-users"),
+    path("admin/users/create-and-assign", views.CreateUserWithAssignmentView.as_view(), name="admin-users-create-and-assign"),
     path("admin/access-preview", views.EffectiveAccessPreviewView.as_view(), name="admin-access-preview"),
     path("admin/audit-logs", views.AuditLogListView.as_view(), name="admin-audit-logs"),
     path("admin/templates", views.RoleTemplatesView.as_view(), name="admin-templates"),

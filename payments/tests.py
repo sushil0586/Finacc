@@ -12,6 +12,7 @@ from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
+from withholding.models import WithholdingBaseRule
 
 
 class FakeRelated(list):
@@ -852,10 +853,15 @@ class PaymentVoucherCashGuardTests(SimpleTestCase):
 
 
 class PaymentRuntimeWithholdingTests(SimpleTestCase):
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
     @patch("payments.services.payment_voucher_service.compute_withholding_preview")
-    def test_runtime_withholding_adds_auto_tds_adjustment(self, mock_preview, mock_get_account_id, mock_get_ledger_id):
+    def test_runtime_withholding_adds_auto_tds_adjustment(self, mock_preview, mock_get_account_id, mock_get_ledger_id, mock_filter):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=5,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+        )
         mock_get_account_id.return_value = 9001
         mock_get_ledger_id.return_value = 3001
         mock_preview.return_value = SimpleNamespace(rate=Decimal("1.0000"), amount=Decimal("10.00"), reason="auto", reason_code="OK")
@@ -898,6 +904,35 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         self.assertEqual(len(adjustments), 1)
         self.assertEqual(adjustments[0]["adj_type"], "BANK_CHARGES")
         self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "DISABLED")
+
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
+    def test_runtime_withholding_rejects_invoice_based_section_even_in_manual_mode(self, mock_filter):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=10,
+            base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+        )
+
+        adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("100.00"),
+            allocations=[],
+            adjustments=[],
+            workflow_payload={
+                "withholding": {
+                    "enabled": True,
+                    "section_id": 10,
+                    "mode": "MANUAL",
+                    "manual_rate": Decimal("1.00"),
+                }
+            },
+        )
+
+        self.assertEqual(adjustments, [])
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "INVALID_BASE_RULE")
 
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
@@ -943,6 +978,7 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         mock_get_account_id.assert_not_called()
         mock_get_ledger_id.assert_not_called()
 
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
     @patch("payments.services.payment_voucher_service.compute_withholding_preview")
@@ -953,7 +989,12 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         mock_preview,
         mock_get_account_id,
         mock_get_ledger_id,
+        mock_filter,
     ):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=10,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+        )
         mock_resolve_entity.return_value = (None, None)
         mock_get_account_id.return_value = 9001
         mock_get_ledger_id.return_value = 3001
@@ -977,6 +1018,7 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
                 workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
             )
 
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
     @patch("payments.services.payment_voucher_service.compute_withholding_preview")
@@ -987,7 +1029,12 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         mock_preview,
         mock_get_account_id,
         mock_get_ledger_id,
+        mock_filter,
     ):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=10,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+        )
         mock_resolve_entity.return_value = (None, None)
         mock_get_account_id.return_value = 9001
         mock_get_ledger_id.return_value = 3001

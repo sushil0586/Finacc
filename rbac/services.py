@@ -108,8 +108,9 @@ class EffectivePermissionService:
 
         # Entity creator should retain access even when explicit RBAC
         # assignments are not available yet (e.g. fresh onboarding flows).
+        has_any_assignment = UserRoleAssignment.objects.filter(user=user, entity_id=entity_id).exists()
         owned = Entity.objects.filter(id=entity_id, createdby_id=user.id).first()
-        if owned:
+        if owned and not has_any_assignment:
             return owned
 
         active_assignment_entity_ids = EffectivePermissionService.active_assignments_queryset(

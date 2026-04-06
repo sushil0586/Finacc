@@ -284,6 +284,16 @@ class PurchaseInvoicePostingAdapter:
                 rcm_tax["sgst"] = q2(rcm_tax["sgst"] + t_sgst)
                 rcm_tax["igst"] = q2(rcm_tax["igst"] + t_igst)
                 rcm_tax["cess"] = q2(rcm_tax["cess"] + t_cess)
+                if bool(getattr(ln, "is_itc_eligible", False)):
+                    eligible_tax["cgst"] = q2(eligible_tax["cgst"] + t_cgst)
+                    eligible_tax["sgst"] = q2(eligible_tax["sgst"] + t_sgst)
+                    eligible_tax["igst"] = q2(eligible_tax["igst"] + t_igst)
+                    eligible_tax["cess"] = q2(eligible_tax["cess"] + t_cess)
+                else:
+                    blocked_tax["cgst"] = q2(blocked_tax["cgst"] + t_cgst)
+                    blocked_tax["sgst"] = q2(blocked_tax["sgst"] + t_sgst)
+                    blocked_tax["igst"] = q2(blocked_tax["igst"] + t_igst)
+                    blocked_tax["cess"] = q2(blocked_tax["cess"] + t_cess)
             else:
                 if bool(getattr(ln, "is_itc_eligible", False)):
                     eligible_tax["cgst"] = q2(eligible_tax["cgst"] + t_cgst)
@@ -321,6 +331,16 @@ class PurchaseInvoicePostingAdapter:
                 rcm_tax["sgst"] = q2(rcm_tax["sgst"] + c_sgst)
                 rcm_tax["igst"] = q2(rcm_tax["igst"] + c_igst)
                 rcm_tax["cess"] = q2(rcm_tax["cess"] + c_cess)
+                if bool(getattr(ch, "itc_eligible", False)):
+                    eligible_tax["cgst"] = q2(eligible_tax["cgst"] + c_cgst)
+                    eligible_tax["sgst"] = q2(eligible_tax["sgst"] + c_sgst)
+                    eligible_tax["igst"] = q2(eligible_tax["igst"] + c_igst)
+                    eligible_tax["cess"] = q2(eligible_tax["cess"] + c_cess)
+                else:
+                    blocked_tax["cgst"] = q2(blocked_tax["cgst"] + c_cgst)
+                    blocked_tax["sgst"] = q2(blocked_tax["sgst"] + c_sgst)
+                    blocked_tax["igst"] = q2(blocked_tax["igst"] + c_igst)
+                    blocked_tax["cess"] = q2(blocked_tax["cess"] + c_cess)
             else:
                 if bool(getattr(ch, "itc_eligible", False)):
                     eligible_tax["cgst"] = q2(eligible_tax["cgst"] + c_cgst)
@@ -345,6 +365,34 @@ class PurchaseInvoicePostingAdapter:
 
         # 1C) Tax postings
         if is_rcm:
+            def _add_input(acct_id: Optional[int], ledger_id: Optional[int], amt: Decimal, label: str):
+                if amt <= ZERO2:
+                    return
+                if not acct_id:
+                    raise ValueError(f"{label} not mapped.")
+                jl.append(JLInput(
+                    account_id=int(acct_id),
+                    ledger_id=int(ledger_id) if ledger_id else None,
+                    drcr=input_tax_is_debit,
+                    amount=amt,
+                    description=f"{narration} ({label})",
+                ))
+
+            _add_input(in_cgst, in_cgst_ledger, eligible_tax["cgst"], "Input CGST (RCM)")
+            _add_input(in_sgst, in_sgst_ledger, eligible_tax["sgst"], "Input SGST (RCM)")
+            _add_input(in_igst, in_igst_ledger, eligible_tax["igst"], "Input IGST (RCM)")
+            _add_input(in_cess, in_cess_ledger, eligible_tax["cess"], "Input CESS (RCM)")
+
+            blocked_total = q2(blocked_tax["cgst"] + blocked_tax["sgst"] + blocked_tax["igst"] + blocked_tax["cess"])
+            if blocked_total > ZERO2 and cfg.post_blocked_itc_tax_to_expense:
+                jl.append(JLInput(
+                    account_id=itc_blocked_ac,
+                    ledger_id=itc_blocked_ledger,
+                    drcr=blocked_tax_is_debit,
+                    amount=blocked_total,
+                    description=f"{narration} (Blocked ITC tax - RCM)",
+                ))
+
             # RCM payable: invoice/DN Cr, CN Dr
             def _add_rcm(acct_id: Optional[int], ledger_id: Optional[int], amt: Decimal, label: str):
                 if amt <= ZERO2:
@@ -487,9 +535,11 @@ class PurchaseInvoicePostingAdapter:
 
         # optional RCM special-case (if your header stores base-only separately)
         if is_rcm and not cfg.rcm_supplier_includes_tax:
-            base_only = getattr(header, "total_taxable_value", None)
-            if base_only is not None:
-                expected_vendor_amt = q2(base_only)
+            total_gst = q2(
+                getattr(header, "total_gst", None)
+                or (rcm_tax["cgst"] + rcm_tax["sgst"] + rcm_tax["igst"] + rcm_tax["cess"])
+            )
+            expected_vendor_amt = q2(header_grand_total - total_gst)
 
         if expected_vendor_amt > ZERO2:
             if (vendor_amt - expected_vendor_amt).copy_abs() > cfg.totals_tolerance:

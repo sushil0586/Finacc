@@ -1,10 +1,47 @@
+from datetime import datetime, time
+
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
+
+from entity.models import SubEntity
 
 from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
 
 
 User = get_user_model()
+
+
+class DateFriendlyDateTimeField(serializers.DateTimeField):
+    """Accept date-only inputs and safely serialize legacy date values."""
+
+    def to_internal_value(self, value):
+        if isinstance(value, datetime):
+            if timezone.is_naive(value):
+                return timezone.make_aware(value, timezone.get_current_timezone())
+            return value
+        if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day") and not isinstance(value, str):
+            value = datetime.combine(value, time.min)
+            return timezone.make_aware(value, timezone.get_current_timezone())
+        if isinstance(value, str) and len(value) == 10 and value.count("-") == 2:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            return timezone.make_aware(parsed, timezone.get_current_timezone())
+        return super().to_internal_value(value)
+
+    def to_representation(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt_value = value
+        elif hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+            dt_value = datetime.combine(value, time.min)
+        else:
+            return super().to_representation(value)
+        if timezone.is_naive(dt_value):
+            dt_value = timezone.make_aware(dt_value, timezone.get_current_timezone())
+        return super().to_representation(dt_value)
 
 
 class PermissionSerializer(serializers.ModelSerializer):
@@ -282,6 +319,10 @@ class UserOptionSerializer(serializers.ModelSerializer):
 
 
 class UserRoleAssignmentAdminSerializer(serializers.ModelSerializer):
+    entity = serializers.PrimaryKeyRelatedField(read_only=True)
+    scope_data = serializers.JSONField(required=False, allow_null=True, default=dict)
+    effective_from = DateFriendlyDateTimeField(required=False, allow_null=True)
+    effective_to = DateFriendlyDateTimeField(required=False, allow_null=True)
     user_name = serializers.SerializerMethodField()
     role_name = serializers.CharField(source="role.name", read_only=True)
     entity_name = serializers.CharField(source="entity.entityname", read_only=True)
@@ -306,6 +347,9 @@ class UserRoleAssignmentAdminSerializer(serializers.ModelSerializer):
             "isactive",
         )
 
+    def validate_scope_data(self, value):
+        return value or {}
+
     def get_user_name(self, obj):
         user = obj.user
         full_name = f"{user.first_name} {user.last_name}".strip()
@@ -316,11 +360,19 @@ class UserRoleAssignmentAdminSerializer(serializers.ModelSerializer):
         entity = attrs.get("entity", getattr(self.instance, "entity", None))
         role = attrs.get("role", getattr(self.instance, "role", None))
         subentity = attrs.get("subentity", getattr(self.instance, "subentity", None))
+        effective_from = attrs.get("effective_from", getattr(self.instance, "effective_from", None))
+        effective_to = attrs.get("effective_to", getattr(self.instance, "effective_to", None))
         qs = UserRoleAssignment.objects.filter(user=user, entity=entity, role=role, subentity=subentity)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if user and entity and role and qs.exists():
             raise serializers.ValidationError("This user already has the same role assignment for this entity/subentity.")
+        if effective_from and effective_to and effective_from > effective_to:
+            raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
+        if role and entity and role.role_level == Role.LEVEL_ENTITY and role.entity_id != entity.id:
+            raise serializers.ValidationError({"role": "Selected role does not belong to this entity."})
+        if subentity and entity and subentity.entity_id != entity.id:
+            raise serializers.ValidationError({"subentity": "Selected subentity does not belong to this entity."})
         return attrs
 
 
@@ -382,9 +434,121 @@ class BulkAssignmentSerializer(serializers.Serializer):
     user_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
     role = serializers.IntegerField(min_value=1)
     subentity = serializers.IntegerField(required=False, allow_null=True)
+    effective_from = DateFriendlyDateTimeField(required=False, allow_null=True)
+    effective_to = DateFriendlyDateTimeField(required=False, allow_null=True)
     is_primary = serializers.BooleanField(default=False)
     isactive = serializers.BooleanField(default=True)
-    scope_data = serializers.JSONField(required=False)
+    scope_data = serializers.JSONField(required=False, allow_null=True, default=dict)
+
+    def validate(self, attrs):
+        effective_from = attrs.get("effective_from")
+        effective_to = attrs.get("effective_to")
+        if effective_from and effective_to and effective_from > effective_to:
+            raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
+        return attrs
+
+
+class UserSearchResultSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    entity_assignment_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "email",
+            "username",
+            "first_name",
+            "last_name",
+            "full_name",
+            "is_active",
+            "entity_assignment_count",
+        )
+
+    def get_full_name(self, obj):
+        full_name = f"{obj.first_name} {obj.last_name}".strip()
+        return full_name or obj.email or obj.username
+
+
+class CreateUserWithAssignmentSerializer(serializers.Serializer):
+    first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    email = serializers.EmailField()
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(max_length=128, min_length=6, write_only=True)
+    role = serializers.PrimaryKeyRelatedField(queryset=Role.objects.filter(isactive=True))
+    subentity = serializers.PrimaryKeyRelatedField(queryset=SubEntity.objects.filter(isactive=True), required=False, allow_null=True)
+    effective_from = DateFriendlyDateTimeField(required=False, allow_null=True)
+    effective_to = DateFriendlyDateTimeField(required=False, allow_null=True)
+    is_primary = serializers.BooleanField(default=False)
+    isactive = serializers.BooleanField(default=True)
+    scope_data = serializers.JSONField(required=False, allow_null=True, default=dict)
+
+    def validate_email(self, value):
+        normalized = (value or "").strip().lower()
+        if User.objects.filter(email__iexact=normalized).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return normalized
+
+    def validate_username(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Username is required.")
+        return value
+
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
+    def validate(self, attrs):
+        entity = self.context["entity"]
+        role = attrs["role"]
+        subentity = attrs.get("subentity")
+        effective_from = attrs.get("effective_from")
+        effective_to = attrs.get("effective_to")
+        if role.role_level == Role.LEVEL_ENTITY and role.entity_id != entity.id:
+            raise serializers.ValidationError({"role": "Selected role does not belong to this entity."})
+        if subentity and subentity.entity_id != entity.id:
+            raise serializers.ValidationError({"subentity": "Selected subentity does not belong to this entity."})
+        if effective_from and effective_to and effective_from > effective_to:
+            raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        entity = self.context["entity"]
+        actor = self.context["actor"]
+        role = validated_data.pop("role")
+        subentity = validated_data.pop("subentity", None)
+        user = User.objects.create_user(
+            username=validated_data.pop("username"),
+            email=validated_data.pop("email"),
+            password=validated_data.pop("password"),
+            first_name=(validated_data.pop("first_name", "") or "").strip(),
+            last_name=(validated_data.pop("last_name", "") or "").strip(),
+            is_active=True,
+        )
+        assignment = UserRoleAssignment.objects.create(
+            user=user,
+            entity=entity,
+            role=role,
+            subentity=subentity,
+            assigned_by=actor,
+            effective_from=validated_data.get("effective_from"),
+            effective_to=validated_data.get("effective_to"),
+            is_primary=validated_data.get("is_primary", False),
+            isactive=validated_data.get("isactive", True),
+            scope_data=validated_data.get("scope_data") or {},
+        )
+        return {
+            "user": user,
+            "assignment": assignment,
+        }
+
+
+class CreateUserWithAssignmentResponseSerializer(serializers.Serializer):
+    user = UserOptionSerializer()
+    assignment = UserRoleAssignmentAdminSerializer()
 
 
 class RBACAuditLogSerializer(serializers.ModelSerializer):

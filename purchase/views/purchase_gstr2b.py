@@ -10,6 +10,7 @@ from purchase.serializers.purchase_gstr2b import (
     Gstr2bImportBatchCreateSerializer,
     Gstr2bImportBatchSerializer,
     Gstr2bImportRowSerializer,
+    Gstr2bImportRowReviewSerializer,
 )
 from purchase.services.purchase_gstr2b_service import PurchaseGstr2bService
 
@@ -104,3 +105,35 @@ class PurchaseGstr2bImportBatchMatchAPIView(APIView):
             }
         )
 
+
+class PurchaseGstr2bImportRowReviewAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk: int):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        row = Gstr2bImportRow.objects.select_related("batch").filter(
+            pk=pk,
+            batch__entity_id=entity_id,
+            batch__entityfinid_id=entityfinid_id,
+        ).first()
+        if not row:
+            raise ValidationError({"detail": "Row not found for scope."})
+        if subentity_id is not None and row.batch.subentity_id != subentity_id:
+            raise ValidationError({"detail": "Row subentity mismatch."})
+
+        ser = Gstr2bImportRowReviewSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            row = PurchaseGstr2bService.review_row(
+                row_id=row.id,
+                match_status=ser.validated_data["match_status"],
+                comment=ser.validated_data.get("comment"),
+                matched_purchase_id=ser.validated_data.get("matched_purchase"),
+                reviewed_by_id=request.user.id,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({
+            "message": "GSTR-2B row review updated.",
+            "data": Gstr2bImportRowSerializer(row).data,
+        })
