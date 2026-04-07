@@ -4,8 +4,10 @@ from django.db.models import Prefetch
 
 from financial.models import (
     AccountAddress,
+    AccountBankDetails,
     AccountCommercialProfile,
     AccountComplianceProfile,
+    ContactDetails,
     FinancialSettings,
     Ledger,
     account,
@@ -36,19 +38,20 @@ def sync_ledger_for_account(acc, ledger_overrides=None):
     Later this service should become the primary create/update path once
     accounting flows are Ledger-first.
     """
+    existing_ledger = getattr(acc, "ledger", None)
     ledger_defaults = {
         "entity": acc.entity,
-        "ledger_code": acc.accountcode,
+        "ledger_code": getattr(existing_ledger, "ledger_code", None),
         "name": acc.accountname or f"Account {acc.pk}",
         "legal_name": acc.legalname,
-        "accounthead": acc.accounthead,
-        "creditaccounthead": acc.creditaccounthead,
-        "accounttype": acc.accounttype,
+        "accounthead": getattr(existing_ledger, "accounthead", None),
+        "creditaccounthead": getattr(existing_ledger, "creditaccounthead", None),
+        "accounttype": getattr(existing_ledger, "accounttype", None),
         "is_party": True,
         "is_system": False,
         "canbedeleted": acc.canbedeleted,
-        "openingbcr": acc.openingbcr,
-        "openingbdr": acc.openingbdr,
+        "openingbcr": getattr(existing_ledger, "openingbcr", None),
+        "openingbdr": getattr(existing_ledger, "openingbdr", None),
         "createdby": acc.createdby,
         "isactive": acc.isactive,
     }
@@ -66,16 +69,6 @@ def sync_ledger_for_account(acc, ledger_overrides=None):
         ledger = Ledger.objects.create(**ledger_defaults)
         acc.ledger = ledger
         acc.save(update_fields=["ledger"])
-
-    if acc.contraaccount_id and acc.contraaccount and acc.contraaccount.ledger_id:
-        if acc.contraaccount.entity_id and acc.entity_id and acc.contraaccount.entity_id != acc.entity_id:
-            raise ValidationError({"contraaccount": "Contra account belongs to a different entity."})
-        if ledger.contra_ledger_id != acc.contraaccount.ledger_id:
-            ledger.contra_ledger = acc.contraaccount.ledger
-            ledger.save(update_fields=["contra_ledger"])
-    elif ledger.contra_ledger_id is not None:
-        ledger.contra_ledger = None
-        ledger.save(update_fields=["contra_ledger"])
 
     return ledger
 
@@ -111,12 +104,42 @@ def create_account_with_synced_ledger(*, account_data, ledger_overrides=None):
     - creates/syncs linked ledger row
     """
     data = dict(account_data or {})
+    removed_accounting_map = {
+        "accountcode": "ledger_code",
+        "accounthead": "accounthead",
+        "accounthead_id": "accounthead_id",
+        "creditaccounthead": "creditaccounthead",
+        "creditaccounthead_id": "creditaccounthead_id",
+        "contraaccount": "contraaccount",
+        "contraaccount_id": "contraaccount_id",
+        "accounttype": "accounttype",
+        "accounttype_id": "accounttype_id",
+        "openingbcr": "openingbcr",
+        "openingbdr": "openingbdr",
+    }
+    normalized_ledger_overrides = dict(ledger_overrides or {})
+    for legacy_key, ledger_key in removed_accounting_map.items():
+        if legacy_key in data:
+            normalized_ledger_overrides.setdefault(ledger_key, data.pop(legacy_key))
+
+    contra_account = normalized_ledger_overrides.pop("contraaccount", None)
+    contra_account_id = normalized_ledger_overrides.pop("contraaccount_id", None)
+    if "contra_ledger" not in normalized_ledger_overrides and "contra_ledger_id" not in normalized_ledger_overrides:
+        if contra_account is not None and getattr(contra_account, "ledger_id", None):
+            normalized_ledger_overrides["contra_ledger"] = contra_account.ledger
+        elif contra_account_id:
+            contra_acc = account.objects.filter(pk=contra_account_id).only("ledger_id").first()
+            if contra_acc and contra_acc.ledger_id:
+                normalized_ledger_overrides["contra_ledger_id"] = contra_acc.ledger_id
+
+    allowed_account_fields = {field.name for field in account._meta.get_fields() if getattr(field, "concrete", False)}
+    data = {key: value for key, value in data.items() if key in allowed_account_fields}
     entity = data.get("entity")
-    if data.get("accountcode") is None and entity is not None:
-        data["accountcode"] = allocate_next_ledger_code(entity_id=entity.id)
+    if normalized_ledger_overrides.get("ledger_code") is None and entity is not None:
+        normalized_ledger_overrides["ledger_code"] = allocate_next_ledger_code(entity_id=entity.id)
 
     acc = account.objects.create(**data)
-    sync_ledger_for_account(acc, ledger_overrides=ledger_overrides)
+    sync_ledger_for_account(acc, ledger_overrides=normalized_ledger_overrides)
     ensure_normalized_profiles_for_account(acc)
     return acc
 
@@ -150,7 +173,7 @@ def bootstrap_financial_settings_for_all_entities(entity_model, createdby=None):
 def resync_ledgers(entity_id=None):
     from financial.models import account
 
-    qs = account.objects.select_related("ledger", "contraaccount", "contraaccount__ledger")
+    qs = account.objects.select_related("ledger")
     if entity_id is not None:
         qs = qs.filter(entity_id=entity_id)
 
@@ -226,12 +249,19 @@ def apply_normalized_profile_payload(
     compliance_data=None,
     commercial_data=None,
     primary_address_data=None,
+    primary_contact_data=None,
+    primary_bank_data=None,
     createdby=None,
 ):
     """
     Persist normalized profile payloads without relying on legacy account columns.
     """
     actor = createdby or acc.createdby
+
+    def _normalize_fk_value(value):
+        if value in (None, "", 0, "0"):
+            return None
+        return getattr(value, "pk", value)
 
     if compliance_data is not None:
         defaults = {"entity": acc.entity, "createdby": actor}
@@ -265,14 +295,45 @@ def apply_normalized_profile_payload(
         address.createdby = actor
         fk_fields = {"country", "state", "district", "city"}
         for field_name, value in primary_address_data.items():
-            # Frontend sends FK ids (e.g. state: 1). Django FK attributes
-            # expect model instances unless we assign via <field>_id.
             if field_name in fk_fields:
-                normalized = None if value in (None, "", 0, "0") else value
-                setattr(address, f"{field_name}_id", normalized)
+                setattr(address, f"{field_name}_id", _normalize_fk_value(value))
                 continue
             setattr(address, field_name, value)
         address.save()
+
+    if primary_contact_data is not None:
+        contact = (
+            ContactDetails.objects.filter(account=acc, isprimary=True)
+            .order_by("-id")
+            .first()
+        )
+        if contact is None:
+            contact = ContactDetails(account=acc, isprimary=True)
+        contact.entity = acc.entity
+        contact.createdby = actor
+        fk_fields = {"country", "state", "district", "city"}
+        field_map = {"contactperson": "full_name", "contactno": "phoneno"}
+        for field_name, value in primary_contact_data.items():
+            target_field = field_map.get(field_name, field_name)
+            if target_field in fk_fields:
+                setattr(contact, f"{target_field}_id", _normalize_fk_value(value))
+                continue
+            setattr(contact, target_field, value)
+        contact.save()
+
+    if primary_bank_data is not None:
+        bank_detail = (
+            AccountBankDetails.objects.filter(account=acc, isprimary=True, isactive=True)
+            .order_by("-id")
+            .first()
+        )
+        if bank_detail is None:
+            bank_detail = AccountBankDetails(account=acc, isprimary=True, isactive=True)
+        bank_detail.entity = acc.entity
+        bank_detail.createdby = actor
+        for field_name, value in primary_bank_data.items():
+            setattr(bank_detail, field_name, value)
+        bank_detail.save()
 
 
 def build_ledger_balance_rows(entity_id, fin_start, fin_end, ledger_ids=None, accounthead_ids=None):

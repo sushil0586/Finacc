@@ -7,6 +7,11 @@ from purchase.views.purchase_invoice import (
     PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView,
     PurchaseInvoiceSearchAPIView,
 )
+from purchase.views.purchase_attachment import (
+    PurchaseInvoiceAttachmentDeleteAPIView,
+    PurchaseInvoiceAttachmentDownloadAPIView,
+    PurchaseInvoiceAttachmentListCreateAPIView,
+)
 
 from purchase.views.purchase_charge_type import (
     PurchaseChargeTypeListCreateAPIView,
@@ -87,14 +92,21 @@ from purchase.views.purchase_gstr2b import (
     PurchaseGstr2bImportBatchListCreateAPIView,
     PurchaseGstr2bImportBatchRowsAPIView,
     PurchaseGstr2bImportBatchMatchAPIView,
+    PurchaseGstr2bImportRowReviewAPIView,
 )
 
 urlpatterns = [
     # CRUD
     path("purchase-invoices/", PurchaseInvoiceListCreateAPIView.as_view(), name="purchase-invoice-list-create"),
     path("purchase-invoices/<int:pk>/", PurchaseInvoiceRetrieveUpdateDestroyAPIView.as_view(), name="purchase-invoice-rud"),
+    path("purchase-invoices/<int:pk>/attachments/", PurchaseInvoiceAttachmentListCreateAPIView.as_view(), name="purchase-invoice-attachments"),
+    path("purchase-invoices/<int:pk>/attachments/<int:attachment_id>/", PurchaseInvoiceAttachmentDeleteAPIView.as_view(), name="purchase-invoice-attachment-delete"),
+    path("purchase-invoices/<int:pk>/attachments/<int:attachment_id>/download/", PurchaseInvoiceAttachmentDownloadAPIView.as_view(), name="purchase-invoice-attachment-download"),
     path("purchase-service-invoices/", PurchaseServiceInvoiceListCreateAPIView.as_view(), name="purchase-service-invoice-list-create"),
     path("purchase-service-invoices/<int:pk>/", PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView.as_view(), name="purchase-service-invoice-rud"),
+    path("purchase-service-invoices/<int:pk>/attachments/", PurchaseInvoiceAttachmentListCreateAPIView.as_view(), name="purchase-service-invoice-attachments"),
+    path("purchase-service-invoices/<int:pk>/attachments/<int:attachment_id>/", PurchaseInvoiceAttachmentDeleteAPIView.as_view(), name="purchase-service-invoice-attachment-delete"),
+    path("purchase-service-invoices/<int:pk>/attachments/<int:attachment_id>/download/", PurchaseInvoiceAttachmentDownloadAPIView.as_view(), name="purchase-service-invoice-attachment-download"),
 
     # Actions
     path("purchase-invoices/<int:pk>/confirm/", PurchaseInvoiceConfirmAPIView.as_view(), name="purchase-invoice-confirm"),
@@ -186,5 +198,6 @@ urlpatterns = [
     path("gstr2b/import-batches/", PurchaseGstr2bImportBatchListCreateAPIView.as_view(), name="purchase-gstr2b-import-batch-list-create"),
     path("gstr2b/import-batches/<int:pk>/rows/", PurchaseGstr2bImportBatchRowsAPIView.as_view(), name="purchase-gstr2b-import-batch-rows"),
     path("gstr2b/import-batches/<int:pk>/match/", PurchaseGstr2bImportBatchMatchAPIView.as_view(), name="purchase-gstr2b-import-batch-match"),
+    path("gstr2b/import-rows/<int:pk>/review/", PurchaseGstr2bImportRowReviewAPIView.as_view(), name="purchase-gstr2b-import-row-review"),
 
 ]

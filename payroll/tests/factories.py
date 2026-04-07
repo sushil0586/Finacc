@@ -8,6 +8,7 @@ from django.utils import timezone
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from payroll.models import (
     PayrollComponent,
@@ -139,15 +140,17 @@ class PayrollFactory:
             createdby=user,
             is_party=True,
         )
-        return account.objects.create(
-            entity=entity,
-            ledger=ledger,
-            accounthead=accounthead,
-            accountname=ledger_name,
-            accountcode=ledger.ledger_code,
-            partytype=partytype,
-            createdby=user,
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": entity,
+                "ledger": ledger,
+                "accountname": ledger_name,
+                "createdby": user,
+            },
+            ledger_overrides={"ledger_code": ledger.ledger_code, "accounthead": accounthead, "is_party": True},
         )
+        apply_normalized_profile_payload(acc, commercial_data={"partytype": partytype}, createdby=user)
+        return acc
 
     @classmethod
     def component(cls, *, entity, code="BASIC", component_type=PayrollComponent.ComponentType.EARNING, posting_behavior=PayrollComponent.PostingBehavior.GROSS_EARNING):

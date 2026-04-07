@@ -10,8 +10,9 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 
 from entity.models import Entity
-from financial.models import accountHead
-from posting.models import Entry, EntryStatus, JournalLine, PostingBatch
+from financial.models import Ledger, account, accountHead, accounttype
+from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup
+from posting.static_account_service import StaticAccountMappingService
 from posting.services.balances import ledger_balance_map
 from posting.services.posting_service import (
     JLInput,
@@ -253,3 +254,83 @@ class LedgerBalanceMapTests(PostingServiceBaseTest):
             fin_end=date(2025, 12, 31),
         )
         self.assertIsInstance(result, dict)
+
+
+class StaticAccountMappingServiceTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.entity = Entity.objects.create(entityname="Mapping Co")
+        cls.user = User.objects.create_user(username="posting_map", email="posting_map@test.com", password="x")
+        cls.account_type = accounttype.objects.create(
+            entity=cls.entity,
+            accounttypename="Liability",
+            accounttypecode="LIAB",
+        )
+        cls.account_head = accountHead.objects.create(
+            entity=cls.entity,
+            name="Duties & Taxes",
+            code=9101,
+            accounttype=cls.account_type,
+            drcreffect="Credit",
+        )
+        cls.static_account = StaticAccount.objects.create(
+            code="OUTPUT_IGST",
+            name="Output IGST",
+            group=StaticAccountGroup.GST_OUTPUT,
+            is_required=True,
+        )
+        cls.pure_ledger = Ledger.objects.create(
+            entity=cls.entity,
+            ledger_code=5001,
+            name="Output IGST Ledger",
+            accounthead=cls.account_head,
+            accounttype=cls.account_type,
+            is_party=False,
+        )
+        cls.party_ledger = Ledger.objects.create(
+            entity=cls.entity,
+            ledger_code=5002,
+            name="Vendor Ledger",
+            accounthead=cls.account_head,
+            accounttype=cls.account_type,
+            is_party=True,
+        )
+        cls.party_account = account.objects.create(
+            entity=cls.entity,
+            accountname="Vendor A",
+            ledger=cls.party_ledger,
+        )
+
+    def test_upsert_one_allows_pure_ledger_without_account_profile(self):
+        row = StaticAccountMappingService.upsert_one(
+            entity_id=self.entity.id,
+            static_account_code=self.static_account.code,
+            account_id=None,
+            ledger_id=self.pure_ledger.id,
+            sub_entity_id=None,
+            effective_from=TODAY,
+            actor=self.user,
+        )
+
+        mapping = EntityStaticAccountMap.objects.get(entity=self.entity, static_account=self.static_account, is_active=True)
+        self.assertIsNone(mapping.account_id)
+        self.assertEqual(mapping.ledger_id, self.pure_ledger.id)
+        self.assertIsNone(row.account_id)
+        self.assertEqual(row.ledger_id, self.pure_ledger.id)
+
+    def test_upsert_one_still_backfills_account_when_ledger_has_profile(self):
+        row = StaticAccountMappingService.upsert_one(
+            entity_id=self.entity.id,
+            static_account_code=self.static_account.code,
+            account_id=None,
+            ledger_id=self.party_ledger.id,
+            sub_entity_id=None,
+            effective_from=TODAY,
+            actor=self.user,
+        )
+
+        mapping = EntityStaticAccountMap.objects.get(entity=self.entity, static_account=self.static_account, is_active=True)
+        self.assertEqual(mapping.account_id, self.party_account.id)
+        self.assertEqual(mapping.ledger_id, self.party_ledger.id)
+        self.assertEqual(row.account_id, self.party_account.id)
+        self.assertEqual(row.ledger_id, self.party_ledger.id)

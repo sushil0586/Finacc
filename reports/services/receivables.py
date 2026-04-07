@@ -76,7 +76,7 @@ def _customer_queryset(*, entity_id, customer_id=None, customer_group=None, regi
         qs = qs.filter(
             Q(accountname__icontains=token)
             | Q(legalname__icontains=token)
-            | Q(accountcode__icontains=token)
+            | Q(ledger__ledger_code__icontains=token)
             | Q(compliance_profile__gstno__icontains=token)
         )
     primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")

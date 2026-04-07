@@ -1,14 +1,50 @@
 from __future__ import annotations
+
+import os
+from decimal import Decimal
+
+from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.utils.text import slugify
+
 from .base import TrackingModel
 from purchase.models.purchase_core import PurchaseInvoiceHeader
-from django.conf import settings
+
 User = settings.AUTH_USER_MODEL
-from decimal import Decimal
 
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
+
+
+def _purchase_attachment_upload_to(instance: "PurchaseAttachment", filename: str) -> str:
+    ext = os.path.splitext(filename or "")[1]
+    stem = slugify(os.path.splitext(filename or "")[0]) or "attachment"
+    safe_stem = stem[:24] or "attachment"
+    safe_ext = (ext.lower() or "")[:10]
+    template = getattr(
+        settings,
+        "PURCHASE_ATTACHMENT_UPLOAD_TEMPLATE",
+        "purchase/e{entity_id}/s{subentity_id}/i{invoice_id}/{year}/{month}/{filename}",
+    )
+    header = getattr(instance, "header", None)
+    entity_id = getattr(header, "entity_id", None) or "global"
+    subentity_id = getattr(header, "subentity_id", None)
+    invoice_id = getattr(instance, "header_id", None) or getattr(header, "id", None) or "draft"
+    today = getattr(instance, "created_at", None) or getattr(header, "created_at", None)
+    year = getattr(today, "strftime", lambda fmt: "0000")("%Y")
+    month = getattr(today, "strftime", lambda fmt: "00")("%m")
+    safe_name = f"{safe_stem}{safe_ext}"
+    return template.format(
+        app="purchase",
+        feature="attachments",
+        entity_id=entity_id,
+        subentity_id=subentity_id if subentity_id is not None else "root",
+        invoice_id=invoice_id,
+        year=year,
+        month=month,
+        filename=safe_name,
+    )
 
 
 class PurchaseChargeType(TrackingModel):
@@ -175,7 +211,7 @@ class PurchaseAttachment(TrackingModel):
     Vendor bill PDF/image attachments for audit and future OCR.
     """
     header = models.ForeignKey(PurchaseInvoiceHeader, related_name="attachments", on_delete=models.CASCADE)
-    file = models.FileField(upload_to="purchase/attachments/%Y/%m/")
+    file = models.FileField(upload_to=_purchase_attachment_upload_to, max_length=255)
     original_name = models.CharField(max_length=255, null=True, blank=True)
     content_type = models.CharField(max_length=100, null=True, blank=True)
 

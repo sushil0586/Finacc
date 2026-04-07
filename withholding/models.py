@@ -144,7 +144,7 @@ class PartyTaxProfile(models.Model):
     """
     party_account = models.OneToOneField(
         "financial.account",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="tax_profile",
         db_index=True,
     )
@@ -177,7 +177,7 @@ class EntityPartyTaxProfile(models.Model):
     """
     entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, db_index=True)
-    party_account = models.ForeignKey("financial.account", on_delete=models.CASCADE, db_index=True)
+    party_account = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
 
     is_exempt_withholding = models.BooleanField(default=False)
     is_specified_person_206ab = models.BooleanField(default=False)
@@ -294,7 +294,7 @@ class EntityTcsThresholdOpening(models.Model):
     entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, db_index=True)
     entityfin = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, db_index=True)
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, db_index=True)
-    party_account = models.ForeignKey("financial.account", on_delete=models.CASCADE, db_index=True)
+    party_account = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)
     section = models.ForeignKey(
         WithholdingSection,
         on_delete=models.CASCADE,

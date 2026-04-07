@@ -21,7 +21,7 @@ class Command(BaseCommand):
         summary = FinancialSeedService.seed_entity(
             entity=entity,
             actor=None,
-            template_code="standard_business_full",
+            template_code="indian_accounting_final",
         )
 
         self.stdout.write(self.style.SUCCESS("Common ledger seed applied successfully."))

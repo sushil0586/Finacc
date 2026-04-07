@@ -265,7 +265,7 @@ class OnboardingConstitutionSerializer(serializers.Serializer):
 
 
 class OnboardingSeedOptionsSerializer(serializers.Serializer):
-    template_code = serializers.CharField(required=False, default="standard_trading")
+    template_code = serializers.CharField(required=False, default="indian_accounting_final")
     seed_financial = serializers.BooleanField(required=False, default=True)
     seed_rbac = serializers.BooleanField(required=False, default=True)
     seed_default_subentity = serializers.BooleanField(required=False, default=True)

@@ -249,7 +249,7 @@ class StaticAccountMappingService:
                 raise ValidationError(f"ledger_id(s) not found for entity: {', '.join(map(str, bad))}")
 
         item_errors: List[str] = []
-        resolved_pairs: List[Tuple[dict, account, Optional[Ledger]]] = []
+        resolved_pairs: List[Tuple[dict, Optional[account], Optional[Ledger]]] = []
         for item in items:
             provided_account_id = item.get("account_id")
             provided_ledger_id = item.get("ledger_id")
@@ -257,16 +257,16 @@ class StaticAccountMappingService:
             led = ledgers.get(provided_ledger_id) if provided_ledger_id else None
             ledger_profile = cls._get_ledger_account_profile(led) if led else None
 
-            if acc is None:
-                if ledger_profile:
-                    acc = ledger_profile
-                else:
-                    item_errors.append(
-                        f"{item['static_account_code']}: account_id not found for entity and ledger_id has no linked account profile."
-                    )
-                    continue
+            if acc is None and led is None:
+                item_errors.append(
+                    f"{item['static_account_code']}: provide either a valid account_id or ledger_id."
+                )
+                continue
 
-            if led and ledger_profile and acc.id != ledger_profile.id:
+            if acc is None and ledger_profile:
+                acc = ledger_profile
+
+            if led and ledger_profile and acc and acc.id != ledger_profile.id:
                 item_errors.append(
                     f"{item['static_account_code']}: account_id {acc.id} does not match ledger_id {led.id} account_profile_id {ledger_profile.id}."
                 )
@@ -383,7 +383,7 @@ class StaticAccountMappingService:
         entity_id: int,
         account_id: Optional[int],
         ledger_id: Optional[int],
-    ) -> Tuple[account, Optional[Ledger]]:
+    ) -> Tuple[Optional[account], Optional[Ledger]]:
         led: Optional[Ledger] = None
         if ledger_id:
             led = Ledger.objects.select_related("account_profile").filter(id=ledger_id, entity_id=entity_id).first()
@@ -398,12 +398,10 @@ class StaticAccountMappingService:
         if acc is None:
             if ledger_profile:
                 acc = ledger_profile
-            else:
-                raise ValidationError(
-                    "Provide a valid account_id, or use a ledger_id linked with an account profile."
-                )
+            elif led is None:
+                raise ValidationError("Provide a valid account_id or ledger_id.")
 
-        if led and ledger_profile and acc.id != ledger_profile.id:
+        if led and ledger_profile and acc and acc.id != ledger_profile.id:
             raise ValidationError("account_id does not match the selected ledger_id account profile.")
 
         return acc, led

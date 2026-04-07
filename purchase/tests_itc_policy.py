@@ -140,3 +140,30 @@ class PurchaseItcPolicyActionTests(TestCase):
 
         with self.assertRaises(ValueError):
             PurchaseInvoiceActions.mark_itc_claimed(1, "2999-12")
+
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._log_itc_action")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._assert_action_allowed_by_level")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get")
+    def test_itc_claim_blocks_rcm_invoice_until_payment_tracking_exists(self, mock_get, mock_get_policy, _mock_assert, _mock_log):
+        header = _DummyHeader(
+            id=1,
+            entity_id=1,
+            subentity_id=None,
+            status=Status.CONFIRMED,
+            is_itc_eligible=True,
+            is_reverse_charge=True,
+            gstr2b_match_status=PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED,
+            itc_claim_status=ItcClaimStatus.PENDING,
+            itc_claim_period=None,
+            itc_claimed_at=None,
+        )
+        mock_get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(
+            itc_claim_2b_gate="off",
+            itc_claim_allowed_2b_statuses={"matched", "partial"},
+            enforce_2b_before_itc_claim=False,
+        )
+
+        with self.assertRaisesMessage(ValueError, "RCM ITC should be claimed only after reverse-charge tax payment is tracked."):
+            PurchaseInvoiceActions.mark_itc_claimed(1, "2026-04")

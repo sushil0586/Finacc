@@ -13,7 +13,7 @@ from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.profile_access import account_gstno
 from financial.models import Ledger, account, accountHead, accounttype
-from financial.services import apply_normalized_profile_payload
+from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from sales.models import (
     SalesAdvanceAdjustment,
@@ -130,13 +130,14 @@ class Gstr1ReportAPITests(APITestCase):
             accounthead=self.customer_head,
             createdby=self.user,
         )
-        customer = account.objects.create(
-            entity=self.entity,
-            ledger=ledger,
-            accounthead=self.customer_head,
-            accountname=name,
-            accountcode=accountcode,
-            createdby=self.user,
+        customer = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": ledger,
+                "accountname": name,
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": accountcode, "accounthead": self.customer_head, "is_party": True},
         )
         apply_normalized_profile_payload(
             customer,

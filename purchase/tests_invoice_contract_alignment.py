@@ -26,6 +26,7 @@ from financial.models import (
     accountHead,
     accounttype,
 )
+from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from purchase.serializers.purchase_invoice import PurchaseInvoiceLineSerializer
 from purchase.services.purchase_invoice_service import DerivedRegime, PurchaseInvoiceService
@@ -101,25 +102,30 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
             accounthead=self.vendor_head,
             createdby=self.user,
         )
-        self.vendor = account.objects.create(
-            entity=self.entity,
-            ledger=self.vendor_ledger,
-            accounthead=self.vendor_head,
-            accountname="Alpha Traders",
-            accountcode=4001,
-            createdby=self.user,
+        self.vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": self.vendor_ledger,
+                "accountname": "Alpha Traders",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 4001, "accounthead": self.vendor_head, "is_party": True},
         )
-        AccountComplianceProfile.objects.create(
+        AccountComplianceProfile.objects.update_or_create(
             account=self.vendor,
-            entity=self.entity,
-            gstno="27ABCDE1234F1Z5",
-            createdby=self.user,
+            defaults={
+                "entity": self.entity,
+                "gstno": "27ABCDE1234F1Z5",
+                "createdby": self.user,
+            },
         )
-        AccountCommercialProfile.objects.create(
+        AccountCommercialProfile.objects.update_or_create(
             account=self.vendor,
-            entity=self.entity,
-            partytype="Vendor",
-            createdby=self.user,
+            defaults={
+                "entity": self.entity,
+                "partytype": "Vendor",
+                "createdby": self.user,
+            },
         )
 
     def test_purchase_form_meta_exposes_backend_authoritative_contract(self):

@@ -123,7 +123,7 @@ def _validate_entity_accounts(entity_id: int, ids: list[int], *, field_name: str
     rows = {
         row.id: row
         for row in account.objects.filter(entity_id=entity_id, id__in=ids)
-        .select_related("ledger", "accounthead", "ledger__accounthead", "accounttype")
+        .select_related("ledger", "ledger__accounthead", "ledger__accounttype")
     }
     missing = sorted(set(ids) - set(rows.keys()))
     if missing:
@@ -466,14 +466,14 @@ def _cashbook_target_accounts(entity_id, *, mode, cash_account_ids, bank_account
                 getattr(row.ledger, "openingbcr", ZERO) or ZERO
             )
         else:
-            opening = Decimal(getattr(row, "openingbdr", ZERO) or ZERO) - Decimal(getattr(row, "openingbcr", ZERO) or ZERO)
+            opening = ZERO
         refs.append(
             CashbookAccountRef(
                 key=f"ledger:{row.ledger_id}" if row.ledger_id else f"account:{row.id}",
                 account_id=row.id,
                 ledger_id=row.ledger_id,
                 name=getattr(getattr(row, "ledger", None), "name", None) or row.accountname or f"Account {row.id}",
-                code=getattr(getattr(row, "ledger", None), "ledger_code", None) or row.accountcode,
+                code=getattr(getattr(row, "ledger", None), "ledger_code", None),
                 kind=kind,
                 opening_balance=opening,
             )

@@ -74,17 +74,26 @@ class AccountHeadAdmin(ImportExportModelAdmin):
 @admin.register(account)
 class AccountAdmin(ImportExportModelAdmin):
     resource_class = AccountResource
-    list_display = ("accountname", "accountcode", "compliance_gstno", "entity", "accounthead")
+    list_display = ("accountname", "ledger_code", "compliance_gstno", "entity", "ledger_head")
     list_filter = ("entity",)
-    search_fields = ("accountname", "compliance_profile__gstno", "accountcode")
-    ordering = ("entity", "accountcode")
-    list_select_related = ("entity", "accounthead", "compliance_profile")
+    search_fields = ("accountname", "compliance_profile__gstno", "ledger__ledger_code")
+    ordering = ("entity", "ledger__ledger_code", "accountname")
+    list_select_related = ("entity", "ledger", "ledger__accounthead", "compliance_profile")
     inlines = []
 
     @admin.display(description="GSTIN")
     def compliance_gstno(self, obj):
         profile = getattr(obj, "compliance_profile", None)
         return getattr(profile, "gstno", None)
+
+    @admin.display(description="Ledger Code")
+    def ledger_code(self, obj):
+        return getattr(getattr(obj, "ledger", None), "ledger_code", None)
+
+    @admin.display(description="Account Head")
+    def ledger_head(self, obj):
+        ledger = getattr(obj, "ledger", None)
+        return getattr(getattr(ledger, "accounthead", None), "name", None)
 
 
 class AccountComplianceProfileInline(admin.StackedInline):

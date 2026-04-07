@@ -137,7 +137,7 @@ class EntityOnboardingMetaAPIView(APIView):
             "version": "v2",
             "defaults": {
                 "seed_options": {
-                    "template_code": "standard_trading",
+                    "template_code": "indian_accounting_final",
                     "seed_financial": True,
                     "seed_rbac": True,
                     "seed_default_subentity": True,

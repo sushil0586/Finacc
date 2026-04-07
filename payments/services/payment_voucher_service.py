@@ -339,6 +339,40 @@ class PaymentVoucherService:
 
         mode = str(config.get("mode") or "AUTO").upper().strip()
         section_obj: Optional[WithholdingSection] = None
+        section_obj = (
+            WithholdingSection.objects.filter(
+                id=section_id,
+                tax_type=WithholdingTaxType.TDS,
+            )
+            .only("id", "base_rule")
+            .first()
+        )
+        if not section_obj:
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=True,
+                mode=mode,
+                section_id=section_id,
+                base_amount=base_amount,
+                rate=ZERO2,
+                amount=ZERO2,
+                reason="Selected withholding section is not available for payment-stage TDS.",
+                reason_code="INVALID_SECTION",
+            )
+            return non_runtime_rows, payload
+
+        if int(getattr(section_obj, "base_rule", 0) or 0) != int(WithholdingBaseRule.PAYMENT_VALUE):
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=True,
+                mode=mode,
+                section_id=section_id,
+                base_amount=base_amount,
+                rate=ZERO2,
+                amount=ZERO2,
+                reason="Selected withholding section is invoice-based and cannot be used in payment-stage TDS.",
+                reason_code="INVALID_BASE_RULE",
+            )
+            return non_runtime_rows, payload
+
         if mode == "MANUAL":
             rate = q2(config.get("manual_rate") or ZERO2)
             amount = q2(config.get("manual_amount") or ZERO2)
@@ -346,11 +380,6 @@ class PaymentVoucherService:
                 amount = q2((base_amount * rate) / Decimal("100.00"))
             reason = str(config.get("manual_reason") or "MANUAL")
             reason_code = "MANUAL"
-            section_obj = (
-                WithholdingSection.objects.filter(id=section_id)
-                .only("id")
-                .first()
-            )
         else:
             preview = compute_withholding_preview(
                 entity_id=entity_id,

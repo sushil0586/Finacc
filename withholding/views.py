@@ -1125,6 +1125,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             has_missing_pan = not bool(pan_token)
             has_invalid_pan_format = bool(pan_token) and not _is_valid_pan(pan_token)
             has_missing_section = comp.section_id is None
+            sec_code = comp.section.section_code if comp.section else "UNMAPPED"
             section_upper = str(sec_code or "").strip().upper()
             profile = profile_map.get(comp.party_account_id)
             tax_identifier = str(getattr(profile, "tax_identifier", "") or "").strip()
@@ -1171,7 +1172,6 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                 lifecycle_status = "COMPUTED_PENDING_COLLECTION"
                 status_counts["computed_pending_collection"] += 1
 
-            sec_code = comp.section.section_code if comp.section else "UNMAPPED"
             bucket = section_summary.setdefault(
                 sec_code,
                 {

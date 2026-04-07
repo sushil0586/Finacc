@@ -27,6 +27,7 @@ from financial.models import (
     accountHead,
     accounttype,
 )
+from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
@@ -104,25 +105,30 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
             accounthead=self.customer_head,
             createdby=self.user,
         )
-        self.customer = account.objects.create(
-            entity=self.entity,
-            ledger=self.customer_ledger,
-            accounthead=self.customer_head,
-            accountname="Alpha Retail",
-            accountcode=5001,
-            createdby=self.user,
+        self.customer = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": self.customer_ledger,
+                "accountname": "Alpha Retail",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 5001, "accounthead": self.customer_head, "is_party": True},
         )
-        AccountComplianceProfile.objects.create(
+        AccountComplianceProfile.objects.update_or_create(
             account=self.customer,
-            entity=self.entity,
-            gstno="27ABCDE1234F1Z5",
-            createdby=self.user,
+            defaults={
+                "entity": self.entity,
+                "gstno": "27ABCDE1234F1Z5",
+                "createdby": self.user,
+            },
         )
-        AccountCommercialProfile.objects.create(
+        AccountCommercialProfile.objects.update_or_create(
             account=self.customer,
-            entity=self.entity,
-            partytype="Customer",
-            createdby=self.user,
+            defaults={
+                "entity": self.entity,
+                "partytype": "Customer",
+                "createdby": self.user,
+            },
         )
         self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="NOS", description="Numbers")
         self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Goods")

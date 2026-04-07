@@ -74,6 +74,9 @@ class Gstr2bImportRow(TrackingModel):
         PurchaseInvoiceHeader, null=True, blank=True, on_delete=models.SET_NULL, related_name="gstr2b_matches"
     )
     match_status = models.CharField(max_length=20, default="NOT_CHECKED")  # quick status for import tool UI
+    match_review_comment = models.TextField(null=True, blank=True)
+    match_reviewed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    match_reviewed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [

@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 
 from django.db import transaction
+from django.utils import timezone
 
 from purchase.models.gstr2b_models import Gstr2bImportBatch, Gstr2bImportRow
 from purchase.models.purchase_core import PurchaseInvoiceHeader
@@ -167,3 +168,52 @@ class PurchaseGstr2bService:
             multiple=multiple,
             not_matched=not_matched,
         )
+
+    @staticmethod
+    @transaction.atomic
+    def review_row(
+        *,
+        row_id: int,
+        match_status: str,
+        comment: Optional[str],
+        matched_purchase_id: Optional[int],
+        reviewed_by_id: Optional[int],
+    ) -> Gstr2bImportRow:
+        row = Gstr2bImportRow.objects.select_for_update().get(pk=row_id)
+        normalized_status = str(match_status or "").strip().upper()
+        allowed = {"NOT_CHECKED", "NOT_MATCHED", "PARTIAL", "MATCHED", "MULTIPLE", "REVIEWED"}
+        if normalized_status not in allowed:
+            raise ValueError("Invalid GSTR-2B review status.")
+
+        matched_purchase = None
+        if matched_purchase_id:
+            invoice_qs = PurchaseInvoiceHeader.objects.filter(
+                pk=matched_purchase_id,
+                entity_id=row.batch.entity_id,
+                entityfinid_id=row.batch.entityfinid_id,
+            ).exclude(status=PurchaseInvoiceHeader.Status.CANCELLED)
+            if row.batch.subentity_id is None:
+                invoice_qs = invoice_qs.filter(subentity__isnull=True)
+            else:
+                invoice_qs = invoice_qs.filter(subentity_id=row.batch.subentity_id)
+            matched_purchase = invoice_qs.first()
+            if not matched_purchase:
+                raise ValueError("Selected purchase invoice is not valid for this GSTR-2B batch scope.")
+
+        row.match_status = normalized_status
+        row.match_review_comment = (comment or "").strip() or None
+        row.match_reviewed_by_id = reviewed_by_id
+        row.match_reviewed_at = timezone.now()
+        row.matched_purchase = matched_purchase
+        row.save(update_fields=["match_status", "match_review_comment", "match_reviewed_by", "match_reviewed_at", "matched_purchase", "updated_at"])
+
+        invoice = matched_purchase
+        if invoice:
+            if normalized_status == "MATCHED":
+                invoice.gstr2b_match_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED
+                invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
+            elif normalized_status == "PARTIAL":
+                invoice.gstr2b_match_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.PARTIAL
+                invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
+
+        return row
