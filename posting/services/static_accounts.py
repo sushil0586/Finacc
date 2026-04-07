@@ -11,7 +11,7 @@ from posting.models import StaticAccount, EntityStaticAccountMap, StaticAccountG
 @dataclass(frozen=True)
 class StaticAccountResolved:
     code: str
-    account_id: int
+    account_id: Optional[int]
     ledger_id: Optional[int] = None
 
 

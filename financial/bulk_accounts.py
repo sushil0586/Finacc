@@ -15,6 +15,7 @@ from openpyxl import Workbook, load_workbook
 from catalog.models import ProductBulkJob
 from entity.models import Entity
 from financial.models import account
+from financial.profile_access import account_primary_email, account_primary_phone
 from financial.serializers_ledger import AccountProfileV2WriteSerializer
 
 SHEET = "accounts"
@@ -196,17 +197,17 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
         rows.append(
             {
                 "id": row.id,
-                "ledger_code": row.accountcode,
+                "ledger_code": row.effective_accounting_code,
                 "accountname": row.accountname,
                 "legalname": row.legalname,
-                "emailid": row.emailid,
-                "contactno": row.contactno,
+                "emailid": account_primary_email(row),
+                "contactno": account_primary_phone(row),
                 "isactive": row.isactive,
-                "accounthead": row.accounthead_id,
-                "creditaccounthead": row.creditaccounthead_id,
-                "accounttype": row.accounttype_id,
-                "openingbdr": str(row.openingbdr or "0.00"),
-                "openingbcr": str(row.openingbcr or "0.00"),
+                "accounthead": getattr(row.ledger, "accounthead_id", None),
+                "creditaccounthead": getattr(row.ledger, "creditaccounthead_id", None),
+                "accounttype": getattr(row.ledger, "accounttype_id", None),
+                "openingbdr": str(getattr(row.ledger, "openingbdr", Decimal("0.00")) or "0.00"),
+                "openingbcr": str(getattr(row.ledger, "openingbcr", Decimal("0.00")) or "0.00"),
                 "partytype": getattr(commercial, "partytype", None),
                 "gstno": getattr(compliance, "gstno", None),
                 "pan": getattr(compliance, "pan", None),
@@ -270,7 +271,7 @@ def _resolve_existing_account(entity: Entity, row: dict[str, Any]) -> account | 
 
     ledger_code = _to_int(row.get("ledger_code"))
     if ledger_code:
-        existing = account.objects.filter(entity=entity, accountcode=ledger_code).first()
+        existing = account.objects.filter(entity=entity, ledger__ledger_code=ledger_code).first()
         if existing:
             return existing
 

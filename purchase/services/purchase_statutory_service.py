@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from django.db import transaction
 from django.db.models import Sum, Q
 from django.utils import timezone
-from financial.profile_access import account_gstno, account_pan
+from financial.profile_access import account_compliance_profile, account_gstno, account_pan, account_primary_address
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -109,7 +109,10 @@ class PurchaseStatutoryService:
     def _vendor_country_obj(header: PurchaseInvoiceHeader):
         try:
             vendor = getattr(header, "vendor", None)
-            return getattr(vendor, "country", None) if vendor is not None else None
+            if vendor is None:
+                return None
+            addr = account_primary_address(vendor)
+            return getattr(addr, "country", None) if addr is not None else None
         except Exception:
             return None
 
@@ -129,9 +132,10 @@ class PurchaseStatutoryService:
             vendor = getattr(header, "vendor", None)
             if vendor is None:
                 return None
+            compliance = account_compliance_profile(vendor)
             # Priority for non-resident tax-id style fields.
-            for f in ("tdsno", "cin", "adhaarno"):
-                val = (getattr(vendor, f, None) or "").strip()
+            for f in ("tdsno", "cin"):
+                val = (getattr(compliance, f, None) or "").strip()
                 if val:
                     return val
             pan_val = (account_pan(vendor) or "").strip()

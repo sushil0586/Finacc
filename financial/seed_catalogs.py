@@ -450,7 +450,109 @@ STANDARD_BUSINESS_FULL_TEMPLATE = {
 }
 
 
+def _override_head_types(rows, overrides):
+    normalized = []
+    for row in rows:
+        current = dict(row)
+        if current["code"] in overrides:
+            current["type_code"] = overrides[current["code"]]
+        normalized.append(current)
+    return normalized
+
+
+def _append_unique_accounts(rows, additions):
+    merged = {row["code"]: dict(row) for row in rows}
+    for row in additions:
+        merged[row["code"]] = dict(row)
+    return [merged[key] for key in sorted(merged)]
+
+
+INDIAN_ACCOUNTING_FINAL_TEMPLATE = {
+    "account_types": [
+        {"code": "1100", "name": "Current Assets", "normal_balance": Debit},
+        {"code": "1200", "name": "Bank and Cash", "normal_balance": Debit},
+        {"code": "1300", "name": "Non Current Assets", "normal_balance": Debit},
+        {"code": "2100", "name": "Current Liabilities", "normal_balance": Credit},
+        {"code": "2200", "name": "Non Current Liabilities", "normal_balance": Credit},
+        {"code": "3100", "name": "Capital and Equity", "normal_balance": Credit},
+        {"code": "4100", "name": "Direct Income", "normal_balance": Credit},
+        {"code": "4200", "name": "Indirect Income", "normal_balance": Credit},
+        {"code": "5100", "name": "Direct Expenses", "normal_balance": Debit},
+        {"code": "5200", "name": "Indirect Expenses", "normal_balance": Debit},
+    ],
+    "account_heads": _override_head_types(
+        STANDARD_BUSINESS_FULL_TEMPLATE["account_heads"],
+        {
+            200: "1100",    # Closing Stock
+            1000: "5100",   # Purchase
+            2000: "1200",   # Bank
+            3000: "4100",   # Sale
+            4000: "1200",   # Cash
+            6000: "2100",   # Advance Payable
+            6100: "1100",   # Advance Recoverable
+            6200: "3100",   # Proprietor Capital
+            6300: "3100",   # Partner Capital
+            6500: "1100",   # GST Input / ITC
+            6600: "2100",   # GST Output / liability
+            7000: "2100",   # Sundry Creditors
+            7088: "4200",   # Indirect Income
+            7090: "4200",
+            7095: "4200",
+            7098: "4200",
+            8000: "1100",   # Sundry Debtors
+            8300: "5100",   # Direct Expenses
+            8350: "5200",   # Indirect Expenses
+            8360: "5200",
+            8370: "5200",
+            8380: "5200",
+            8390: "5200",
+            8395: "5200",
+            8398: "5200",
+            9000: "1100",   # Opening Stock
+            2200: "1300",   # Fixed Assets
+            2210: "1300",
+            2220: "1300",
+            2230: "1300",
+            2240: "1300",
+            2250: "1300",
+            2260: "1300",
+            2270: "1300",
+            2280: "1300",
+            2290: "1300",
+            5200: "2100",   # Statutory Payables
+            5300: "2100",   # Duties & Taxes
+            5400: "2200",   # Secured Loans
+            5500: "2200",   # Unsecured Loans
+            5600: "1100",   # Deposits & Advances
+        },
+    ),
+    "default_accounts": _append_unique_accounts(
+        STANDARD_BUSINESS_FULL_TEMPLATE["default_accounts"],
+        [
+            {"code": 5304, "name": "GST TDS Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 5305, "name": "RCM CGST Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 5306, "name": "RCM SGST Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 5307, "name": "RCM IGST Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 5308, "name": "RCM CESS Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 7081, "name": "Round Off Income", "head_code": 7088, "party_type": "Other"},
+            {"code": 7082, "name": "Discount Received", "head_code": 7088, "party_type": "Other"},
+            {"code": 7083, "name": "Sales Other Charges Income", "head_code": 7088, "party_type": "Other"},
+            {"code": 1001, "name": "Purchase Default", "head_code": 1000, "party_type": "Other"},
+            {"code": 3001, "name": "Sales Default", "head_code": 3000, "party_type": "Other"},
+            {"code": 3002, "name": "Sales Revenue", "head_code": 3000, "party_type": "Other"},
+            {"code": 8351, "name": "Purchase Misc Expense", "head_code": 8350, "party_type": "Other"},
+            {"code": 8352, "name": "Sales Misc Expense", "head_code": 8350, "party_type": "Other"},
+            {"code": 8353, "name": "Blocked ITC Expense", "head_code": 8350, "party_type": "Other"},
+            {"code": 8401, "name": "TDS Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 8402, "name": "TCS Payable", "head_code": 5300, "party_type": "Government"},
+            {"code": 8403, "name": "Round Off Expense", "head_code": 8350, "party_type": "Other"},
+        ],
+    ),
+}
+
+
 FINANCIAL_TEMPLATES = {
     "standard_trading": STANDARD_TRADING_TEMPLATE,
     "standard_business_full": STANDARD_BUSINESS_FULL_TEMPLATE,
+    "indian_accounting_final": INDIAN_ACCOUNTING_FINAL_TEMPLATE,
 }

@@ -375,25 +375,10 @@ class account(TrackingModel):
     # financial.account. Later, accounting identity should live in Ledger and
     # this model should focus on party/commercial profile fields.
     #
-    # Fields that are candidates to move fully to Ledger later:
-    # - accountcode
-    # - accounthead
-    # - creditaccounthead
-    # - contraaccount
-    # - accounttype
-    # - openingbcr / openingbdr
-    #
-    # Fields that are likely to remain here:
-    # - GST/PAN/TDS/TCS/compliance fields
-    # - party/contact/commercial profile fields
-    # - credit terms / payment terms
-    #
-    # NOTE:
-    # New writes for compliance/commercial/address profile data should go to:
-    # - AccountComplianceProfile
-    # - AccountCommercialProfile
-    # - AccountAddress
-    # Legacy columns are retained temporarily for controlled schema cutover.
+    # Current architecture:
+    # - Ledger owns accounting identity
+    # - account owns party/business identity
+    # - normalized profile tables own compliance/commercial/address/contact/bank details
     ledger = models.OneToOneField(
         "financial.Ledger",
         null=True,
@@ -408,73 +393,12 @@ class account(TrackingModel):
 
     website = models.URLField(max_length=255, null=True, blank=True, verbose_name=_("Website"))
 
-    accounthead = models.ForeignKey(
-        to=accountHead,
-        related_name="accounthead_accounts",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        db_index=True,
-    )
-    creditaccounthead = models.ForeignKey(
-        to=accountHead,
-        related_name="accounthead_creditaccounts",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        db_index=True,
-    )
-
-    accountcode = models.IntegerField(verbose_name=_("Account Code"), null=True, blank=True, db_index=True)
-
     accountname = models.CharField(max_length=200, null=True, blank=True, verbose_name=_("Account Name"), db_index=True)
     legalname = models.CharField(max_length=255, null=True, blank=True)
 
-    contraaccount = models.ForeignKey(
-        "self",
-        null=True,
-        blank=True,
-        on_delete=models.PROTECT,
-        verbose_name=_("contra account"),
-    )
-
-    dateofreg = models.DateTimeField(verbose_name="Date of Registration", null=True, blank=True)
-    dateofdreg = models.DateTimeField(verbose_name="Date of De Regitration", null=True, blank=True)
-
-    openingbcr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Opening Balance Cr"))
-    openingbdr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Opening Balance Dr"))
-
-    contactno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Contact no"))
-    contactno2 = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Contact no2"))
-
-    emailid = models.EmailField(max_length=254, null=True, blank=True, verbose_name=_("Email id"))
-
-    tobel10cr = models.BooleanField(verbose_name=_("Turnover below 10 lac"), default=False)
-    isaddsameasbillinf = models.BooleanField(verbose_name=_("isaddsameasbillinf"), default=False)
-
     entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE, db_index=True)
 
-    rtgsno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Rtgs no"))
-    bankname = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Bank Name"))
-    adhaarno = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Adhaar No"))
-    saccode = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("SAC Code"))
-    contactperson = models.CharField(max_length=50, null=True, blank=True, verbose_name=_("Contact Person"))
-
-    deprate = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Depreciaion Rate"))
-    gstshare = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Adhaar No"))
-
-    quanity1 = models.IntegerField(verbose_name=_("Quanity 1"), null=True, blank=True)
-    quanity2 = models.IntegerField(verbose_name=_("Quanity 2"), null=True, blank=True)
-
-    banKAcno = models.CharField(max_length=50, verbose_name=_("Bank A/c No"), null=True, blank=True)
-
-    composition = models.BooleanField(verbose_name=_("Bank A/c No"), default=False)
-
     canbedeleted = models.BooleanField(verbose_name=_("Can be deleted"), default=True)
-
-    accounttype = models.ForeignKey(to=accounttype, on_delete=models.SET_NULL, null=True, blank=True)
-
-    sharepercentage = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True, verbose_name=_("Share Percentage"))
 
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
 
@@ -483,12 +407,10 @@ class account(TrackingModel):
     def __str__(self):
         return f"{self.accountname}"
 
-    # Ledger-first helper accessors. These allow downstream code to start
-    # reading accounting identity from Ledger without breaking current callers
-    # that still expect the legacy account columns to exist.
+    # Ledger-first helper accessors.
     @property
     def effective_accounting_code(self):
-        return self.ledger.ledger_code if self.ledger_id and self.ledger.ledger_code is not None else self.accountcode
+        return self.ledger.ledger_code if self.ledger_id and self.ledger.ledger_code is not None else None
 
     @property
     def effective_accounting_name(self):
@@ -496,34 +418,21 @@ class account(TrackingModel):
 
     @property
     def effective_accounthead_id(self):
-        return self.ledger.accounthead_id if self.ledger_id and self.ledger.accounthead_id else self.accounthead_id
+        return self.ledger.accounthead_id if self.ledger_id and self.ledger.accounthead_id else None
 
     @property
     def effective_creditaccounthead_id(self):
-        return (
-            self.ledger.creditaccounthead_id
-            if self.ledger_id and self.ledger.creditaccounthead_id
-            else self.creditaccounthead_id
-        )
+        return self.ledger.creditaccounthead_id if self.ledger_id and self.ledger.creditaccounthead_id else None
 
     @property
     def effective_openingbdr(self):
-        return self.ledger.openingbdr if self.ledger_id and self.ledger.openingbdr is not None else self.openingbdr
+        return self.ledger.openingbdr if self.ledger_id and self.ledger.openingbdr is not None else None
 
     @property
     def effective_openingbcr(self):
-        return self.ledger.openingbcr if self.ledger_id and self.ledger.openingbcr is not None else self.openingbcr
+        return self.ledger.openingbcr if self.ledger_id and self.ledger.openingbcr is not None else None
 
     def clean(self):
-        cr = self.openingbcr or 0
-        dr = self.openingbdr or 0
-        if cr and dr:
-            raise ValidationError(_("Only one of Opening Balance Cr or Opening Balance Dr can be non-zero."))
-
-        if self.accounthead_id and self.accounttype_id:
-            if self.accounthead.accounttype_id and self.accounthead.accounttype_id != self.accounttype_id:
-                raise ValidationError(_("Account.accounttype must match AccountHead.accounttype (or leave one of them blank)."))
-
         if self.ledger_id and self.entity_id and self.ledger.entity_id != self.entity_id:
             raise ValidationError({"ledger": _("Selected ledger belongs to a different entity.")})
 
@@ -537,19 +446,8 @@ class account(TrackingModel):
     class Meta:
         verbose_name = _("Account")
         verbose_name_plural = _("Accounts")
-        constraints = [
-            models.UniqueConstraint(
-                fields=["entity", "accountcode"],
-                condition=Q(accountcode__isnull=False),
-                name="uq_account_entity_accountcode_present",
-            ),
-            models.CheckConstraint(check=Q(openingbcr__gte=0) | Q(openingbcr__isnull=True), name="ck_account_openingbcr_nonneg"),
-            models.CheckConstraint(check=Q(openingbdr__gte=0) | Q(openingbdr__isnull=True), name="ck_account_openingbdr_nonneg"),
-            models.CheckConstraint(check=Q(accountcode__gt=0) | Q(accountcode__isnull=True), name="ck_account_accountcode_positive"),
-        ]
         indexes = [
             models.Index(fields=["entity", "accountname"], name="ix_account_entity_name"),
-            models.Index(fields=["entity", "accounthead"], name="ix_account_entity_head"),
             models.Index(fields=["entity", "isactive"], name="ix_account_entity_isactive"),
         ]
         # PAN uniqueness is intentionally deferred to a later migration because

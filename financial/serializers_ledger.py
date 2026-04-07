@@ -4,7 +4,14 @@ from rest_framework import serializers
 
 from financial.gstin import validate_financial_gstin
 from financial.models import Ledger, account
-from financial.profile_access import account_primary_address
+from financial.profile_access import (
+    account_primary_address,
+    account_primary_bank_account,
+    account_primary_bank_name,
+    account_primary_contact_person,
+    account_primary_email,
+    account_primary_phone,
+)
 from financial.services import (
     allocate_next_ledger_code,
     apply_normalized_profile_payload,
@@ -110,7 +117,6 @@ class SimpleAccountV2Serializer(serializers.ModelSerializer):
     pincode = serializers.SerializerMethodField()
     gstno = serializers.SerializerMethodField()
     pan = serializers.SerializerMethodField()
-    saccode = serializers.CharField(source="account_profile.saccode", allow_null=True, read_only=True)
 
     class Meta:
         model = Ledger
@@ -126,7 +132,6 @@ class SimpleAccountV2Serializer(serializers.ModelSerializer):
             "pincode",
             "gstno",
             "pan",
-            "saccode",
         )
 
     def get_gstno(self, obj):
@@ -218,10 +223,17 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
     openingbcr = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True, write_only=True)
     openingbdr = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True, write_only=True)
     canbedeleted = serializers.BooleanField(required=False, write_only=True)
+    emailid = serializers.EmailField(required=False, allow_null=True, allow_blank=True, write_only=True)
+    contactno = serializers.CharField(required=False, allow_null=True, allow_blank=True, write_only=True)
+    contactperson = serializers.CharField(required=False, allow_null=True, allow_blank=True, write_only=True)
+    bankname = serializers.CharField(required=False, allow_null=True, allow_blank=True, write_only=True)
+    banKAcno = serializers.CharField(required=False, allow_null=True, allow_blank=True, write_only=True)
     ledger = AccountProfileLedgerInputSerializer(required=False, write_only=True)
     compliance_profile = serializers.DictField(required=False, write_only=True)
     commercial_profile = serializers.DictField(required=False, write_only=True)
     primary_address = serializers.DictField(required=False, write_only=True)
+    primary_contact = serializers.DictField(required=False, write_only=True)
+    primary_bank = serializers.DictField(required=False, write_only=True)
 
     class Meta:
         model = account
@@ -233,21 +245,11 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             "legalname",
             "emailid",
             "contactno",
-            "contactno2",
             "contactperson",
             "isactive",
             "bankname",
             "banKAcno",
-            "rtgsno",
-            "saccode",
-            "adhaarno",
-            "sharepercentage",
-            "composition",
-            "tobel10cr",
-            "isaddsameasbillinf",
             "website",
-            "dateofreg",
-            "dateofdreg",
             "ledger_code",
             "accounthead",
             "creditaccounthead",
@@ -260,6 +262,8 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             "compliance_profile",
             "commercial_profile",
             "primary_address",
+            "primary_contact",
+            "primary_bank",
         )
 
     def validate(self, attrs):
@@ -320,13 +324,34 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         compliance = dict(validated_data.pop("compliance_profile", {}) or {})
         commercial = dict(validated_data.pop("commercial_profile", {}) or {})
         primary_address = dict(validated_data.pop("primary_address", {}) or {})
+        primary_contact = dict(validated_data.pop("primary_contact", {}) or {})
+        primary_bank = dict(validated_data.pop("primary_bank", {}) or {})
 
-        return compliance, commercial, primary_address
+        top_level_contact = {
+            "emailid": validated_data.get("emailid"),
+            "contactno": validated_data.get("contactno"),
+            "contactperson": validated_data.get("contactperson"),
+        }
+        if any(value not in (None, "") for value in top_level_contact.values()):
+            for key, value in top_level_contact.items():
+                if value not in (None, "") and key not in primary_contact:
+                    primary_contact[key] = value
+
+        top_level_bank = {
+            "bankname": validated_data.get("bankname"),
+            "banKAcno": validated_data.get("banKAcno"),
+        }
+        if any(value not in (None, "") for value in top_level_bank.values()):
+            for key, value in top_level_bank.items():
+                if value not in (None, "") and key not in primary_bank:
+                    primary_bank[key] = value
+
+        return compliance, commercial, primary_address, primary_contact, primary_bank
 
     @transaction.atomic
     def create(self, validated_data):
         accounting = self._resolve_accounting_payload(validated_data)
-        compliance_payload, commercial_payload, primary_address_payload = self._extract_normalized_profile_payload(
+        compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
             validated_data
         )
         request = self.context.get("request")
@@ -337,12 +362,6 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         if ledger_code is None and validated_data.get("entity"):
             ledger_code = allocate_next_ledger_code(entity_id=validated_data["entity"].id)
 
-        validated_data["accountcode"] = ledger_code
-        validated_data["accounthead_id"] = accounting.get("accounthead")
-        validated_data["creditaccounthead_id"] = accounting.get("creditaccounthead")
-        validated_data["accounttype_id"] = accounting.get("accounttype")
-        validated_data["openingbcr"] = accounting.get("openingbcr")
-        validated_data["openingbdr"] = accounting.get("openingbdr")
         validated_data["canbedeleted"] = accounting.get("canbedeleted", True)
         if accounting.get("isactive") is not None:
             validated_data["isactive"] = accounting["isactive"]
@@ -369,6 +388,8 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             compliance_data=compliance_payload if compliance_payload else {},
             commercial_data=commercial_payload if commercial_payload else {},
             primary_address_data=primary_address_payload if primary_address_payload else None,
+            primary_contact_data=primary_contact_payload if primary_contact_payload else None,
+            primary_bank_data=primary_bank_payload if primary_bank_payload else None,
             createdby=validated_data.get("createdby"),
         )
         return acc
@@ -376,26 +397,12 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         accounting = self._resolve_accounting_payload(validated_data)
-        compliance_payload, commercial_payload, primary_address_payload = self._extract_normalized_profile_payload(
+        compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
             validated_data
         )
         for field, value in validated_data.items():
             setattr(instance, field, value)
 
-        if "ledger_code" in accounting and accounting.get("ledger_code") is not None:
-            instance.accountcode = accounting.get("ledger_code")
-        elif instance.accountcode is None and instance.entity_id:
-            instance.accountcode = allocate_next_ledger_code(entity_id=instance.entity_id)
-        if "accounthead" in accounting:
-            instance.accounthead_id = accounting.get("accounthead")
-        if "creditaccounthead" in accounting:
-            instance.creditaccounthead_id = accounting.get("creditaccounthead")
-        if "accounttype" in accounting:
-            instance.accounttype_id = accounting.get("accounttype")
-        if "openingbcr" in accounting:
-            instance.openingbcr = accounting.get("openingbcr")
-        if "openingbdr" in accounting:
-            instance.openingbdr = accounting.get("openingbdr")
         if "canbedeleted" in accounting:
             instance.canbedeleted = accounting.get("canbedeleted")
 
@@ -404,18 +411,23 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             instance.createdby = request.user
 
         instance.save()
+        ledger_code = accounting.get("ledger_code")
+        if ledger_code is None and getattr(instance, "ledger_id", None):
+            ledger_code = instance.ledger.ledger_code
+        elif ledger_code is None and instance.entity_id:
+            ledger_code = allocate_next_ledger_code(entity_id=instance.entity_id)
         sync_ledger_for_account(
             instance,
             ledger_overrides={
-                "ledger_code": instance.accountcode,
+                "ledger_code": ledger_code,
                 "name": instance.accountname,
                 "legal_name": instance.legalname,
-                "accounthead_id": instance.accounthead_id,
-                "creditaccounthead_id": instance.creditaccounthead_id,
+                "accounthead_id": accounting.get("accounthead"),
+                "creditaccounthead_id": accounting.get("creditaccounthead"),
                 "contra_ledger_id": accounting.get("contra_ledger") if "contra_ledger" in accounting else None,
-                "accounttype_id": instance.accounttype_id,
-                "openingbcr": instance.openingbcr,
-                "openingbdr": instance.openingbdr,
+                "accounttype_id": accounting.get("accounttype"),
+                "openingbcr": accounting.get("openingbcr"),
+                "openingbdr": accounting.get("openingbdr"),
                 "canbedeleted": instance.canbedeleted,
                 "is_party": True,
                 "isactive": accounting.get("isactive") if accounting.get("isactive") is not None else instance.isactive,
@@ -428,6 +440,8 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             compliance_data=compliance_payload if compliance_payload else {},
             commercial_data=commercial_payload if commercial_payload else {},
             primary_address_data=primary_address_payload if primary_address_payload else None,
+            primary_contact_data=primary_contact_payload if primary_contact_payload else None,
+            primary_bank_data=primary_bank_payload if primary_bank_payload else None,
             createdby=actor,
         )
         return instance
@@ -469,6 +483,11 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
     cin = serializers.SerializerMethodField()
     msme = serializers.SerializerMethodField()
     gsttdsno = serializers.SerializerMethodField()
+    emailid = serializers.SerializerMethodField()
+    contactno = serializers.SerializerMethodField()
+    contactperson = serializers.SerializerMethodField()
+    bankname = serializers.SerializerMethodField()
+    banKAcno = serializers.SerializerMethodField()
 
     class Meta:
         model = account
@@ -482,7 +501,6 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
             "pan",
             "emailid",
             "contactno",
-            "contactno2",
             "contactperson",
             "cin",
             "msme",
@@ -515,18 +533,9 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
             "addressstreet",
             "bankname",
             "banKAcno",
-            "rtgsno",
-            "saccode",
-            "adhaarno",
-            "sharepercentage",
-            "composition",
-            "tobel10cr",
-            "isaddsameasbillinf",
             "website",
             "agent",
             "reminders",
-            "dateofreg",
-            "dateofdreg",
             "ledger_mode",
             "ledger",
         )
@@ -609,6 +618,15 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
     def get_reminders(self, obj):
         return getattr(self._get_commercial(obj), "reminders", None)
 
+    def get_emailid(self, obj):
+        return account_primary_email(obj)
+
+    def get_contactno(self, obj):
+        return account_primary_phone(obj)
+
+    def get_contactperson(self, obj):
+        return account_primary_contact_person(obj)
+
     def get_country(self, obj):
         address = self._get_primary_address(obj)
         return getattr(address, "country_id", None)
@@ -644,6 +662,12 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
     def get_addressstreet(self, obj):
         address = self._get_primary_address(obj)
         return getattr(address, "street", None)
+
+    def get_bankname(self, obj):
+        return account_primary_bank_name(obj)
+
+    def get_banKAcno(self, obj):
+        return account_primary_bank_account(obj)
 
     def get_cin(self, obj):
         return getattr(self._get_compliance(obj), "cin", None)

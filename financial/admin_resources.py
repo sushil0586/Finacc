@@ -135,47 +135,22 @@ class AccountResource(resources.ModelResource):
         widget=ForeignKeyWidget(User, "username"),
     )
 
-    accounthead = fields.Field(
-        column_name="accounthead_code",
-        attribute="accounthead",
-        widget=ForeignKeyWidget(accountHead, "code"),
-    )
-    creditaccounthead = fields.Field(
-        column_name="creditaccounthead_code",
-        attribute="creditaccounthead",
-        widget=ForeignKeyWidget(accountHead, "code"),
-    )
-
     class Meta:
         model = account
-        # Choose your natural key:
-        # If accountcode is stable per entity, use (entity, accountcode)
-        import_id_fields = ("entity", "accountcode")
+        import_id_fields = ("entity", "accountname")
         fields = (
             "entity",
-            "accountcode",
             "accountname",
-            "emailid",
-            "contactno",
-            "openingbdr",
-            "openingbcr",
-            "accounthead_code",
-            "creditaccounthead_code",
+            "legalname",
+            "website",
+            "isactive",
             "createdby",
         )
         skip_unchanged = True
         report_skipped = True
 
-    def dehydrate_accounthead_code(self, obj):
-        return obj.accounthead.code if obj.accounthead else ""
-
-    def dehydrate_creditaccounthead_code(self, obj):
-        return obj.creditaccounthead.code if obj.creditaccounthead else ""
-
     def before_import_row(self, row, **kwargs):
         row["entity"] = _blank_to_none(row.get("entity"))
         row["createdby"] = _blank_to_none(row.get("createdby"))
-        row["accounthead_code"] = _blank_to_none(row.get("accounthead_code"))
-        row["creditaccounthead_code"] = _blank_to_none(row.get("creditaccounthead_code"))
 
 

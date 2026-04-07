@@ -14,7 +14,7 @@ from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.profile_access import account_gstno
-from financial.services import apply_normalized_profile_payload
+from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement, VendorSettlementLine
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
@@ -98,13 +98,14 @@ class PayableReportAPITests(APITestCase):
             accounthead=self.vendor_head,
             createdby=self.user,
         )
-        self.vendor = account.objects.create(
-            entity=self.entity,
-            ledger=self.vendor_ledger,
-            accounthead=self.vendor_head,
-            accountname="ABC Traders",
-            accountcode=5001,
-            createdby=self.user,
+        self.vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": self.vendor_ledger,
+                "accountname": "ABC Traders",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 5001, "accounthead": self.vendor_head, "is_party": True},
         )
         apply_normalized_profile_payload(
             self.vendor,
@@ -204,13 +205,14 @@ class PayableReportAPITests(APITestCase):
             accounthead=self.vendor_head,
             createdby=self.user,
         )
-        vendor = account.objects.create(
-            entity=self.entity,
-            ledger=ledger,
-            accounthead=self.vendor_head,
-            accountname=name,
-            accountcode=ledger_code,
-            createdby=self.user,
+        vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": ledger,
+                "accountname": name,
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": ledger_code, "accounthead": self.vendor_head, "is_party": True},
         )
         apply_normalized_profile_payload(
             vendor,

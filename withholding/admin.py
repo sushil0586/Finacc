@@ -58,7 +58,7 @@ class PartyTaxProfileAdmin(admin.ModelAdmin):
         "is_specified_person_206ab",
         "lower_deduction_rate",
     )
-    search_fields = ("party_account__name", "pan")
+    search_fields = ("party_account__accountname", "pan")
 
 
 @admin.register(EntityPartyTaxProfile)

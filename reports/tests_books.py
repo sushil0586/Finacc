@@ -11,7 +11,7 @@ from rest_framework.test import APITestCase, APIClient
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
-from financial.services import apply_normalized_profile_payload
+from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, PostingBatch, JournalLine, StaticAccount, EntityStaticAccountMap, TxnType
@@ -106,14 +106,13 @@ class BookReportAPITests(APITestCase):
         self.bank_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1002, name="Main Bank", accounthead=self.head_bank, openingbdr=Decimal("200.00"), createdby=self.user)
         self.expense_ledger = Ledger.objects.create(entity=self.entity, ledger_code=2001, name="Office Expense", accounthead=self.head_expense, createdby=self.user)
         self.income_ledger = Ledger.objects.create(entity=self.entity, ledger_code=3001, name="Sales Income", accounthead=self.head_income, createdby=self.user)
-        self.cash_account = account.objects.create(entity=self.entity, ledger=self.cash_ledger, accounthead=self.head_cash, accountname="Cash In Hand", accountcode=1001, createdby=self.user)
-        self.bank_account = account.objects.create(
-            entity=self.entity,
-            ledger=self.bank_ledger,
-            accounthead=self.head_bank,
-            accountname="Main Bank",
-            accountcode=1002,
-            createdby=self.user,
+        self.cash_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": self.cash_ledger, "accountname": "Cash In Hand", "createdby": self.user},
+            ledger_overrides={"ledger_code": 1001, "accounthead": self.head_cash, "is_party": True},
+        )
+        self.bank_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": self.bank_ledger, "accountname": "Main Bank", "createdby": self.user},
+            ledger_overrides={"ledger_code": 1002, "accounthead": self.head_bank, "is_party": True},
         )
         apply_normalized_profile_payload(
             self.bank_account,
@@ -121,12 +120,24 @@ class BookReportAPITests(APITestCase):
             commercial_data={"partytype": "Bank"},
             primary_address_data={},
         )
-        self.expense_account = account.objects.create(entity=self.entity, ledger=self.expense_ledger, accounthead=self.head_expense, accountname="Office Expense", accountcode=2001, createdby=self.user)
-        self.income_account = account.objects.create(entity=self.entity, ledger=self.income_ledger, accounthead=self.head_income, accountname="Sales Income", accountcode=3001, createdby=self.user)
+        self.expense_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": self.expense_ledger, "accountname": "Office Expense", "createdby": self.user},
+            ledger_overrides={"ledger_code": 2001, "accounthead": self.head_expense, "is_party": True},
+        )
+        self.income_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": self.income_ledger, "accountname": "Sales Income", "createdby": self.user},
+            ledger_overrides={"ledger_code": 3001, "accounthead": self.head_income, "is_party": True},
+        )
         self.ap_ledger = Ledger.objects.create(entity=self.entity, ledger_code=4001, name="Sundry Creditors", accounthead=self.head_bank, createdby=self.user)
-        self.ap_account = account.objects.create(entity=self.entity, ledger=self.ap_ledger, accounthead=self.head_bank, accountname="Sundry Creditors", accountcode=4001, createdby=self.user)
+        self.ap_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": self.ap_ledger, "accountname": "Sundry Creditors", "createdby": self.user},
+            ledger_overrides={"ledger_code": 4001, "accounthead": self.head_bank, "is_party": True},
+        )
         self.other_cash_ledger = Ledger.objects.create(entity=self.other_entity, ledger_code=9001, name="Other Cash", accounthead=self.head_cash, createdby=self.user)
-        self.other_cash_account = account.objects.create(entity=self.other_entity, ledger=self.other_cash_ledger, accounthead=self.head_cash, accountname="Other Cash", accountcode=9001, createdby=self.user)
+        self.other_cash_account = create_account_with_synced_ledger(
+            account_data={"entity": self.other_entity, "ledger": self.other_cash_ledger, "accountname": "Other Cash", "createdby": self.user},
+            ledger_overrides={"ledger_code": 9001, "accounthead": self.head_cash, "is_party": True},
+        )
 
         static_cash = StaticAccount.objects.create(code="CASH", name="Cash", group="CASH_BANK")
         static_bank = StaticAccount.objects.create(code="BANK_MAIN", name="Bank", group="CASH_BANK")

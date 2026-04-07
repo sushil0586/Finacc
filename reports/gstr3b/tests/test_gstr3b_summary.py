@@ -11,6 +11,7 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.services import create_account_with_synced_ledger
 from posting.models import Entry, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, TxnType
 from purchase.models import PurchaseInvoiceHeader
 from sales.models import SalesInvoiceHeader
@@ -167,13 +168,14 @@ class Gstr3bSummaryAPITests(APITestCase):
             accounthead=self.acc_head,
             createdby=self.user,
         )
-        acc = account.objects.create(
-            entity=self.entity,
-            ledger=ledger,
-            accounthead=self.acc_head,
-            accountname=name,
-            accountcode=account_code,
-            createdby=self.user,
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": ledger,
+                "accountname": name,
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": account_code, "accounthead": self.acc_head, "is_party": True},
         )
         EntityStaticAccountMap.objects.create(
             entity=self.entity,

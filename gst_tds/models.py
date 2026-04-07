@@ -59,7 +59,7 @@ class GstTdsContractLedger(models.Model):
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, db_index=True)
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.CASCADE, db_index=True)
 
-    vendor = models.ForeignKey("financial.account", on_delete=models.CASCADE, db_index=True)  # adjust app label
+    vendor = models.ForeignKey("financial.account", on_delete=models.PROTECT, db_index=True)  # adjust app label
 
     contract_ref = models.CharField(max_length=64, db_index=True)
 

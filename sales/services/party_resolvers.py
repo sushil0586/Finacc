@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 import re
-from financial.profile_access import account_gstno, account_primary_address
+from financial.profile_access import (
+    account_gstno,
+    account_primary_address,
+    account_primary_email,
+    account_primary_phone,
+)
 from sales.services.profile_resolvers import entity_primary_address
 
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
@@ -139,8 +144,8 @@ def buyer_from_account(acct, pos_state=None) -> Dict[str, Any]:
         # "Em": str(acct.email).strip()[:50] if getattr(acct, "email", None) else None,
     }
     trd = (getattr(acct, "accountname", None) or "").strip()
-    ph = (getattr(acct, "contactno", None) or getattr(acct, "phone", None) or "").strip()
-    em = (getattr(acct, "emailid", None) or getattr(acct, "email", None) or "").strip()
+    ph = (account_primary_phone(acct) or getattr(acct, "phone", None) or "").strip()
+    em = (account_primary_email(acct) or getattr(acct, "email", None) or "").strip()
     if trd:
         out["TrdNm"] = trd[:100]
     if ph:

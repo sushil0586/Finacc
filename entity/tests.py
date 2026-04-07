@@ -137,7 +137,7 @@ class EntityOnboardingTests(TestCase):
                 {"shareholder": "Owner Name", "pan": "APXPB5894F", "sharepercentage": "100.00"}
             ],
             "seed_options": {
-                "template_code": "standard_trading",
+                "template_code": "indian_accounting_final",
                 "seed_financial": True,
                 "seed_rbac": True,
                 "seed_default_subentity": True,
@@ -154,7 +154,7 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(BankAccount.objects.filter(entity=entity).count(), 1)
         self.assertTrue(FinancialSettings.objects.filter(entity=entity).exists())
         self.assertTrue(accountHead.objects.filter(entity=entity, code=1000).exists())
-        self.assertTrue(account.objects.filter(entity=entity, accountcode=4000).exists())
+        self.assertTrue(account.objects.filter(entity=entity, ledger__ledger_code=4000).exists())
         self.assertTrue(Ledger.objects.filter(entity=entity, ledger_code=4000).exists())
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=self.user).exists())
         self.assertTrue(RbacRole.objects.filter(entity=entity, code="entity.super_admin").exists())
@@ -166,7 +166,7 @@ class EntityOnboardingTests(TestCase):
         response = self.client.get("/api/entity/onboarding/meta/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["defaults"]["seed_options"]["template_code"], "standard_trading")
+        self.assertEqual(response.data["defaults"]["seed_options"]["template_code"], "indian_accounting_final")
         self.assertTrue(len(response.data["dropdowns"]["unit_types"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["gst_registration_types"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["constitutions"]) >= 1)
@@ -411,7 +411,7 @@ class RegisterAndEntityOnboardingTests(TestCase):
                     }
                 ],
                 "seed_options": {
-                    "template_code": "standard_trading",
+                    "template_code": "indian_accounting_final",
                     "seed_financial": True,
                     "seed_rbac": True,
                     "seed_default_subentity": True,

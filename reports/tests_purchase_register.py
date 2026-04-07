@@ -14,7 +14,7 @@ from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.profile_access import account_gstno
-from financial.services import apply_normalized_profile_payload
+from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.models.purchase_ap import VendorBillOpenItem
@@ -146,13 +146,14 @@ class PurchaseRegisterAPITests(APITestCase):
             accounthead=account_head,
             createdby=self.user,
         )
-        row = account.objects.create(
-            entity=entity,
-            ledger=ledger,
-            accounthead=account_head,
-            accountname=name,
-            accountcode=accountcode,
-            createdby=self.user,
+        row = create_account_with_synced_ledger(
+            account_data={
+                "entity": entity,
+                "ledger": ledger,
+                "accountname": name,
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": accountcode, "accounthead": account_head, "is_party": True},
         )
         apply_normalized_profile_payload(
             row,

@@ -89,7 +89,7 @@ class SalesMetaBaseAPIView(APIView):
         return rows
 
     def _customers(self, entity_id: int):
-        primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state", "city")
+        primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")
         customers = list(
             account.objects.filter(entity_id=entity_id, isactive=True)
             .filter(
@@ -112,7 +112,6 @@ class SalesMetaBaseAPIView(APIView):
             prefetched_primary = getattr(row, "prefetched_primary_addresses", None)
             primary = prefetched_primary[0] if prefetched_primary else None
             state = getattr(primary, "state", None)
-            city = getattr(primary, "city", None)
             rows.append(
                 {
                     "id": row.id,
@@ -126,7 +125,7 @@ class SalesMetaBaseAPIView(APIView):
                     "statecode": getattr(state, "statecode", None),
                     "statename": getattr(state, "statename", None),
                     "city": getattr(primary, "city_id", None),
-                    "cityname": getattr(city, "cityname", None),
+                    "cityname": None,
                     "ledger_id": row.ledger_id,
                 }
             )

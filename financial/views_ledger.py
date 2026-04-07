@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import EntityFinancialYear
-from financial.models import AccountAddress, ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
+from financial.models import AccountAddress, AccountBankDetails, ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
 from financial.serializers_ledger import (
     AccountProfileV2ReadSerializer,
@@ -320,21 +320,15 @@ class LedgerListCreateAPIView(ListCreateAPIView):
 
     def perform_create(self, serializer):
         ledger = serializer.save(createdby=self.request.user)
-        # Auto-create a linked account profile for non-system ledgers.
-        if not ledger.is_system and not getattr(ledger, "account_profile_id", None):
+        # Only party ledgers should get an account profile. Pure accounting
+        # ledgers must remain ledger-only.
+        if ledger.is_party and not ledger.is_system and not getattr(ledger, "account_profile_id", None):
             create_account_with_synced_ledger(
                 account_data={
                     "ledger": ledger,
                     "entity": ledger.entity,
                     "accountname": ledger.name,
                     "legalname": ledger.legal_name,
-                    "accountcode": ledger.ledger_code,
-                    "accounthead": ledger.accounthead,
-                    "creditaccounthead": ledger.creditaccounthead,
-                    "contraaccount": ledger.contra_ledger.account_profile if ledger.contra_ledger_id else None,
-                    "accounttype": ledger.accounttype,
-                    "openingbcr": ledger.openingbcr,
-                    "openingbdr": ledger.openingbdr,
                     "canbedeleted": ledger.canbedeleted,
                     "isactive": ledger.isactive,
                     "createdby": self.request.user,
@@ -647,6 +641,12 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
 
     def get_queryset(self):
         primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True)
+        primary_contact_qs = ContactDetails.objects.filter(isprimary=True).only(
+            "id", "account_id", "phoneno", "emailid", "full_name", "designation", "isprimary"
+        )
+        primary_bank_qs = AccountBankDetails.objects.filter(isprimary=True, isactive=True).only(
+            "id", "account_id", "bankname", "banKAcno", "ifsc", "branch", "isprimary"
+        )
         entity_id = self.request.query_params.get("entity")
         q = (self.request.query_params.get("q") or "").strip()
         qs = account.objects.select_related(
@@ -656,7 +656,9 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
             "compliance_profile",
             "commercial_profile",
         ).prefetch_related(
-            Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses")
+            Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses"),
+            Prefetch("contact_details", queryset=primary_contact_qs, to_attr="prefetched_primary_contacts"),
+            Prefetch("bank_details", queryset=primary_bank_qs, to_attr="prefetched_primary_bank_details"),
         )
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
@@ -668,11 +670,15 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
                 Q(legalname__icontains=q) |
                 Q(compliance_profile__gstno__icontains=q) |
                 Q(compliance_profile__pan__icontains=q) |
-                Q(emailid__icontains=q)
+                Q(contact_details__emailid__icontains=q) |
+                Q(contact_details__phoneno__icontains=q) |
+                Q(contact_details__full_name__icontains=q) |
+                Q(bank_details__bankname__icontains=q) |
+                Q(bank_details__banKAcno__icontains=q)
             )
             if q.isdigit():
                 filters |= Q(ledger__ledger_code=int(q))
-            qs = qs.filter(filters)
+            qs = qs.filter(filters).distinct()
         return qs.order_by("accountname")
 
     def get_serializer_class(self):
@@ -692,6 +698,12 @@ class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestr
 
     def get_queryset(self):
         primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True)
+        primary_contact_qs = ContactDetails.objects.filter(isprimary=True).only(
+            "id", "account_id", "phoneno", "emailid", "full_name", "designation", "isprimary"
+        )
+        primary_bank_qs = AccountBankDetails.objects.filter(isprimary=True, isactive=True).only(
+            "id", "account_id", "bankname", "banKAcno", "ifsc", "branch", "isprimary"
+        )
         return account.objects.select_related(
             "ledger",
             "ledger__accounthead",
@@ -699,7 +711,9 @@ class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestr
             "compliance_profile",
             "commercial_profile",
         ).prefetch_related(
-            Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses")
+            Prefetch("addresses", queryset=primary_address_qs, to_attr="prefetched_primary_addresses"),
+            Prefetch("contact_details", queryset=primary_contact_qs, to_attr="prefetched_primary_contacts"),
+            Prefetch("bank_details", queryset=primary_bank_qs, to_attr="prefetched_primary_bank_details"),
         )
 
     def get_serializer_class(self):

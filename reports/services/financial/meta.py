@@ -107,7 +107,7 @@ def _account_option_payload(entity_id: int) -> dict[str, list[dict]]:
             {
                 "id": row.id,
                 "name": getattr(row.ledger, "name", None) or row.accountname or f"Account {row.id}",
-                "code": getattr(row.ledger, "ledger_code", None) or row.accountcode,
+                "code": getattr(row.ledger, "ledger_code", None),
                 "account_type": _infer_account_kind(row, static_kind_by_account=static_kind_by_account),
             }
         )

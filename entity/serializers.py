@@ -4,9 +4,9 @@ from rest_framework import serializers
 from entity.models import Entity,EntityDetail,UnitType,EntityFinancialYear,EntityConstitution,Constitution,SubEntity,GstRegistrationType,BankAccount
 
 from Authentication.models import User
-from financial.models import accountHead,account
+from financial.models import Ledger, accountHead
 from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
-from financial.serializers_ledger import AccountProfileV2WriteSerializer
+from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 import os
 import json
 import collections
@@ -159,6 +159,70 @@ class entityAddSerializer(serializers.ModelSerializer):
     accounthead = AccountHeadV2Serializer
     acounttype = AccountTypeV2Serializer
 
+    def _create_constitution_party_account(self, *, entity_obj, detail, user, accountdate1):
+        constcode = getattr(entity_obj.const, "constcode", None)
+        head_code = None
+        if constcode == "01":
+            head_code = 6200
+        elif str(getattr(entity_obj.const, "id", "")) == "02" or constcode == "02":
+            head_code = 6300
+        if head_code is None:
+            return None
+
+        achead = accountHead.objects.get(entity=entity_obj, code=head_code)
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": entity_obj,
+                "accountname": detail.shareholder,
+                "createdby": user,
+                "accountdate": accountdate1,
+            },
+            ledger_overrides={
+                "name": detail.shareholder,
+                "accounthead": achead,
+                "creditaccounthead": achead,
+                "canbedeleted": True,
+                "is_party": True,
+                "isactive": True,
+            },
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={"pan": detail.pan} if getattr(detail, "pan", None) else {},
+            primary_address_data={
+                "country": entity_obj.country_id,
+                "state": entity_obj.state_id,
+                "district": entity_obj.district_id,
+                "city": entity_obj.city_id,
+                "line1": getattr(entity_obj, "address", None),
+                "line2": getattr(entity_obj, "address2", None),
+                "floor_no": getattr(entity_obj, "addressfloorno", None),
+                "street": getattr(entity_obj, "addressstreet", None),
+                "pincode": getattr(entity_obj, "pincode", None),
+            },
+            primary_contact_data={
+                "emailid": getattr(entity_obj, "email", None),
+            },
+            createdby=user,
+        )
+        return acc
+
+    def _apply_default_credit_head_mappings(self, *, entity_obj):
+        account_updates = [
+            {"code": 1000, "credit_code": 3000},
+            {"code": 6000, "credit_code": 6100},
+            {"code": 8000, "credit_code": 7000},
+        ]
+        for update in account_updates:
+            credit_head = accountHead.objects.filter(code=update["credit_code"], entity=entity_obj).first()
+            if not credit_head:
+                continue
+            Ledger.objects.filter(
+                entity=entity_obj,
+                account_profile__isnull=False,
+                accounthead__code=update["code"],
+            ).update(creditaccounthead=credit_head)
+
     def process_json_file(self, newentity, users, accountdate1):
         # Load JSON data once
         file_path = os.path.join(os.getcwd(), "account.json")
@@ -224,65 +288,19 @@ class entityAddSerializer(serializers.ModelSerializer):
 
         # Process constitution data
         constitution_details = []
-        account_details = []
-
         for data in constitutiondata:
             detail = EntityConstitution(entity=newentity, **data, createdby=users[0])
             constitution_details.append(detail)
 
-            # Logic for account creation based on constitution code
-            if newentity.const.constcode == "01":
-                achead = accountHead.objects.get(entity=newentity, code=6200)
-                account_details.append(
-                    account(
-                        accounthead=achead,
-                        creditaccounthead=achead,
-                        accountname=detail.shareholder,
-                        pan=detail.pan,
-                        entity=newentity,
-                        createdby=users[0],
-                        sharepercentage=detail.sharepercentage,
-                        country=newentity.country,
-                        state=newentity.state,
-                        district=newentity.district,
-                        city=newentity.city,
-                        emailid=newentity.email,
-                        accountdate=accountdate1,
-                    )
-                )
-            elif newentity.const.id == "02":
-                achead = accountHead.objects.get(entity=newentity, code=6300)
-                account_details.append(
-                    account(
-                        accounthead=achead,
-                        creditaccounthead=achead,
-                        accountname=detail.shareholder,
-                        pan=detail.pan,
-                        entity=newentity,
-                        createdby=users[0],
-                        sharepercentage=detail.sharepercentage,
-                        country=newentity.country,
-                        state=newentity.state,
-                        district=newentity.district,
-                        city=newentity.city,
-                        emailid=newentity.email,
-                        accountdate=accountdate1,
-                    )
-                )
-
         EntityConstitution.objects.bulk_create(constitution_details)
-        account.objects.bulk_create(account_details)
-
-        # Update accounts in bulk
-        account_updates = [
-            {"code": 1000, "credit_code": 3000},
-            {"code": 6000, "credit_code": 6100},
-            {"code": 8000, "credit_code": 7000},
-        ]
-        for update in account_updates:
-            account.objects.filter(accounthead__code=update["code"], entity=newentity).update(
-                creditaccounthead=accountHead.objects.get(code=update["credit_code"], entity=newentity)
+        for detail in constitution_details:
+            self._create_constitution_party_account(
+                entity_obj=newentity,
+                detail=detail,
+                user=users[0],
+                accountdate1=accountdate1,
             )
+        self._apply_default_credit_head_mappings(entity_obj=newentity)
 
         return newentity
     
@@ -449,6 +467,74 @@ class EntityNewSerializer(serializers.ModelSerializer):
     serializer = AccountHeadV2Serializer
     accounthead = AccountHeadV2Serializer
     acounttype = AccountTypeV2Serializer
+
+    def _create_constitution_party_account(self, *, entity_obj, detail, user, accountdate):
+        constcode = getattr(entity_obj.const, "constcode", None)
+        head_code = None
+        if constcode == "01":
+            head_code = 6200
+        elif constcode == "02":
+            head_code = 6300
+        if head_code is None:
+            return None
+
+        achead = accountHead.objects.get(entity=entity_obj, code=head_code)
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": entity_obj,
+                "accountname": detail.shareholder,
+                "createdby": user,
+                "accountdate": accountdate,
+            },
+            ledger_overrides={
+                "name": detail.shareholder,
+                "accounthead": achead,
+                "creditaccounthead": achead,
+                "canbedeleted": True,
+                "is_party": True,
+                "isactive": True,
+            },
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={"pan": detail.pan} if getattr(detail, "pan", None) else {},
+            primary_address_data={
+                "country": entity_obj.country_id,
+                "state": entity_obj.state_id,
+                "district": entity_obj.district_id,
+                "city": entity_obj.city_id,
+                "line1": getattr(entity_obj, "address", None),
+                "line2": getattr(entity_obj, "address2", None),
+                "floor_no": getattr(entity_obj, "addressfloorno", None),
+                "street": getattr(entity_obj, "addressstreet", None),
+                "pincode": getattr(entity_obj, "pincode", None),
+            },
+            primary_contact_data={
+                "emailid": getattr(entity_obj, "email", None),
+            },
+            createdby=user,
+        )
+        return acc
+
+    def _apply_default_credit_head_mappings(self, *, entity_obj):
+        account_updates = [
+            {"code": 1000, "credit_code": 3000},
+            {"code": 6000, "credit_code": 6100},
+            {"code": 8000, "credit_code": 7000},
+        ]
+        for upd in account_updates:
+            credit_head = accountHead.objects.filter(code=upd["credit_code"], entity=entity_obj).first()
+            if not credit_head:
+                print(f"[WARN] Missing credit accountHead code={upd['credit_code']} for entity={entity_obj.id}. Skipping mapping.")
+                continue
+
+            updated = Ledger.objects.filter(
+                entity=entity_obj,
+                account_profile__isnull=False,
+                accounthead__code=upd["code"],
+            ).update(creditaccounthead=credit_head)
+            if updated == 0:
+                print(f"[WARN] No ledger rows found for mapping code={upd['code']} for entity={entity_obj.id}.")
 
     # -------------------------
     # seed masters (account.json)
@@ -634,7 +720,6 @@ class EntityNewSerializer(serializers.ModelSerializer):
         # -------------------------
         # Create Constitution + Partner/Shareholder Accounts
         # -------------------------
-        account_details = []
         for c in constitution_data:
             c = dict(c)
             c.pop("id", None)
@@ -643,69 +728,14 @@ class EntityNewSerializer(serializers.ModelSerializer):
             c.pop("createdby", None)
 
             detail = EntityConstitution.objects.create(entity=entity, createdby=user, **c)
-
-            # Partner/shareholder accounts based on constitution code
-            if getattr(entity.const, "constcode", None) == "01":
-                achead = accountHead.objects.get(entity=entity, code=6200)
-                account_details.append(
-                    account(
-                        accounthead=achead,
-                        creditaccounthead=achead,
-                        accountname=detail.shareholder,
-                        pan=detail.pan,
-                        entity=entity,
-                        createdby=user,
-                        sharepercentage=detail.sharepercentage,
-                        country=entity.country,
-                        state=entity.state,
-                        district=entity.district,
-                        city=entity.city,
-                        emailid=entity.email,
-                        accountdate=accountdate,
-                    )
-                )
-            elif getattr(entity.const, "constcode", None) == "02":
-                achead = accountHead.objects.get(entity=entity, code=6300)
-                account_details.append(
-                    account(
-                        accounthead=achead,
-                        creditaccounthead=achead,
-                        accountname=detail.shareholder,
-                        pan=detail.pan,
-                        entity=entity,
-                        createdby=user,
-                        sharepercentage=detail.sharepercentage,
-                        country=entity.country,
-                        state=entity.state,
-                        district=entity.district,
-                        city=entity.city,
-                        emailid=entity.email,
-                        accountdate=accountdate,
-                    )
-                )
-
-        if account_details:
-            account.objects.bulk_create(account_details)
-
-        # -------------------------
-        # Update default credit heads mapping
-        # -------------------------
-        account_updates = [
-            {"code": 1000, "credit_code": 3000},
-            {"code": 6000, "credit_code": 6100},
-            {"code": 8000, "credit_code": 7000},
-        ]
-        for upd in account_updates:
-            credit_head = accountHead.objects.filter(code=upd["credit_code"], entity=entity).first()
-            if not credit_head:
-                print(f"[WARN] Missing credit accountHead code={upd['credit_code']} for entity={entity.id}. Skipping mapping.")
-                continue
-
-            updated = account.objects.filter(accounthead__code=upd["code"], entity=entity).update(
-                creditaccounthead=credit_head
+            self._create_constitution_party_account(
+                entity_obj=entity,
+                detail=detail,
+                user=user,
+                accountdate=accountdate,
             )
-            if updated == 0:
-                print(f"[WARN] No account rows found for mapping code={upd['code']} for entity={entity.id}.")
+
+        self._apply_default_credit_head_mappings(entity_obj=entity)
 
         return entity
 

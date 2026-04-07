@@ -4,7 +4,8 @@ from rest_framework.test import APIClient
 
 from Authentication.models import User
 from entity.models import Entity
-from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, account, accountHead
+from financial.models import AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, Ledger, account, accountHead
+from financial.seeding import FinancialSeedService
 from financial.serializers_ledger import AccountProfileV2ReadSerializer, AccountProfileV2WriteSerializer
 from financial.services import (
     apply_normalized_profile_payload,
@@ -45,9 +46,9 @@ class FinancialLedgerSyncTests(TestCase):
         self.assertIsNotNone(a2.ledger_id)
         self.assertEqual(a1.entity_id, a1.ledger.entity_id)
         self.assertEqual(a2.entity_id, a2.ledger.entity_id)
-        self.assertEqual(a1.accountcode, a1.ledger.ledger_code)
-        self.assertEqual(a2.accountcode, a2.ledger.ledger_code)
-        self.assertGreater(a2.accountcode, a1.accountcode)
+        self.assertIsNotNone(a1.ledger.ledger_code)
+        self.assertIsNotNone(a2.ledger.ledger_code)
+        self.assertGreater(a2.ledger.ledger_code, a1.ledger.ledger_code)
 
     def test_create_account_with_cross_entity_ledger_rolls_back(self):
         foreign_ledger = Ledger.objects.create(
@@ -64,7 +65,6 @@ class FinancialLedgerSyncTests(TestCase):
                     "ledger": foreign_ledger,
                     "accountname": "Invalid Link",
                     "createdby": self.user,
-                    "accountcode": 1200,
                 }
             )
 
@@ -81,7 +81,6 @@ class FinancialLedgerSyncTests(TestCase):
             entity=self.entity_a,
             ledger=foreign_ledger,
             accountname="Bad Existing Link",
-            accountcode=1300,
             createdby=self.user,
         )
 
@@ -170,6 +169,40 @@ class FinancialLedgerSyncTests(TestCase):
         self.assertEqual(data["creditdays"], 30)
         self.assertEqual(data["address1"], "Profile Address 1")
 
+    def test_account_read_serializer_prefers_primary_contact_and_bank_details(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Contact Bank Check",
+                "createdby": self.user,
+            }
+        )
+        ContactDetails.objects.create(
+            account=acc,
+            entity=self.entity_a,
+            createdby=self.user,
+            full_name="Primary Person",
+            phoneno="9999999999",
+            emailid="primary@example.com",
+            isprimary=True,
+        )
+        AccountBankDetails.objects.create(
+            account=acc,
+            entity=self.entity_a,
+            createdby=self.user,
+            bankname="Primary Bank",
+            banKAcno="PRIMARY001",
+            isprimary=True,
+            isactive=True,
+        )
+
+        data = AccountProfileV2ReadSerializer(acc).data
+        self.assertEqual(data["emailid"], "primary@example.com")
+        self.assertEqual(data["contactno"], "9999999999")
+        self.assertEqual(data["contactperson"], "Primary Person")
+        self.assertEqual(data["bankname"], "Primary Bank")
+        self.assertEqual(data["banKAcno"], "PRIMARY001")
+
     def test_account_write_serializer_persists_profile_data_without_legacy_columns(self):
         head = accountHead.objects.create(
             entity=self.entity_a,
@@ -215,9 +248,92 @@ class FinancialLedgerSyncTests(TestCase):
         self.assertEqual(address.line1, "Profile Address")
         self.assertEqual(address.pincode, "560001")
 
+
+class FinancialSeedTemplateTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="fin-seed@example.com",
+            username="fin-seed@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity = Entity.objects.create(entityname="Seed Entity", createdby=self.user)
+
+    def test_indian_accounting_final_seed_creates_correct_advance_classification(self):
+        FinancialSeedService.seed_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")
+
+        advance_payable_head = accountHead.objects.get(entity=self.entity, code=6000)
+        advance_receivable_head = accountHead.objects.get(entity=self.entity, code=6100)
+
+        self.assertEqual(advance_payable_head.accounttype.accounttypename, "Current Liabilities")
+        self.assertEqual(advance_receivable_head.accounttype.accounttypename, "Current Assets")
+
+    def test_indian_accounting_final_seed_creates_static_ready_ledgers(self):
+        FinancialSeedService.seed_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")
+
+        self.assertTrue(Ledger.objects.filter(entity=self.entity, ledger_code=5304, name="GST TDS Payable").exists())
+        self.assertTrue(Ledger.objects.filter(entity=self.entity, ledger_code=7081, name="Round Off Income").exists())
+        self.assertTrue(Ledger.objects.filter(entity=self.entity, ledger_code=8403, name="Round Off Expense").exists())
+
+    def test_reconcile_entity_sets_party_heads_from_party_type(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Customer X",
+                "createdby": self.user,
+            }
+        )
+        apply_normalized_profile_payload(
+            acc,
+            commercial_data={"partytype": "Customer"},
+            createdby=self.user,
+        )
+        acc.ledger.accounthead = None
+        acc.ledger.accounttype = None
+        acc.ledger.ledger_code = 99001
+        acc.ledger.save(update_fields=["accounthead", "accounttype", "ledger_code"])
+
+        FinancialSeedService.reconcile_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")
+
+        acc.refresh_from_db()
+        self.assertEqual(acc.ledger.accounthead.code, 8000)
+        self.assertEqual(acc.ledger.accounttype.accounttypename, "Current Assets")
+
+    def test_account_write_serializer_persists_primary_contact_and_bank_details(self):
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Sundry Creditors Contact",
+            code=2003,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity.id,
+                "accountname": "Contact Writer",
+                "accounthead": head.id,
+                "emailid": "contact@example.com",
+                "contactno": "8888888888",
+                "contactperson": "Write Person",
+                "bankname": "Writer Bank",
+                "banKAcno": "WRITER001",
+            },
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        acc = serializer.save()
+
+        primary_contact = ContactDetails.objects.get(account=acc, isprimary=True)
+        primary_bank = AccountBankDetails.objects.get(account=acc, isprimary=True, isactive=True)
+        self.assertEqual(primary_contact.emailid, "contact@example.com")
+        self.assertEqual(primary_contact.phoneno, "8888888888")
+        self.assertEqual(primary_contact.full_name, "Write Person")
+        self.assertEqual(primary_bank.bankname, "Writer Bank")
+        self.assertEqual(primary_bank.banKAcno, "WRITER001")
+
     def test_account_write_serializer_rejects_legacy_profile_input_fields(self):
         head = accountHead.objects.create(
-            entity=self.entity_a,
+            entity=self.entity,
             name="Sundry Debtors",
             code=2002,
             drcreffect="Debit",
@@ -225,7 +341,7 @@ class FinancialLedgerSyncTests(TestCase):
         )
         serializer = AccountProfileV2WriteSerializer(
             data={
-                "entity": self.entity_a.id,
+                "entity": self.entity.id,
                 "accountname": "Legacy Payload Rejected",
                 "accounthead": head.id,
                 "gstno": "29ABCDE1234F1Z5",
@@ -240,7 +356,7 @@ class FinancialLedgerSyncTests(TestCase):
 
     def test_account_model_allows_create_without_legacy_profile_columns(self):
         acc = account.objects.create(
-            entity=self.entity_a,
+            entity=self.entity,
             accountname="Account Create",
             createdby=self.user,
         )
@@ -281,3 +397,49 @@ class FinancialEndpointAliasTests(TestCase):
         response = self.client.get(f"/api/financial/base-account-list-v2/?entity={self.entity.id}")
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.headers.get("X-API-Deprecated"))
+
+    def test_pure_ledger_create_does_not_auto_create_account_profile(self):
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Indirect Expense",
+            code=3001,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        response = self.client.post(
+            "/api/financial/ledgers",
+            data={
+                "entity": self.entity.id,
+                "ledger_code": 3001,
+                "name": "Bank Charges",
+                "accounthead": head.id,
+                "is_party": False,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        ledger = Ledger.objects.get(id=response.data["id"])
+        self.assertFalse(hasattr(ledger, "account_profile"))
+
+    def test_party_ledger_create_auto_creates_account_profile(self):
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Sundry Creditors",
+            code=3002,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        response = self.client.post(
+            "/api/financial/ledgers",
+            data={
+                "entity": self.entity.id,
+                "ledger_code": 3002,
+                "name": "Vendor A",
+                "accounthead": head.id,
+                "is_party": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        ledger = Ledger.objects.select_related("account_profile").get(id=response.data["id"])
+        self.assertEqual(ledger.account_profile.accountname, "Vendor A")

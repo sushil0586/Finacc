@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase, TestCase
 
 from withholding.models import (
+    EntityPartyTaxProfile,
+    EntityTcsThresholdOpening,
     PartyTaxProfile,
     WithholdingSection,
     WithholdingSectionPolicyAudit,
@@ -578,3 +580,16 @@ class WithholdingSerializerGuardTests(SimpleTestCase):
                 }
             )
         self.assertIn("payable_account", str(exc.exception))
+
+
+class WithholdingDeleteProtectionTests(SimpleTestCase):
+    def test_withholding_party_links_use_protect(self):
+        self.assertEqual(PartyTaxProfile._meta.get_field("party_account").remote_field.on_delete.__name__, "PROTECT")
+        self.assertEqual(
+            EntityPartyTaxProfile._meta.get_field("party_account").remote_field.on_delete.__name__,
+            "PROTECT",
+        )
+        self.assertEqual(
+            EntityTcsThresholdOpening._meta.get_field("party_account").remote_field.on_delete.__name__,
+            "PROTECT",
+        )

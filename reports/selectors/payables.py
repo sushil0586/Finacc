@@ -98,7 +98,7 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
         qs = qs.filter(
             Q(accountname__icontains=token)
             | Q(legalname__icontains=token)
-            | Q(accountcode__icontains=token)
+            | Q(ledger__ledger_code__icontains=token)
             | Q(compliance_profile__gstno__icontains=token)
         )
     primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")
@@ -114,7 +114,6 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
             "ledger__accounthead_id",
             "accountname",
             "legalname",
-            "accountcode",
             "commercial_profile__partytype",
             "commercial_profile__currency",
             "commercial_profile__agent",
@@ -204,7 +203,7 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
         "vendor__ledger_id",
         "vendor__accountname",
         "vendor__legalname",
-        "vendor__accountcode",
+        "vendor__ledger__ledger_code",
         "vendor__commercial_profile__creditlimit",
         "vendor__commercial_profile__creditdays",
         "vendor__commercial_profile__currency",

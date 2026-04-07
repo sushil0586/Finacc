@@ -86,7 +86,7 @@ class EntityStaticAccountMap(models.Model):
     sub_entity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
 
     static_account = models.ForeignKey(StaticAccount, on_delete=models.PROTECT,related_name="entity_maps",)
-    account = models.ForeignKey(account, on_delete=models.PROTECT, related_name="+",)
+    account = models.ForeignKey(account, on_delete=models.PROTECT, related_name="+", null=True, blank=True)
     # Additive ledger storage. Keep account for compatibility until all downstream
     # posting/reporting code is fully ledger-native.
     ledger = models.ForeignKey(Ledger, on_delete=models.PROTECT, null=True, blank=True, related_name="+")

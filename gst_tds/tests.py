@@ -461,3 +461,11 @@ class GstTdsApiTests(TestCase):
         self.assertEqual(filtered.data["contract_ref"], "CTR-101")
         self.assertEqual(filtered.data["total_contracts"], 1)
         self.assertEqual(Decimal(filtered.data["total_taxable"]), Decimal("10000.00"))
+
+
+class GstTdsDeleteProtectionTests(SimpleTestCase):
+    def test_contract_ledger_vendor_uses_protect(self):
+        self.assertEqual(
+            GstTdsContractLedger._meta.get_field("vendor").remote_field.on_delete.__name__,
+            "PROTECT",
+        )

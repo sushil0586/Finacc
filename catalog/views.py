@@ -17,7 +17,7 @@ import math
 from django.db import transaction
 from django.utils.dateparse import parse_date
 from rest_framework.generics import ListAPIView
-from django.db.models import Q, Prefetch, OuterRef, Subquery
+from django.db.models import Q, OuterRef, Subquery
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, permissions, serializers, status
@@ -34,8 +34,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from entity.models import Entity, SubEntity
-from financial.models import AccountAddress, Ledger
-from financial.serializers_ledger import SimpleAccountV2Serializer
+from financial.models import Ledger
 
 from .models import (
     ProductCategory,
@@ -408,19 +407,18 @@ class ProductPageBootstrapAPIView(APIView):
         hsn_sac = HsnSac.objects.filter(entity_id=entity_id_int, isactive=True)
         pricelists = PriceList.objects.filter(entity_id=entity_id_int, isactive=True)
         product_attributes = ProductAttribute.objects.filter(entity_id=entity_id_int, isactive=True).order_by("name")
+        # Product setup only needs lightweight account picker rows.
+        # Avoid prefetching full address/compliance details here because it
+        # slows the add/edit screen without changing the UI behavior.
         accounts = (
             Ledger.objects.filter(entity_id=entity_id_int, account_profile__isnull=False, isactive=True)
-            .select_related("account_profile", "accounthead")
-            .prefetch_related(
-                Prefetch(
-                    "account_profile__addresses",
-                    queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related(
-                        "country", "state", "district", "city"
-                    ),
-                    to_attr="prefetched_primary_addresses",
-                )
-            )
+            .select_related("account_profile")
             .order_by("name", "id")
+            .values(
+                "account_profile__id",
+                "account_profile__accountname",
+                "ledger_code",
+            )
         )
         locations = SubEntity.objects.filter(entity_id=entity_id_int).order_by("subentityname", "id")
 
@@ -436,7 +434,14 @@ class ProductPageBootstrapAPIView(APIView):
             "hsn_sac": HsnSacSerializer(hsn_sac, many=True).data,
             "pricelists": PriceListSerializer(pricelists, many=True).data,
             "product_attributes": ProductAttributeSerializer(product_attributes, many=True).data,
-            "accounts": SimpleAccountV2Serializer(accounts, many=True).data,
+            "accounts": [
+                {
+                    "id": row["account_profile__id"],
+                    "accountname": row["account_profile__accountname"],
+                    "accountcode": row["ledger_code"],
+                }
+                for row in accounts
+            ],
             "locations": SubentityLiteSerializer(locations, many=True).data,
         }
         return Response(data)

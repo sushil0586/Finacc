@@ -26,6 +26,7 @@ from financial.models import (
     accountHead,
     accounttype,
 )
+from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from purchase.serializers.purchase_invoice import PurchaseInvoiceLineSerializer
 from purchase.services.purchase_invoice_service import DerivedRegime, PurchaseInvoiceService
@@ -101,25 +102,30 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
             accounthead=self.vendor_head,
             createdby=self.user,
         )
-        self.vendor = account.objects.create(
-            entity=self.entity,
-            ledger=self.vendor_ledger,
-            accounthead=self.vendor_head,
-            accountname="Alpha Traders",
-            accountcode=4001,
-            createdby=self.user,
+        self.vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": self.vendor_ledger,
+                "accountname": "Alpha Traders",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 4001, "accounthead": self.vendor_head, "is_party": True},
         )
-        AccountComplianceProfile.objects.create(
+        AccountComplianceProfile.objects.update_or_create(
             account=self.vendor,
-            entity=self.entity,
-            gstno="27ABCDE1234F1Z5",
-            createdby=self.user,
+            defaults={
+                "entity": self.entity,
+                "gstno": "27ABCDE1234F1Z5",
+                "createdby": self.user,
+            },
         )
-        AccountCommercialProfile.objects.create(
+        AccountCommercialProfile.objects.update_or_create(
             account=self.vendor,
-            entity=self.entity,
-            partytype="Vendor",
-            createdby=self.user,
+            defaults={
+                "entity": self.entity,
+                "partytype": "Vendor",
+                "createdby": self.user,
+            },
         )
 
     def test_purchase_form_meta_exposes_backend_authoritative_contract(self):
@@ -142,7 +148,7 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(attrs["posting_date"], date(2025, 4, 10))
         self.assertEqual(attrs["due_date"], date(2025, 4, 17))
 
-    def test_purchase_compute_line_recomputes_cess_and_retains_rcm_gst(self):
+    def test_purchase_compute_line_recomputes_cess_and_suppresses_rcm_gst(self):
         non_rcm = PurchaseInvoiceService.compute_line_authoritative(
             header_attrs={"default_taxability": 1, "is_reverse_charge": False},
             line={
@@ -177,10 +183,10 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
             },
             derived=DerivedRegime(tax_regime=1, is_igst=False),
         )
-        self.assertEqual(rcm["cgst_amount"], Decimal("9.00"))
-        self.assertEqual(rcm["sgst_amount"], Decimal("9.00"))
+        self.assertEqual(rcm["cgst_amount"], Decimal("0.00"))
+        self.assertEqual(rcm["sgst_amount"], Decimal("0.00"))
         self.assertEqual(rcm["igst_amount"], Decimal("0.00"))
-        self.assertEqual(rcm["cess_amount"], Decimal("5.00"))
+        self.assertEqual(rcm["cess_amount"], Decimal("0.00"))
 
     def test_purchase_line_serializer_auto_fills_itc_block_reason(self):
         serializer = PurchaseInvoiceLineSerializer(
