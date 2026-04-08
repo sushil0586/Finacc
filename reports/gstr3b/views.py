@@ -6,16 +6,20 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from reports.gstr3b.exporters import export_gstr3b_csv_rows, export_gstr3b_excel
 from reports.gstr3b.selectors import scope_filters
 from reports.gstr3b.serializers import Gstr3bSummarySerializer, Gstr3bValidationSerializer
 from reports.gstr3b.services import Gstr3bSummaryService
 from reports.schemas.common import build_report_envelope
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
-class Gstr3bSummaryAPIView(APIView):
+class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr3bSummaryService
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
         service = self.service_class()
@@ -23,6 +27,7 @@ class Gstr3bSummaryAPIView(APIView):
             scope = service.build_scope(request.query_params)
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
+        self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
 
         payload = {
             "summary": Gstr3bSummarySerializer(service.build(scope)).data,
@@ -46,10 +51,16 @@ class Gstr3bSummaryAPIView(APIView):
         return Response(response)
 
 
-class Gstr3bMetaAPIView(APIView):
+class Gstr3bMetaAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
+        entity_id = request.query_params.get("entity")
+        if not entity_id:
+            return Response({"detail": "entity is required."}, status=400)
+        self.enforce_scope(request, entity_id=int(entity_id))
         return Response(
             {
                 "report_code": "gstr3b-summary",
@@ -61,9 +72,11 @@ class Gstr3bMetaAPIView(APIView):
         )
 
 
-class Gstr3bValidationAPIView(APIView):
+class Gstr3bValidationAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr3bSummaryService
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
         service = self.service_class()
@@ -71,13 +84,16 @@ class Gstr3bValidationAPIView(APIView):
             scope = service.build_scope(request.query_params)
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
+        self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
         warnings = Gstr3bValidationSerializer(service.validations(scope), many=True).data
         return Response({"warnings": warnings})
 
 
-class Gstr3bExportAPIView(APIView):
+class Gstr3bExportAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr3bSummaryService
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def initialize_request(self, request, *args, **kwargs):
         request = super().initialize_request(request, *args, **kwargs)
@@ -95,6 +111,7 @@ class Gstr3bExportAPIView(APIView):
             scope = service.build_scope(request.query_params)
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
+        self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
 
         summary = Gstr3bSummarySerializer(service.build(scope)).data
         warnings = Gstr3bValidationSerializer(service.validations(scope), many=True).data

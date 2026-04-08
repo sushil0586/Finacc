@@ -7,6 +7,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from reports.api.receivables_views import _write_csv, _write_excel, _write_pdf
 from reports.schemas.common import build_report_envelope
 from reports.serializers.purchase_register_serializer import (
@@ -16,6 +17,7 @@ from reports.serializers.purchase_register_serializer import (
 )
 from reports.services.payables_config import build_related_report_links, get_payables_meta_entry, resolve_report_columns
 from reports.services.purchase_register_service import PurchaseRegisterService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 
@@ -93,12 +95,14 @@ class PurchaseRegisterPagination(PageNumberPagination):
     max_page_size = 500
 
 
-class PurchaseRegisterAPIView(APIView):
+class PurchaseRegisterAPIView(ScopedEntitlementMixin, APIView):
     """Purchase register list endpoint with optional payables enrichments and exports."""
 
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = PurchaseRegisterPagination
     service_class = PurchaseRegisterService
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get_service_payload(self, request, *, page=None, page_size=None):
         service = self.service_class()
@@ -114,6 +118,12 @@ class PurchaseRegisterAPIView(APIView):
             params["to_date"] = params["date_to"]
         queryset = service.get_base_queryset()
         queryset, cleaned_filters = service.apply_filters(queryset, params)
+        self.enforce_scope(
+            request,
+            entity_id=cleaned_filters.get("entity"),
+            entityfinid_id=cleaned_filters.get("entityfinid"),
+            subentity_id=cleaned_filters.get("subentity"),
+        )
         queryset = service.annotate_register_fields(queryset, include_outstanding=include_outstanding).order_by(
             "bill_date",
             "posting_date",

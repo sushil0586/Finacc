@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from entity.models import Entity
+from subscriptions.services import SubscriptionService
 
 from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
 
@@ -106,24 +107,57 @@ class EffectivePermissionService:
         if RBACDevelopmentAccess.allow_all():
             return Entity.objects.filter(id=entity_id).first()
 
-        # Entity creator should retain access even when explicit RBAC
-        # assignments are not available yet (e.g. fresh onboarding flows).
-        has_any_assignment = UserRoleAssignment.objects.filter(user=user, entity_id=entity_id).exists()
-        owned = Entity.objects.filter(id=entity_id, createdby_id=user.id).first()
-        if owned and not has_any_assignment:
-            return owned
-
-        active_assignment_entity_ids = EffectivePermissionService.active_assignments_queryset(
+        entity = Entity.objects.filter(id=entity_id).select_related("customer_account").first()
+        if entity is None:
+            return None
+        if not SubscriptionService.has_entity_membership(user=user, entity=entity, backfill_owner=True):
+            return None
+        active_assignment_exists = EffectivePermissionService.active_assignments_queryset(
             user,
             entity_id,
-        ).values_list("entity_id", flat=True)
-        return Entity.objects.filter(id__in=active_assignment_entity_ids).distinct().first()
+        ).exists()
+        if active_assignment_exists:
+            return entity
+        if entity.createdby_id != user.id:
+            return None
+        if UserRoleAssignment.objects.filter(user=user, entity_id=entity_id).exists():
+            return None
+        return entity
 
 
 class EffectiveMenuService:
     @staticmethod
     def _collect_visible_menu_ids(permission_codes):
-        return LegacyMenuCompatibilityService._collect_visible_menu_ids(permission_codes)
+        visible_ids = set(
+            MenuPermission.objects.filter(
+                permission__code__in=permission_codes,
+                isactive=True,
+                relation_type=MenuPermission.RELATION_VISIBILITY,
+                menu__isactive=True,
+            ).values_list("menu_id", flat=True)
+        )
+        if not visible_ids:
+            return visible_ids
+
+        pending_parent_ids = set(
+            Menu.objects.filter(id__in=visible_ids, isactive=True)
+            .exclude(parent_id__isnull=True)
+            .values_list("parent_id", flat=True)
+        )
+        pending_parent_ids.discard(None)
+
+        while pending_parent_ids:
+            parents = list(
+                Menu.objects.filter(id__in=pending_parent_ids, isactive=True).only("id", "parent_id")
+            )
+            next_pending = set()
+            for parent in parents:
+                visible_ids.add(parent.id)
+                if parent.parent_id and parent.parent_id not in visible_ids:
+                    next_pending.add(parent.parent_id)
+            pending_parent_ids = next_pending
+
+        return visible_ids
 
     @staticmethod
     def _build_recursive_tree(menu_queryset):
@@ -133,13 +167,16 @@ class EffectiveMenuService:
             children_map.setdefault(menu.parent_id, []).append(menu)
 
         def serialize_node(node):
+            normalized_route_path = (node.route_path or "").strip()
+            if normalized_route_path and not normalized_route_path.startswith("/"):
+                normalized_route_path = f"/{normalized_route_path}"
             return {
                 "id": node.id,
                 "name": node.name,
-                "code": node.route_name or node.code,
+                "code": node.code,
                 "menu_code": node.code,
                 "menu_type": node.menu_type,
-                "route_path": node.route_path,
+                "route_path": normalized_route_path,
                 "route_name": node.route_name,
                 "icon": node.icon,
                 "sort_order": node.sort_order,
@@ -176,75 +213,37 @@ class EffectiveMenuService:
 
 class LegacyMenuCompatibilityService:
     @staticmethod
-    def _collect_visible_menu_ids(permission_codes):
-        visible_ids = set(
-            MenuPermission.objects.filter(
-                permission__code__in=permission_codes,
-                isactive=True,
-                relation_type=MenuPermission.RELATION_VISIBILITY,
-                menu__isactive=True,
-            ).values_list("menu_id", flat=True)
-        )
-        if not visible_ids:
-            return visible_ids
-
-        menu_map = {
-            menu.id: menu.parent_id
-            for menu in Menu.objects.filter(id__in=visible_ids).only("id", "parent_id")
-        }
-        pending_parent_ids = {parent_id for parent_id in menu_map.values() if parent_id}
-
-        while pending_parent_ids:
-            parents = Menu.objects.filter(id__in=pending_parent_ids, isactive=True).only("id", "parent_id")
-            next_pending = set()
-            for parent in parents:
-                if parent.id not in visible_ids:
-                    visible_ids.add(parent.id)
-                if parent.parent_id and parent.parent_id not in visible_ids:
-                    next_pending.add(parent.parent_id)
-            pending_parent_ids = next_pending
-
-        return visible_ids
-
-    @staticmethod
-    def _rbac_response(user, entity_id, role_id=None):
-        permission_codes = EffectivePermissionService.permission_codes_for_user(user, entity_id, role_id=role_id)
-        visible_menu_ids = LegacyMenuCompatibilityService._collect_visible_menu_ids(permission_codes)
-        if not visible_menu_ids:
-            return []
-
-        menus = list(
-            Menu.objects.filter(id__in=visible_menu_ids, isactive=True)
-            .only("id", "parent_id", "name", "code", "route_path", "route_name", "sort_order")
-            .order_by("sort_order", "name")
-        )
-        menu_by_parent = {}
-        for menu in menus:
-            menu_by_parent.setdefault(menu.parent_id, []).append(menu)
-
+    def legacy_shape_for_user(user, entity_id, role_id=None):
+        menus = EffectiveMenuService.menu_tree_for_user(user, entity_id, role_id=role_id)
         final_rows = []
-        for root in menu_by_parent.get(None, []):
-            submenus = [
-                {
-                    "submenu": child.name,
-                    "subMenuurl": child.route_path,
-                    "submenucode": child.route_name or child.code,
-                }
-                for child in menu_by_parent.get(root.id, [])
-            ]
+        for root in menus:
+            submenus = LegacyMenuCompatibilityService._collect_leaf_nodes(root.get("children", []))
             final_rows.append(
                 {
-                    "mainmenu": root.name,
-                    "menuurl": root.route_path,
-                    "menucode": root.route_name or root.code,
+                    "mainmenu": root["name"],
+                    "menuurl": root.get("route_path", ""),
+                    "menucode": root.get("menu_code") or root.get("code"),
                     "submenu": submenus,
                 }
             )
         return final_rows
 
     @staticmethod
-    def legacy_shape_for_user(user, entity_id, role_id=None):
-        return LegacyMenuCompatibilityService._rbac_response(user, entity_id, role_id=role_id)
+    def _collect_leaf_nodes(nodes):
+        collected = []
+        for node in nodes:
+            children = node.get("children") or []
+            if node.get("menu_type") == Menu.TYPE_SCREEN or not children:
+                collected.append(
+                    {
+                        "submenu": node.get("name", ""),
+                        "subMenuurl": node.get("route_path", ""),
+                        "submenucode": node.get("menu_code") or node.get("code"),
+                    }
+                )
+                continue
+            collected.extend(LegacyMenuCompatibilityService._collect_leaf_nodes(children))
+        return collected
 
 
 class RBACAuditService:
@@ -261,50 +260,136 @@ class RBACAuditService:
         )
 
 
+class AssignmentSemanticsService:
+    @staticmethod
+    def _current_entity_wide_queryset(*, user, entity, exclude_id=None):
+        now = timezone.now()
+        queryset = UserRoleAssignment.objects.filter(
+            user=user,
+            entity=entity,
+            isactive=True,
+            role__isactive=True,
+            subentity__isnull=True,
+        ).filter(
+            Q(effective_from__isnull=True) | Q(effective_from__lte=now),
+            Q(effective_to__isnull=True) | Q(effective_to__gte=now),
+        )
+        if exclude_id is not None:
+            queryset = queryset.exclude(pk=exclude_id)
+        return queryset
+
+    @staticmethod
+    def validate_assignment_shape(*, role, is_primary, subentity, isactive):
+        if role is not None and not role.is_assignable:
+            raise ValueError("Selected role is not assignable to users.")
+        if is_primary and subentity is not None:
+            raise ValueError("Primary assignment cannot be limited to a subentity.")
+        if is_primary and not isactive:
+            raise ValueError("Primary assignment must remain active.")
+
+    @staticmethod
+    @transaction.atomic
+    def normalize_primary_assignments(*, user, entity, preferred_assignment=None):
+        current_entity_wide = list(
+            UserRoleAssignment.objects.filter(
+                user=user,
+                entity=entity,
+                isactive=True,
+                role__isactive=True,
+                subentity__isnull=True,
+            ).order_by("-is_primary", "role__priority", "id")
+        )
+
+        current_by_id = {assignment.id: assignment for assignment in current_entity_wide}
+        target = None
+        if preferred_assignment is not None and preferred_assignment.pk in current_by_id and preferred_assignment.is_primary:
+            target = current_by_id[preferred_assignment.pk]
+        else:
+            target = (
+                AssignmentSemanticsService._current_entity_wide_queryset(user=user, entity=entity)
+                .order_by("role__priority", "id")
+                .first()
+            )
+
+        target_id = getattr(target, "id", None)
+        for assignment in current_entity_wide:
+            should_be_primary = assignment.id == target_id
+            if assignment.is_primary != should_be_primary:
+                assignment.is_primary = should_be_primary
+                assignment.save(update_fields=["is_primary", "updated_at"])
+
+    @staticmethod
+    @transaction.atomic
+    def finalize_assignment(assignment):
+        AssignmentSemanticsService.validate_assignment_shape(
+            role=assignment.role,
+            is_primary=assignment.is_primary,
+            subentity=assignment.subentity,
+            isactive=assignment.isactive,
+        )
+        AssignmentSemanticsService.normalize_primary_assignments(
+            user=assignment.user,
+            entity=assignment.entity,
+            preferred_assignment=assignment if assignment.is_primary else None,
+        )
+
+
 class RoleTemplateService:
     TEMPLATE_DEFINITIONS = {
         "admin": {
             "name": "Admin",
             "description": "Broad operational access for entity administrators.",
-            "modules": ["admin", "sales", "purchase", "inventory", "accounts", "compliance", "reports", "stock", "payment", "receipt", "production", "tds", "credit", "debit", "tcs", "payroll", "masters", "voucher"],
-            "menu_code_prefixes": ["admin", "reports", "compliance", "accounts", "inventory", "sales", "purchase", "masters", "payroll"],
+            "permission_prefixes": [
+                "admin.",
+                "sales.",
+                "purchase.",
+                "inventory.",
+                "accounts.",
+                "compliance.",
+                "reports.",
+                "stock.",
+                "payment.",
+                "receipt.",
+                "production.",
+                "tds.",
+                "credit.",
+                "debit.",
+                "tcs.",
+                "payroll.",
+                "masters.",
+                "voucher.",
+            ],
         },
         "sales_user": {
             "name": "Sales User",
             "description": "Sales invoice and note operations.",
-            "modules": ["sales", "credit", "debit"],
-            "menu_code_prefixes": ["sales", "sales.transactions"],
+            "permission_prefixes": ["sales.", "credit.", "debit."],
             "exclude_codes": ["sales.settings.update"],
         },
         "purchase_user": {
             "name": "Purchase User",
             "description": "Purchase invoice operations.",
-            "modules": ["purchase"],
-            "menu_code_prefixes": ["purchase", "purchase.transactions"],
+            "permission_prefixes": ["purchase."],
         },
         "accounts_user": {
             "name": "Accounts User",
             "description": "Voucher operations for receipts, payments, and TDS.",
-            "modules": ["accounts", "payment", "receipt", "tds"],
-            "menu_code_prefixes": ["accounts", "accounts.vouchers", "compliance.tds"],
+            "permission_prefixes": ["accounts.", "payment.", "receipt.", "tds."],
         },
         "report_viewer": {
             "name": "Report Viewer",
             "description": "Read-only reporting access.",
-            "modules": ["reports"],
-            "menu_code_prefixes": ["reports"],
+            "permission_prefixes": ["reports."],
         },
         "payroll_user": {
             "name": "Payroll User",
             "description": "Payroll and employee administration access.",
-            "modules": ["payroll"],
-            "menu_code_prefixes": ["payroll"],
+            "permission_prefixes": ["payroll.", "payments.payroll.", "reports.payroll."],
         },
         "compliance_user": {
             "name": "Compliance User",
             "description": "TCS and TDS compliance access.",
-            "modules": ["tcs", "tds", "compliance"],
-            "menu_code_prefixes": ["compliance", "reports.compliance"],
+            "permission_prefixes": ["tcs.", "tds.", "compliance.", "reports.compliance."],
         },
     }
 
@@ -316,10 +401,8 @@ class RoleTemplateService:
 
         queryset = Permission.objects.filter(isactive=True)
         clauses = Q()
-        for module in config.get("modules", []):
-            clauses |= Q(module=module)
-        for prefix in config.get("menu_code_prefixes", []):
-            clauses |= Q(metadata__menu_code__startswith=prefix)
+        for prefix in config.get("permission_prefixes", []):
+            clauses |= Q(code__startswith=prefix)
         for exact_code in config.get("exact_codes", []):
             clauses |= Q(code=exact_code)
         if clauses:

@@ -18,10 +18,6 @@ from reports.selectors.financial import (
     resolve_scope_names,
 )
 
-
-PNL_INCOME_TYPE_CODES = {"1014", "1015"}
-PNL_EXPENSE_TYPE_CODES = {"1016"}
-
 GROUP_BY_CHOICES = {"ledger", "accounthead", "accounttype"}
 PERIOD_BY_CHOICES = {"month", "quarter", "year"}
 STOCK_VALUATION_MODES = {"auto", "gl", "valuation", "none"}
@@ -79,6 +75,41 @@ def _resolve_effective_head_and_type(ledger, amount):
 
     acc_type = getattr(head, "accounttype", None) if head else getattr(ledger, "accounttype", None)
     return head, acc_type
+
+
+def _detailsingroup_value(head) -> int | None:
+    value = getattr(head, "detailsingroup", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_profit_loss_classification(head, acc_type) -> bool:
+    return _detailsingroup_value(head) == 2
+
+
+def _profit_loss_category(head, acc_type, amount) -> str:
+    if _detailsingroup_value(head) == 2:
+        head_side = _normalize_balance_side(getattr(head, "drcreffect", None) or getattr(head, "balanceType", None))
+        if head_side == "debit":
+            return "expense"
+        if head_side == "credit":
+            return "income"
+
+        type_side = _normalize_balance_side(getattr(acc_type, "balanceType", None))
+        if type_side == "debit":
+            return "expense"
+        if type_side == "credit":
+            return "income"
+
+        # Final fallback only when grouping metadata is incomplete.
+        return "income" if amount < 0 else "expense"
+    return "expense"
+
+
+def _is_balance_sheet_classification(head, acc_type) -> bool:
+    return _detailsingroup_value(head) == 3
 
 
 def _coerce_date(value):
@@ -163,8 +194,7 @@ def _raw_balance_rows(
         ledger = item["ledger"]
         amount = item["amount"]
         head, acc_type = _resolve_effective_head_and_type(ledger, amount)
-        type_code = str(getattr(acc_type, "accounttypecode", "")) if acc_type else ""
-        if type_code in PNL_INCOME_TYPE_CODES or type_code in PNL_EXPENSE_TYPE_CODES:
+        if not _is_balance_sheet_classification(head, acc_type):
             continue
         if not include_zero_balances and amount == 0:
             continue
@@ -236,11 +266,12 @@ def _raw_profit_loss_rows(
         net = debit - credit
 
         head, acc_type = _resolve_effective_head_and_type(ledger, net)
-        type_code = str(getattr(acc_type, "accounttypecode", "")) if acc_type else ""
-        if type_code not in PNL_INCOME_TYPE_CODES and type_code not in PNL_EXPENSE_TYPE_CODES:
+        if not _is_profit_loss_classification(head, acc_type):
             continue
         if not include_zero_balances and net == 0:
             continue
+
+        category = _profit_loss_category(head, acc_type, net)
 
         row = {
             "ledger_id": ledger.id,
@@ -254,7 +285,7 @@ def _raw_profit_loss_rows(
             "credit": f"{credit:.2f}",
             "amount_decimal": abs(net),
             "amount": f"{abs(net):.2f}",
-            "category": "income" if type_code in PNL_INCOME_TYPE_CODES else "expense",
+            "category": category,
             **_ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id),
         }
         if search_text:

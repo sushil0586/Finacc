@@ -11,6 +11,16 @@ from reports.selectors.financial import (
     resolve_scope_names,
 )
 
+SORTABLE_FIELDS = {
+    "posting_date": lambda row: (row.get("posting_date") or "", row.get("journal_line_id") or 0),
+    "voucher_number": lambda row: (row.get("voucher_number") or "", row.get("journal_line_id") or 0),
+    "voucher_type": lambda row: (row.get("voucher_type_name") or row.get("voucher_type") or "", row.get("journal_line_id") or 0),
+    "description": lambda row: (row.get("description") or "", row.get("journal_line_id") or 0),
+    "debit": lambda row: Decimal(row.get("debit") or "0.00"),
+    "credit": lambda row: Decimal(row.get("credit") or "0.00"),
+    "running_balance": lambda row: Decimal(row.get("running_balance") or "0.00"),
+}
+
 
 def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
     txn_type = line.txn_type
@@ -55,7 +65,21 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
     }
 
 
-def build_ledger_book(entity_id, ledger_id, entityfin_id=None, subentity_id=None, from_date=None, to_date=None):
+def build_ledger_book(
+    entity_id,
+    ledger_id,
+    entityfin_id=None,
+    subentity_id=None,
+    from_date=None,
+    to_date=None,
+    *,
+    search=None,
+    voucher_types=None,
+    sort_by=None,
+    sort_order="asc",
+    page=1,
+    page_size=100,
+):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = resolve_date_window(entityfin_id, from_date, to_date)
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
@@ -73,32 +97,67 @@ def build_ledger_book(entity_id, ledger_id, entityfin_id=None, subentity_id=None
     row_data = []
     total_debit = Decimal("0.00")
     total_credit = Decimal("0.00")
+    voucher_type_set = {str(value).strip().lower() for value in (voucher_types or []) if str(value).strip()}
+    search_term = str(search or "").strip().lower()
     for line in lines:
         debit = line.amount if line.drcr else Decimal("0.00")
         credit = line.amount if not line.drcr else Decimal("0.00")
         running += debit - credit
         total_debit += debit
         total_credit += credit
-        row_data.append(
-            {
-                "journal_line_id": line.id,
-                "entry_id": line.entry_id,
-                "posting_date": line.posting_date,
-                "voucher_number": line.voucher_no or getattr(line.entry, "voucher_no", None),
-                "voucher_type": line.txn_type,
-                "voucher_type_name": line.get_txn_type_display() if hasattr(line, "get_txn_type_display") else None,
-                "description": line.description,
-                "debit": f"{debit:.2f}",
-                "credit": f"{credit:.2f}",
-                "running_balance": f"{running:.2f}",
-                **_drilldown_meta(
-                    line,
-                    entity_id=entity_id,
-                    entityfin_id=entityfin_id,
-                    subentity_id=subentity_id,
-                ),
+        row = {
+            "journal_line_id": line.id,
+            "entry_id": line.entry_id,
+            "posting_date": line.posting_date,
+            "voucher_number": line.voucher_no or getattr(line.entry, "voucher_no", None),
+            "voucher_type": line.txn_type,
+            "voucher_type_name": line.get_txn_type_display() if hasattr(line, "get_txn_type_display") else None,
+            "description": line.description,
+            "debit": f"{debit:.2f}",
+            "credit": f"{credit:.2f}",
+            "running_balance": f"{running:.2f}",
+            **_drilldown_meta(
+                line,
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+            ),
+        }
+
+        if voucher_type_set:
+            voucher_matches = {
+                str(row["voucher_type"] or "").strip().lower(),
+                str(row["voucher_type_name"] or "").strip().lower(),
             }
-        )
+            if not voucher_matches.intersection(voucher_type_set):
+                continue
+
+        if search_term:
+            search_blob = " ".join(
+                str(value or "").strip().lower()
+                for value in (
+                    row["voucher_number"],
+                    row["voucher_type_name"],
+                    row["voucher_type"],
+                    row["description"],
+                )
+            )
+            if search_term not in search_blob:
+                continue
+
+        row_data.append(row)
+
+    sort_key = SORTABLE_FIELDS.get(sort_by or "posting_date", SORTABLE_FIELDS["posting_date"])
+    reverse = str(sort_order or "asc").lower() == "desc"
+    row_data = sorted(row_data, key=sort_key, reverse=reverse)
+
+    total_records = len(row_data)
+    safe_page_size = max(int(page_size or 100), 1)
+    total_pages = max((total_records + safe_page_size - 1) // safe_page_size, 1)
+    safe_page = min(max(int(page or 1), 1), total_pages)
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
+    paged_rows = row_data[start:end]
 
     return {
         "entity_id": entity_id,
@@ -124,5 +183,16 @@ def build_ledger_book(entity_id, ledger_id, entityfin_id=None, subentity_id=None
             "credit": f"{total_credit:.2f}",
             "closing_balance": f"{running:.2f}",
         },
-        "rows": row_data,
+        "pagination": {
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total_pages": total_pages,
+            "total_records": total_records,
+        },
+        "reporting": {
+            "basis": "ledger_running_balance",
+            "sort_by": sort_by or "posting_date",
+            "sort_order": "desc" if reverse else "asc",
+        },
+        "rows": paged_rows,
     }

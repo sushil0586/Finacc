@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from django.db.models import Prefetch
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from payments.models import PaymentVoucherHeader, PaymentVoucherAllocation
+from rbac.services import EffectivePermissionService
 from payments.serializers.payment_voucher import (
     PaymentVoucherHeaderSerializer,
     PaymentVoucherListSerializer,
@@ -20,6 +21,22 @@ def _raise_validation_error(err: ValueError) -> None:
     if isinstance(payload, dict):
         raise ValidationError(payload)
     raise ValidationError({"non_field_errors": [str(payload)]})
+
+
+def _payment_permission_code(action: str) -> str:
+    return f"voucher.payment.{action}"
+
+
+def _require_payment_permission(user, *, entity_id: int, action: str):
+    entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
+    if entity is None:
+        raise PermissionDenied({"detail": "Entity not found or inaccessible."})
+
+    permission_codes = EffectivePermissionService.permission_codes_for_user(user, int(entity_id))
+    permission_code = _payment_permission_code(action)
+    legacy_code = f"payment.voucher.{action}"
+    if permission_code not in permission_codes and legacy_code not in permission_codes:
+        raise PermissionDenied({"detail": f"Missing permission: {permission_code}"})
 
 
 class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
@@ -50,6 +67,7 @@ class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids(required=True)
+        _require_payment_permission(self.request.user, entity_id=entity_id, action="view")
         qs = PaymentVoucherHeader.objects.select_related(
             "entity",
             "entityfinid",
@@ -81,6 +99,18 @@ class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
+        entity_id = payload.get("entity_id", payload.get("entity"))
+        if entity_id in (None, "", "null"):
+            raise ValidationError({"detail": "entity is required."})
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity must be an integer."})
+        _require_payment_permission(request.user, entity_id=entity_id, action="create")
+        return super().create(request, *args, **kwargs)
 
 
 class PaymentVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -122,16 +152,39 @@ class PaymentVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             return qs
         return qs.filter(subentity_id=subentity_id)
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        _require_payment_permission(request.user, entity_id=instance.entity_id, action="view")
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        _require_payment_permission(request.user, entity_id=instance.entity_id, action="update")
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        _require_payment_permission(request.user, entity_id=instance.entity_id, action="update")
+        return super().partial_update(request, *args, **kwargs)
+
     def perform_destroy(self, instance):
         if int(instance.status) != int(PaymentVoucherHeader.Status.DRAFT):
             raise ValidationError({"detail": "Only draft payment vouchers can be deleted. Use cancel flow."})
         super().perform_destroy(instance)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        _require_payment_permission(request.user, entity_id=instance.entity_id, action="delete")
+        return super().destroy(request, *args, **kwargs)
 
 
 class PaymentVoucherConfirmAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = PaymentVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        _require_payment_permission(request.user, entity_id=header.entity_id, action="confirm")
         try:
             result = PaymentVoucherService.confirm_voucher(pk, confirmed_by_id=request.user.id)
         except ValueError as e:
@@ -146,6 +199,8 @@ class PaymentVoucherPostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = PaymentVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        _require_payment_permission(request.user, entity_id=header.entity_id, action="post")
         try:
             result = PaymentVoucherService.post_voucher(pk, posted_by_id=request.user.id)
         except ValueError as e:
@@ -160,14 +215,18 @@ class PaymentVoucherApprovalAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = PaymentVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
         action = (request.data.get("action") or "").strip().lower()
         remarks = (request.data.get("remarks") or "").strip() or None
         try:
             if action == "submit":
+                _require_payment_permission(request.user, entity_id=header.entity_id, action="submit")
                 result = PaymentVoucherService.submit_voucher(pk, submitted_by_id=request.user.id, remarks=remarks)
             elif action == "approve":
+                _require_payment_permission(request.user, entity_id=header.entity_id, action="approve")
                 result = PaymentVoucherService.approve_voucher(pk, approved_by_id=request.user.id, remarks=remarks)
             elif action == "reject":
+                _require_payment_permission(request.user, entity_id=header.entity_id, action="reject")
                 result = PaymentVoucherService.reject_voucher(pk, rejected_by_id=request.user.id, remarks=remarks)
             else:
                 raise ValidationError({"detail": "action must be submit|approve|reject"})
@@ -186,6 +245,8 @@ class PaymentVoucherCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = PaymentVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        _require_payment_permission(request.user, entity_id=header.entity_id, action="cancel")
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PaymentVoucherService.cancel_voucher(pk, reason=reason, cancelled_by_id=request.user.id)
@@ -201,6 +262,8 @@ class PaymentVoucherUnpostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        header = PaymentVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        _require_payment_permission(request.user, entity_id=header.entity_id, action="unpost")
         try:
             result = PaymentVoucherService.unpost_voucher(pk, unposted_by_id=request.user.id)
         except ValueError as e:
@@ -259,6 +322,7 @@ class PaymentVoucherSettlementSummaryAPIView(APIView):
             subentity_id = int(subentity) if subentity not in (None, "", "null") else None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+        _require_payment_permission(request.user, entity_id=entity_id, action="view")
 
         qs = PaymentVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
         if subentity_id is not None:

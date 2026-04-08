@@ -6,13 +6,43 @@ from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
+from rbac.services import EffectivePermissionService
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_invoice_service import SalesInvoiceService
+
+
+def _resolve_sales_doc_type(raw_doc_type) -> int:
+    try:
+        return int(raw_doc_type or SalesInvoiceHeader.DocType.TAX_INVOICE)
+    except (TypeError, ValueError):
+        return int(SalesInvoiceHeader.DocType.TAX_INVOICE)
+
+
+def _sales_permission_prefix(raw_doc_type) -> str:
+    doc_type = _resolve_sales_doc_type(raw_doc_type)
+    if doc_type == int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
+        return "sales.credit_note"
+    if doc_type == int(SalesInvoiceHeader.DocType.DEBIT_NOTE):
+        return "sales.debit_note"
+    return "sales.invoice"
+
+
+def require_sales_request_permission(*, user, entity_id: int, doc_type, action: str):
+    entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
+    if entity is None:
+        raise PermissionDenied({"detail": "Entity not found or inaccessible."})
+
+    permission_code = f"{_sales_permission_prefix(doc_type)}.{action}"
+    permission_codes = EffectivePermissionService.permission_codes_for_user(user, int(entity_id))
+    if permission_code not in permission_codes:
+        if action == "update" and "sales.invoice.edit" in permission_codes:
+            return
+        raise PermissionDenied({"detail": f"Missing permission: {permission_code}"})
 
 
 class _SalesScopeMixin:
@@ -65,6 +95,15 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
     serializer_class = SalesInvoiceHeaderSerializer
 
     def get_queryset(self):
+        scope_filters = self._scope_filters(self.request)
+        entity_id = scope_filters.get("entity_id")
+        if entity_id:
+            require_sales_request_permission(
+                user=self.request.user,
+                entity_id=entity_id,
+                doc_type=self.request.query_params.get("doc_type"),
+                action="view",
+            )
         qs = (
             self._scoped_queryset()
             .select_related(
@@ -130,6 +169,21 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         return ctx
 
     def create(self, request, *args, **kwargs):
+        payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
+        entity_id = payload.get("entity_id", payload.get("entity"))
+        if entity_id in (None, "", "null"):
+            raise DRFValidationError({"detail": "entity is required."})
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise DRFValidationError({"detail": "entity must be an integer."})
+
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=entity_id,
+            doc_type=payload.get("doc_type"),
+            action="create",
+        )
         try:
             return super().create(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
@@ -164,7 +218,25 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
         ctx["line_mode"] = self._get_line_mode()
         return ctx
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="view",
+        )
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
     def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="update",
+        )
         try:
             return super().update(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
@@ -172,11 +244,28 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
     def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="update",
+        )
         try:
             return super().partial_update(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             detail = getattr(e, "message_dict", None) or str(e)
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="delete",
+        )
+        return super().destroy(request, *args, **kwargs)
 
 
 class SalesServiceInvoiceListCreateAPIView(SalesInvoiceListCreateAPIView):
@@ -190,6 +279,12 @@ class SalesServiceInvoiceRetrieveUpdateAPIView(SalesInvoiceRetrieveUpdateAPIView
 class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):
     def post(self, request, pk: int):
         header = self._get_scoped_header(pk)
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="confirm",
+        )
         try:
             header = SalesInvoiceService.confirm(header=header, user=request.user)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
@@ -201,6 +296,12 @@ class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):
 class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
     def post(self, request, pk: int):
         header = self._get_scoped_header(pk)
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="post",
+        )
         try:
             header = SalesInvoiceService.post(header=header, user=request.user)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
@@ -212,6 +313,12 @@ class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
 class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
     def post(self, request, pk: int):
         header = self._get_scoped_header(pk)
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="cancel",
+        )
         reason = (request.data or {}).get("reason", "")
         try:
             header = SalesInvoiceService.cancel(header=header, user=request.user, reason=reason)
@@ -224,6 +331,12 @@ class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
 class SalesInvoiceReverseAPIView(_SalesScopeMixin, APIView):
     def post(self, request, pk: int):
         header = self._get_scoped_header(pk)
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="unpost",
+        )
         reason = (request.data or {}).get("reason", "")
         try:
             header = SalesInvoiceService.reverse_posting(header=header, user=request.user, reason=reason)
@@ -236,6 +349,12 @@ class SalesInvoiceReverseAPIView(_SalesScopeMixin, APIView):
 class SalesInvoiceSettlementAPIView(_SalesScopeMixin, APIView):
     def post(self, request, pk: int):
         header = self._get_scoped_header(pk)
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="update",
+        )
         payload = request.data or {}
         settled_amount = payload.get("settled_amount")
         note = payload.get("note", "")

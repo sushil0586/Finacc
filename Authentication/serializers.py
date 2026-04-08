@@ -95,12 +95,16 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_uentity(self, obj):
         now = timezone.now()
+        membership_account_ids = SubscriptionService.active_memberships_queryset(
+            user=obj
+        ).values_list("customer_account_id", flat=True)
         assignments = (
             UserRoleAssignment.objects.filter(
                 user=obj,
                 isactive=True,
                 role__isactive=True,
             )
+            .filter(entity__customer_account_id__in=membership_account_ids)
             .filter(
                 Q(effective_from__isnull=True) | Q(effective_from__lte=now),
                 Q(effective_to__isnull=True) | Q(effective_to__gte=now),
@@ -128,6 +132,7 @@ class UserSerializer(serializers.ModelSerializer):
 class AuthenticatedUserSerializer(serializers.ModelSerializer):
     entity_count = serializers.SerializerMethodField()
     is_locked = serializers.ReadOnlyField()
+    subscription = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -142,16 +147,21 @@ class AuthenticatedUserSerializer(serializers.ModelSerializer):
             "is_staff",
             "is_locked",
             "entity_count",
+            "subscription",
         )
 
     def get_entity_count(self, obj):
         now = timezone.now()
+        membership_account_ids = SubscriptionService.active_memberships_queryset(
+            user=obj
+        ).values_list("customer_account_id", flat=True)
         return (
             UserRoleAssignment.objects.filter(
                 user=obj,
                 isactive=True,
                 role__isactive=True,
             )
+            .filter(entity__customer_account_id__in=membership_account_ids)
             .filter(
                 Q(effective_from__isnull=True) | Q(effective_from__lte=now),
                 Q(effective_to__isnull=True) | Q(effective_to__gte=now),
@@ -160,6 +170,9 @@ class AuthenticatedUserSerializer(serializers.ModelSerializer):
             .distinct()
             .count()
         )
+
+    def get_subscription(self, obj):
+        return SubscriptionService.build_subscription_snapshot(user=obj)
 
 
 class LoginSerializer(serializers.ModelSerializer):

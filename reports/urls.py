@@ -5,6 +5,7 @@ from reports.api.financial import (
     FinancialReportsMetaAPIView,
     LedgerBookAPIView,
     ProfitAndLossAPIView,
+    TradingAccountAPIView,
     TrialBalanceAPIView,
 )
 from reports.api.assets_views import (
@@ -150,6 +151,9 @@ urlpatterns = [
     path("financial/ledger-book/", LedgerBookAPIView.as_view(), name="financial-ledger-book"),
     path("financial/profit-loss/", ProfitAndLossAPIView.as_view(), name="financial-profit-loss"),
     path("financial/balance-sheet/", BalanceSheetAPIView.as_view(), name="financial-balance-sheet"),
+    path("financial/trading-account/", TradingAccountAPIView.as_view(), name="financial-trading-account"),
+    path("trading-account", TradingAccountAPIView.as_view(), name="trading-account-noslash"),
+    path("trading-account/", TradingAccountAPIView.as_view(), name="trading-account"),
     path("fixed-assets/register/", FixedAssetRegisterAPIView.as_view(), name="fixed-asset-register"),
     path("fixed-assets/register/excel/", FixedAssetRegisterExcelAPIView.as_view(), name="fixed-asset-register-excel"),
     path("fixed-assets/register/pdf/", FixedAssetRegisterPDFAPIView.as_view(), name="fixed-asset-register-pdf"),

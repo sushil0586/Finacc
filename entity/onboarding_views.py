@@ -48,6 +48,7 @@ class EntityOnboardingCreateAPIView(APIView):
             "constitution_ids": result["constitution_ids"],
             "financial": result["financial"],
             "rbac": result["rbac"],
+            "validation_warnings": result.get("validation_warnings", []),
             "subscription": SubscriptionService.build_subscription_snapshot(entity=entity),
         }
         output = EntityOnboardingResponseSerializer(response_payload)
@@ -109,6 +110,7 @@ class RegisterAndEntityOnboardingCreateAPIView(APIView):
             "constitution_ids": result["onboarding"]["constitution_ids"],
             "financial": result["onboarding"]["financial"],
             "rbac": result["onboarding"]["rbac"],
+            "validation_warnings": result["onboarding"].get("validation_warnings", []),
             "subscription": result["subscription"],
         }
         response_payload = {
@@ -135,6 +137,23 @@ class EntityOnboardingMetaAPIView(APIView):
     def get(self, request, *args, **kwargs):
         payload = {
             "version": "v2",
+            "workflow": {
+                "public_signup_flow": {
+                    "endpoint": "/api/entity/onboarding/register/",
+                    "role": "primary",
+                    "description": "Creates the user, tenant, subscription, first entity, first head office subentity, and seeded setup.",
+                },
+                "additional_entity_flow": {
+                    "endpoint": "/api/entity/onboarding/create/",
+                    "role": "primary",
+                    "description": "Creates an additional entity under the current tenant after subscription and membership checks.",
+                },
+                "auth_register_flow": {
+                    "endpoint": "/api/auth/register",
+                    "role": "secondary",
+                    "description": "Creates only the user, tenant, subscription, and owner membership. It does not complete ERP onboarding.",
+                },
+            },
             "defaults": {
                 "seed_options": {
                     "template_code": "indian_accounting_final",
@@ -142,6 +161,13 @@ class EntityOnboardingMetaAPIView(APIView):
                     "seed_rbac": True,
                     "seed_default_subentity": True,
                     "seed_default_roles": True,
+                },
+                "policy": {
+                    "gstin_state_match_mode": "hard",
+                    "require_subentity_mode": "hard",
+                    "require_head_office_subentity_mode": "hard",
+                    "require_entity_primary_gstin_mode": "hard",
+                    "subentity_gstin_state_match_mode": "hard",
                 },
                 "bank_account_types": [
                     {"value": "current", "label": "Current"},
@@ -155,6 +181,7 @@ class EntityOnboardingMetaAPIView(APIView):
             "payload_contract": {
                 "root_keys": [
                     "entity",
+                    "policy",
                     "financial_years",
                     "bank_accounts",
                     "subentities",
@@ -229,21 +256,6 @@ class EntityOnboardingMetaAPIView(APIView):
                 "cities": "/api/entity/onboarding/options/cities/?district_id=<id>",
                 "gst_lookup": "/api/entity/onboarding/gst-lookup/?gstno=<gstin>",
             },
-            "deprecated_endpoints": [
-                "/api/entity/entityDetails",
-                "/api/entity/unittype",
-                "/api/entity/constitution",
-                "/api/entity/entityfy",
-                "/api/entity/entityfylist",
-                "/api/entity/subentity",
-                "/api/entity/subentity/<id>",
-                "/api/entity/subentitybyentity/",
-                "/api/entity/getyearsbyentity",
-                "/api/entity/bankaccounts/",
-                "/api/entity/bankaccounts/<pk>/",
-                "/api/entity/bankaccounts/entity/<entity_id>/",
-                "/api/entity/entity/<id>/",
-            ],
         }
         output = OnboardingMetaResponseSerializer(payload)
         return Response(output.data, status=status.HTTP_200_OK)
@@ -254,7 +266,7 @@ class OnboardingCountryOptionsAPIView(APIView):
     authentication_classes = []
 
     def get(self, request, *args, **kwargs):
-        rows = Country.objects.all().order_by("countryname")
+        rows = Country.objects.filter(isactive=True).order_by("countryname")
         return Response(CountryOptionSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -264,7 +276,7 @@ class OnboardingStateOptionsAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         country_id = request.query_params.get("country_id")
-        rows = State.objects.all().order_by("statename")
+        rows = State.objects.filter(isactive=True).order_by("statename")
         if country_id:
             rows = rows.filter(country_id=country_id)
         return Response(StateOptionSerializer(rows, many=True).data, status=status.HTTP_200_OK)
@@ -276,7 +288,7 @@ class OnboardingDistrictOptionsAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         state_id = request.query_params.get("state_id")
-        rows = District.objects.all().order_by("districtname")
+        rows = District.objects.filter(isactive=True).order_by("districtname")
         if state_id:
             rows = rows.filter(state_id=state_id)
         return Response(DistrictOptionSerializer(rows, many=True).data, status=status.HTTP_200_OK)
@@ -288,7 +300,7 @@ class OnboardingCityOptionsAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         district_id = request.query_params.get("district_id")
-        rows = City.objects.all().order_by("cityname")
+        rows = City.objects.filter(isactive=True).order_by("cityname")
         if district_id:
             rows = rows.filter(distt_id=district_id)
         return Response(CityOptionSerializer(rows, many=True).data, status=status.HTTP_200_OK)
@@ -308,8 +320,16 @@ class OnboardingGstLookupAPIView(APIView):
             raise ValidationError({"gstno": "GST details could not be fetched."})
 
         try:
-            state = State.objects.filter(statecode=gst_data.get("StateCode")).first()
-            city = City.objects.filter(pincode=gst_data.get("AddrPncd")).first()
+            state_code = str(gst_data.get("StateCode") or "").strip().zfill(2)
+            state = State.objects.filter(isactive=True, statecode=state_code).first()
+            city = City.objects.filter(isactive=True, pincode=gst_data.get("AddrPncd")).first()
+            if state and city and city.distt_id and city.distt and city.distt.state_id != state.id:
+                city = City.objects.filter(
+                    isactive=True,
+                    pincode=gst_data.get("AddrPncd"),
+                    distt__state=state,
+                    distt__isactive=True,
+                ).first()
             district = city.distt if city else None
             country = state.country if state else None
         except Exception:

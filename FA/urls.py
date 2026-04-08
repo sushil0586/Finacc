@@ -49,6 +49,7 @@ urlpatterns = [
     path("api/receipts/", include("receipts.urls")),
     path("api/assets/", include("assets.urls")),
     path("api/rbac/", include("rbac.urls", namespace="rbac_api")),
+    path("api/subscriptions/", include("subscriptions.urls", namespace="subscriptions_api")),
     path("api/vouchers/", include("vouchers.urls")),
     path("api/sales/", include("sales.urls.api")),
     path("api/posting/", include("posting.urls")),

@@ -111,12 +111,16 @@ class RegisterApiView(ListCreateAPIView):
             "last_name": user.last_name,
             "email": user.email,
             "email_verified": user.email_verified,
+            "signup_flow": "account_only",
+            "entity_onboarding_completed": False,
+            "next_step": "entity_onboarding_required",
+            "recommended_onboarding_endpoint": "/api/entity/onboarding/register/",
             "intent": intent,
             "trial_started": subscription["subscription"]["is_trial"],
             "message": (
-                "Your free trial has started."
+                "Your free trial has started. Finish entity onboarding to start ERP operations."
                 if subscription["subscription"]["is_trial"]
-                else "Account created successfully."
+                else "Account created successfully. Finish entity onboarding to start ERP operations."
             ),
             "subscription": subscription,
         }
@@ -210,6 +214,7 @@ class LoginApiView(GenericAPIView):
             "token_type": "Bearer",
             "expires_in": int((session.expires_at - session.issued_at).total_seconds()),
             "refresh_expires_in": int((session.refresh_expires_at - session.issued_at).total_seconds()),
+            "subscription": SubscriptionService.build_subscription_snapshot(user=user),
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -328,6 +333,7 @@ class RefreshTokenApiView(GenericAPIView):
                 "token_type": "Bearer",
                 "expires_in": int((session.expires_at - session.issued_at).total_seconds()),
                 "refresh_expires_in": int((session.refresh_expires_at - session.issued_at).total_seconds()),
+                "subscription": SubscriptionService.build_subscription_snapshot(user=user),
                 "user": {
                     "id": user.id,
                     "username": user.username,

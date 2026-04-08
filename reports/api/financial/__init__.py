@@ -4,6 +4,7 @@ from .views import (
     FinancialReportsMetaAPIView,
     LedgerBookAPIView,
     ProfitAndLossAPIView,
+    TradingAccountAPIView,
     TrialBalanceAPIView,
 )
 
@@ -13,4 +14,5 @@ __all__ = [
     "LedgerBookAPIView",
     "ProfitAndLossAPIView",
     "BalanceSheetAPIView",
+    "TradingAccountAPIView",
 ]

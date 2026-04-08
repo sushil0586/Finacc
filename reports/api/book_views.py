@@ -4,6 +4,7 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from posting.models import Entry
 from reports.schemas.book_reports import CashbookScopeSerializer, DaybookScopeSerializer
 from reports.schemas.common import build_report_envelope
@@ -13,18 +14,28 @@ from reports.services.financial.books import (
     build_daybook,
     build_daybook_entry_detail,
 )
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
-class _BaseBookReportAPIView(APIView):
+class _BaseBookReportAPIView(ScopedEntitlementMixin, APIView):
     """Common utilities for thin report views that delegate accounting logic to services."""
 
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = None
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get_scope(self, request):
         serializer = self.serializer_class(data=request.query_params)
         serializer.is_valid(raise_exception=True)
-        return serializer.validated_data
+        scope = serializer.validated_data
+        self.enforce_scope(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
+        return scope
 
     def attach_pagination_links(self, request, payload):
         """Populate stable `next` and `previous` URLs for paginated report responses."""
@@ -79,6 +90,7 @@ class DaybookAPIView(_BaseBookReportAPIView):
                     "entity": scope["entity"],
                     "entityfinid": scope.get("entityfinid"),
                     "subentity": scope.get("subentity"),
+                    "scope_mode": scope.get("scope_mode"),
                     "from_date": scope.get("from_date"),
                     "to_date": scope.get("to_date"),
                     "voucher_type": scope.get("voucher_types", []),
@@ -94,10 +106,12 @@ class DaybookAPIView(_BaseBookReportAPIView):
         )
 
 
-class DaybookEntryDetailAPIView(APIView):
+class DaybookEntryDetailAPIView(ScopedEntitlementMixin, APIView):
     """Return a journal-line drill-down payload for a single posting entry."""
 
     permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request, entry_id: int):
         entity_id = request.query_params.get("entity")
@@ -105,6 +119,12 @@ class DaybookEntryDetailAPIView(APIView):
             return Response({"detail": "entity is required."}, status=400)
         entityfin_id = request.query_params.get("entityfinid")
         subentity_id = request.query_params.get("subentity")
+        self.enforce_scope(
+            request,
+            entity_id=int(entity_id),
+            entityfinid_id=int(entityfin_id) if entityfin_id else None,
+            subentity_id=int(subentity_id) if subentity_id else None,
+        )
         try:
             data = build_daybook_entry_detail(
                 entry_id=entry_id,
@@ -152,6 +172,7 @@ class CashbookAPIView(_BaseBookReportAPIView):
                     "entity": scope["entity"],
                     "entityfinid": scope.get("entityfinid"),
                     "subentity": scope.get("subentity"),
+                    "scope_mode": scope.get("scope_mode"),
                     "from_date": scope.get("from_date"),
                     "to_date": scope.get("to_date"),
                     "mode": scope.get("mode", "both"),

@@ -65,7 +65,19 @@ def ensure_date(value):
     if isinstance(value, date):
         return value
     if isinstance(value, str):
-        return date.fromisoformat(value)
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            normalized = text.replace("Z", "+00:00")
+            try:
+                return datetime.fromisoformat(normalized).date()
+            except ValueError:
+                if "T" in text:
+                    return date.fromisoformat(text.split("T", 1)[0])
+                raise
     return value.date()
 
 

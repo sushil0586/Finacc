@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from assets.models import AssetSettings
 from assets.services.settings import AssetSettingsService
 from entity.models import SubEntity
@@ -26,6 +27,7 @@ from sales.services.sales_settings_service import SalesSettingsService
 from vouchers.models.voucher_config import VoucherSettings
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from reports.services.financial.reporting_policy import resolve_financial_reporting_policy
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -80,8 +82,10 @@ def _sections_from_payload(schema: list[dict], *, include_policy=False, include_
     return sections
 
 
-class SettingsHubAPIView(APIView):
+class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     MODULE_ORDER = ["financial", "sales", "purchase", "payments", "receipts", "vouchers", "assets"]
 
@@ -101,6 +105,7 @@ class SettingsHubAPIView(APIView):
         entity_id = self._parse_int(request.query_params.get("entity"), "entity", required=True)
         entityfinid_id = self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=False)
         subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity", required=False)
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, entityfinid_id, subentity_id
 
     def _subentity_options(self, entity_id: int):

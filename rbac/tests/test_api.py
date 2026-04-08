@@ -43,6 +43,22 @@ class RBACAPITests(TestCase):
         UserRoleAssignment.objects.create(user=user, entity=entity, role=role, is_primary=True)
         return role, permission
 
+    def _grant_admin_permissions(self, *, entity, user, codes):
+        role = Role.objects.create(entity=entity, name="RBAC Admin", code=f"rbac_admin_{entity.id}_{user.id}_{len(codes)}")
+        for code in codes:
+            permission, _ = Permission.objects.get_or_create(
+                code=code,
+                defaults={
+                    "name": code,
+                    "module": "admin",
+                    "resource": code.split(".")[1] if "." in code else "rbac",
+                    "action": code.rsplit(".", 1)[-1],
+                },
+            )
+            RolePermission.objects.get_or_create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=user, entity=entity, role=role, is_primary=True)
+        return role
+
     def test_menu_tree_endpoint_returns_nested_children(self):
         root = Menu.objects.create(name="Sales", code=f"{self.prefix}.sales.root", menu_type=Menu.TYPE_GROUP)
         Menu.objects.create(name="Invoices", code=f"{self.prefix}.sales.invoices", parent=root)
@@ -88,7 +104,43 @@ class RBACAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["entity_id"], self.entity_a.id)
         self.assertEqual(response.data["menus"][0]["name"], "Sales")
+        self.assertEqual(response.data["menus"][0]["code"], root.code)
         self.assertEqual(response.data["menus"][0]["children"][0]["name"], "Invoices")
+
+    def test_user_menu_endpoint_returns_canonical_menu_codes_and_normalized_routes(self):
+        root = Menu.objects.create(
+            name="Admin",
+            code=f"{self.prefix}.admin",
+            menu_type=Menu.TYPE_GROUP,
+            route_path="admin",
+            route_name="admin",
+        )
+        child = Menu.objects.create(
+            name="Users",
+            code=f"{self.prefix}.admin.users",
+            parent=root,
+            route_path="user",
+            route_name="user",
+        )
+        role, root_permission = self._grant_basic_access(entity=self.entity_a, user=self.user)
+        child_permission = Permission.objects.create(
+            code=f"{self.prefix}.admin.users.view",
+            name="View Users Menu",
+            module="admin",
+            resource="user",
+            action="view",
+        )
+        MenuPermission.objects.create(menu=root, permission=root_permission)
+        MenuPermission.objects.create(menu=child, permission=child_permission)
+        RolePermission.objects.create(role=role, permission=child_permission)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["menus"][0]["code"], root.code)
+        self.assertEqual(response.data["menus"][0]["route_path"], "/admin")
+        self.assertEqual(response.data["menus"][0]["children"][0]["code"], child.code)
+        self.assertEqual(response.data["menus"][0]["children"][0]["route_path"], "/user")
 
     def test_effective_access_preview_denies_when_requester_has_only_future_assignment(self):
         role = Role.objects.create(entity=self.entity_a, name="Reports User", code="REPORTS_USER")
@@ -122,10 +174,10 @@ class RBACAPITests(TestCase):
             action="view",
         )
         RolePermission.objects.create(role=role, permission=permission)
-        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+        self._grant_admin_permissions(entity=self.entity_a, user=self.user, codes=("admin.role.create",))
 
         response = self.client.post(
-            f"/api/rbac/admin/roles/{role.id}/clone",
+            f"/api/rbac/admin/roles/{role.id}/clone?entity={self.entity_a.id}",
             {"name": "Sales User Copy", "code": "SALES_USER_COPY"},
             format="json",
         )
@@ -136,9 +188,9 @@ class RBACAPITests(TestCase):
 
     def test_role_delete_is_soft_delete(self):
         role = Role.objects.create(entity=self.entity_a, name="Temp Role", code="TEMP_ROLE")
-        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+        self._grant_admin_permissions(entity=self.entity_a, user=self.user, codes=("admin.role.delete",))
 
-        response = self.client.delete(f"/api/rbac/admin/roles/{role.id}")
+        response = self.client.delete(f"/api/rbac/admin/roles/{role.id}?entity={self.entity_a.id}")
 
         self.assertEqual(response.status_code, 204)
         role.refresh_from_db()
@@ -147,6 +199,11 @@ class RBACAPITests(TestCase):
 
     def test_future_assignment_cannot_access_admin_bootstrap(self):
         role = Role.objects.create(entity=self.entity_a, name="Future Role", code="FUTURE_ROLE")
+        permission, _ = Permission.objects.get_or_create(
+            code="admin.role.view",
+            defaults={"name": "View Roles", "module": "admin", "resource": "role", "action": "view"},
+        )
+        RolePermission.objects.get_or_create(role=role, permission=permission)
         UserRoleAssignment.objects.create(
             user=self.user,
             entity=self.entity_a,
@@ -161,7 +218,7 @@ class RBACAPITests(TestCase):
         self.assertEqual(response.data["detail"], "You do not have access to this entity.")
 
     def test_tenant_boundary_denies_other_entity_access(self):
-        self._grant_basic_access(entity=self.entity_a, user=self.user)
+        self._grant_admin_permissions(entity=self.entity_a, user=self.user, codes=("admin.role.view",))
 
         response = self.client.get(f"/api/rbac/admin/bootstrap?entity={self.entity_b.id}")
 
@@ -187,3 +244,37 @@ class RBACAPITests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(f"{self.prefix}.voucher.post", response.data["permissions"])
+
+    def test_admin_bootstrap_requires_explicit_role_view_permission(self):
+        self._grant_basic_access(entity=self.entity_a, user=self.user)
+
+        response = self.client.get(f"/api/rbac/admin/bootstrap?entity={self.entity_a.id}")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["detail"], "You do not have permission to perform this action for this entity.")
+
+    def test_admin_bootstrap_exposes_capabilities_from_permissions(self):
+        self._grant_admin_permissions(
+            entity=self.entity_a,
+            user=self.user,
+            codes=("admin.role.view", "admin.role.update", "admin.user.view"),
+        )
+
+        response = self.client.get(f"/api/rbac/admin/bootstrap?entity={self.entity_a.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["capabilities"],
+            {
+                "can_view_roles": True,
+                "can_manage_roles": True,
+                "can_view_menus": True,
+                "can_manage_menus": True,
+                "can_view_role_access": True,
+                "can_manage_role_access": True,
+                "can_view_user_access": True,
+                "can_manage_user_access": False,
+                "can_preview_access": True,
+                "can_view_audit": True,
+            },
+        )

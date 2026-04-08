@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
@@ -24,6 +25,7 @@ from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.sales_compliance_service import SalesComplianceService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
 
 
@@ -39,8 +41,10 @@ def _enum_choices_to_payload(enum_cls):
     return out
 
 
-class SalesMetaBaseAPIView(APIView):
+class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_SALES
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def _parse_int(self, raw_value, field_name: str, required: bool = False):
         if raw_value in (None, "", "null", "None"):
@@ -62,6 +66,7 @@ class SalesMetaBaseAPIView(APIView):
         subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity", required=False)
         if subentity_id == 0:
             subentity_id = None
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, entityfinid_id, subentity_id
 
     def _parse_line_mode(self, request) -> str | None:

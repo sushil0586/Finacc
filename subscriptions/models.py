@@ -59,7 +59,15 @@ class CustomerAccount(TimeStampedModel, SoftDeleteModel):
         related_name="owned_customer_accounts",blank=True, null=True,
     )
 
+    legal_name = models.CharField(max_length=255, blank=True, null=True)
+    trade_name = models.CharField(max_length=255, blank=True, null=True)
+    primary_contact_name = models.CharField(max_length=150, blank=True, null=True)
+    primary_contact_email = models.EmailField(blank=True, null=True)
+    primary_contact_phone = models.CharField(max_length=30, blank=True, null=True)
+    billing_contact_name = models.CharField(max_length=150, blank=True, null=True)
+    billing_contact_phone = models.CharField(max_length=30, blank=True, null=True)
     billing_email = models.EmailField(blank=True, null=True)
+    support_email = models.EmailField(blank=True, null=True)
     external_customer_id = models.CharField(
         max_length=120,
         blank=True,
@@ -76,6 +84,8 @@ class CustomerAccount(TimeStampedModel, SoftDeleteModel):
 
     timezone = models.CharField(max_length=64, default="UTC")
     country = models.CharField(max_length=2, blank=True, null=True)
+    status_reason = models.CharField(max_length=255, blank=True, null=True)
+    status_notes = models.TextField(blank=True, null=True)
 
     metadata = models.JSONField(default=dict, blank=True)
 
@@ -96,8 +106,27 @@ class CustomerAccount(TimeStampedModel, SoftDeleteModel):
         return self.status in {self.Status.ACTIVE, self.Status.SUSPENDED}
 
     @property
-    def is_usable(self):
+    def is_setup_accessible(self):
+        return self.is_active and self.status in {
+            self.Status.PENDING,
+            self.Status.ACTIVE,
+        }
+
+    @property
+    def is_operationally_active(self):
         return self.status == self.Status.ACTIVE and self.is_active
+
+    @property
+    def is_billing_accessible(self):
+        return self.is_active and self.status in {
+            self.Status.PENDING,
+            self.Status.ACTIVE,
+            self.Status.SUSPENDED,
+        }
+
+    @property
+    def is_usable(self):
+        return self.is_operationally_active
 
 
 class SubscriptionPlan(TimeStampedModel, SoftDeleteModel):
@@ -350,6 +379,29 @@ class CustomerSubscription(TimeStampedModel, SoftDeleteModel):
             return False
 
         return True
+
+    @property
+    def is_setup_accessible(self):
+        return self.is_active and self.status in {
+            self.Status.TRIALING,
+            self.Status.ACTIVE,
+            self.Status.PAST_DUE,
+        }
+
+    @property
+    def is_operationally_active(self):
+        return self.is_setup_accessible
+
+    @property
+    def is_billing_accessible(self):
+        return self.is_active and self.status in {
+            self.Status.TRIALING,
+            self.Status.ACTIVE,
+            self.Status.PAST_DUE,
+            self.Status.PAUSED,
+            self.Status.CANCELED,
+            self.Status.EXPIRED,
+        }
 
     def clean(self):
         if self.current_period_start and self.current_period_end:

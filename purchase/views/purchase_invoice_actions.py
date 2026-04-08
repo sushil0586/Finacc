@@ -12,6 +12,7 @@ from gst_tds.models import GstTdsContractLedger
 
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
+from purchase.views.rbac import require_purchase_request_permission
 
 
 def _raise_validation_error(err: ValueError) -> None:
@@ -47,7 +48,7 @@ def _assert_invoice_scope(pk: int, request):
     entity_id, entityfinid_id, subentity_id = _parse_scope(request, required=True)
     header = (
         PurchaseInvoiceHeader.objects
-        .only("id", "entity_id", "entityfinid_id", "subentity_id")
+        .only("id", "entity_id", "entityfinid_id", "subentity_id", "doc_type")
         .filter(pk=pk)
         .first()
     )
@@ -57,6 +58,7 @@ def _assert_invoice_scope(pk: int, request):
         raise ValidationError({"detail": "Invoice scope mismatch with entity/entityfinid."})
     if subentity_id is not None and int(header.subentity_id or 0) != int(subentity_id or 0):
         raise ValidationError({"detail": "Invoice subentity mismatch for requested scope."})
+    return header
 
 
 def _gst_tds_contract_summary_block(header):
@@ -105,7 +107,13 @@ class PurchaseInvoiceConfirmAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="post",
+        )
         try:
             result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
         except ValueError as e:
@@ -117,7 +125,13 @@ class PurchaseInvoicePostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="post",
+        )
         try:
             result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
         except ValueError as e:
@@ -129,7 +143,13 @@ class PurchaseInvoiceUnpostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="unpost",
+        )
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PurchaseInvoiceActions.unpost(pk, unposted_by_id=request.user.id, reason=reason)
@@ -142,7 +162,13 @@ class PurchaseInvoiceCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="cancel",
+        )
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
@@ -155,7 +181,13 @@ class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="rebuild_tax_summary",
+        )
         try:
             result = PurchaseInvoiceActions.rebuild_tax_summary(pk)
         except ValueError as e:
@@ -168,7 +200,13 @@ class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
 class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=DocType.CREDIT_NOTE,
+            action="create",
+        )
         try:
             res = PurchaseNoteFactory.create_note_from_invoice(
                 invoice_id=pk,
@@ -186,7 +224,13 @@ class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
 class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=DocType.DEBIT_NOTE,
+            action="create",
+        )
         try:
             res = PurchaseNoteFactory.create_note_from_invoice(
                 invoice_id=pk,
@@ -206,7 +250,13 @@ class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
 class PurchaseInvoiceITCBlockAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="itc",
+        )
         ser = ItcBlockSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
@@ -223,7 +273,13 @@ class PurchaseInvoiceITCBlockAPIView(APIView):
 class PurchaseInvoiceITCPendingAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="itc",
+        )
         try:
             result = PurchaseInvoiceActions.mark_itc_pending(pk, acted_by_id=request.user.id)
         except ValueError as e:
@@ -234,7 +290,13 @@ class PurchaseInvoiceITCPendingAPIView(APIView):
 class PurchaseInvoiceITCUnblockAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="itc",
+        )
         ser = ItcUnblockSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         reason = (ser.validated_data.get("reason") or "").strip() or None
@@ -248,7 +310,13 @@ class PurchaseInvoiceITCUnblockAPIView(APIView):
 class PurchaseInvoiceITCClaimAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="itc",
+        )
         ser = ItcClaimSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
@@ -265,7 +333,13 @@ class PurchaseInvoiceITCClaimAPIView(APIView):
 class PurchaseInvoiceITCReverseAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="itc",
+        )
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PurchaseInvoiceActions.mark_itc_reversed(pk, reason=reason, acted_by_id=request.user.id)
@@ -279,7 +353,13 @@ class PurchaseInvoiceITCReverseAPIView(APIView):
 class PurchaseInvoice2BMatchStatusAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request, pk: int):
-        _assert_invoice_scope(pk, request)
+        header = _assert_invoice_scope(pk, request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="gstr2b",
+        )
         ser = Match2BSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:

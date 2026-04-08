@@ -4,7 +4,8 @@ from rest_framework.test import APIClient
 
 from Authentication.models import User
 from entity.models import Entity
-from financial.models import AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, Ledger, account, accountHead
+from financial.models import AccountAddress, AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, Ledger, ShippingDetails, account, accountHead
+from geography.models import City, Country, District, State
 from financial.seeding import FinancialSeedService
 from financial.serializers_ledger import AccountProfileV2ReadSerializer, AccountProfileV2WriteSerializer
 from financial.services import (
@@ -361,6 +362,74 @@ class FinancialSeedTemplateTests(TestCase):
             createdby=self.user,
         )
         self.assertEqual(acc.accountname, "Account Create")
+
+
+class FinancialGeographyHierarchyTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="geo-fin@example.com",
+            username="geo-fin@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity = Entity.objects.create(entityname="Geo Entity", createdby=self.user)
+        self.account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Geo Account",
+                "createdby": self.user,
+            }
+        )
+        self.country = Country.objects.create(countryname="India", countrycode="IN")
+        self.state = State.objects.create(statename="Punjab", statecode="03", country=self.country)
+        self.other_state = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        self.district = District.objects.create(districtname="Fatehgarh Sahib", districtcode="FGS", state=self.state)
+        self.city = City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=self.district)
+
+    def test_account_address_rejects_city_from_other_state(self):
+        with self.assertRaises(ValidationError):
+            AccountAddress.objects.create(
+                account=self.account,
+                entity=self.entity,
+                createdby=self.user,
+                line1="Address 1",
+                country=self.country,
+                state=self.other_state,
+                district=self.district,
+                city=self.city,
+                pincode="140406",
+                isactive=True,
+            )
+
+    def test_contact_details_rejects_mismatched_district_and_state(self):
+        with self.assertRaises(ValidationError):
+            ContactDetails.objects.create(
+                account=self.account,
+                entity=self.entity,
+                createdby=self.user,
+                full_name="Geo Contact",
+                country=self.country,
+                state=self.other_state,
+                district=self.district,
+                city=self.city,
+                pincode="140406",
+                isprimary=True,
+            )
+
+    def test_shipping_details_accepts_consistent_hierarchy(self):
+        row = ShippingDetails.objects.create(
+            account=self.account,
+            entity=self.entity,
+            createdby=self.user,
+            full_name="Geo Shipping",
+            country=self.country,
+            state=self.state,
+            district=self.district,
+            city=self.city,
+            pincode="140406",
+            isprimary=True,
+        )
+        self.assertIsNotNone(row.id)
 
 
 class FinancialEndpointAliasTests(TestCase):

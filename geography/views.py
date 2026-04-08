@@ -1,7 +1,6 @@
 from rest_framework.generics import ListAPIView
-from rest_framework import permissions
 from geography.models import Country, State, District, City
-from geography.serializers import CountrySerializer, StateListSerializer, DistrictListSerializer, CityListSerializer,CountrySerializer
+from geography.serializers import CountrySerializer, StateListSerializer, DistrictListSerializer, CityListSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 
 
@@ -13,8 +12,7 @@ class CountryApiView(ListAPIView):
     filterset_fields = ['id']
 
     def get_queryset(self):
-        # Prefetch related states for each country
-        return Country.objects.prefetch_related('state').all()
+        return Country.objects.filter(isactive=True).prefetch_related('state')
 
 
 class StateApiView(ListAPIView):
@@ -25,8 +23,7 @@ class StateApiView(ListAPIView):
     filterset_fields = ['id', 'country']
 
     def get_queryset(self):
-        # Prefetch related districts for each state (using related_name='districts')
-        return State.objects.prefetch_related('districts').all()
+        return State.objects.filter(isactive=True, country__isactive=True).select_related('country').prefetch_related('districts')
 
 
 class DistrictApiView(ListAPIView):
@@ -37,8 +34,7 @@ class DistrictApiView(ListAPIView):
     filterset_fields = ['id', 'state']
 
     def get_queryset(self):
-        # Prefetch related cities for each district (using related_name='cities')
-        return District.objects.prefetch_related('cities').all()
+        return District.objects.filter(isactive=True, state__isactive=True).select_related('state').prefetch_related('cities')
 
 
 class CityApiView(ListAPIView):
@@ -46,8 +42,11 @@ class CityApiView(ListAPIView):
    
 
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['id', 'distt']
+    filterset_fields = ['id']
 
     def get_queryset(self):
-        # Just return all cities
-        return City.objects.all()
+        queryset = City.objects.filter(isactive=True, distt__isactive=True).select_related('distt')
+        district_id = self.request.query_params.get('district_id') or self.request.query_params.get('distt')
+        if district_id:
+            queryset = queryset.filter(distt_id=district_id)
+        return queryset

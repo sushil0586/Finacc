@@ -7,6 +7,7 @@ from Authentication.models import User
 from entity.models import Entity, SubEntity
 from rbac.models import Menu, Permission, Role, RolePermission, UserRoleAssignment
 from rbac.seeding import PayrollRBACSeedService
+from rbac.services import EffectivePermissionService, RoleTemplateService
 
 
 class RBACModelTests(TestCase):
@@ -90,6 +91,51 @@ class RBACModelTests(TestCase):
         with self.assertRaises(ValidationError):
             assignment.clean()
 
+    def test_primary_assignment_cannot_be_subentity_scoped(self):
+        role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
+        assignment = UserRoleAssignment(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            subentity=self.subentity,
+            is_primary=True,
+        )
+
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_primary_assignment_must_be_active(self):
+        role = Role.objects.create(entity=self.entity, name="Sales User", code="SALES_USER")
+        assignment = UserRoleAssignment(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            is_primary=True,
+            isactive=False,
+        )
+
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_entity_for_user_requires_tenant_membership(self):
+        outsider = User.objects.create_user(
+            email="outsider@example.com",
+            username="outsider@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        role = Role.objects.create(entity=self.entity, name="Viewer", code="VIEWER")
+        UserRoleAssignment.objects.create(
+            user=outsider,
+            entity=self.entity,
+            role=role,
+            is_primary=True,
+        )
+
+        resolved = EffectivePermissionService.entity_for_user(outsider, self.entity.id)
+
+        self.assertIsNone(resolved)
+
     def test_payroll_rbac_seed_service_is_idempotent(self):
         first = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)
         second = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)
@@ -116,3 +162,28 @@ class RBACModelTests(TestCase):
             RolePermission.objects.filter(role=admin_role, permission__module__in=["payroll", "reports", "payments"], isactive=True).count(),
             33,
         )
+
+    def test_role_template_service_uses_permission_code_prefixes_not_menu_metadata(self):
+        sales_permission = Permission.objects.create(
+            code="sales.template_test.create",
+            name="Create Sales Template Test",
+            module="misc",
+            resource="misc",
+            action="create",
+            metadata={},
+        )
+        unrelated_permission = Permission.objects.create(
+            code="inventory.template_test.post",
+            name="Post Inventory Adjustment",
+            module="sales",
+            resource="inventory",
+            action="post",
+            metadata={"menu_code": "sales.transactions.inventory"},
+        )
+
+        template_permissions = set(
+            RoleTemplateService._permission_queryset_for_template("sales_user").values_list("id", flat=True)
+        )
+
+        self.assertIn(sales_permission.id, template_permissions)
+        self.assertNotIn(unrelated_permission.id, template_permissions)
