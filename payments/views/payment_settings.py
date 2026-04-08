@@ -9,11 +9,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from numbering.models import DocumentNumberSeries
 from numbering.services import ensure_document_type, ensure_series
 from payments.models.payment_config import PaymentChoiceOverride, PaymentLockPeriod, PaymentSettings
 from payments.services.payment_choice_service import PaymentChoiceService
 from payments.services.payment_settings_service import PaymentSettingsService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -94,8 +96,10 @@ PAYMENT_DOC_TYPE = {
 }
 
 
-class PaymentSettingsAPIView(APIView):
+class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     @staticmethod
     def _is_private_override_key(key: Any) -> bool:
@@ -120,6 +124,7 @@ class PaymentSettingsAPIView(APIView):
         entity_id = self._parse_int(self._qp(request, "entity_id", "entity"), "entity_id", required=True)
         subentity_id = self._parse_int(self._qp(request, "subentity_id", "subentity"), "subentity_id", required=False)
         entityfinid_id = self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=require_entityfinid)
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, subentity_id, entityfinid_id
 
     @staticmethod

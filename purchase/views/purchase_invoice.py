@@ -19,6 +19,7 @@ from purchase.serializers.purchase_invoice import (
     PurchaseInvoiceListSerializer,
 )
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from purchase.views.rbac import require_purchase_request_permission
 
 
 class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
@@ -74,6 +75,13 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids(required=True)
+        requested_doc_type = self.request.query_params.get("doc_type")
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=requested_doc_type,
+            action="view",
+        )
         base_qs = PurchaseInvoiceHeader.objects.all().select_related(
             "vendor", "vendor_ledger", "vendor_state",
             "supplier_state", "place_of_supply_state",
@@ -115,6 +123,19 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user)
 
     def create(self, request, *args, **kwargs):
+        entity_id = request.data.get("entity")
+        if entity_id in (None, "", "null"):
+            raise ValidationError({"detail": "entity is required."})
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity must be an integer."})
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=entity_id,
+            doc_type=request.data.get("doc_type"),
+            action="create",
+        )
         try:
             return super().create(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, ValidationError) as exc:
@@ -185,6 +206,17 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
         ctx["line_mode"] = self._get_line_mode()
         return ctx
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="view",
+        )
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
     def perform_destroy(self, instance):
         policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
         if policy.delete_policy == "never":
@@ -195,7 +227,25 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             raise ValidationError({"detail": "Posted purchase invoices cannot be deleted."})
         super().perform_destroy(instance)
 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="delete",
+        )
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="update",
+        )
         try:
             return super().update(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, ValidationError) as exc:
@@ -203,6 +253,13 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
     def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=instance.entity_id,
+            doc_type=instance.doc_type,
+            action="update",
+        )
         try:
             return super().partial_update(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, ValidationError) as exc:
@@ -263,6 +320,13 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        requested_doc_type = self.request.query_params.get("doc_type")
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=requested_doc_type,
+            action="view",
+        )
         qs = (
             PurchaseInvoiceHeader.objects
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)

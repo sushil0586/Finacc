@@ -1,5 +1,7 @@
 from django.db import transaction
-from rest_framework.exceptions import PermissionDenied
+from django.db.models import Q
+from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from Authentication.models import User
 from Authentication.services import AuthOTPService
@@ -19,6 +21,7 @@ from entity.models import (
     SubEntityContact,
     SubEntityGstRegistration,
 )
+from entity.policy import EntityPolicyService
 
 from financial.seeding import FinancialSeedService
 from rbac.seeding import RBACSeedService
@@ -264,12 +267,19 @@ class EntityOnboardingService:
 
         gstno = (profile.get("gstno") or "").strip().upper()
         if gstno:
+            SubEntityGstRegistration.objects.filter(
+                subentity=subentity,
+                isactive=True,
+                is_primary=True,
+            ).exclude(gstin=gstno).update(is_primary=False)
             SubEntityGstRegistration.objects.update_or_create(
                 subentity=subentity,
                 gstin=gstno,
                 defaults={
                     "registration_type": profile.get("GstRegitrationType"),
                     "gst_status": getattr(subentity.entity, "gst_registration_status", Entity.GstStatus.REGISTERED),
+                    "state": profile.get("state"),
+                    "nature_of_business": profile.get("nature_of_business"),
                     "is_primary": True,
                     "isactive": True,
                 },
@@ -309,18 +319,137 @@ class EntityOnboardingService:
         return payload
 
     @classmethod
+    def _normalize_subentity_rows(cls, *, subentity_rows):
+        rows = [dict(row) for row in subentity_rows]
+        if not rows:
+            return rows
+
+        normalized = []
+        for row in rows:
+            if row.get("ismainentity"):
+                row["is_head_office"] = True
+            if row.get("branch_type") == SubEntity.BranchType.HEAD_OFFICE:
+                row["is_head_office"] = True
+            normalized.append(row)
+
+        head_office_indexes = [
+            index for index, row in enumerate(normalized)
+            if bool(row.get("is_head_office"))
+        ]
+        if not head_office_indexes:
+            normalized[0]["is_head_office"] = True
+            normalized[0]["branch_type"] = SubEntity.BranchType.HEAD_OFFICE
+        return normalized
+
+    @classmethod
+    def _validate_subentity_boundary(cls, *, entity):
+        policy = EntityPolicyService.ensure_policy(entity=entity)
+        warnings = []
+        active_subentities = list(entity.subentity.filter(isactive=True).order_by("sort_order", "id"))
+        head_office_count = sum(1 for row in active_subentities if row.is_head_office)
+
+        if not active_subentities:
+            EntityPolicyService.enforce(
+                mode=policy.require_subentity_mode,
+                field="subentities",
+                code="entity.require_subentity",
+                message="At least one active subentity is required for this entity.",
+                warnings=warnings,
+            )
+
+        if active_subentities and head_office_count != 1:
+            EntityPolicyService.enforce(
+                mode=policy.require_head_office_subentity_mode,
+                field="subentities",
+                code="entity.require_single_head_office",
+                message="Exactly one active head office subentity is required for this entity.",
+                warnings=warnings,
+            )
+        return warnings
+
+    @classmethod
+    def _validate_entity_gst_rules(cls, *, entity):
+        policy = EntityPolicyService.ensure_policy(entity=entity)
+        warnings = []
+
+        active_gst_rows = list(entity.gst_registrations.filter(isactive=True).select_related("state"))
+        primary_rows = [row for row in active_gst_rows if row.is_primary]
+        if active_gst_rows and not primary_rows:
+            EntityPolicyService.enforce(
+                mode=policy.require_entity_primary_gstin_mode,
+                field="entity.gst",
+                code="entity.primary_gstin_required",
+                message="At least one active primary GST registration is required for this entity.",
+                warnings=warnings,
+            )
+
+        for row in active_gst_rows:
+            if row.gstin and row.state_id:
+                gst_state_code = str(row.gstin[:2]).strip()
+                state_code = str(getattr(row.state, "statecode", "") or "").strip().zfill(2)
+                if state_code and gst_state_code != state_code:
+                    EntityPolicyService.enforce(
+                        mode=policy.gstin_state_match_mode,
+                        field="entity.gst.state",
+                        code="entity.gstin_state_mismatch",
+                        message=f"GSTIN {row.gstin} does not match state code {state_code}.",
+                        warnings=warnings,
+                    )
+        return warnings
+
+    @classmethod
+    def _validate_subentity_gst_rules(cls, *, entity):
+        policy = EntityPolicyService.ensure_policy(entity=entity)
+        warnings = []
+
+        for subentity in entity.subentity.filter(isactive=True).prefetch_related("gst_registrations__state"):
+            active_gst_rows = [row for row in subentity.gst_registrations.all() if row.isactive]
+            primary_rows = [row for row in active_gst_rows if row.is_primary]
+            if active_gst_rows and not primary_rows:
+                EntityPolicyService.enforce(
+                    mode=policy.subentity_gstin_state_match_mode,
+                    field="subentity.gst",
+                    code="subentity.primary_gstin_required",
+                    message=f"At least one active primary GST registration is required for subentity '{subentity.subentityname}'.",
+                    warnings=warnings,
+                )
+            for row in active_gst_rows:
+                if row.gstin and row.state_id:
+                    gst_state_code = str(row.gstin[:2]).strip()
+                    state_code = str(getattr(row.state, "statecode", "") or "").strip().zfill(2)
+                    if state_code and gst_state_code != state_code:
+                        EntityPolicyService.enforce(
+                            mode=policy.subentity_gstin_state_match_mode,
+                            field="subentity.gst.state",
+                            code="subentity.gstin_state_mismatch",
+                            message=f"GSTIN {row.gstin} for subentity '{subentity.subentityname}' does not match state code {state_code}.",
+                            warnings=warnings,
+                        )
+        return warnings
+
+    @classmethod
+    def _collect_validation_warnings(cls, *, entity):
+        warnings = []
+        warnings.extend(cls._validate_subentity_boundary(entity=entity))
+        warnings.extend(cls._validate_entity_gst_rules(entity=entity))
+        warnings.extend(cls._validate_subentity_gst_rules(entity=entity))
+        return warnings
+
+    @classmethod
     @transaction.atomic
     def create_entity(cls, *, actor, payload):
         customer_account = SubscriptionService.assert_can_create_entity(user=actor)
         entity_data = dict(payload["entity"])
+        policy_data = dict(payload.get("policy") or {})
         fy_rows = [dict(row) for row in payload.get("financial_years", [])]
         bank_rows = [dict(row) for row in payload.get("bank_accounts", [])]
-        subentity_rows = [dict(row) for row in payload.get("subentities", [])]
+        subentity_rows = cls._normalize_subentity_rows(subentity_rows=payload.get("subentities", []))
         constitution_rows = [dict(row) for row in payload.get("constitution_details", [])]
         seed_options = dict(payload.get("seed_options") or {})
 
         entity_profile_data = cls._extract_entity_profile_data(entity_data)
         entity = Entity.objects.create(createdby=actor, customer_account=customer_account, **entity_data)
+        EntityPolicyService.sync_policy(entity=entity, policy_data=policy_data, actor=actor)
         cls._sync_entity_normalized_profiles(entity=entity, actor=actor, profile=entity_profile_data)
         if not entity.entity_code:
             entity.entity_code = f"ENT{entity.id:05d}"
@@ -393,6 +522,8 @@ class EntityOnboardingService:
             subentity.save(update_fields=["subentity_code"])
             subentity_ids.append(subentity.id)
 
+        validation_warnings = cls._collect_validation_warnings(entity=entity)
+
         constitution_ids = []
         for row in constitution_rows:
             constitution = EntityConstitutionV2.objects.create(
@@ -447,15 +578,25 @@ class EntityOnboardingService:
             "financial": financial_summary,
             "rbac": rbac_summary,
             "numbering": numbering_summary,
+            "validation_warnings": validation_warnings,
         }
 
     @staticmethod
     def can_manage_entity(*, user, entity) -> bool:
         if not user or not user.is_authenticated:
             return False
-        if entity.createdby_id == user.id:
+        if not SubscriptionService.has_entity_membership(user=user, entity=entity, backfill_owner=True):
+            return False
+        now = timezone.now()
+        current_assignment_exists = UserRoleAssignment.objects.filter(entity=entity, user=user, isactive=True).filter(
+            Q(effective_from__isnull=True) | Q(effective_from__lte=now),
+            Q(effective_to__isnull=True) | Q(effective_to__gte=now),
+        ).exists()
+        if current_assignment_exists:
             return True
-        return UserRoleAssignment.objects.filter(entity=entity, user=user, isactive=True).exists()
+        if entity.createdby_id != user.id:
+            return False
+        return not UserRoleAssignment.objects.filter(entity=entity, user=user).exists()
 
     @classmethod
     def build_entity_payload(cls, *, entity):
@@ -531,6 +672,7 @@ class EntityOnboardingService:
             "parent_entity": entity.parent_entity_id,
             "metadata": entity.metadata,
         }
+        policy_payload = EntityPolicyService.build_payload(entity=entity)
 
         subentity_rows = []
         for sub in entity.subentity.all().order_by("id"):
@@ -577,6 +719,8 @@ class EntityOnboardingService:
         return {
             "entity_id": entity.id,
             "entity": entity_payload,
+            "policy": policy_payload,
+            "validation_warnings": cls._collect_validation_warnings(entity=entity),
             "financial_years": entity.fy.all().order_by("finstartyear", "id"),
             "bank_accounts": entity.bank_accounts_v2.all().order_by("id"),
             "subentities": subentity_rows,
@@ -635,6 +779,13 @@ class EntityOnboardingService:
             entity.save()
             cls._sync_entity_normalized_profiles(entity=entity, actor=actor, profile=entity_profile_data)
 
+        if "policy" in payload:
+            EntityPolicyService.sync_policy(
+                entity=entity,
+                policy_data=dict(payload.get("policy") or {}),
+                actor=actor,
+            )
+
         fy_rows = payload.get("financial_years")
         if fy_rows is not None:
             fy_rows = [dict(row) for row in fy_rows]
@@ -663,7 +814,7 @@ class EntityOnboardingService:
         )
         sub_rows = payload.get("subentities")
         if sub_rows is not None:
-            incoming = [dict(row) for row in sub_rows]
+            incoming = cls._normalize_subentity_rows(subentity_rows=sub_rows)
             existing = {obj.id: obj for obj in entity.subentity.all()}
             keep_ids = set()
             for row in incoming:

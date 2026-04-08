@@ -272,8 +272,18 @@ class OnboardingSeedOptionsSerializer(serializers.Serializer):
     seed_default_roles = serializers.BooleanField(required=False, default=True)
 
 
+class EntityPolicySerializer(serializers.Serializer):
+    gstin_state_match_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
+    require_subentity_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
+    require_head_office_subentity_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
+    require_entity_primary_gstin_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
+    subentity_gstin_state_match_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
+    metadata = serializers.JSONField(required=False)
+
+
 class EntityOnboardingCreateSerializer(serializers.Serializer):
     entity = OnboardingEntityPayloadSerializer()
+    policy = EntityPolicySerializer(required=False)
     financial_years = OnboardingFinancialYearSerializer(many=True)
     bank_accounts = OnboardingBankAccountSerializer(many=True, required=False)
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
@@ -291,6 +301,7 @@ class EntityOnboardingCreateSerializer(serializers.Serializer):
 
 class EntityOnboardingUpdateSerializer(serializers.Serializer):
     entity = OnboardingEntityPayloadSerializer(required=False)
+    policy = EntityPolicySerializer(required=False)
     financial_years = OnboardingFinancialYearSerializer(many=True, required=False)
     bank_accounts = OnboardingBankAccountSerializer(many=True, required=False)
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
@@ -308,6 +319,8 @@ class EntityOnboardingUpdateSerializer(serializers.Serializer):
 class EntityOnboardingDetailResponseSerializer(serializers.Serializer):
     entity_id = serializers.IntegerField()
     entity = serializers.DictField()
+    policy = EntityPolicySerializer()
+    validation_warnings = serializers.ListField(child=serializers.DictField(), required=False)
     financial_years = OnboardingFinancialYearSerializer(many=True)
     bank_accounts = OnboardingBankAccountSerializer(many=True)
     subentities = serializers.ListField(child=serializers.DictField())
@@ -370,6 +383,7 @@ class EntityOnboardingResponseSerializer(serializers.Serializer):
     constitution_ids = serializers.ListField(child=serializers.IntegerField())
     financial = serializers.DictField()
     rbac = serializers.DictField()
+    validation_warnings = serializers.ListField(child=serializers.DictField(), required=False)
     subscription = serializers.DictField(required=False)
 
 

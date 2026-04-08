@@ -274,6 +274,10 @@ class UserRoleAssignment(TrackingModel):
             raise ValidationError("Sub entity must belong to the same entity.")
         if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
             raise ValidationError("effective_from cannot be after effective_to.")
+        if self.is_primary and self.subentity_id:
+            raise ValidationError("Primary assignment cannot be limited to a subentity.")
+        if self.is_primary and not self.isactive:
+            raise ValidationError("Primary assignment must remain active.")
 
     def __str__(self):
         labels = [

@@ -5,6 +5,8 @@ from unittest.mock import patch, MagicMock
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
+from rest_framework import status
+from rest_framework.response import Response
 from rest_framework.test import APITestCase, APIClient
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader
@@ -771,7 +773,23 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.mark_itc_claimed")
     @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
-    def test_purchase_service_invoice_itc_claim_endpoint_returns_200(self, _mock_scope, mock_action, mock_serializer):
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_purchase_service_invoice_itc_claim_endpoint_returns_200(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        _mock_scope,
+        mock_action,
+        mock_serializer,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.invoice.update"}
+        _mock_scope.return_value = SimpleNamespace(
+            id=9,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
         mock_action.return_value = SimpleNamespace(message="ok", header=SimpleNamespace(id=9))
         mock_serializer.return_value.data = {"id": 9}
         resp = self.client.post(
@@ -785,7 +803,23 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.mark_itc_unblocked")
     @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
-    def test_purchase_service_invoice_itc_unblock_endpoint_returns_200(self, _mock_scope, mock_action, mock_serializer):
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_purchase_service_invoice_itc_unblock_endpoint_returns_200(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        _mock_scope,
+        mock_action,
+        mock_serializer,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.invoice.update"}
+        _mock_scope.return_value = SimpleNamespace(
+            id=9,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
         mock_action.return_value = SimpleNamespace(message="unblocked", header=SimpleNamespace(id=9))
         mock_serializer.return_value.data = {"id": 9}
         resp = self.client.post(
@@ -799,7 +833,23 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.update_2b_match_status")
     @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
-    def test_purchase_service_invoice_2b_status_endpoint_returns_200(self, _mock_scope, mock_action, mock_serializer):
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_purchase_service_invoice_2b_status_endpoint_returns_200(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        _mock_scope,
+        mock_action,
+        mock_serializer,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.invoice.update"}
+        _mock_scope.return_value = SimpleNamespace(
+            id=10,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
         mock_action.return_value = SimpleNamespace(message="ok", header=SimpleNamespace(id=10))
         mock_serializer.return_value.data = {"id": 10, "gstr2b_match_status": 2}
         resp = self.client.post(
@@ -949,3 +999,180 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
         )
         with self.assertRaisesMessage(ValueError, "27Q requires deductee_tax_id_snapshot"):
             PurchaseStatutoryService._validate_it_tds_return_code(return_code="27Q", lines=[line_bad])
+
+
+class PurchaseApiPermissionTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="purchase_permission_tester",
+            email="purchase_permission_tester@example.com",
+            password="x",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_credit_note_create_requires_credit_note_create_permission(self, mock_entity_for_user, mock_codes):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.credit_note.view"}
+
+        response = self.client.post(
+            "/api/purchase/purchase-invoices/",
+            {
+                "entity": 1,
+                "entityfinid": 1,
+                "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("purchase.credit_note create", str(response.data["detail"]).lower())
+
+    @patch("purchase.views.purchase_invoice.generics.RetrieveUpdateDestroyAPIView.update")
+    @patch("purchase.views.purchase_invoice.PurchaseInvoiceRetrieveUpdateDestroyAPIView.get_object")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_debit_note_update_uses_debit_note_permission_family(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_get_object,
+        mock_super_update,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.debit_note.view"}
+        mock_get_object.return_value = SimpleNamespace(
+            id=9,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+        )
+        mock_super_update.return_value = Response({"ok": True})
+
+        response = self.client.put(
+            "/api/purchase/purchase-invoices/9/?entity=1&entityfinid=1",
+            {"vendor_name": "Updated"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        mock_super_update.assert_not_called()
+
+    @patch("purchase.views.purchase_invoice.generics.RetrieveUpdateDestroyAPIView.update")
+    @patch("purchase.views.purchase_invoice.PurchaseInvoiceRetrieveUpdateDestroyAPIView.get_object")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_debit_note_update_allows_matching_update_permission(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_get_object,
+        mock_super_update,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.debit_note.update"}
+        mock_get_object.return_value = SimpleNamespace(
+            id=9,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+        )
+        mock_super_update.return_value = Response({"ok": True})
+
+        response = self.client.put(
+            "/api/purchase/purchase-invoices/9/?entity=1&entityfinid=1",
+            {"vendor_name": "Updated"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_super_update.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.post")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_credit_note_post_requires_credit_note_post_permission(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_scope,
+        mock_post,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.credit_note.view"}
+        mock_scope.return_value = SimpleNamespace(
+            id=11,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        )
+
+        response = self.client.post(
+            "/api/purchase/purchase-invoices/11/post/?entity=1&entityfinid=1",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        mock_post.assert_not_called()
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.cancel")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_credit_note_cancel_allows_update_permission_fallback(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_scope,
+        mock_cancel,
+        mock_serializer,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.credit_note.update"}
+        mock_scope.return_value = SimpleNamespace(
+            id=12,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        )
+        mock_cancel.return_value = SimpleNamespace(message="cancelled", header=SimpleNamespace(id=12))
+        mock_serializer.return_value.data = {"id": 12}
+
+        response = self.client.post(
+            "/api/purchase/purchase-invoices/12/cancel/?entity=1&entityfinid=1",
+            {"reason": "test"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_cancel.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseNoteFactory.create_note_from_invoice")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_create_credit_note_action_requires_credit_note_create_permission(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_scope,
+        mock_factory,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_codes.return_value = {"purchase.invoice.post"}
+        mock_scope.return_value = SimpleNamespace(
+            id=13,
+            entity_id=1,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
+
+        response = self.client.post(
+            "/api/purchase/purchase-invoices/13/create-credit-note/?entity=1&entityfinid=1",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        mock_factory.assert_not_called()

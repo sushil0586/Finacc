@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.db.models import Count
 
 from .models import CustomerAccount, CustomerSubscription, PlanLimit, SubscriptionPlan, UserEntityAccess
+from .services import SubscriptionLimitCodes, SubscriptionService
 
 
 class PlanLimitInline(admin.TabularInline):
@@ -94,6 +95,8 @@ class CustomerAccountAdmin(admin.ModelAdmin):
         "member_count",
         "subscription_count",
         "current_subscription_summary",
+        "feature_summary",
+        "usage_summary",
     )
     autocomplete_fields = ("owner",)
     ordering = ("-created_at",)
@@ -139,6 +142,8 @@ class CustomerAccountAdmin(admin.ModelAdmin):
                     "member_count",
                     "subscription_count",
                     "current_subscription_summary",
+                    "feature_summary",
+                    "usage_summary",
                 )
             },
         ),
@@ -233,6 +238,27 @@ class CustomerAccountAdmin(admin.ModelAdmin):
             f"Period End={subscription.current_period_end or '-'}"
         )
 
+    @admin.display(description="Features")
+    def feature_summary(self, obj):
+        try:
+            flags = SubscriptionService.get_feature_flags(customer_account=obj)
+        except Exception:
+            return "-"
+        enabled = [key.replace("feature_", "").replace("_", " ").title() for key, value in flags.items() if value]
+        return ", ".join(enabled) if enabled else "No features enabled"
+
+    @admin.display(description="Usage snapshot")
+    def usage_summary(self, obj):
+        try:
+            snapshot = SubscriptionService.build_subscription_snapshot(customer_account=obj)
+        except Exception:
+            return "-"
+        usage = snapshot.get("usage", {})
+        return (
+            f"Entities {usage.get('entities_used', 0)}/{snapshot.get('limits', {}).get(SubscriptionLimitCodes.MAX_ENTITIES, '∞')} | "
+            f"Users {usage.get('account_users_used', 0)}/{snapshot.get('limits', {}).get(SubscriptionLimitCodes.MAX_ENTITY_USERS, '∞')}"
+        )
+
 
 @admin.register(SubscriptionPlan)
 class SubscriptionPlanAdmin(admin.ModelAdmin):
@@ -249,6 +275,8 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "is_public",
         "billing_provider",
         "limit_count",
+        "limit_summary",
+        "feature_summary",
         "subscriber_count",
         "is_active",
     )
@@ -272,6 +300,8 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "updated_at",
         "limit_count",
         "subscriber_count",
+        "feature_summary",
+        "limit_summary",
     )
     ordering = ("sort_order", "price_amount", "created_at")
     inlines = [PlanLimitInline]
@@ -324,6 +354,8 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "limit_count",
+                    "limit_summary",
+                    "feature_summary",
                     "subscriber_count",
                 )
             },
@@ -347,9 +379,30 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related("limits", "customer_subscriptions")
 
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        SubscriptionService.ensure_plan_limit_catalog(plan=obj)
+
     @admin.display(description="Limits")
     def limit_count(self, obj):
         return obj.limits.count()
+
+    @admin.display(description="Limit summary")
+    def limit_summary(self, obj):
+        limits = {limit.key: limit for limit in obj.limits.all()}
+        max_entities = limits.get(SubscriptionLimitCodes.MAX_ENTITIES)
+        max_users = limits.get(SubscriptionLimitCodes.MAX_ENTITY_USERS)
+        entity_value = "Unlimited" if max_entities and max_entities.is_unlimited else (max_entities.value if max_entities else "-")
+        user_value = "Unlimited" if max_users and max_users.is_unlimited else (max_users.value if max_users else "-")
+        return f"Entities={entity_value} | Users={user_value}"
+
+    @admin.display(description="Feature summary")
+    def feature_summary(self, obj):
+        enabled = []
+        for limit in obj.limits.all():
+            if limit.key.startswith("feature_") and bool(limit.value):
+                enabled.append(limit.key.replace("feature_", "").replace("_", " ").title())
+        return ", ".join(sorted(enabled)) if enabled else "No enabled features"
 
     @admin.display(description="Subscribers")
     def subscriber_count(self, obj):
@@ -366,6 +419,7 @@ class PlanLimitAdmin(admin.ModelAdmin):
         "limit_type",
         "resolved_value",
         "is_unlimited",
+        "plan_code",
         "created_at",
     )
     list_filter = (
@@ -432,6 +486,10 @@ class PlanLimitAdmin(admin.ModelAdmin):
     def resolved_value(self, obj):
         return "Unlimited" if obj.is_unlimited else obj.value
 
+    @admin.display(ordering="plan__code", description="Plan code")
+    def plan_code(self, obj):
+        return obj.plan.code
+
 
 @admin.register(CustomerSubscription)
 class CustomerSubscriptionAdmin(admin.ModelAdmin):
@@ -450,6 +508,7 @@ class CustomerSubscriptionAdmin(admin.ModelAdmin):
         "billing_provider",
         "external_subscription_id",
         "is_current_display",
+        "limits_snapshot",
         "is_active",
     )
     list_filter = (
@@ -470,6 +529,8 @@ class CustomerSubscriptionAdmin(admin.ModelAdmin):
     )
     readonly_fields = (
         "is_current_display",
+        "limits_snapshot",
+        "features_snapshot",
         "created_at",
         "updated_at",
     )
@@ -508,6 +569,8 @@ class CustomerSubscriptionAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "seats_purchased",
+                    "limits_snapshot",
+                    "features_snapshot",
                 )
             },
         ),
@@ -542,6 +605,26 @@ class CustomerSubscriptionAdmin(admin.ModelAdmin):
     @admin.display(boolean=True, description="Is current")
     def is_current_display(self, obj):
         return obj.is_current
+
+    @admin.display(description="Limits snapshot")
+    def limits_snapshot(self, obj):
+        try:
+            limits = SubscriptionService.get_all_plan_limits(customer_account=obj.customer_account)
+        except Exception:
+            return "-"
+        return (
+            f"Entities={limits.get(SubscriptionLimitCodes.MAX_ENTITIES, '-')}, "
+            f"Users={limits.get(SubscriptionLimitCodes.MAX_ENTITY_USERS, '-')}"
+        )
+
+    @admin.display(description="Features snapshot")
+    def features_snapshot(self, obj):
+        try:
+            flags = SubscriptionService.get_feature_flags(customer_account=obj.customer_account)
+        except Exception:
+            return "-"
+        enabled = [key.replace("feature_", "").replace("_", " ").title() for key, value in flags.items() if value]
+        return ", ".join(enabled) if enabled else "No features enabled"
 
 
 @admin.register(UserEntityAccess)

@@ -7,16 +7,20 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherDetailSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
-class VoucherMetaBaseAPIView(APIView):
+class VoucherMetaBaseAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def _parse_int(self, raw_value, field_name: str, required: bool = False):
         if raw_value in (None, "", "null", "None"):
@@ -38,6 +42,7 @@ class VoucherMetaBaseAPIView(APIView):
         subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity", required=False)
         if subentity_id == 0:
             subentity_id = None
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, entityfinid_id, subentity_id
 
     def _financial_years(self, entity_id: int):

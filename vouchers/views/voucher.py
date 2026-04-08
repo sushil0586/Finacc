@@ -16,7 +16,7 @@ from financial.profile_access import account_gstno, account_pan, account_partyty
 
 def _perm_code(voucher_type: str, action: str) -> str:
     vt = (voucher_type or "").upper()
-    suffix = {"CASH": "cashvoucher", "BANK": "bankvoucher", "JOURNAL": "journalvoucher"}.get(vt)
+    suffix = {"CASH": "cash", "BANK": "bank", "JOURNAL": "journal"}.get(vt)
     if not suffix:
         return ""
     return f"voucher.{suffix}.{action}"

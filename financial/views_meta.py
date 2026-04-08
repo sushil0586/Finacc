@@ -5,6 +5,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db.models import Q
 
+from core.entitlements import ScopedEntitlementMixin
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+
 # import the choices from your models.py
 from .models import (
     PARTY_TYPE_CHOICES,
@@ -39,13 +42,16 @@ class AccountChoicesAPIView(APIView):
         })
 
 
-class LedgerFormMetaAPIView(APIView):
+class LedgerFormMetaAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     def get(self, request):
         entity_id = request.query_params.get("entity")
         if not entity_id:
             return Response({"error": "Entity is required"}, status=400)
+        self.enforce_scope(request, entity_id=int(entity_id))
 
         account_types = list(
             accounttype.objects.filter(entity_id=entity_id, isactive=True)
@@ -117,13 +123,16 @@ class LedgerFormMetaAPIView(APIView):
         )
 
 
-class AccountFormMetaAPIView(APIView):
+class AccountFormMetaAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     def get(self, request):
         entity_id = request.query_params.get("entity")
         if not entity_id:
             return Response({"error": "Entity is required"}, status=400)
+        self.enforce_scope(request, entity_id=int(entity_id))
 
         account_types = list(
             accounttype.objects.filter(entity_id=entity_id, isactive=True)
@@ -204,13 +213,16 @@ class AccountFormMetaAPIView(APIView):
         )
 
 
-class AccountingMastersMetaAPIView(APIView):
+class AccountingMastersMetaAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     def get(self, request):
         entity_id = request.query_params.get("entity")
         if not entity_id:
             return Response({"error": "Entity is required"}, status=400)
+        self.enforce_scope(request, entity_id=int(entity_id))
 
         account_types = list(
             accounttype.objects.filter(entity_id=entity_id)

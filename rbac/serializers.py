@@ -5,10 +5,13 @@ from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from entity.models import SubEntity
+from subscriptions.services import SubscriptionService
 
 from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
+from .services import AssignmentSemanticsService
 
 
 User = get_user_model()
@@ -357,11 +360,13 @@ class UserRoleAssignmentAdminSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user = attrs.get("user", getattr(self.instance, "user", None))
-        entity = attrs.get("entity", getattr(self.instance, "entity", None))
+        entity = attrs.get("entity", getattr(self.instance, "entity", None)) or self.context.get("entity")
         role = attrs.get("role", getattr(self.instance, "role", None))
         subentity = attrs.get("subentity", getattr(self.instance, "subentity", None))
         effective_from = attrs.get("effective_from", getattr(self.instance, "effective_from", None))
         effective_to = attrs.get("effective_to", getattr(self.instance, "effective_to", None))
+        is_primary = attrs.get("is_primary", getattr(self.instance, "is_primary", False))
+        isactive = attrs.get("isactive", getattr(self.instance, "isactive", True))
         qs = UserRoleAssignment.objects.filter(user=user, entity=entity, role=role, subentity=subentity)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
@@ -373,7 +378,44 @@ class UserRoleAssignmentAdminSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"role": "Selected role does not belong to this entity."})
         if subentity and entity and subentity.entity_id != entity.id:
             raise serializers.ValidationError({"subentity": "Selected subentity does not belong to this entity."})
+        if user and entity:
+            try:
+                SubscriptionService.assert_account_membership_exists(
+                    user=user,
+                    customer_account=SubscriptionService._customer_account_for_entity(entity),
+                )
+            except DRFValidationError as exc:
+                raise serializers.ValidationError({"user": exc.detail.get("detail", "User must be a tenant member before entity role assignment.")})
+        try:
+            AssignmentSemanticsService.validate_assignment_shape(
+                role=role,
+                is_primary=is_primary,
+                subentity=subentity,
+                isactive=isactive,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "not assignable" in message:
+                raise serializers.ValidationError({"role": message})
+            if "subentity" in message:
+                raise serializers.ValidationError({"subentity": message, "is_primary": message})
+            if "active" in message:
+                raise serializers.ValidationError({"isactive": message, "is_primary": message})
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        assignment = super().create(validated_data)
+        AssignmentSemanticsService.finalize_assignment(assignment)
+        assignment.refresh_from_db()
+        return assignment
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        assignment = super().update(instance, validated_data)
+        AssignmentSemanticsService.finalize_assignment(assignment)
+        assignment.refresh_from_db()
+        return assignment
 
 
 class RolePermissionsStateSerializer(serializers.Serializer):
@@ -398,6 +440,7 @@ class RBACAdminBootstrapSerializer(serializers.Serializer):
     assignments = UserRoleAssignmentAdminSerializer(many=True)
     users = UserOptionSerializer(many=True)
     permission_groups = serializers.ListField()
+    capabilities = serializers.DictField(child=serializers.BooleanField())
 
 
 class PermissionGroupSerializer(serializers.Serializer):
@@ -441,10 +484,53 @@ class BulkAssignmentSerializer(serializers.Serializer):
     scope_data = serializers.JSONField(required=False, allow_null=True, default=dict)
 
     def validate(self, attrs):
+        entity = self.context.get("entity")
         effective_from = attrs.get("effective_from")
         effective_to = attrs.get("effective_to")
         if effective_from and effective_to and effective_from > effective_to:
             raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
+        role_id = attrs.get("role")
+        subentity_id = attrs.get("subentity")
+        role = Role.objects.filter(pk=role_id, isactive=True).first() if role_id else None
+        subentity = SubEntity.objects.filter(pk=subentity_id, isactive=True).first() if subentity_id else None
+        if entity and role and role.entity_id != entity.id:
+            raise serializers.ValidationError({"role": "Selected role does not belong to this entity."})
+        if entity and subentity and subentity.entity_id != entity.id:
+            raise serializers.ValidationError({"subentity": "Selected subentity does not belong to this entity."})
+        if entity:
+            customer_account = SubscriptionService._customer_account_for_entity(entity)
+            invalid_user_ids = []
+            for user_id in attrs.get("user_ids", []):
+                user = User.objects.filter(pk=user_id, is_active=True).first()
+                if user is None:
+                    continue
+                membership = SubscriptionService.get_account_membership(
+                    user=user,
+                    customer_account=customer_account,
+                )
+                if membership is None:
+                    invalid_user_ids.append(user_id)
+            if invalid_user_ids:
+                raise serializers.ValidationError(
+                    {
+                        "user_ids": f"Users must be tenant members before entity role assignment. Invalid user ids: {', '.join(str(x) for x in invalid_user_ids)}"
+                    }
+                )
+        try:
+            AssignmentSemanticsService.validate_assignment_shape(
+                role=role,
+                is_primary=attrs.get("is_primary", False),
+                subentity=subentity,
+                isactive=attrs.get("isactive", True),
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "not assignable" in message:
+                raise serializers.ValidationError({"role": message})
+            if "subentity" in message:
+                raise serializers.ValidationError({"subentity": message, "is_primary": message})
+            if "active" in message:
+                raise serializers.ValidationError({"isactive": message, "is_primary": message})
         return attrs
 
 
@@ -512,6 +598,21 @@ class CreateUserWithAssignmentSerializer(serializers.Serializer):
             raise serializers.ValidationError({"subentity": "Selected subentity does not belong to this entity."})
         if effective_from and effective_to and effective_from > effective_to:
             raise serializers.ValidationError({"effective_to": "effective_to cannot be before effective_from."})
+        try:
+            AssignmentSemanticsService.validate_assignment_shape(
+                role=role,
+                is_primary=attrs.get("is_primary", False),
+                subentity=subentity,
+                isactive=attrs.get("isactive", True),
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "not assignable" in message:
+                raise serializers.ValidationError({"role": message})
+            if "subentity" in message:
+                raise serializers.ValidationError({"subentity": message, "is_primary": message})
+            if "active" in message:
+                raise serializers.ValidationError({"isactive": message, "is_primary": message})
         return attrs
 
     @transaction.atomic
@@ -528,6 +629,11 @@ class CreateUserWithAssignmentSerializer(serializers.Serializer):
             last_name=(validated_data.pop("last_name", "") or "").strip(),
             is_active=True,
         )
+        SubscriptionService.register_user_invite(
+            entity=entity,
+            user=user,
+            invited_by=actor,
+        )
         assignment = UserRoleAssignment.objects.create(
             user=user,
             entity=entity,
@@ -540,6 +646,8 @@ class CreateUserWithAssignmentSerializer(serializers.Serializer):
             isactive=validated_data.get("isactive", True),
             scope_data=validated_data.get("scope_data") or {},
         )
+        AssignmentSemanticsService.finalize_assignment(assignment)
+        assignment.refresh_from_db()
         return {
             "user": user,
             "assignment": assignment,

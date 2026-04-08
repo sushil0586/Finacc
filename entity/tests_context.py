@@ -5,6 +5,7 @@ from rest_framework.test import APIClient
 from Authentication.models import User
 from entity.models import Entity
 from rbac.models import Role, UserRoleAssignment
+from subscriptions.models import UserEntityAccess
 
 
 @override_settings(RBAC_DEV_ALLOW_ALL_ACCESS=False)
@@ -55,3 +56,36 @@ class EntityContextAccessTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.data["detail"], "Entity not found or access denied.")
+
+    def test_entities_list_requires_tenant_membership_even_with_role_assignment(self):
+        role = Role.objects.create(entity=self.entity, name="Viewer", code="VIEWER_ACTIVE")
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            is_primary=True,
+        )
+
+        response = self.client.get("/api/entity/me/entities")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_owner_access_backfills_membership_for_owned_entity(self):
+        owner_client = APIClient()
+        owner_client.force_authenticate(user=self.owner)
+
+        response = owner_client.get("/api/entity/me/entities")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["entityid"], self.entity.id)
+        self.entity.refresh_from_db()
+        self.assertTrue(
+            UserEntityAccess.objects.filter(
+                customer_account=self.entity.customer_account,
+                user=self.owner,
+                role=UserEntityAccess.Role.OWNER,
+                is_active=True,
+            ).exists()
+        )

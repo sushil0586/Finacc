@@ -6,6 +6,7 @@ from django.db.models import Q
 from helpers.models import TrackingModel
 from Authentication.models import User
 from geography.models import Country,State,District,City
+from geography.validators import validate_geography_hierarchy
 from django.utils.dateformat import DateFormat
 #from Authentication.models import User 
 
@@ -187,13 +188,45 @@ class Entity(TrackingModel):
         self.trade_name = (self.trade_name or "").strip() or None
         self.short_name = (self.short_name or "").strip() or None
         super().save(*args, **kwargs)
-    
 
 
-    
+class EntityPolicy(TrackingModel):
+    class ValidationMode(models.TextChoices):
+        HARD = "hard", "Hard"
+        SOFT = "soft", "Soft"
+        OFF = "off", "Off"
 
+    entity = models.OneToOneField("Entity", on_delete=models.CASCADE, related_name="policy")
+    gstin_state_match_mode = models.CharField(
+        max_length=10,
+        choices=ValidationMode.choices,
+        default=ValidationMode.HARD,
+    )
+    require_subentity_mode = models.CharField(
+        max_length=10,
+        choices=ValidationMode.choices,
+        default=ValidationMode.HARD,
+    )
+    require_head_office_subentity_mode = models.CharField(
+        max_length=10,
+        choices=ValidationMode.choices,
+        default=ValidationMode.HARD,
+    )
+    require_entity_primary_gstin_mode = models.CharField(
+        max_length=10,
+        choices=ValidationMode.choices,
+        default=ValidationMode.HARD,
+    )
+    subentity_gstin_state_match_mode = models.CharField(
+        max_length=10,
+        choices=ValidationMode.choices,
+        default=ValidationMode.HARD,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
-
+    def __str__(self):
+        return f"Policy - {self.entity}"
 class EntityAddress(TrackingModel):
     class AddressType(models.TextChoices):
         REGISTERED = "registered", "Registered"
@@ -226,12 +259,21 @@ class EntityAddress(TrackingModel):
         ]
         indexes = [models.Index(fields=["entity", "address_type", "isactive"])]
 
+    def clean(self):
+        validate_geography_hierarchy(
+            country=self.country,
+            state=self.state,
+            district=self.district,
+            city=self.city,
+        )
+
     def save(self, *args, **kwargs):
         self.line1 = (self.line1 or "").strip()
         self.line2 = (self.line2 or "").strip() or None
         self.floor_no = (self.floor_no or "").strip() or None
         self.street = (self.street or "").strip() or None
         self.pincode = (self.pincode or "").strip() or None
+        self.full_clean()
         super().save(*args, **kwargs)
 
 
@@ -320,13 +362,6 @@ class EntityGstRegistration(TrackingModel):
     def clean(self):
         gstin = (self.gstin or "").strip().upper()
 
-        # GSTIN carries the GST state code in the first 2 chars. Keep DB state aligned.
-        if gstin and self.state_id:
-            gst_state_code = gstin[:2]
-            state_code = str(getattr(self.state, "statecode", "") or "").strip().zfill(2)
-            if state_code and gst_state_code != state_code:
-                raise ValidationError({"state": "State does not match GSTIN state code."})
-
         # Prevent multiple active GST rows for same entity+state.
         if self.isactive and self.entity_id and self.state_id:
             exists_same_state = EntityGstRegistration.objects.filter(
@@ -336,16 +371,6 @@ class EntityGstRegistration(TrackingModel):
             ).exclude(pk=self.pk).exists()
             if exists_same_state:
                 raise ValidationError({"state": "Only one active GST registration is allowed per entity per state."})
-
-        # Keep one active primary row per entity for clean downstream lookups.
-        if self.isactive and self.entity_id and not self.is_primary:
-            has_primary = EntityGstRegistration.objects.filter(
-                entity_id=self.entity_id,
-                isactive=True,
-                is_primary=True,
-            ).exclude(pk=self.pk).exists()
-            if not has_primary:
-                raise ValidationError({"is_primary": "At least one active primary GST registration is required per entity."})
 
     def save(self, *args, **kwargs):
         self.gstin = (self.gstin or "").strip().upper()
@@ -481,6 +506,11 @@ class SubEntity(TrackingModel):
                 condition=Q(subentity_code__isnull=False),
                 name="uq_subentity_code_per_entity",
             ),
+            models.UniqueConstraint(
+                fields=["entity"],
+                condition=Q(is_head_office=True, isactive=True),
+                name="uq_subentity_single_head_office_per_entity",
+            ),
         ]
         ordering = ["sort_order", "subentityname"]
         indexes = [
@@ -488,11 +518,26 @@ class SubEntity(TrackingModel):
             models.Index(fields=["entity", "subentity_code"]),
         ]
 
+    def clean(self):
+        if self.branch_type == self.BranchType.HEAD_OFFICE:
+            self.is_head_office = True
+        if self.is_head_office and self.entity_id:
+            exists_other_head_office = SubEntity.objects.filter(
+                entity_id=self.entity_id,
+                is_head_office=True,
+                isactive=True,
+            ).exclude(pk=self.pk).exists()
+            if exists_other_head_office:
+                raise ValidationError({"is_head_office": "Only one active head office is allowed per entity."})
+
     def save(self, *args, **kwargs):
         self.subentity_code = (self.subentity_code or "").strip().upper() or None
         self.is_head_office = bool(self.is_head_office)
+        if self.branch_type == self.BranchType.HEAD_OFFICE:
+            self.is_head_office = True
         if self.is_head_office:
             self.branch_type = self.BranchType.HEAD_OFFICE
+        self.full_clean()
         super().save(*args, **kwargs)
     
 
@@ -521,6 +566,23 @@ class SubEntityAddress(TrackingModel):
     class Meta:
         indexes = [models.Index(fields=["subentity", "address_type", "isactive"])]
 
+    def clean(self):
+        validate_geography_hierarchy(
+            country=self.country,
+            state=self.state,
+            district=self.district,
+            city=self.city,
+        )
+
+    def save(self, *args, **kwargs):
+        self.line1 = (self.line1 or "").strip()
+        self.line2 = (self.line2 or "").strip() or None
+        self.floor_no = (self.floor_no or "").strip() or None
+        self.street = (self.street or "").strip() or None
+        self.pincode = (self.pincode or "").strip() or None
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class SubEntityContact(TrackingModel):
     subentity = models.ForeignKey("SubEntity", on_delete=models.CASCADE, related_name="contacts")
@@ -539,6 +601,8 @@ class SubEntityGstRegistration(TrackingModel):
     gstin = models.CharField(max_length=15, validators=[gstin_validator], db_index=True)
     registration_type = models.ForeignKey(GstRegistrationType, on_delete=models.SET_NULL, null=True, blank=True)
     gst_status = models.CharField(max_length=20, choices=Entity.GstStatus.choices, default=Entity.GstStatus.REGISTERED)
+    state = models.ForeignKey(State, on_delete=models.PROTECT, null=True, blank=True)
+    nature_of_business = models.CharField(max_length=150, null=True, blank=True)
     gst_effective_from = models.DateField(null=True, blank=True)
     gst_cancelled_from = models.DateField(null=True, blank=True)
     is_primary = models.BooleanField(default=False)
@@ -546,11 +610,31 @@ class SubEntityGstRegistration(TrackingModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["gstin"], condition=Q(isactive=True), name="uq_subentity_gst_registration_active_gstin"),
+            models.UniqueConstraint(fields=["subentity"], condition=Q(isactive=True, is_primary=True), name="uq_subentity_gst_registration_primary"),
+            models.UniqueConstraint(
+                fields=["subentity", "state"],
+                condition=Q(isactive=True, state__isnull=False),
+                name="uq_subentity_gst_registration_subentity_state_active",
+            ),
         ]
         indexes = [models.Index(fields=["subentity", "is_primary", "isactive"])]
 
+    def clean(self):
+        gstin = (self.gstin or "").strip().upper()
+
+        if self.isactive and self.subentity_id and self.state_id:
+            exists_same_state = SubEntityGstRegistration.objects.filter(
+                subentity_id=self.subentity_id,
+                state_id=self.state_id,
+                isactive=True,
+            ).exclude(pk=self.pk).exists()
+            if exists_same_state:
+                raise ValidationError({"state": "Only one active GST registration is allowed per subentity per state."})
+
     def save(self, *args, **kwargs):
         self.gstin = (self.gstin or "").strip().upper()
+        self.nature_of_business = (self.nature_of_business or "").strip() or None
+        self.full_clean()
         super().save(*args, **kwargs)
 
 

@@ -6,6 +6,7 @@ from django.db.models import Q
 from helpers.models import TrackingModel
 from Authentication.models import User
 from geography.models import Country, State, District, City
+from geography.validators import validate_geography_hierarchy
 
 
 
@@ -493,6 +494,25 @@ class ShippingDetails(models.Model):
             models.Index(fields=["entity", "account"], name="ix_ship_entity_account"),
         ]
 
+    def clean(self):
+        validate_geography_hierarchy(
+            country=self.country,
+            state=self.state,
+            district=self.district,
+            city=self.city,
+        )
+
+    def save(self, *args, **kwargs):
+        self.address1 = (self.address1 or "").strip() or None
+        self.address2 = (self.address2 or "").strip() or None
+        self.pincode = (self.pincode or "").strip() or None
+        self.phoneno = (self.phoneno or "").strip() or None
+        self.emailid = (self.emailid or "").strip().lower() or None
+        self.full_name = (self.full_name or "").strip() or None
+        self.gstno = (self.gstno or "").strip().upper() or None
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class ContactDetails(models.Model):
     account = models.ForeignKey(account, on_delete=models.CASCADE, related_name="contact_details", db_index=True)
@@ -534,6 +554,25 @@ class ContactDetails(models.Model):
             models.Index(fields=["entity", "account"], name="ix_contact_entity_account"),
             models.Index(fields=["account", "isprimary"], name="ix_contact_account_primary"),
         ]
+
+    def clean(self):
+        validate_geography_hierarchy(
+            country=self.country,
+            state=self.state,
+            district=self.district,
+            city=self.city,
+        )
+
+    def save(self, *args, **kwargs):
+        self.address1 = (self.address1 or "").strip() or None
+        self.address2 = (self.address2 or "").strip() or None
+        self.designation = (self.designation or "").strip() or None
+        self.pincode = (self.pincode or "").strip() or None
+        self.phoneno = (self.phoneno or "").strip() or None
+        self.emailid = (self.emailid or "").strip().lower() or None
+        self.full_name = (self.full_name or "").strip() or None
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class AccountBankDetails(TrackingModel):
@@ -596,6 +635,23 @@ class AccountAddress(TrackingModel):
             models.Index(fields=["entity", "account"], name="ix_accaddr_ent_acc"),
             models.Index(fields=["account", "address_type"], name="ix_accaddr_acc_type"),
         ]
+
+    def clean(self):
+        validate_geography_hierarchy(
+            country=self.country,
+            state=self.state,
+            district=self.district,
+            city=self.city,
+        )
+
+    def save(self, *args, **kwargs):
+        self.line1 = (self.line1 or "").strip() or None
+        self.line2 = (self.line2 or "").strip() or None
+        self.floor_no = (self.floor_no or "").strip() or None
+        self.street = (self.street or "").strip() or None
+        self.pincode = (self.pincode or "").strip() or None
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class AccountComplianceProfile(TrackingModel):

@@ -23,9 +23,14 @@ SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost', cast=Csv())
 
-# RBAC: only bypass access checks in real development (DEBUG=True in .env).
-# Never True in production because DEBUG will be False there.
-RBAC_DEV_ALLOW_ALL_ACCESS = DEBUG
+# RBAC bypass must be enabled explicitly.
+# Keep it separate from DEBUG so local development can still exercise
+# real tenant/membership/RBAC behavior by default.
+RBAC_DEV_ALLOW_ALL_ACCESS = config(
+    'RBAC_DEV_ALLOW_ALL_ACCESS',
+    default=False,
+    cast=bool,
+)
 
 # ---------------------------------------------------------------------------
 # Test / conditional app flags

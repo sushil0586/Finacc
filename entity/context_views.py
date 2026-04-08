@@ -15,6 +15,7 @@ from entity.context_serializers import (
 from entity.models import Entity, EntityFinancialYear, SubEntity, UserEntityContext
 from rbac.models import UserRoleAssignment
 from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionService
 
 
 def _primary_gst(entity):
@@ -41,13 +42,18 @@ def _default_subentity_id(entity):
 def _can_access_entity(user, entity):
     if getattr(settings, "RBAC_DEV_ALLOW_ALL_ACCESS", False):
         return True
-    if entity.createdby_id == user.id:
-        return True
+    if not SubscriptionService.has_entity_membership(user=user, entity=entity, backfill_owner=True):
+        return False
     now = timezone.now()
-    return UserRoleAssignment.objects.filter(user=user, entity=entity, isactive=True).filter(
+    current_assignment_exists = UserRoleAssignment.objects.filter(user=user, entity=entity, isactive=True).filter(
         Q(effective_from__isnull=True) | Q(effective_from__lte=now),
         Q(effective_to__isnull=True) | Q(effective_to__gte=now),
     ).exists()
+    if current_assignment_exists:
+        return True
+    if entity.createdby_id != user.id:
+        return False
+    return not UserRoleAssignment.objects.filter(user=user, entity=entity).exists()
 
 
 def _resolve_user_context(user, entity):
@@ -160,11 +166,17 @@ class UserEntitiesV2View(APIView):
                 Q(effective_from__isnull=True) | Q(effective_from__lte=now),
                 Q(effective_to__isnull=True) | Q(effective_to__gte=now),
             )
-            .select_related("entity", "role")
+            .select_related("entity", "entity__customer_account", "role")
             .order_by("entity__entityname", "id")
         )
         entity_ids = []
         for assignment in assignments:
+            if not SubscriptionService.has_entity_membership(
+                user=user,
+                entity=assignment.entity,
+                backfill_owner=True,
+            ):
+                continue
             if assignment.entity_id in entity_map:
                 continue
             entity_ids.append(assignment.entity_id)
@@ -186,8 +198,18 @@ class UserEntitiesV2View(APIView):
 
         # Include entities owned by the user even if explicit RBAC assignments
         # are not present yet (common right after onboarding).
-        owned_entities = Entity.objects.filter(isactive=True, createdby=user).order_by("entityname", "id")
+        owned_entities = (
+            Entity.objects.filter(isactive=True, createdby=user)
+            .select_related("customer_account")
+            .order_by("entityname", "id")
+        )
         for entity in owned_entities:
+            if not SubscriptionService.has_entity_membership(
+                user=user,
+                entity=entity,
+                backfill_owner=True,
+            ):
+                continue
             if entity.id in entity_map:
                 continue
             entity_ids.append(entity.id)

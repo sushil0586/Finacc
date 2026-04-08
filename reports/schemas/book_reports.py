@@ -34,6 +34,11 @@ class DaybookScopeSerializer(serializers.Serializer):
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
+    scope_mode = serializers.ChoiceField(
+        choices=("financial_year", "month", "quarter", "year", "custom", "as_of"),
+        required=False,
+        allow_null=True,
+    )
     from_date = serializers.DateField(required=False, allow_null=True)
     to_date = serializers.DateField(required=False, allow_null=True)
     voucher_type = serializers.CharField(required=False, allow_blank=True)
@@ -86,6 +91,11 @@ class CashbookScopeSerializer(serializers.Serializer):
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
+    scope_mode = serializers.ChoiceField(
+        choices=("financial_year", "month", "quarter", "year", "custom", "as_of"),
+        required=False,
+        allow_null=True,
+    )
     from_date = serializers.DateField(required=False, allow_null=True)
     to_date = serializers.DateField(required=False, allow_null=True)
     mode = serializers.ChoiceField(choices=("cash", "bank", "both"), required=False, default="both")
