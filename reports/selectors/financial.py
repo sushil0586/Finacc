@@ -25,19 +25,24 @@ def resolve_date_window(entityfin_id=None, from_date=None, to_date=None):
     return explicit_from, explicit_to
 
 
-def journal_lines_for_scope(entity_id, entityfin_id=None, subentity_id=None, from_date=None, to_date=None):
+def journal_lines_for_scope(
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    from_date=None,
+    to_date=None,
+    posted_only=True,
+):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = resolve_date_window(entityfin_id, from_date, to_date)
 
+    qs = JournalLine.objects.filter(entity_id=entity_id).annotate(
+        resolved_ledger_id=Coalesce(F("ledger_id"), F("account__ledger_id")),
+    )
+    if posted_only:
+        qs = qs.filter(entry__status=EntryStatus.POSTED)
     qs = (
-        JournalLine.objects.filter(
-            entity_id=entity_id,
-            entry__status=EntryStatus.POSTED,
-        )
-        .annotate(
-            resolved_ledger_id=Coalesce(F("ledger_id"), F("account__ledger_id")),
-        )
-        .exclude(resolved_ledger_id__isnull=True)
+        qs.exclude(resolved_ledger_id__isnull=True)
         .select_related(
             "entry",
             "ledger",

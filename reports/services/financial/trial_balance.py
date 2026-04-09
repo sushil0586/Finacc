@@ -120,6 +120,8 @@ def _raw_trial_balance_rows(
     subentity_id,
     from_date,
     to_date,
+    ledger_ids=None,
+    posted_only=True,
     include_zero_balances=False,
     search=None,
 ):
@@ -127,7 +129,14 @@ def _raw_trial_balance_rows(
     from_date, to_date = _resolve_trial_balance_window(entityfin_id, from_date, to_date)
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
-    lines = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
+    lines = journal_lines_for_scope(
+        entity_id,
+        entityfin_id,
+        subentity_id,
+        from_date,
+        to_date,
+        posted_only=posted_only,
+    )
     movement_rows = (
         lines.values("resolved_ledger_id")
         .annotate(
@@ -137,7 +146,12 @@ def _raw_trial_balance_rows(
     )
     movement_map = {row["resolved_ledger_id"]: row for row in movement_rows}
 
-    ledger_ids = list(movement_map.keys())
+    selected_ledger_ids = [int(ledger_id) for ledger_id in (ledger_ids or []) if ledger_id is not None]
+    if selected_ledger_ids:
+        ledger_ids = selected_ledger_ids
+    else:
+        ledger_ids = list(movement_map.keys())
+
     if not ledger_ids:
         return entity_id, entityfin_id, subentity_id, from_date, to_date, scope_names, []
 
@@ -158,6 +172,7 @@ def _raw_trial_balance_rows(
         credit = movement.get("credit") or Decimal("0.00")
         closing = opening + debit - credit
         accounthead_id, accounthead_name, normal_balance = _resolve_dynamic_party_head(ledger, closing)
+        abnormal_balance = _is_abnormal_balance(closing, normal_balance)
         if not include_zero_balances and opening == 0 and debit == 0 and credit == 0 and closing == 0:
             continue
         row = {
@@ -177,6 +192,7 @@ def _raw_trial_balance_rows(
             "debit_value": debit,
             "credit_value": credit,
             "closing_value": closing,
+            "is_abnormal_balance": abnormal_balance,
         }
         if search_text:
             haystack = " ".join(
@@ -216,6 +232,7 @@ def _group_rows(rows, group_by, sort_by, sort_order):
         debit = sum((child["debit_value"] for child in children), Decimal("0.00"))
         credit = sum((child["credit_value"] for child in children), Decimal("0.00"))
         closing = sum((child["closing_value"] for child in children), Decimal("0.00"))
+        abnormal_children = [child for child in children if child.get("is_abnormal_balance")]
         child_rows = [dict(child) for child in children]
         child_rows.sort(key=lambda item: _sort_key(item, sort_by), reverse=reverse)
         out.append(
@@ -232,10 +249,90 @@ def _group_rows(rows, group_by, sort_by, sort_order):
                 "closing_value": closing,
                 "children": child_rows,
                 "child_count": len(child_rows),
+                "is_abnormal_balance": bool(abnormal_children) or _is_abnormal_balance(closing, None),
             }
         )
     out.sort(key=lambda item: _sort_key(item, sort_by), reverse=reverse)
     return out
+
+
+def _is_abnormal_balance(closing, normal_balance):
+    closing_amount = Decimal(str(closing or 0))
+    if closing_amount == 0:
+        return False
+    side = (normal_balance or "").strip().lower()
+    if side == "debit":
+        return closing_amount < 0
+    if side == "credit":
+        return closing_amount > 0
+    return False
+
+
+def _row_identity(row, group_by):
+    if row.get("children"):
+        group_id = row.get("group_id")
+        if group_id is not None:
+            return f"group:{group_by}:{group_id}"
+        fallback_label = row.get("label") or row.get("ledger_name") or row.get("accounthead_name") or row.get("accounttype_name")
+        return f"group:{group_by}:{fallback_label or 'row'}"
+
+    ledger_id = row.get("ledger_id")
+    if ledger_id is not None:
+        return f"ledger:{ledger_id}"
+
+    accounthead_id = row.get("accounthead_id")
+    if accounthead_id is not None:
+        return f"accounthead:{accounthead_id}"
+
+    accounttype_id = row.get("accounttype_id")
+    if accounttype_id is not None:
+        return f"accounttype:{accounttype_id}"
+
+    fallback_label = row.get("label") or row.get("ledger_name") or row.get("accounthead_name") or row.get("accounttype_name")
+    return f"row:{fallback_label or 'row'}"
+
+
+def _build_row_period_map(rows, group_by, period_key, period_label):
+    period_map = {}
+    for row in rows:
+        row_id = _row_identity(row, group_by)
+        period_map[row_id] = {
+            "key": period_key,
+            "label": period_label,
+            "code": period_key,
+            "name": period_label,
+            "title": period_label,
+            "opening": row.get("opening", "0.00"),
+            "debit": row.get("debit", "0.00"),
+            "credit": row.get("credit", "0.00"),
+            "closing": row.get("closing", "0.00"),
+        }
+        if row.get("children"):
+            period_map.update(_build_row_period_map(row["children"], group_by, period_key, period_label))
+    return period_map
+
+
+def _attach_period_rows(rows, period_maps, period_meta, group_by):
+    for row in rows:
+        row_id = _row_identity(row, group_by)
+        row["periods"] = []
+        for index, meta in enumerate(period_meta):
+            period_values = period_maps[index].get(row_id)
+            if period_values is None:
+                period_values = {
+                    "key": meta["period_key"],
+                    "label": meta["period_label"],
+                    "code": meta["period_key"],
+                    "name": meta["period_label"],
+                    "title": meta["period_label"],
+                    "opening": "0.00",
+                    "debit": "0.00",
+                    "credit": "0.00",
+                    "closing": "0.00",
+                }
+            row["periods"].append(period_values)
+        if row.get("children"):
+            _attach_period_rows(row["children"], period_maps, period_meta, group_by)
 
 
 def _build_snapshot(
@@ -245,6 +342,8 @@ def _build_snapshot(
     subentity_id,
     from_date,
     to_date,
+    ledger_ids,
+    posted_only,
     group_by,
     include_zero_balances,
     search,
@@ -260,6 +359,8 @@ def _build_snapshot(
         subentity_id=subentity_id,
         from_date=from_date,
         to_date=to_date,
+        ledger_ids=ledger_ids,
+        posted_only=posted_only,
         include_zero_balances=include_zero_balances,
         search=search,
     )
@@ -320,25 +421,35 @@ def build_trial_balance(
     entity_id,
     entityfin_id=None,
     subentity_id=None,
+    ledger_ids=None,
     from_date=None,
     to_date=None,
     as_of_date=None,
-    group_by=None,
+    account_group=None,
     include_zero_balances=False,
+    posted_only=True,
     search=None,
     sort_by=None,
     sort_order="asc",
     page=1,
     page_size=100,
     period_by=None,
+    view_type=None,
+    include_opening=True,
+    include_movement=True,
+    include_closing=True,
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = _resolve_trial_balance_window(entityfin_id, from_date, to_date, as_of_date)
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
-    group_by = (group_by or "ledger").strip().lower()
+    group_by = (account_group or "ledger").strip().lower()
     if group_by not in GROUP_BY_CHOICES:
         group_by = "ledger"
+
+    view_type = (view_type or "").strip().lower() or None
+    if view_type not in {"summary", "detailed"}:
+        view_type = None
 
     period_by = (period_by or "").strip().lower() or None
     if period_by not in PERIOD_BY_CHOICES:
@@ -358,6 +469,8 @@ def build_trial_balance(
         subentity_id=subentity_id,
         from_date=from_date,
         to_date=to_date,
+        ledger_ids=ledger_ids,
+        posted_only=posted_only,
         group_by=group_by,
         include_zero_balances=include_zero_balances,
         search=search,
@@ -376,15 +489,24 @@ def build_trial_balance(
         "reporting": {
             "basis": "period",
             "group_by": group_by,
+            "account_group": group_by,
+            "view_type": view_type or ("detailed" if group_by != "ledger" else "summary"),
             "period_by": period_by,
             "sort_by": sort_by,
             "sort_order": sort_order,
             "search": search,
+            "posted_only": posted_only,
+            "include_opening": include_opening,
+            "include_movement": include_movement,
+            "include_closing": include_closing,
+            "ledger_ids": ledger_ids or [],
         },
     }
 
     if period_by and from_date and to_date and from_date <= to_date:
         periods = []
+        period_meta = []
+        period_maps = []
         for period_start, period_end in _iter_period_ranges(from_date, to_date, period_by):
             period_snapshot = _build_snapshot(
                 entity_id=entity_id,
@@ -392,6 +514,8 @@ def build_trial_balance(
                 subentity_id=subentity_id,
                 from_date=period_start,
                 to_date=period_end,
+                ledger_ids=ledger_ids,
+                posted_only=posted_only,
                 group_by=group_by,
                 include_zero_balances=include_zero_balances,
                 search=search,
@@ -415,7 +539,20 @@ def build_trial_balance(
                 if period_by == "year"
                 else period_end.strftime("%b %Y")
             )
+            period_snapshot["key"] = period_snapshot["period_key"]
+            period_snapshot["code"] = period_snapshot["period_key"]
+            period_snapshot["label"] = period_snapshot["period_label"]
+            period_snapshot["name"] = period_snapshot["period_label"]
+            period_snapshot["title"] = period_snapshot["period_label"]
+            period_meta.append(
+                {
+                    "period_key": period_snapshot["period_key"],
+                    "period_label": period_snapshot["period_label"],
+                }
+            )
+            period_maps.append(_build_row_period_map(period_snapshot["rows"], group_by, period_snapshot["period_key"], period_snapshot["period_label"]))
             periods.append(period_snapshot)
+        _attach_period_rows(snapshot["rows"], period_maps, period_meta, group_by)
         response["periods"] = periods
 
     return response

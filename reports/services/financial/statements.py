@@ -10,6 +10,7 @@ from financial.models import Ledger
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from sales.models.sales_core import SalesInvoiceHeader
 from reports.services.balance_sheet import _inventory_value_asof
+from reports.services.financial.classification import classify_financial_head
 from reports.services.financial.reporting_policy import FINANCIAL_REPORTING_POLICY_DEFAULTS
 from reports.selectors.financial import (
     journal_lines_for_scope,
@@ -86,11 +87,15 @@ def _detailsingroup_value(head) -> int | None:
 
 
 def _is_profit_loss_classification(head, acc_type) -> bool:
-    return _detailsingroup_value(head) == 2
+    return classify_financial_head(head, acc_type).include_in_profit_loss
 
 
 def _profit_loss_category(head, acc_type, amount) -> str:
-    if _detailsingroup_value(head) == 2:
+    classification = classify_financial_head(head, acc_type)
+    if classification.include_in_profit_loss:
+        if classification.profit_loss_side in {"income", "expense"}:
+            return classification.profit_loss_side
+
         head_side = _normalize_balance_side(getattr(head, "drcreffect", None) or getattr(head, "balanceType", None))
         if head_side == "debit":
             return "expense"
@@ -109,7 +114,7 @@ def _profit_loss_category(head, acc_type, amount) -> str:
 
 
 def _is_balance_sheet_classification(head, acc_type) -> bool:
-    return _detailsingroup_value(head) == 3
+    return classify_financial_head(head, acc_type).include_in_balance_sheet
 
 
 def _coerce_date(value):
@@ -146,10 +151,28 @@ def _ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id):
     }
 
 
-def _closing_map(entity_id, entityfin_id=None, subentity_id=None, from_date=None, to_date=None):
+def _closing_map(
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    from_date=None,
+    to_date=None,
+    posted_only=True,
+    ledger_ids=None,
+):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = _resolve_balance_sheet_window(entityfin_id, from_date, to_date)
-    lines = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
+    lines = journal_lines_for_scope(
+        entity_id,
+        entityfin_id,
+        subentity_id,
+        from_date,
+        to_date,
+        posted_only=posted_only,
+    )
+    selected_ledger_ids = [int(ledger_id) for ledger_id in (ledger_ids or []) if ledger_id is not None]
+    if selected_ledger_ids:
+        lines = lines.filter(resolved_ledger_id__in=selected_ledger_ids)
     movement_rows = (
         lines.values("resolved_ledger_id")
         .annotate(
@@ -183,9 +206,17 @@ def _raw_balance_rows(
     to_date,
     include_zero_balances=False,
     search=None,
+    posted_only=True,
+    ledger_ids=None,
 ):
     entity_id, entityfin_id, subentity_id, from_date, to_date, closing = _closing_map(
-        entity_id, entityfin_id, subentity_id, from_date, to_date
+        entity_id,
+        entityfin_id,
+        subentity_id,
+        from_date,
+        to_date,
+        posted_only=posted_only,
+        ledger_ids=ledger_ids,
     )
 
     rows = []
@@ -238,10 +269,22 @@ def _raw_profit_loss_rows(
     to_date,
     include_zero_balances=False,
     search=None,
+    posted_only=True,
+    ledger_ids=None,
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = _resolve_balance_sheet_window(entityfin_id, from_date, to_date)
-    lines = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
+    lines = journal_lines_for_scope(
+        entity_id,
+        entityfin_id,
+        subentity_id,
+        from_date,
+        to_date,
+        posted_only=posted_only,
+    )
+    selected_ledger_ids = [int(ledger_id) for ledger_id in (ledger_ids or []) if ledger_id is not None]
+    if selected_ledger_ids:
+        lines = lines.filter(resolved_ledger_id__in=selected_ledger_ids)
     movement_rows = (
         lines.values("resolved_ledger_id")
         .annotate(
@@ -485,6 +528,9 @@ def _build_profit_loss_snapshot(
     page_size,
     stock_valuation_mode,
     stock_valuation_method,
+    posted_only,
+    ledger_ids,
+    view_type,
     include_pagination=True,
     reporting_policy=None,
 ):
@@ -496,6 +542,8 @@ def _build_profit_loss_snapshot(
         to_date=to_date,
         include_zero_balances=include_zero_balances,
         search=search,
+        posted_only=posted_only,
+        ledger_ids=ledger_ids,
     )
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
@@ -504,61 +552,68 @@ def _build_profit_loss_snapshot(
     total_income = sum((row["amount_decimal"] for row in income_source), Decimal("0.00"))
     total_expense = sum((row["amount_decimal"] for row in expense_source), Decimal("0.00"))
 
-    stock_context = _stock_context(
-        entity_id=entity_id,
-        from_date=from_date,
-        to_date=to_date,
-        assets_source=[],
-        requested_mode=stock_valuation_mode,
-        valuation_method=stock_valuation_method,
-    )
-    stock_adjustment = Decimal("0.00")
-    if stock_context["effective_mode"] == "valuation":
-        stock_adjustment = stock_context["inventory_delta"]
-        if stock_adjustment > 0:
-            income_source.append(
-                {
-                    "ledger_id": None,
-                    "ledger_code": None,
-                    "ledger_name": "Closing Stock Adjustment",
-                    "accounthead_id": None,
-                    "accounthead_name": "Stock Adjustment",
-                    "accounttype_id": None,
-                    "accounttype_name": "Inventory",
-                    "debit": "0.00",
-                    "credit": f"{stock_adjustment:.2f}",
-                    "amount_decimal": stock_adjustment,
-                    "amount": f"{stock_adjustment:.2f}",
-                    "category": "income",
-                    "can_drilldown": False,
-                    "drilldown_target": None,
-                    "drilldown_params": None,
-                }
-            )
-        elif stock_adjustment < 0:
-            loss_stock = abs(stock_adjustment)
-            expense_source.append(
-                {
-                    "ledger_id": None,
-                    "ledger_code": None,
-                    "ledger_name": "Stock Consumption Adjustment",
-                    "accounthead_id": None,
-                    "accounthead_name": "Stock Adjustment",
-                    "accounttype_id": None,
-                    "accounttype_name": "Inventory",
-                    "debit": f"{loss_stock:.2f}",
-                    "credit": "0.00",
-                    "amount_decimal": loss_stock,
-                    "amount": f"{loss_stock:.2f}",
-                    "category": "expense",
-                    "can_drilldown": False,
-                    "drilldown_target": None,
-                    "drilldown_params": None,
-                }
-            )
+    from reports.services.trading_account import build_trading_account_dynamic
 
-    adjusted_income = total_income + max(stock_adjustment, Decimal("0.00"))
-    adjusted_expense = total_expense + abs(min(stock_adjustment, Decimal("0.00")))
+    trading_snapshot = build_trading_account_dynamic(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        startdate=from_date.isoformat(),
+        enddate=to_date.isoformat(),
+        valuation_method=stock_valuation_method,
+        level="head",
+        inventory_breakdown=False,
+    )
+    gross_profit = Decimal(str(trading_snapshot.get("gross_profit", 0) or 0))
+    gross_loss = Decimal(str(trading_snapshot.get("gross_loss", 0) or 0))
+    opening_inventory = Decimal(str(trading_snapshot.get("opening_stock", 0) or 0))
+    closing_inventory = Decimal(str(trading_snapshot.get("closing_stock", 0) or 0))
+
+    # Trading Account carries opening stock, purchases, direct expenses, sales, and closing stock.
+    # Only the resulting gross profit/loss flows into Profit & Loss.
+    if gross_profit > 0:
+        income_source.append(
+            {
+                "ledger_id": None,
+                "ledger_code": None,
+                "ledger_name": "Gross Profit b/d",
+                "accounthead_id": None,
+                "accounthead_name": "Trading Account",
+                "accounttype_id": None,
+                "accounttype_name": "Gross Profit",
+                "debit": "0.00",
+                "credit": f"{gross_profit:.2f}",
+                "amount_decimal": gross_profit,
+                "amount": f"{gross_profit:.2f}",
+                "category": "income",
+                "can_drilldown": False,
+                "drilldown_target": None,
+                "drilldown_params": None,
+            }
+        )
+    elif gross_loss > 0:
+        expense_source.append(
+            {
+                "ledger_id": None,
+                "ledger_code": None,
+                "ledger_name": "Gross Loss b/d",
+                "accounthead_id": None,
+                "accounthead_name": "Trading Account",
+                "accounttype_id": None,
+                "accounttype_name": "Gross Loss",
+                "debit": f"{gross_loss:.2f}",
+                "credit": "0.00",
+                "amount_decimal": gross_loss,
+                "amount": f"{gross_loss:.2f}",
+                "category": "expense",
+                "can_drilldown": False,
+                "drilldown_target": None,
+                "drilldown_params": None,
+            }
+        )
+
+    adjusted_income = total_income + gross_profit
+    adjusted_expense = total_expense + gross_loss
     net_profit = adjusted_income - adjusted_expense
 
     pl_policy = _profit_loss_policy(reporting_policy)
@@ -610,28 +665,33 @@ def _build_profit_loss_snapshot(
             "net_profit": f"{net_profit:.2f}",
             "raw_income": f"{total_income:.2f}",
             "raw_expense": f"{total_expense:.2f}",
-            "stock_adjustment": f"{stock_adjustment:.2f}",
+            "stock_adjustment": "0.00",
         },
         "summary": {
             "income_rows": income_count,
             "expense_rows": expense_count,
-            "opening_inventory_valuation": f"{stock_context['opening_inventory']:.2f}",
-            "closing_inventory_valuation": f"{stock_context['closing_inventory']:.2f}",
+            "opening_inventory_valuation": f"{opening_inventory:.2f}",
+            "closing_inventory_valuation": f"{closing_inventory:.2f}",
             "accounting_only_notes_count": (accounting_only_notes or {}).get("totals", {}).get("count", 0),
             "accounting_only_notes_taxable_amount": (accounting_only_notes or {}).get("totals", {}).get("taxable_amount", "0.00"),
             "accounting_only_notes_estimated_profit_impact": (accounting_only_notes or {}).get("totals", {}).get("estimated_profit_impact", "0.00"),
-            "profit_note": "Net profit is book profit and includes accounting-only CN/DN impact.",
+            "gross_profit_from_trading": f"{gross_profit:.2f}",
+            "gross_loss_from_trading": f"{gross_loss:.2f}",
+            "profit_note": "Net profit includes gross result brought down from Trading Account plus indirect income/expenses.",
         },
         "stock_valuation": {
-            "requested_mode": stock_context["requested_mode"],
-            "effective_mode": stock_context["effective_mode"],
-            "valuation_method": stock_context["valuation_method"],
-            "valuation_available": stock_context["valuation_available"],
-            "opening_inventory": f"{stock_context['opening_inventory']:.2f}",
-            "closing_inventory": f"{stock_context['closing_inventory']:.2f}",
-            "inventory_delta": f"{stock_context['inventory_delta']:.2f}",
-            "gl_inventory_total": f"{stock_context['gl_inventory_total']:.2f}",
-            "notes": stock_context["notes"],
+            "requested_mode": stock_valuation_mode,
+            "effective_mode": "trading_account",
+            "valuation_method": stock_valuation_method,
+            "valuation_available": True,
+            "opening_inventory": f"{opening_inventory:.2f}",
+            "closing_inventory": f"{closing_inventory:.2f}",
+            "inventory_delta": f"{(closing_inventory - opening_inventory):.2f}",
+            "gl_inventory_total": "0.00",
+            "notes": [
+                "Opening and closing inventory are handled in Trading Account.",
+                "Profit & Loss receives only Gross Profit/Gross Loss brought down from Trading.",
+            ],
         },
     }
     if accounting_only_notes:
@@ -664,11 +724,25 @@ def build_profit_and_loss(
     period_by=None,
     stock_valuation_mode="auto",
     stock_valuation_method="fifo",
+    view_type="summary",
+    posted_only=True,
+    hide_zero_rows=True,
+    account_group=None,
+    ledger_ids=None,
     reporting_policy=None,
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     from_date, to_date = _resolve_balance_sheet_window(entityfin_id, from_date, to_date, as_of_date)
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
+
+    view_type = (view_type or "summary").strip().lower()
+    if view_type not in {"summary", "detailed"}:
+        view_type = "summary"
+
+    if account_group:
+        group_by = account_group
+    elif not group_by:
+        group_by = "ledger" if view_type == "detailed" else "accounthead"
 
     group_by = (group_by or "ledger").strip().lower()
     if group_by not in GROUP_BY_CHOICES:
@@ -701,7 +775,7 @@ def build_profit_and_loss(
         from_date=from_date,
         to_date=to_date,
         group_by=group_by,
-        include_zero_balances=include_zero_balances,
+        include_zero_balances=include_zero_balances and not hide_zero_rows,
         search=search,
         sort_by=sort_by,
         sort_order=sort_order,
@@ -709,6 +783,9 @@ def build_profit_and_loss(
         page_size=page_size,
         stock_valuation_mode=stock_valuation_mode,
         stock_valuation_method=stock_valuation_method,
+        posted_only=posted_only,
+        ledger_ids=ledger_ids,
+        view_type=view_type,
         include_pagination=True,
         reporting_policy=reporting_policy,
     )
@@ -722,6 +799,11 @@ def build_profit_and_loss(
             "basis": "period",
             "group_by": group_by,
             "period_by": period_by,
+            "view_type": view_type,
+            "account_group": group_by,
+            "ledger_ids": list(ledger_ids) if ledger_ids else None,
+            "posted_only": bool(posted_only),
+            "hide_zero_rows": not bool(include_zero_balances),
             "stock_valuation_mode": stock_valuation_mode,
             "stock_valuation_method": stock_valuation_method,
             "sort_by": sort_by,
@@ -745,7 +827,7 @@ def build_profit_and_loss(
                 from_date=period_start,
                 to_date=period_end,
                 group_by=group_by,
-                include_zero_balances=include_zero_balances,
+                include_zero_balances=include_zero_balances and not hide_zero_rows,
                 search=search,
                 sort_by=sort_by,
                 sort_order=sort_order,
@@ -753,6 +835,9 @@ def build_profit_and_loss(
                 page_size=page_size,
                 stock_valuation_mode=stock_valuation_mode,
                 stock_valuation_method=stock_valuation_method,
+                posted_only=posted_only,
+                ledger_ids=ledger_ids,
+                view_type=view_type,
                 include_pagination=False,
                 reporting_policy=reporting_policy,
             )
@@ -881,7 +966,7 @@ def _inventory_rows(rows):
     ]
 
 
-def _stock_context(*, entity_id, from_date, to_date, assets_source, requested_mode, valuation_method):
+def _stock_context(*, entity_id, entityfin_id=None, subentity_id=None, from_date, to_date, assets_source, requested_mode, valuation_method):
     mode = (requested_mode or "auto").strip().lower()
     if mode not in STOCK_VALUATION_MODES:
         mode = "auto"
@@ -895,10 +980,10 @@ def _stock_context(*, entity_id, from_date, to_date, assets_source, requested_mo
     valuation_available = False
     if to_date:
         try:
-            closing_inventory = Decimal(str(_inventory_value_asof(entity_id, to_date, method)))
+            closing_inventory = Decimal(str(_inventory_value_asof(entity_id, to_date, method, entityfin_id=entityfin_id, subentity_id=subentity_id)))
             valuation_available = True
             if from_date:
-                opening_inventory = Decimal(str(_inventory_value_asof(entity_id, from_date - timedelta(days=1), method)))
+                opening_inventory = Decimal(str(_inventory_value_asof(entity_id, from_date - timedelta(days=1), method, entityfin_id=entityfin_id, subentity_id=subentity_id)))
         except Exception:
             opening_inventory = Decimal("0.00")
             closing_inventory = Decimal("0.00")
@@ -967,6 +1052,8 @@ def _build_snapshot(
     page_size,
     stock_valuation_mode,
     stock_valuation_method,
+    posted_only,
+    ledger_ids,
     include_pagination=True,
     reporting_policy=None,
 ):
@@ -978,6 +1065,8 @@ def _build_snapshot(
         to_date=to_date,
         include_zero_balances=include_zero_balances,
         search=search,
+        posted_only=posted_only,
+        ledger_ids=ledger_ids,
     )
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
@@ -986,6 +1075,8 @@ def _build_snapshot(
 
     stock_context = _stock_context(
         entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
         from_date=from_date,
         to_date=to_date,
         assets_source=assets_source,
@@ -1181,7 +1272,12 @@ def build_balance_sheet(
     to_date=None,
     as_of_date=None,
     group_by=None,
+    view_type="summary",
+    posted_only=True,
+    hide_zero_rows=True,
     include_zero_balances=False,
+    account_group=None,
+    ledger_ids=None,
     search=None,
     sort_by=None,
     sort_order="asc",
@@ -1196,9 +1292,18 @@ def build_balance_sheet(
     from_date, to_date = _resolve_balance_sheet_window(entityfin_id, from_date, to_date, as_of_date)
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
+    view_type = (view_type or "summary").strip().lower()
+    if view_type not in {"summary", "detailed"}:
+        view_type = "summary"
+
+    if account_group:
+        group_by = account_group
+    elif not group_by:
+        group_by = "ledger" if view_type == "detailed" else "accounthead"
+
     group_by = (group_by or "ledger").strip().lower()
     if group_by not in GROUP_BY_CHOICES:
-        group_by = "ledger"
+        group_by = "ledger" if view_type == "detailed" else "accounthead"
 
     period_by = (period_by or "").strip().lower() or None
     if period_by not in PERIOD_BY_CHOICES:
@@ -1219,6 +1324,7 @@ def build_balance_sheet(
 
     page = max(int(page or 1), 1)
     page_size = max(int(page_size or 100), 1)
+    include_zero_balances = bool(include_zero_balances) and not bool(hide_zero_rows)
 
     snapshot = _build_snapshot(
         entity_id=entity_id,
@@ -1235,6 +1341,8 @@ def build_balance_sheet(
         page_size=page_size,
         stock_valuation_mode=stock_valuation_mode,
         stock_valuation_method=stock_valuation_method,
+        posted_only=posted_only,
+        ledger_ids=ledger_ids,
         include_pagination=True,
         reporting_policy=reporting_policy,
     )
@@ -1248,6 +1356,11 @@ def build_balance_sheet(
             "basis": "as_of",
             "group_by": group_by,
             "period_by": period_by,
+            "view_type": view_type,
+            "account_group": account_group or group_by,
+            "ledger_ids": list(ledger_ids) if ledger_ids else None,
+            "posted_only": bool(posted_only),
+            "hide_zero_rows": bool(hide_zero_rows),
             "stock_valuation_mode": stock_valuation_mode,
             "stock_valuation_method": stock_valuation_method,
             "sort_by": sort_by,
@@ -1278,6 +1391,8 @@ def build_balance_sheet(
                 page_size=page_size,
                 stock_valuation_mode=stock_valuation_mode,
                 stock_valuation_method=stock_valuation_method,
+                posted_only=posted_only,
+                ledger_ids=ledger_ids,
                 include_pagination=False,
                 reporting_policy=reporting_policy,
             )

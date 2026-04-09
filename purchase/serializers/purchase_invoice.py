@@ -428,7 +428,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "tax_regime": {"help_text": "Backend derives or validates GST regime from vendor/place-of-supply states."},
             "is_igst": {"help_text": "Backend derives or validates IGST applicability from tax regime."},
             "is_reverse_charge": {"help_text": "Editable, but backend suppresses GST amounts on lines when enabled."},
-            "is_itc_eligible": {"help_text": "Editable, but backend validates legal ITC eligibility."},
+            "is_itc_eligible": {"help_text": "Document-level ITC workflow flag. Detailed eligible and ineligible tax is derived from lines and charges."},
             "itc_block_reason": {"help_text": "Backend may auto-fill when ITC is blocked or not eligible."},
             "status": {"read_only": True},
             "doc_no": {"required": False, "allow_null": True},
