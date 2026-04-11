@@ -34,7 +34,13 @@ from reports.api.purchase_register_view import (
     PurchaseRegisterPDFAPIView,
     PurchaseRegisterPrintAPIView,
 )
-from reports.api.sales_register_view import SalesRegisterAPIView
+from reports.api.sales_register_view import (
+    SalesRegisterAPIView,
+    SalesRegisterCSVAPIView,
+    SalesRegisterExcelAPIView,
+    SalesRegisterPDFAPIView,
+    SalesRegisterPrintAPIView,
+)
 from reports.api.sales_gstin_view import SalesGstinAPIView
 from reports.api.ping import ReportsPingAPIView
 from reports.gstr1.views import (
@@ -128,6 +134,10 @@ urlpatterns = [
     path("purchases/register/csv/", PurchaseRegisterCSVAPIView.as_view(), name="purchase-register-csv"),
     path("purchases/register/print/", PurchaseRegisterPrintAPIView.as_view(), name="purchase-register-print"),
     path("sales/register/", SalesRegisterAPIView.as_view(), name="sales-register"),
+    path("sales/register/excel/", SalesRegisterExcelAPIView.as_view(), name="sales-register-excel"),
+    path("sales/register/pdf/", SalesRegisterPDFAPIView.as_view(), name="sales-register-pdf"),
+    path("sales/register/csv/", SalesRegisterCSVAPIView.as_view(), name="sales-register-csv"),
+    path("sales/register/print/", SalesRegisterPrintAPIView.as_view(), name="sales-register-print"),
     path("sales/gstin/", SalesGstinAPIView.as_view(), name="sales-gstin"),
     path("gstr1/summary/", Gstr1SummaryAPIView.as_view(), name="gstr1-summary"),
     path("gstr1/meta/", Gstr1MetaAPIView.as_view(), name="gstr1-meta"),
