@@ -162,19 +162,19 @@ PAYABLE_DRILLDOWN_TARGETS = OrderedDict(
         },
         "purchase_ap_open_items": {
             "code": "purchase_ap_open_items",
-            "label": "Open Items",
+            "label": "Open Bills",
             "target": "purchase_ap_open_items",
             "kind": "report",
         },
         "purchase_ap_settlements": {
             "code": "purchase_ap_settlements",
-            "label": "Vendor Settlements",
+            "label": "Settlement History",
             "target": "purchase_ap_settlements",
             "kind": "detail",
         },
         "purchase_document_detail": {
             "code": "purchase_document_detail",
-            "label": "Purchase Document Detail",
+            "label": "Bill Detail",
             "target": "purchase_document_detail",
             "kind": "document",
         },
@@ -215,59 +215,112 @@ PAYABLE_REPORTS.update(
             "route_name": "vendoroutstanding",
             "required_permission": "reports.vendoroutstanding.view",
             "supports_traceability": True,
-            "default_filters": {"sort_by": "net_outstanding", "sort_order": "desc"},
+            "default_filters": {
+                "view": "summary",
+                "aging_basis": "due_date",
+                "sort_by": "outstanding",
+                "sort_order": "desc",
+                "include_zero_balance": False,
+                "include_credit_balances": False,
+                "include_advances_separately": False,
+                "show_settled": False,
+                "show_overdue_only": False,
+                "show_not_due": False,
+            },
             "feature_flags": OrderedDict(
                 {
+                    "view": {
+                        "label": "View Mode",
+                        "type": "choice",
+                        "default": "summary",
+                        "choices": [
+                            {"value": "summary", "label": "Summary"},
+                            {"value": "detailed", "label": "Detailed"},
+                        ],
+                    },
+                    "aging_basis": {
+                        "label": "Aging Basis",
+                        "type": "choice",
+                        "default": "due_date",
+                        "choices": [
+                            {"value": "due_date", "label": "Due Date"},
+                            {"value": "bill_date", "label": "Bill Date"},
+                        ],
+                    },
                     "reconcile_gl": {"label": "GL Reconciliation Warning", "type": "boolean", "default": False},
                     "include_trace": {"label": "Traceability", "type": "boolean", "default": True},
+                    "show_zero_balance": {"label": "Include Zero Balances", "type": "boolean", "default": False},
+                    "show_credit_balances": {"label": "Include Credit Balances", "type": "boolean", "default": False},
+                    "show_advances_separately": {"label": "Include Advances Separately", "type": "boolean", "default": False},
                 }
             ),
-            "columns": _ordered_columns(
-                {"key": "vendor_name", "label": "Vendor Name", "default": True},
-                {"key": "vendor_code", "label": "Vendor Code", "default": True},
-                {"key": "opening_balance", "label": "Opening Balance", "default": True},
-                {"key": "bill_amount", "label": "Bill Amount", "default": True},
-                {"key": "payment_amount", "label": "Payment Amount", "default": True},
-                {"key": "credit_note", "label": "Credit Note", "default": True},
-                {"key": "net_outstanding", "label": "Net Outstanding", "default": True},
-                {"key": "overdue_amount", "label": "Overdue Amount", "default": True},
-                {"key": "unapplied_advance", "label": "Unapplied Advance", "default": True},
-                {"key": "credit_limit", "label": "Credit Limit", "default": True},
-                {"key": "credit_days", "label": "Credit Days", "default": True},
-                {"key": "last_bill_date", "label": "Last Bill Date", "default": True},
-                {"key": "last_payment_date", "label": "Last Payment Date", "default": True},
-                {"key": "currency", "label": "Currency", "default": True},
-                {"key": "gstin", "label": "GSTIN", "default": True},
-            ),
-            "summary_blocks": OrderedDict(
-                {
-                    "totals": {"code": "totals", "label": "Totals", "default": True},
-                    "vendor_count": {"code": "vendor_count", "label": "Vendor Count", "default": True},
-                    "gl_reconciliation": {
-                        "code": "gl_reconciliation",
-                        "label": "GL Reconciliation",
-                        "default": False,
-                        "feature_flag": "reconcile_gl",
-                    },
-                }
-            ),
+            "views": {
+                "summary": {
+                    "columns": _ordered_columns(
+                        {"key": "vendor_code", "label": "Vendor Code", "default": True},
+                        {"key": "vendor_name", "label": "Vendor Name", "default": True},
+                        {"key": "outstanding", "label": "Outstanding", "default": True},
+                        {"key": "not_due", "label": "Not Due", "default": True},
+                        {"key": "bucket_0_30", "label": "0-30", "default": True},
+                        {"key": "bucket_31_60", "label": "31-60", "default": True},
+                        {"key": "bucket_61_90", "label": "61-90", "default": True},
+                        {"key": "bucket_91_180", "label": "91-180", "default": True},
+                        {"key": "bucket_181_plus", "label": "181+", "default": True},
+                        {"key": "oldest_due_date", "label": "Oldest Due Date", "default": True},
+                        {"key": "gstin", "label": "GSTIN", "default": True},
+                        {"key": "opening_balance", "label": "Opening", "default": True},
+                        {"key": "bill_amount", "label": "Invoiced", "default": True},
+                        {"key": "payment_amount", "label": "Paid / Adjusted", "default": True},
+                        {"key": "last_bill_date", "label": "Latest Bill Date", "default": True},
+                    ),
+                    "summary_blocks": OrderedDict(
+                        {
+                            "totals": {"code": "totals", "label": "Totals", "default": True},
+                            "vendor_count": {"code": "vendor_count", "label": "Vendor Count", "default": True},
+                        }
+                    ),
+                },
+                "detailed": {
+                    "columns": _ordered_columns(
+                        {"key": "date", "label": "Date", "default": True},
+                        {"key": "voucher_no", "label": "Voucher No", "default": True},
+                        {"key": "voucher_type_name", "label": "Voucher Type", "default": True},
+                        {"key": "bill_ref_no", "label": "Bill / Ref No", "default": True},
+                        {"key": "bill_date", "label": "Bill Date", "default": True},
+                        {"key": "due_date", "label": "Due Date", "default": True},
+                        {"key": "days_overdue", "label": "Days Overdue", "default": True},
+                        {"key": "original_amount", "label": "Original Amount", "default": True},
+                        {"key": "settled_amount", "label": "Settled Amount", "default": True},
+                        {"key": "outstanding_amount", "label": "Outstanding Amount", "default": True},
+                        {"key": "aging_bucket", "label": "Aging Bucket", "default": True},
+                        {"key": "subentity_name", "label": "Subentity", "default": True},
+                    ),
+                    "summary_blocks": OrderedDict(
+                        {
+                            "totals": {"code": "totals", "label": "Totals", "default": True},
+                            "vendor_count": {"code": "vendor_count", "label": "Vendor Count", "default": True},
+                        }
+                    ),
+                },
+            },
             "drilldown_targets": ["ap_aging", "purchase_ap_vendor_statement", "purchase_ap_open_items", "purchase_ap_settlements"],
             "export_columns": [
-                "vendor_name",
                 "vendor_code",
+                "vendor_name",
+                "outstanding",
+                "not_due",
+                "bucket_0_30",
+                "bucket_31_60",
+                "bucket_61_90",
+                "bucket_91_180",
+                "bucket_181_plus",
+                "oldest_due_date",
+                "gstin",
                 "opening_balance",
                 "bill_amount",
                 "payment_amount",
-                "credit_note",
-                "net_outstanding",
-                "overdue_amount",
-                "unapplied_advance",
-                "credit_limit",
-                "credit_days",
                 "last_bill_date",
                 "last_payment_date",
-                "currency",
-                "gstin",
             ],
             "related_reports": [
                 "vendor_outstanding",
@@ -306,20 +359,20 @@ PAYABLE_REPORTS.update(
             "views": {
                 "summary": {
                     "columns": _ordered_columns(
-                        {"key": "vendor_name", "label": "Vendor", "default": True},
-                        {"key": "vendor_code", "label": "Vendor Code", "default": True},
-                        {"key": "outstanding", "label": "Outstanding", "default": True},
-                        {"key": "overdue_amount", "label": "Overdue Amount", "default": True},
-                        {"key": "current", "label": "Current", "default": True},
-                        {"key": "bucket_1_30", "label": "1-30", "default": True},
-                        {"key": "bucket_31_60", "label": "31-60", "default": True},
-                        {"key": "bucket_61_90", "label": "61-90", "default": True},
-                        {"key": "bucket_90_plus", "label": "90+", "default": True},
-                        {"key": "unapplied_advance", "label": "Unapplied Advance", "default": True},
-                        {"key": "credit_limit", "label": "Credit Limit", "default": True},
-                        {"key": "credit_days", "label": "Credit Days", "default": True},
-                        {"key": "last_payment_date", "label": "Last Payment Date", "default": True},
-                        {"key": "currency", "label": "Currency", "default": True},
+                        {"key": "vendor_name", "label": "Vendor Name", "default": True, "width": "240px"},
+                        {"key": "vendor_code", "label": "Vendor Code", "default": True, "width": "120px"},
+                        {"key": "outstanding", "label": "Outstanding", "default": True, "width": "130px"},
+                        {"key": "overdue_amount", "label": "Overdue", "default": True, "width": "120px"},
+                        {"key": "current", "label": "Not Due", "default": True, "width": "110px"},
+                        {"key": "bucket_1_30", "label": "1-30 Days", "default": True, "width": "110px"},
+                        {"key": "bucket_31_60", "label": "31-60 Days", "default": True, "width": "110px"},
+                        {"key": "bucket_61_90", "label": "61-90 Days", "default": True, "width": "110px"},
+                        {"key": "bucket_90_plus", "label": "90+ Days", "default": True, "width": "110px"},
+                        {"key": "unapplied_advance", "label": "Advances", "default": True, "width": "120px"},
+                        {"key": "credit_limit", "label": "Credit Limit", "default": True, "width": "120px"},
+                        {"key": "credit_days", "label": "Credit Days", "default": True, "width": "110px"},
+                        {"key": "last_payment_date", "label": "Last Payment", "default": True, "width": "120px"},
+                        {"key": "currency", "label": "Currency", "default": True, "width": "90px"},
                     ),
                     "summary_blocks": OrderedDict(
                         {
@@ -348,21 +401,21 @@ PAYABLE_REPORTS.update(
                 },
                 "invoice": {
                     "columns": _ordered_columns(
-                        {"key": "vendor_name", "label": "Vendor", "default": True},
-                        {"key": "vendor_code", "label": "Vendor Code", "default": True},
-                        {"key": "bill_number", "label": "Bill Number", "default": True},
-                        {"key": "bill_date", "label": "Bill Date", "default": True},
-                        {"key": "due_date", "label": "Due Date", "default": True},
-                        {"key": "credit_days", "label": "Credit Days", "default": True},
-                        {"key": "bill_amount", "label": "Bill Amount", "default": True},
-                        {"key": "paid_amount", "label": "Paid Amount", "default": True},
-                        {"key": "balance", "label": "Balance", "default": True},
-                        {"key": "current", "label": "Current", "default": True},
-                        {"key": "bucket_1_30", "label": "1-30", "default": True},
-                        {"key": "bucket_31_60", "label": "31-60", "default": True},
-                        {"key": "bucket_61_90", "label": "61-90", "default": True},
-                        {"key": "bucket_90_plus", "label": "90+", "default": True},
-                        {"key": "currency", "label": "Currency", "default": True},
+                        {"key": "vendor_name", "label": "Vendor Name", "default": True, "width": "240px"},
+                        {"key": "vendor_code", "label": "Vendor Code", "default": True, "width": "120px"},
+                        {"key": "bill_number", "label": "Bill / Ref No", "default": True, "width": "140px"},
+                        {"key": "bill_date", "label": "Bill Date", "default": True, "width": "110px"},
+                        {"key": "due_date", "label": "Due Date", "default": True, "width": "110px"},
+                        {"key": "credit_days", "label": "Credit Days", "default": True, "width": "100px"},
+                        {"key": "bill_amount", "label": "Bill Amount", "default": True, "width": "130px"},
+                        {"key": "paid_amount", "label": "Settled Amount", "default": True, "width": "130px"},
+                        {"key": "balance", "label": "Outstanding Amount", "default": True, "width": "140px"},
+                        {"key": "current", "label": "Not Due", "default": True, "width": "100px"},
+                        {"key": "bucket_1_30", "label": "1-30 Days", "default": True, "width": "110px"},
+                        {"key": "bucket_31_60", "label": "31-60 Days", "default": True, "width": "110px"},
+                        {"key": "bucket_61_90", "label": "61-90 Days", "default": True, "width": "110px"},
+                        {"key": "bucket_90_plus", "label": "90+ Days", "default": True, "width": "110px"},
+                        {"key": "currency", "label": "Currency", "default": True, "width": "90px"},
                     ),
                     "summary_blocks": OrderedDict(
                         {
@@ -926,9 +979,17 @@ def build_payables_drilldown(target_code, *, params, label=None, kind=None, path
     return payload
 
 
-def get_payables_registry_payload():
+def _permission_allowed(required_permission, permission_codes):
+    if not required_permission or permission_codes is None:
+        return True
+    return required_permission in permission_codes
+
+
+def get_payables_registry_payload(*, permission_codes=None):
     registry = []
     for report in PAYABLE_REPORTS.values():
+        if not _permission_allowed(report.get("required_permission"), permission_codes):
+            continue
         registry.append(
             {
                 "code": report["code"],
@@ -972,7 +1033,7 @@ def _related_report_defaults(report_code, *, entity_id, entityfin_id, subentity_
     return params
 
 
-def build_related_report_links(report_codes, *, entity_id, entityfin_id, subentity_id, as_of_date=None, from_date=None, to_date=None, vendor_id=None, view=None):
+def build_related_report_links(report_codes, *, entity_id, entityfin_id, subentity_id, as_of_date=None, from_date=None, to_date=None, vendor_id=None, view=None, permission_codes=None):
     links = []
     for code in report_codes:
         if code == "ap_aging_summary":
@@ -985,6 +1046,8 @@ def build_related_report_links(report_codes, *, entity_id, entityfin_id, subenti
             base = get_payables_report_config(code)
             name = base["name"] if base else None
         if not base:
+            continue
+        if not _permission_allowed(base.get("required_permission"), permission_codes):
             continue
         links.append(
             {
@@ -1011,7 +1074,40 @@ def build_related_report_links(report_codes, *, entity_id, entityfin_id, subenti
 
 def _report_filter_codes(report_code, *, view=None):
     mapping = {
-        "vendor_outstanding": ["entity", "entityfinid", "subentity", "from_date", "to_date", "as_of_date", "vendor", "vendor_group", "region", "currency", "overdue_only", "credit_limit_exceeded", "outstanding_gt", "reconcile_gl", "include_trace", "search", "sort_by", "sort_order", "page", "page_size"],
+        "vendor_outstanding": [
+            "entity",
+            "entityfinid",
+            "subentity",
+            "from_date",
+            "to_date",
+            "as_of_date",
+            "vendor",
+            "vendor_ids",
+            "vendor_group",
+            "region",
+            "currency",
+            "gst_registered",
+            "msme",
+            "voucher_type",
+            "aging_basis",
+            "view",
+            "overdue_only",
+            "show_overdue_only",
+            "show_not_due",
+            "include_zero_balance",
+            "include_credit_balances",
+            "include_advances_separately",
+            "show_settled",
+            "credit_limit_exceeded",
+            "outstanding_gt",
+            "reconcile_gl",
+            "include_trace",
+            "search",
+            "sort_by",
+            "sort_order",
+            "page",
+            "page_size",
+        ],
         "ap_aging": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "overdue_only", "credit_limit_exceeded", "include_trace", "search", "sort_by", "sort_order", "page", "page_size", "view"],
         "payables_dashboard_summary": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "search"],
         "ap_gl_reconciliation": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "include_trace", "search", "sort_by", "sort_order", "page", "page_size"],
@@ -1056,12 +1152,30 @@ def resolve_view_modes(report_code):
     return list(view_flag.get("choices", []))
 
 
-def get_payables_meta_entry(report_code, *, view=None, enabled_features=None):
+def get_payables_meta_entry(report_code, *, view=None, enabled_features=None, permission_codes=None):
     report = get_payables_report_config(report_code, view=view)
     if not report:
         return None
+    if not _permission_allowed(report.get("required_permission"), permission_codes):
+        return None
     columns = resolve_report_columns(report_code, view=view, enabled_features=enabled_features)
     summary_blocks = resolve_report_summary_blocks(report_code, view=view, enabled_features=enabled_features)
+    drilldown_targets = []
+    for code in report.get("drilldown_targets", []):
+        target = get_payables_drilldown_target(code) or {"code": code, "target": code, "label": code.replace("_", " ").title()}
+        target_permission = None
+        target_report = get_payables_report_config(target.get("report_code") or code, view=target.get("view"))
+        if target_report:
+            target_permission = target_report.get("required_permission")
+        if _permission_allowed(target_permission, permission_codes):
+            drilldown_targets.append(target)
+    related_reports = []
+    for code in report.get("related_reports", []):
+        related_report = get_payables_report_config(code, view=view)
+        if code in {"ap_aging_summary", "ap_aging_invoice"}:
+            related_report = get_payables_report_config("ap_aging")
+        if related_report and _permission_allowed(related_report.get("required_permission"), permission_codes):
+            related_reports.append(code)
     return {
         "code": report["code"],
         "label": report["name"],
@@ -1084,25 +1198,24 @@ def get_payables_meta_entry(report_code, *, view=None, enabled_features=None):
         "enabled_columns": [column["key"] for column in columns if column["included"]],
         "available_summary_blocks": summary_blocks,
         "enabled_summary_blocks": [block["code"] for block in summary_blocks if block["enabled"]],
-        "drilldown_targets": [
-            get_payables_drilldown_target(code) or {"code": code, "target": code, "label": code.replace("_", " ").title()}
-            for code in report.get("drilldown_targets", [])
-        ],
+        "drilldown_targets": drilldown_targets,
         "export_formats": list(report.get("export_formats", PAYABLE_EXPORT_FORMATS)),
         "export_columns": resolve_report_columns(report_code, view=view, enabled_features=enabled_features, export=True),
-        "related_reports": list(report.get("related_reports", [])),
+        "related_reports": related_reports,
         "print_sections": list(report.get("print_sections", [])),
         "view": view,
     }
 
 
-def get_payables_registry_meta():
+def get_payables_registry_meta(*, permission_codes=None):
     registry = []
     for code, report in PAYABLE_REPORTS.items():
         if "views" in report:
-            registry.append(get_payables_meta_entry(code, view="summary"))
+            entry = get_payables_meta_entry(code, view="summary", permission_codes=permission_codes)
         else:
-            registry.append(get_payables_meta_entry(code))
+            entry = get_payables_meta_entry(code, permission_codes=permission_codes)
+        if entry:
+            registry.append(entry)
     return registry
 
 

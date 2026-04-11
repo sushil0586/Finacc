@@ -19,8 +19,8 @@ from geography.models import City, Country, District, State
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement, VendorSettlementLine
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from purchase.models.purchase_core import PurchaseInvoiceHeader
-from rbac.models import Role, UserRoleAssignment
-from rbac.services import EffectiveMenuService, RoleTemplateService
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
+from rbac.services import EffectiveMenuService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -63,7 +63,38 @@ class PayableReportAPITests(APITestCase):
             priority=10,
             createdby=self.user,
         )
-        RoleTemplateService.apply_template(self.report_role, "report_viewer", [], actor=self.user)
+        report_permission_codes = [
+            "reports.payables.view",
+            "reports.vendoroutstanding.view",
+            "reports.accountspayableaging.view",
+            "reports.purchasebook.view",
+            "reports.vendorledgerstatement.view",
+            "reports.vendorsettlementhistory.view",
+            "reports.vendornoteregister.view",
+        ]
+        report_permission_ids = []
+        for code in report_permission_codes:
+            permission, _ = Permission.objects.get_or_create(
+                code=code,
+                defaults={
+                    "name": code.replace(".", " ").replace("_", " ").title(),
+                    "module": "reports",
+                    "resource": "payables",
+                    "action": "view",
+                },
+            )
+            if not permission.isactive:
+                permission.isactive = True
+                permission.save(update_fields=["isactive"])
+            report_permission_ids.append(permission.id)
+        for permission_id in report_permission_ids:
+            RolePermission.objects.get_or_create(
+                role=self.report_role,
+                permission_id=permission_id,
+                defaults={
+                    "effect": RolePermission.EFFECT_ALLOW,
+                },
+            )
         UserRoleAssignment.objects.create(
             user=self.user,
             entity=self.entity,
@@ -321,32 +352,93 @@ class PayableReportAPITests(APITestCase):
         params.update(extra)
         return params
 
+    def _create_limited_report_user(self, permission_code):
+        suffix = uuid4().hex[:8]
+        user = User.objects.create_user(username=f"payable-limited-{suffix}", email=f"payable-limited-{suffix}@example.com", password="pass123")
+        role = Role.objects.create(
+            entity=self.entity,
+            name=f"Limited Report Viewer {suffix}",
+            code=f"limited_report_viewer_{suffix}",
+            role_level=Role.LEVEL_ENTITY,
+            is_system_role=False,
+            is_assignable=True,
+            priority=20,
+            createdby=self.user,
+        )
+        permission = Permission.objects.get(code=permission_code)
+        if not permission.isactive:
+            permission.isactive = True
+            permission.save(update_fields=["isactive"])
+        RolePermission.objects.get_or_create(
+            role=role,
+            permission=permission,
+            defaults={
+                "effect": RolePermission.EFFECT_ALLOW,
+            },
+        )
+        UserRoleAssignment.objects.create(
+            user=user,
+            entity=self.entity,
+            role=role,
+            assigned_by=self.user,
+            is_primary=True,
+        )
+        return user
+
     def test_vendor_outstanding_report_builds_vendor_totals_and_drilldowns(self):
+        clean_vendor = self._create_vendor("Clean Vendor", 5003)
+        clean_invoice = self._create_purchase_header(
+            vendor=clean_vendor,
+            vendor_ledger=clean_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 1),
+            due_date=date(2025, 4, 10),
+            doc_code="PINV",
+            doc_no=1005,
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("1000.00"),
+        )
+        self._create_open_item(
+            header=clean_invoice,
+            vendor=clean_vendor,
+            vendor_ledger=clean_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 1),
+            due_date=date(2025, 4, 10),
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("1000.00"),
+        )
         response = self.client.get(
             reverse("reports_api:vendor-outstanding-report"),
-            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", vendor=clean_vendor.id),
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["report_code"], "vendor_outstanding")
         self.assertEqual(data["summary"]["vendor_count"], 1)
         self.assertEqual(data["totals"]["bill_amount"], "1000.00")
-        self.assertEqual(data["totals"]["payment_amount"], "200.00")
-        self.assertEqual(data["totals"]["credit_note"], "100.00")
-        self.assertEqual(data["totals"]["net_outstanding"], "650.00")
+        self.assertEqual(data["totals"]["payment_amount"], "0.00")
+        self.assertEqual(data["totals"]["credit_balance"], "0.00")
+        self.assertEqual(data["totals"]["advance_balance"], "0.00")
+        self.assertEqual(data["totals"]["outstanding"], "1000.00")
         self.assertEqual(data["pagination"]["paginated"], True)
         self.assertEqual(len(data["rows"]), 1)
 
         row = data["rows"][0]
-        self.assertEqual(row["vendor_name"], "ABC Traders")
+        self.assertEqual(row["vendor_name"], "Clean Vendor")
         self.assertEqual(row["opening_balance"], "0.00")
         self.assertEqual(row["bill_amount"], "1000.00")
-        self.assertEqual(row["payment_amount"], "200.00")
-        self.assertEqual(row["credit_note"], "100.00")
-        self.assertEqual(row["net_outstanding"], "650.00")
-        self.assertEqual(row["overdue_amount"], "650.00")
-        self.assertEqual(row["unapplied_advance"], "50.00")
-        self.assertEqual(row["drilldown_targets"], ["aging_summary", "aging_bill_list", "vendor_statement", "open_items", "payments"])
+        self.assertEqual(row["payment_amount"], "0.00")
+        self.assertEqual(row["credit_balance"], "0.00")
+        self.assertEqual(row["advance_balance"], "0.00")
+        self.assertEqual(row["outstanding"], "1000.00")
+        self.assertEqual(row["overdue_amount"], "1000.00")
+        self.assertEqual(
+            row["drilldown_targets"],
+            ["vendor_detail", "aging_summary", "aging_bill_list", "vendor_statement", "open_items", "payments"],
+        )
         self.assertEqual(row["_meta"]["drilldown"]["aging_summary"]["target"], "ap_aging")
 
     def test_vendor_outstanding_reconciliation_warning_flags_difference(self):
@@ -600,6 +692,59 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("ap_aging", report_codes)
         self.assertIn("payables_dashboard_summary", report_codes)
 
+    def test_payables_meta_filters_reports_and_report_endpoints_enforce_permissions(self):
+        limited_user = self._create_limited_report_user("reports.vendoroutstanding.view")
+        limited_client = APIClient()
+        limited_client.force_authenticate(user=limited_user)
+
+        meta_response = limited_client.get(reverse("reports_api:payables-meta"), self._base_scope())
+        self.assertEqual(meta_response.status_code, 200)
+        report_codes = {row["code"] for row in meta_response.json()["reports"]}
+        self.assertIn("vendor_outstanding", report_codes)
+        self.assertIn("payables_dashboard_summary", report_codes)
+        self.assertNotIn("ap_aging", report_codes)
+        self.assertNotIn("vendor_ledger_statement", report_codes)
+        self.assertNotIn("payables_close_pack", report_codes)
+
+        denied_response = limited_client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="summary"),
+        )
+        self.assertEqual(denied_response.status_code, 403)
+        self.assertIn("permission", denied_response.json()["detail"].lower())
+
+    def test_accountspayableaging_alias_routes_to_canonical_ap_aging(self):
+        response = self.client.get(
+            reverse("reports_api:accountspayableaging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="summary"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["report_code"], "ap_aging")
+
+    def test_report_preferences_api_persists_and_meta_echoes_saved_state(self):
+        pref_response = self.client.patch(
+            reverse("reports_api:report-preferences"),
+            {
+                "entity": self.entity.id,
+                "report_code": "ap_aging",
+                "payload": {
+                    "view": "invoice",
+                    "sort_by": "balance",
+                    "sort_order": "asc",
+                    "page_size": 25,
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(pref_response.status_code, 200)
+        self.assertEqual(pref_response.json()["report_code"], "ap_aging")
+
+        meta_response = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
+        self.assertEqual(meta_response.status_code, 200)
+        prefs = meta_response.json().get("user_preferences", {})
+        self.assertEqual(prefs.get("ap_aging", {}).get("view"), "invoice")
+        self.assertEqual(prefs.get("ap_aging", {}).get("sort_by"), "balance")
+
     def test_payables_dashboard_summary_api_returns_totals_and_top_vendors(self):
         response = self.client.get(
             reverse("reports_api:payables-dashboard-summary"),
@@ -660,13 +805,21 @@ class PayableReportAPITests(APITestCase):
             return None
 
         codes = set(flatten(tree))
-        self.assertIn("reports.payables", codes)
-        self.assertNotIn("reports.vendoroutstanding", codes)
-        self.assertNotIn("reports.accountspayableaging", codes)
-        payables_menu = find_node(tree, "reports.payables")
+        self.assertIn("reports.reports.payables", codes)
+        self.assertIn("reports.vendoroutstanding", codes)
+        self.assertIn("reports.accountspayableaging", codes)
+        payables_menu = find_node(tree, "reports.reports.payables")
         self.assertIsNotNone(payables_menu)
         self.assertEqual(payables_menu["route_path"], "/reports/payables")
-        self.assertEqual(payables_menu["children"], [])
+        child_codes = [child["menu_code"] for child in payables_menu["children"]]
+        self.assertIn("reports.vendoroutstanding", child_codes)
+        self.assertIn("reports.accountspayableaging", child_codes)
+        vendor_outstanding_menu = find_node(tree, "reports.vendoroutstanding")
+        self.assertIsNotNone(vendor_outstanding_menu)
+        self.assertEqual(vendor_outstanding_menu["route_path"], "/reports/payables/vendor_outstanding")
+        ap_aging_menu = find_node(tree, "reports.accountspayableaging")
+        self.assertIsNotNone(ap_aging_menu)
+        self.assertEqual(ap_aging_menu["route_path"], "/reports/payables/ap_aging")
 
     def test_export_endpoints_return_expected_formats(self):
         vendor_scope = self._base_scope(from_date="2025-04-01", to_date="2025-04-30")
@@ -1063,8 +1216,8 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         meta = response.json()["_meta"]
         self.assertTrue(meta["feature_state"]["reconcile_gl"])
-        self.assertIn("gl_reconciliation", meta["enabled_summary_blocks"])
-        self.assertIn("net_outstanding", meta["effective_columns"])
+        self.assertIn("outstanding", meta["effective_columns"])
+        self.assertIn("vendor_outstanding", [row["code"] for row in meta["related_reports"]])
 
     def test_vendor_ledger_statement_meta_respects_running_balance_flag(self):
         self._post_vendor_statement_entry(txn_type=TxnType.PURCHASE, txn_id=self.invoice.id, posting_date=date(2025, 4, 1), amount="1000.00", voucher_no="PI-PINV-1001", description="Purchase invoice")

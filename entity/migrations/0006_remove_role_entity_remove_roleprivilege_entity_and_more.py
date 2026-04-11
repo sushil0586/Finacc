@@ -10,6 +10,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RemoveConstraint(
+            model_name='userrole',
+            name='uq_entity_user_role_once',
+        ),
         migrations.RemoveField(
             model_name='role',
             name='entity',

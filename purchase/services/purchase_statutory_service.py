@@ -1397,7 +1397,7 @@ class PurchaseStatutoryService:
         qs = PurchaseInvoiceHeader.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
-        ).select_related("vendor")
+        ).select_related("vendor").prefetch_related("tax_summaries")
 
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
@@ -1463,8 +1463,15 @@ class PurchaseStatutoryService:
 
         for h in headers:
             action = latest_action_by_header.get(int(h.id)) or {}
-            eligible_tax = q2(getattr(h, "total_gst", ZERO2)) if bool(getattr(h, "is_itc_eligible", False)) else ZERO2
-            ineligible_tax = ZERO2 if bool(getattr(h, "is_itc_eligible", False)) else q2(getattr(h, "total_gst", ZERO2))
+            eligible_tax = q2(
+                sum((q2(getattr(bucket, "itc_eligible_tax", ZERO2)) for bucket in h.tax_summaries.all()), ZERO2)
+            )
+            ineligible_tax = q2(
+                sum((q2(getattr(bucket, "itc_ineligible_tax", ZERO2)) for bucket in h.tax_summaries.all()), ZERO2)
+            )
+            if eligible_tax == ZERO2 and ineligible_tax == ZERO2:
+                eligible_tax = q2(getattr(h, "total_gst", ZERO2)) if bool(getattr(h, "is_itc_eligible", False)) else ZERO2
+                ineligible_tax = ZERO2 if bool(getattr(h, "is_itc_eligible", False)) else q2(getattr(h, "total_gst", ZERO2))
             total_eligible_tax = q2(total_eligible_tax + eligible_tax)
             total_ineligible_tax = q2(total_ineligible_tax + ineligible_tax)
 

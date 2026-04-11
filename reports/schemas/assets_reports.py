@@ -31,7 +31,7 @@ class AssetEventReportScopeSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
     from_date = serializers.DateField(required=False, allow_null=True)
     to_date = serializers.DateField(required=False, allow_null=True)
-    event_type = serializers.ChoiceField(required=False, allow_null=True, choices=["capitalization", "impairment", "disposal"])
+    event_type = serializers.ChoiceField(required=False, allow_null=True, choices=["capitalization", "depreciation", "impairment", "disposal"])
     asset = serializers.IntegerField(required=False, allow_null=True)
     page = serializers.IntegerField(required=False, min_value=1, default=1)
     page_size = serializers.IntegerField(required=False, min_value=1, max_value=1000, default=100)

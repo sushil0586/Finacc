@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'import_export',
     'payroll',
     'reports',
+    'dashboard',
     'simple_history',
     'errorlogger',
     'numbering',

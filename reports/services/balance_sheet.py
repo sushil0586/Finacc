@@ -12,7 +12,7 @@ from django.db.models import (
 
 from catalog.models import Product
 from posting.models import InventoryMove, JournalLine
-from .trading_account import STRATEGIES
+from .trading_account import STRATEGIES, inventory_breakdown_asof, inventory_value_asof
 from .profit_and_loss import build_profit_and_loss_statement  # for prior & current earnings
 
 
@@ -65,19 +65,14 @@ def _nest_under_accounthead(rows: list, *, head_field: str = "_head") -> list:
 
 # --------------------------- Inventory valuation helpers ---------------------------
 
-def _inventory_value_asof(entity_id: int, enddate, method: str) -> Decimal:
-    method = (method or "fifo").lower()
-    if method in {"fifo", "lifo"}:
-        _rows, _qty, closing = _inventory_breakdown_asof(
-            entity_id=entity_id,
-            enddate=enddate,
-            method=method,
-            include_zero=False,
-        )
-        return closing
-    strat = STRATEGIES.get(method, STRATEGIES["fifo"])
-    _opening, _cogs, closing = strat(entity_id, enddate, enddate)
-    return closing
+def _inventory_value_asof(entity_id: int, enddate, method: str, entityfin_id=None, subentity_id=None) -> Decimal:
+    return inventory_value_asof(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        enddate=enddate,
+        method=method,
+    )
 
 
 def _inventory_breakdown_asof(
@@ -88,163 +83,13 @@ def _inventory_breakdown_asof(
     product_ids: Optional[List[int]] = None,
     include_zero: bool = False,
 ) -> Tuple[List[Dict], Decimal, Decimal]:
-    method = (method or "fifo").lower()
-    moves_qs = (InventoryMove.objects
-                .filter(entity_id=entity_id, posting_date__lte=enddate)
-                .values('product_id', 'posting_date', 'id', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
-                .order_by('product_id', 'posting_date', 'id'))
-
-    if product_ids:
-        moves_qs = moves_qs.filter(product_id__in=product_ids)
-
-    rows: List[Dict] = []
-    total_qty = Decimal('0')
-    total_val = Decimal('0')
-
-    # Align with your Product model's name field (productname)
-    if product_ids:
-        prod_map = {p.id: p.productname for p in Product.objects.filter(id__in=product_ids)}
-    else:
-        prod_map = {p.id: p.productname for p in Product.objects.filter(entity_id=entity_id).only('id', 'productname')}
-
-    cur_pid = None
-    layers: List[Dict[str, Decimal]] = []
-    q = Decimal('0'); v = Decimal('0')
-    latest = Decimal('0')
-    sum_in_qty = Decimal('0'); sum_in_val = Decimal('0'); issues_qty = Decimal('0')
-
-    def flush_product(pid):
-        nonlocal layers, q, v, latest, sum_in_qty, sum_in_val, issues_qty, total_qty, total_val
-        if pid is None:
-            return
-
-        if method in ("fifo", "lifo"):
-            positive_layers = [l for l in layers if l["qty"] > 0]
-            qty = sum((l["qty"] for l in positive_layers), Decimal('0'))
-            val = sum((l["qty"] * l["rate"] for l in positive_layers), Decimal('0'))
-        elif method in ("mwa", "latest"):
-            qty, val = q, v
-        elif method == "wac":
-            avg = (sum_in_val / sum_in_qty) if sum_in_qty > 0 else Decimal('0')
-            qty = max(sum_in_qty - issues_qty, Decimal('0'))
-            val = qty * avg
-        else:
-            qty, val = Decimal('0'), Decimal('0')
-
-        qty = Q2(qty); val = Q2(val)
-        if include_zero or qty != 0:
-            name = prod_map.get(pid, f"Product {pid}")
-            rate = Q2((val / qty) if qty else Decimal('0'))
-            rows.append({
-                "product_id": pid,
-                "product_name": name,
-                "qty": float(qty),
-                "value": float(val),
-                "rate": float(rate)
-            })
-
-        total_qty += qty
-        total_val += val
-
-        layers = []
-        q = Decimal('0'); v = Decimal('0')
-        latest = Decimal('0')
-        sum_in_qty = Decimal('0'); sum_in_val = Decimal('0'); issues_qty = Decimal('0')
-
-    for m in moves_qs:
-        pid = m['product_id']
-        if pid != cur_pid:
-            flush_product(cur_pid)
-            cur_pid = pid
-
-        qty = _signed_move_qty(m)
-        rate = _rate_from_move(abs(qty), m['unit_cost'], m['ext_cost'])
-
-        if method == "fifo":
-            if qty > 0:
-                incoming = qty
-                for layer in layers:
-                    if incoming <= 0:
-                        break
-                    if layer["qty"] < 0:
-                        settle = min(-layer["qty"], incoming)
-                        layer["qty"] += settle
-                        incoming -= settle
-                layers = [l for l in layers if l["qty"] != 0]
-                if incoming > 0:
-                    layers.append({"qty": incoming, "rate": rate})
-            elif qty < 0:
-                need = -qty; i = 0
-                while need > 0 and i < len(layers):
-                    if layers[i]["qty"] <= 0:
-                        i += 1
-                        continue
-                    take = min(layers[i]["qty"], need)
-                    layers[i]["qty"] -= take
-                    need -= take
-                    if layers[i]["qty"] == 0:
-                        i += 1
-                layers = [l for l in layers if l["qty"] != 0]
-                if need > 0:
-                    layers.append({"qty": -need, "rate": rate})
-
-        elif method == "lifo":
-            if qty > 0:
-                incoming = qty
-                i = len(layers) - 1
-                while incoming > 0 and i >= 0:
-                    if layers[i]["qty"] < 0:
-                        settle = min(-layers[i]["qty"], incoming)
-                        layers[i]["qty"] += settle
-                        incoming -= settle
-                    i -= 1
-                layers = [l for l in layers if l["qty"] != 0]
-                if incoming > 0:
-                    layers.append({"qty": incoming, "rate": rate})
-            elif qty < 0:
-                need = -qty; i = len(layers) - 1
-                while need > 0 and i >= 0:
-                    if layers[i]["qty"] <= 0:
-                        i -= 1
-                        continue
-                    take = min(layers[i]["qty"], need)
-                    layers[i]["qty"] -= take
-                    need -= take
-                    if layers[i]["qty"] == 0:
-                        layers.pop(i)
-                        i -= 1
-                if need > 0:
-                    layers.append({"qty": -need, "rate": rate})
-
-        elif method == "mwa":
-            if qty > 0:
-                q += qty; v += qty * rate
-            elif qty < 0 and q > 0:
-                avg = v / q if q else Decimal('0')
-                take = min(q, -qty)
-                v -= take * avg
-                q -= take
-
-        elif method == "latest":
-            if qty > 0:
-                latest = rate
-                q += qty; v += qty * latest
-            elif qty < 0:
-                take = min(q, -qty)
-                v -= take * latest
-                q -= take
-                if q == 0:
-                    latest = Decimal('0')
-
-        elif method == "wac":
-            if qty > 0:
-                sum_in_qty += qty; sum_in_val += qty * rate
-            elif qty < 0:
-                issues_qty += -qty
-
-    flush_product(cur_pid)
-    rows.sort(key=lambda r: r["value"], reverse=True)
-    return rows, Q2(total_qty), Q2(total_val)
+    return inventory_breakdown_asof(
+        entity_id=entity_id,
+        enddate=enddate,
+        method=method,
+        product_ids=product_ids,
+        include_zero=include_zero,
+    )
 
 
 # --------------------------- Labels ---------------------------

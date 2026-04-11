@@ -15,6 +15,7 @@ from sales.models import SalesChoiceOverride, SalesLockPeriod
 from sales.models.sales_settings import SalesSettings
 from sales.services.sales_choices_service import SalesChoicesService
 from sales.services.sales_settings_service import SalesSettingsService
+from sales.views.rbac import require_sales_scope_permission
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -369,11 +370,27 @@ class SalesSettingsAPIView(APIView):
 
     def get(self, request):
         entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=True)
+        require_sales_scope_permission(
+            user=request.user,
+            entity_id=entity_id,
+            permission_codes=("sales.settings.view", "sales.settings.update"),
+            access_mode="setup",
+            feature_code="feature_sales",
+            message="Missing permission: sales.settings.view",
+        )
         return Response(self._payload(entity_id=entity_id, subentity_id=subentity_id, entityfinid_id=entityfinid_id))
 
     @transaction.atomic
     def patch(self, request):
         entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=False)
+        require_sales_scope_permission(
+            user=request.user,
+            entity_id=entity_id,
+            permission_codes=("sales.settings.update",),
+            access_mode="setup",
+            feature_code="feature_sales",
+            message="Missing permission: sales.settings.update",
+        )
         if not isinstance(request.data, dict):
             raise ValidationError({"detail": "Expected an object payload."})
 

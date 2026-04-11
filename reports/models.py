@@ -1,5 +1,7 @@
 from django.db import models
 from django.db.models.deletion import CASCADE
+from django.conf import settings
+from django.db.models import JSONField
 from helpers.models import TrackingModel
 from Authentication.models import User
 from django.utils.translation import gettext as _
@@ -19,6 +21,32 @@ class TransactionType(TrackingModel):
 
     def __str__(self):
         return f'{self.transactiontype}'
+
+
+class UserReportPreference(TrackingModel):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="report_preferences",
+    )
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name="report_preferences")
+    report_code = models.CharField(max_length=120)
+    payload = JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("entity_id", "report_code", "-updated_at")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "entity", "report_code"),
+                name="reports_user_entity_report_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("user", "entity", "report_code")),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.entity_id}:{self.report_code}"
 
 
 

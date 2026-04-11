@@ -24,6 +24,14 @@ END;
 """
 
 
+def apply_postgres_datetime_type_change(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(ALTER_EFFECTIVE_FROM_SQL)
+        cursor.execute(ALTER_EFFECTIVE_TO_SQL)
+
+
 def forwards_normalize_datetimes(apps, schema_editor):
     UserRoleAssignment = apps.get_model("rbac", "UserRoleAssignment")
 
@@ -59,7 +67,6 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(ALTER_EFFECTIVE_FROM_SQL, migrations.RunSQL.noop),
-        migrations.RunSQL(ALTER_EFFECTIVE_TO_SQL, migrations.RunSQL.noop),
+        migrations.RunPython(apply_postgres_datetime_type_change, migrations.RunPython.noop),
         migrations.RunPython(forwards_normalize_datetimes, backwards),
     ]

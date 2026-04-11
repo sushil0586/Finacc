@@ -187,3 +187,36 @@ class RBACModelTests(TestCase):
 
         self.assertIn(sales_permission.id, template_permissions)
         self.assertNotIn(unrelated_permission.id, template_permissions)
+
+    def test_payables_user_template_covers_core_ap_reports_only(self):
+        required_codes = {
+            "reports.payables.view",
+            "reports.vendoroutstanding.view",
+            "reports.accountspayableaging.view",
+            "reports.purchasebook.view",
+            "reports.vendorledgerstatement.view",
+            "reports.vendorsettlementhistory.view",
+            "reports.vendornoteregister.view",
+        }
+        for code in required_codes:
+            Permission.objects.create(
+                code=code,
+                name=code,
+                module="reports",
+                resource="payables",
+                action="view",
+            )
+        Permission.objects.create(
+            code="reports.payablesclosepack.view",
+            name="Payables Close Pack",
+            module="reports",
+            resource="payables",
+            action="view",
+        )
+
+        template_permissions = set(
+            RoleTemplateService._permission_queryset_for_template("payables_user").values_list("code", flat=True)
+        )
+
+        self.assertTrue(required_codes.issubset(template_permissions))
+        self.assertNotIn("reports.payablesclosepack.view", template_permissions)

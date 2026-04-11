@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
@@ -57,6 +58,16 @@ class SalesRegisterAPITests(APITestCase):
             finendyear=fy_end,
             createdby=self.user,
         )
+        self.permission_entity = self.entity
+        self.mock_entity_for_user = patch("sales.views.rbac.EffectivePermissionService.entity_for_user", return_value=self.permission_entity)
+        self.mock_permission_codes = patch(
+            "sales.views.rbac.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.sales_register.view", "reports.sales_register.export"],
+        )
+        self.mock_subscription_access = patch("sales.views.rbac.SubscriptionService.assert_entity_access", return_value=self.permission_entity)
+        self.mock_entity_for_user.start()
+        self.mock_permission_codes.start()
+        self.mock_subscription_access.start()
 
         self.other_entity = Entity.objects.create(
             entityname="Other Entity",
@@ -144,6 +155,10 @@ class SalesRegisterAPITests(APITestCase):
             "subentity": self.subentity.id,
         }
         self.doc_no_seq = 1
+
+    def tearDown(self):
+        patch.stopall()
+        super().tearDown()
 
     def _create_customer(self, *, name, gstin, accountcode, entity=None, account_head=None):
         entity = entity or self.entity

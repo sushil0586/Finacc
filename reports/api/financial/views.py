@@ -13,7 +13,7 @@ from reports.services.financial.reporting_policy import resolve_financial_report
 from reports.services.financial.statements import build_balance_sheet, build_profit_and_loss
 from reports.services.financial.trial_balance import build_trial_balance
 from reports.services.trading_account import build_trading_account_dynamic
-from reports.selectors.financial import ensure_date
+from reports.selectors.financial import resolve_date_window
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -41,11 +41,21 @@ class _BaseFinancialReportAPIView(ScopedEntitlementMixin, APIView):
             "entityfinid": scope.get("entityfinid"),
             "subentity": scope.get("subentity"),
             "scope_mode": scope.get("scope_mode"),
+            "as_on_date": scope.get("as_on_date"),
             "from_date": scope.get("from_date"),
             "to_date": scope.get("to_date"),
             "as_of_date": scope.get("as_of_date"),
+            "view_type": scope.get("view_type"),
+            "account_group": scope.get("account_group"),
+            "ledger_ids": scope.get("ledger_ids"),
+            "include_zero_balance": scope.get("include_zero_balance", REPORT_DEFAULTS["show_zero_balances_default"]),
+            "hide_zero_rows": scope.get("hide_zero_rows", not REPORT_DEFAULTS["show_zero_balances_default"]),
             "group_by": scope.get("group_by"),
             "period_by": scope.get("period_by"),
+            "include_opening": scope.get("include_opening"),
+            "include_movement": scope.get("include_movement"),
+            "include_closing": scope.get("include_closing"),
+            "posted_only": scope.get("posted_only", True),
             "stock_valuation_mode": scope.get(
                 "stock_valuation_mode",
                 REPORT_DEFAULTS["balance_sheet_stock_valuation_mode"],
@@ -91,20 +101,26 @@ class TrialBalanceAPIView(_BaseFinancialReportAPIView):
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
+            ledger_ids=scope.get("ledger_ids"),
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
             as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("group_by"),
+            account_group=scope.get("account_group") or scope.get("group_by"),
             include_zero_balances=scope.get(
                 "include_zero_balances",
                 REPORT_DEFAULTS["show_zero_balances_default"],
             ),
+            posted_only=scope.get("posted_only", True),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
             sort_order=scope.get("sort_order", "asc"),
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=scope.get("period_by"),
+            view_type=scope.get("view_type"),
+            include_opening=scope.get("include_opening", REPORT_DEFAULTS["show_opening_balance_default"]),
+            include_movement=scope.get("include_movement", True),
+            include_closing=scope.get("include_closing", True),
         )
         return Response(
             build_report_envelope(
@@ -151,6 +167,10 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
     def get(self, request):
         scope = self.get_scope(request)
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
+        view_type = (scope.get("view_type") or "summary").lower()
+        account_group = scope.get("account_group") or scope.get("group_by")
+        if not account_group:
+            account_group = "ledger" if view_type == "detailed" else "accounthead"
         data = build_profit_and_loss(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -158,7 +178,7 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
             as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("group_by"),
+            group_by=account_group,
             include_zero_balances=scope.get(
                 "include_zero_balances",
                 REPORT_DEFAULTS["show_zero_balances_default"],
@@ -169,6 +189,11 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=scope.get("period_by"),
+            view_type=view_type,
+            posted_only=scope.get("posted_only", True),
+            hide_zero_rows=not scope.get("include_zero_balance", False),
+            account_group=account_group,
+            ledger_ids=scope.get("ledger_ids") or None,
             reporting_policy=reporting_policy,
         )
         return Response(
@@ -193,11 +218,16 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
             as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("group_by"),
+            group_by=scope.get("account_group") or scope.get("group_by"),
+            view_type=scope.get("view_type"),
+            posted_only=scope.get("posted_only", REPORT_DEFAULTS["balance_sheet_posted_only_default"]),
+            hide_zero_rows=scope.get("hide_zero_rows", REPORT_DEFAULTS["balance_sheet_hide_zero_rows_default"]),
             include_zero_balances=scope.get(
                 "include_zero_balances",
                 REPORT_DEFAULTS["show_zero_balances_default"],
             ),
+            account_group=scope.get("account_group"),
+            ledger_ids=scope.get("ledger_ids"),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
             sort_order=scope.get("sort_order", "asc"),
@@ -223,36 +253,40 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
-        entity_id = request.query_params.get("entity")
-        startdate = request.query_params.get("startdate") or request.query_params.get("from_date")
-        enddate = request.query_params.get("enddate") or request.query_params.get("to_date")
-        entityfinid = request.query_params.get("entityfinid")
-        subentity = request.query_params.get("subentity")
+        serializer = FinancialReportScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
         valuation_method = (request.query_params.get("valuation_method") or "fifo").lower()
-        level = (request.query_params.get("level") or "head").lower()
-
-        if not entity_id:
-            return Response({"detail": "entity is required."}, status=400)
-        if not startdate or not enddate:
-            return Response({"detail": "startdate and enddate are required."}, status=400)
-
-        entity_id = int(entity_id)
-        entityfinid = int(entityfinid) if entityfinid not in (None, "", "0", 0) else None
-        subentity = int(subentity) if subentity not in (None, "", "0", 0) else None
+        level = (request.query_params.get("level") or ("account" if scope.get("view_type") == "detailed" else "head")).lower()
 
         self.enforce_scope(
             request,
-            entity_id=entity_id,
-            entityfinid_id=entityfinid,
-            subentity_id=subentity,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
         )
 
-        start = ensure_date(startdate)
-        end = ensure_date(enddate)
+        from_date = scope.get("from_date")
+        to_date = scope.get("to_date")
+        as_of_date = scope.get("as_of_date") or scope.get("as_on_date")
+        if as_of_date and not to_date:
+            to_date = as_of_date
+        start, end = resolve_date_window(
+            scope.get("entityfinid"),
+            from_date,
+            to_date,
+        )
         data = build_trading_account_dynamic(
-            entity_id=entity_id,
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
             startdate=start.isoformat(),
             enddate=end.isoformat(),
+            posted_only=scope.get("posted_only", True),
+            hide_zero_rows=not scope.get("include_zero_balance", False),
+            view_type=scope.get("view_type") or ("detailed" if level == "account" else "summary"),
+            account_group=scope.get("account_group") or scope.get("group_by"),
+            ledger_ids=scope.get("ledger_ids") or None,
             valuation_method=valuation_method,
             level=level,
         )
@@ -262,15 +296,27 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
                 report_code="trading_account",
                 report_name="Trading Account",
                 payload=data,
-                filters={
-                    "entity": entity_id,
-                    "entityfinid": entityfinid,
-                    "subentity": subentity,
-                    "from_date": start.isoformat(),
-                    "to_date": end.isoformat(),
-                    "level": level,
-                    "valuation_method": valuation_method,
-                },
+                filters=self.build_filters(scope, level=level, valuation_method=valuation_method, start=start, end=end),
                 defaults=REPORT_DEFAULTS,
             )
         )
+
+    def build_filters(self, scope, *, level: str, valuation_method: str, start, end):
+        return {
+            "entity": scope["entity"],
+            "entityfinid": scope.get("entityfinid"),
+            "financial_year": scope.get("financial_year") or scope.get("entityfinid"),
+            "subentity": scope.get("subentity"),
+            "scope_mode": scope.get("scope_mode"),
+            "as_on_date": scope.get("as_on_date"),
+            "from_date": start.isoformat() if start else None,
+            "to_date": end.isoformat() if end else None,
+            "view_type": scope.get("view_type") or ("detailed" if level == "account" else "summary"),
+            "account_group": scope.get("account_group") or scope.get("group_by"),
+            "ledger_ids": scope.get("ledger_ids"),
+            "posted_only": scope.get("posted_only", True),
+            "include_zero_balance": scope.get("include_zero_balance", False),
+            "hide_zero_rows": not scope.get("include_zero_balance", False),
+            "valuation_method": valuation_method,
+            "level": level,
+        }

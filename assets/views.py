@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from django.shortcuts import get_object_or_404
+from rest_framework.exceptions import ValidationError
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from assets.models import AssetCategory, DepreciationRun, FixedAsset
 from assets.serializers import (
     AssetCapitalizeSerializer,
@@ -21,28 +24,83 @@ from assets.serializers import (
 from assets.services.asset_service import AssetService
 from assets.services.settings import AssetSettingsService
 from financial.models import Ledger
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
-class AssetSettingsAPIView(APIView):
+class AssetScopedAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_ASSETS
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    @staticmethod
+    def _parse_int(raw_value, field_name: str, *, required: bool) -> int | None:
+        if raw_value in (None, "", "null", "None"):
+            if required:
+                raise ValidationError({field_name: f"{field_name} is required."})
+            return None
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValidationError({field_name: f"{field_name} must be an integer."})
+        return None if field_name == "subentity" and value == 0 else value
+
+    def _scope_from_query(self, request, *, require_entity: bool = True, require_entityfinid: bool = False):
+        entity_id = self._parse_int(request.query_params.get("entity"), "entity", required=require_entity)
+        if entity_id is None:
+            return None, None, None
+        subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity", required=False)
+        entityfinid_id = self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=require_entityfinid)
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
+        return entity_id, entityfinid_id, subentity_id
+
+    def _scope_from_payload(self, request, payload, *, require_entityfinid: bool = False):
+        entity_id = self._parse_int(payload.get("entity"), "entity", required=True)
+        subentity_id = self._parse_int(payload.get("subentity"), "subentity", required=False)
+        entityfinid_id = self._parse_int(payload.get("entityfinid"), "entityfinid", required=require_entityfinid)
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
+        return entity_id, entityfinid_id, subentity_id
+
+    @staticmethod
+    def _asset_queryset(*, entity_id: int, subentity_id: int | None = None, search: str | None = None):
+        qs = AssetService.asset_queryset(entity_id=entity_id, subentity_id=subentity_id, search=search)
+        return qs
+
+    @staticmethod
+    def _run_queryset(*, entity_id: int, entityfinid_id: int | None = None, subentity_id: int | None = None):
+        qs = DepreciationRun.objects.prefetch_related("lines__asset__category").filter(entity_id=entity_id)
+        if entityfinid_id is not None:
+            qs = qs.filter(entityfinid_id=entityfinid_id)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        return qs
+
+    def _scoped_asset(self, request, pk: int):
+        asset = get_object_or_404(FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity"), pk=pk)
+        self.enforce_scope(request, entity_id=asset.entity_id, entityfinid_id=asset.entityfinid_id, subentity_id=asset.subentity_id)
+        return asset
+
+    def _scoped_run(self, request, pk: int):
+        run = get_object_or_404(DepreciationRun.objects.prefetch_related("lines__asset__category"), pk=pk)
+        self.enforce_scope(request, entity_id=run.entity_id, entityfinid_id=run.entityfinid_id, subentity_id=run.subentity_id)
+        return run
+
+
+class AssetSettingsAPIView(AssetScopedAPIView):
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     def get(self, request):
-        entity_id = request.query_params.get("entity")
-        if not entity_id:
-            return Response({"entity": "This query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
-        subentity_id = request.query_params.get("subentity")
-        settings_obj = AssetSettingsService.get_settings(int(entity_id), int(subentity_id) if subentity_id else None)
+        entity_id, _, subentity_id = self._scope_from_query(request, require_entity=True)
+        settings_obj = AssetSettingsService.get_settings(entity_id, subentity_id)
         return Response(AssetSettingsSerializer(settings_obj).data)
 
     def put(self, request):
-        entity_id = request.data.get("entity")
-        if not entity_id:
-            return Response({"entity": "This field is required."}, status=status.HTTP_400_BAD_REQUEST)
-        subentity_id = request.data.get("subentity")
+        if not isinstance(request.data, dict):
+            raise ValidationError({"detail": "Expected an object payload."})
         try:
+            entity_id, _, subentity_id = self._scope_from_payload(request, request.data)
             updated = AssetSettingsService.upsert_settings(
-                entity_id=int(entity_id),
-                subentity_id=int(subentity_id) if subentity_id not in (None, "") else None,
+                entity_id=entity_id,
+                subentity_id=subentity_id,
                 updates=request.data,
                 user_id=request.user.id,
             )
@@ -51,40 +109,56 @@ class AssetSettingsAPIView(APIView):
         return Response(AssetSettingsSerializer(updated).data)
 
 
-class AssetCategoryListCreateAPIView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class AssetCategoryListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIView):
     serializer_class = AssetCategorySerializer
 
     def get_queryset(self):
-        qs = AssetCategory.objects.filter(entity_id=self.request.query_params.get("entity")).order_by("name")
-        subentity_id = self.request.query_params.get("subentity")
-        if subentity_id:
+        entity_id, _, subentity_id = self._scope_from_query(self.request, require_entity=True)
+        qs = AssetCategory.objects.filter(entity_id=entity_id).order_by("name")
+        if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
         return qs
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.enforce_scope(
+            request,
+            entity_id=serializer.validated_data["entity"].id,
+            subentity_id=getattr(serializer.validated_data.get("subentity"), "id", None),
+        )
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-class AssetCategoryRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    queryset = AssetCategory.objects.all()
+
+class AssetCategoryRetrieveUpdateAPIView(AssetScopedAPIView, generics.RetrieveUpdateAPIView):
     serializer_class = AssetCategorySerializer
+
+    def get_queryset(self):
+        return AssetCategory.objects.all()
+
+    def get_object(self):
+        obj = super().get_object()
+        self.enforce_scope(
+            self.request,
+            entity_id=obj.entity_id,
+            subentity_id=obj.subentity_id,
+        )
+        return obj
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
 
 
-class FixedAssetListCreateAPIView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class FixedAssetListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIView):
 
     def get_queryset(self):
-        entity_id = self.request.query_params.get("entity")
-        if not entity_id:
-            return FixedAsset.objects.none()
-        subentity_id = self.request.query_params.get("subentity")
+        entity_id, _, subentity_id = self._scope_from_query(self.request, require_entity=True)
         search = self.request.query_params.get("search")
-        qs = AssetService.asset_queryset(entity_id=int(entity_id), subentity_id=int(subentity_id) if subentity_id else None, search=search)
+        qs = self._asset_queryset(entity_id=entity_id, subentity_id=subentity_id, search=search)
         category_id = self.request.query_params.get("category")
         status_value = self.request.query_params.get("status")
         if category_id:
@@ -99,30 +173,55 @@ class FixedAssetListCreateAPIView(generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        entity = serializer.validated_data["entity"]
+        subentity = serializer.validated_data.get("subentity")
+        entityfinid = serializer.validated_data.get("entityfinid")
+        self.enforce_scope(
+            request,
+            entity_id=entity.id,
+            entityfinid_id=getattr(entityfinid, "id", None),
+            subentity_id=getattr(subentity, "id", None),
+        )
         asset = AssetService.create_asset(data=serializer.validated_data, user_id=request.user.id)
         return Response(FixedAssetListSerializer(asset).data, status=status.HTTP_201_CREATED)
 
 
-class FixedAssetRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    queryset = FixedAsset.objects.select_related("category", "ledger", "vendor_account")
+class FixedAssetRetrieveUpdateAPIView(AssetScopedAPIView, generics.RetrieveUpdateAPIView):
 
     def get_serializer_class(self):
         return FixedAssetListSerializer if self.request.method == "GET" else FixedAssetWriteSerializer
+
+    def get_queryset(self):
+        return FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity")
+
+    def get_object(self):
+        obj = super().get_object()
+        self.enforce_scope(
+            self.request,
+            entity_id=obj.entity_id,
+            entityfinid_id=obj.entityfinid_id,
+            subentity_id=obj.subentity_id,
+        )
+        return obj
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=kwargs.get("partial", False))
         serializer.is_valid(raise_exception=True)
+        self.enforce_scope(
+            request,
+            entity_id=instance.entity_id,
+            entityfinid_id=instance.entityfinid_id,
+            subentity_id=instance.subentity_id,
+        )
         asset = AssetService.update_asset(instance=instance, data=serializer.validated_data, user_id=request.user.id)
         return Response(FixedAssetListSerializer(asset).data)
 
 
-class FixedAssetCapitalizeAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class FixedAssetCapitalizeAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = FixedAsset.objects.select_related("category").get(pk=pk)
+        asset = self._scoped_asset(request, pk)
         serializer = AssetCapitalizeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -132,11 +231,10 @@ class FixedAssetCapitalizeAPIView(APIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
-class FixedAssetImpairAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class FixedAssetImpairAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = FixedAsset.objects.select_related("category").get(pk=pk)
+        asset = self._scoped_asset(request, pk)
         serializer = AssetImpairSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -146,11 +244,10 @@ class FixedAssetImpairAPIView(APIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
-class FixedAssetTransferAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class FixedAssetTransferAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = FixedAsset.objects.select_related("category").get(pk=pk)
+        asset = self._scoped_asset(request, pk)
         serializer = AssetTransferSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -160,11 +257,10 @@ class FixedAssetTransferAPIView(APIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
-class FixedAssetDisposeAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class FixedAssetDisposeAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = FixedAsset.objects.select_related("category").get(pk=pk)
+        asset = self._scoped_asset(request, pk)
         serializer = AssetDisposalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -174,14 +270,10 @@ class FixedAssetDisposeAPIView(APIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
-class AssetMetaAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class AssetMetaAPIView(AssetScopedAPIView):
 
     def get(self, request):
-        entity_id = request.query_params.get("entity")
-        if not entity_id:
-            return Response({"entity": "This query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
-        subentity_id = request.query_params.get("subentity")
+        entity_id, _, subentity_id = self._scope_from_query(request, require_entity=True)
         categories = AssetCategory.objects.filter(entity_id=entity_id)
         if subentity_id:
             categories = categories.filter(subentity_id=subentity_id)
@@ -198,20 +290,11 @@ class AssetMetaAPIView(APIView):
         )
 
 
-class DepreciationRunListCreateAPIView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class DepreciationRunListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIView):
 
     def get_queryset(self):
-        qs = DepreciationRun.objects.all().order_by("-period_to", "-id")
-        entity_id = self.request.query_params.get("entity")
-        if entity_id:
-            qs = qs.filter(entity_id=entity_id)
-        entityfinid = self.request.query_params.get("entityfinid")
-        if entityfinid:
-            qs = qs.filter(entityfinid_id=entityfinid)
-        subentity_id = self.request.query_params.get("subentity")
-        if subentity_id:
-            qs = qs.filter(subentity_id=subentity_id)
+        entity_id, entityfinid_id, subentity_id = self._scope_from_query(self.request, require_entity=True, require_entityfinid=False)
+        qs = self._run_queryset(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id).order_by("-period_to", "-id")
         return qs
 
     def get_serializer_class(self):
@@ -220,21 +303,40 @@ class DepreciationRunListCreateAPIView(generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        entity = serializer.validated_data["entity"]
+        entityfinid = serializer.validated_data["entityfinid"]
+        subentity = serializer.validated_data.get("subentity")
+        self.enforce_scope(
+            request,
+            entity_id=entity.id,
+            entityfinid_id=entityfinid.id,
+            subentity_id=getattr(subentity, "id", None),
+        )
         run = serializer.save(created_by=request.user, updated_by=request.user)
         return Response(DepreciationRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
 
-class DepreciationRunRetrieveAPIView(generics.RetrieveAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    queryset = DepreciationRun.objects.prefetch_related("lines__asset__category")
+class DepreciationRunRetrieveAPIView(AssetScopedAPIView, generics.RetrieveAPIView):
     serializer_class = DepreciationRunSerializer
 
+    def get_queryset(self):
+        return DepreciationRun.objects.prefetch_related("lines__asset__category")
 
-class DepreciationRunCalculateAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    def get_object(self):
+        obj = super().get_object()
+        self.enforce_scope(
+            self.request,
+            entity_id=obj.entity_id,
+            entityfinid_id=obj.entityfinid_id,
+            subentity_id=obj.subentity_id,
+        )
+        return obj
+
+
+class DepreciationRunCalculateAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        run = DepreciationRun.objects.get(pk=pk)
+        run = self._scoped_run(request, pk)
         serializer = DepreciationRunCalculateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -244,11 +346,10 @@ class DepreciationRunCalculateAPIView(APIView):
         return Response(DepreciationRunSerializer(run).data)
 
 
-class DepreciationRunPostAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class DepreciationRunPostAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        run = DepreciationRun.objects.prefetch_related("lines__asset__category").get(pk=pk)
+        run = self._scoped_run(request, pk)
         try:
             run = AssetService.post_run(run=run, user_id=request.user.id)
         except ValueError as exc:

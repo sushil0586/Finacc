@@ -73,7 +73,7 @@ def resolve_scope_dates(entityfin_id=None, from_date=None, to_date=None, as_of_d
     return coerce_date(explicit_from), coerce_date(explicit_to)
 
 
-def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=None, currency=None, search=None):
+def vendor_queryset(*, entity_id, vendor_id=None, vendor_ids=None, vendor_group=None, region_id=None, currency=None, search=None, gst_registered=None, msme=None):
     """Return vendor masters eligible for AP reports within the entity scope."""
     qs = account.objects.filter(entity_id=entity_id)
     qs = qs.filter(
@@ -83,6 +83,8 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
     )
     if vendor_id:
         qs = qs.filter(id=vendor_id)
+    if vendor_ids:
+        qs = qs.filter(id__in=list(vendor_ids))
     if vendor_group:
         qs = qs.filter(commercial_profile__agent__iexact=vendor_group)
     if region_id:
@@ -93,6 +95,14 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
         )
     if currency:
         qs = qs.filter(commercial_profile__currency__iexact=currency)
+    if gst_registered is True:
+        qs = qs.filter(compliance_profile__gstno__isnull=False).exclude(compliance_profile__gstno="")
+    elif gst_registered is False:
+        qs = qs.filter(Q(compliance_profile__gstno__isnull=True) | Q(compliance_profile__gstno=""))
+    if msme is True:
+        qs = qs.filter(compliance_profile__msme__isnull=False).exclude(compliance_profile__msme="")
+    elif msme is False:
+        qs = qs.filter(Q(compliance_profile__msme__isnull=True) | Q(compliance_profile__msme=""))
     if search:
         token = str(search).strip()
         qs = qs.filter(
@@ -120,6 +130,7 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_group=None, region_id=N
             "commercial_profile__creditdays",
             "commercial_profile__creditlimit",
             "compliance_profile__gstno",
+            "compliance_profile__msme",
         )
         .prefetch_related(
             Prefetch(

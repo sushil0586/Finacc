@@ -381,6 +381,25 @@ class RoleTemplateService:
             "description": "Read-only reporting access.",
             "permission_prefixes": ["reports."],
         },
+        "payables_user": {
+            "name": "Payables User",
+            "description": "Core accounts payable reporting access.",
+            "exact_codes": [
+                "reports.payables.view",
+                "reports.vendoroutstanding.view",
+                "reports.accountspayableaging.view",
+                "reports.purchasebook.view",
+                "reports.vendorledgerstatement.view",
+                "reports.vendorsettlementhistory.view",
+                "reports.vendornoteregister.view",
+            ],
+            "exclude_codes": [
+                "reports.apglreconciliation.view",
+                "reports.vendorbalanceexceptions.view",
+                "reports.payablesclosepack.view",
+                "reports.payables.export",
+            ],
+        },
         "payroll_user": {
             "name": "Payroll User",
             "description": "Payroll and employee administration access.",

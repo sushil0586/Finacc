@@ -13,6 +13,7 @@ from sales.serializers.sales_ar import (
     CustomerSettlementCreateInputSerializer,
 )
 from sales.services.sales_ar_service import SalesArService
+from sales.views.rbac import require_sales_scope_permission
 from financial.models import account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 
@@ -34,12 +35,35 @@ def _parse_scope(request):
     return entity_id, entityfinid_id, subentity_id
 
 
+def _require_ar_view_permission(*, user, entity_id: int):
+    require_sales_scope_permission(
+        user=user,
+        entity_id=entity_id,
+        permission_codes=("sales.invoice.view", "sales.invoice.update"),
+        access_mode="operational",
+        feature_code="feature_sales",
+        message="Missing permission to access sales AR data.",
+    )
+
+
+def _require_ar_manage_permission(*, user, entity_id: int):
+    require_sales_scope_permission(
+        user=user,
+        entity_id=entity_id,
+        permission_codes=("sales.invoice.update", "sales.invoice.post", "sales.invoice.unpost"),
+        access_mode="operational",
+        feature_code="feature_sales",
+        message="Missing permission to manage sales AR data.",
+    )
+
+
 class CustomerBillOpenItemListAPIView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = CustomerBillOpenItemSerializer
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
+        _require_ar_view_permission(user=self.request.user, entity_id=entity_id)
 
         customer = self.request.query_params.get("customer")
         is_open = self.request.query_params.get("is_open")
@@ -65,6 +89,7 @@ class CustomerAdvanceBalanceListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
+        _require_ar_view_permission(user=self.request.user, entity_id=entity_id)
         customer = self.request.query_params.get("customer")
         is_open = self.request.query_params.get("is_open")
         customer_id = int(customer) if customer not in (None, "", "null") else None
@@ -89,6 +114,7 @@ class CustomerSettlementListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
+        _require_ar_view_permission(user=self.request.user, entity_id=entity_id)
         qs = CustomerSettlement.objects.prefetch_related("lines").filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -106,6 +132,7 @@ class CustomerSettlementListCreateAPIView(generics.ListCreateAPIView):
         inp = CustomerSettlementCreateInputSerializer(data=request.data)
         inp.is_valid(raise_exception=True)
         data = inp.validated_data
+        _require_ar_manage_permission(user=request.user, entity_id=data["entity"])
 
         try:
             res = SalesArService.create_settlement(
@@ -133,6 +160,10 @@ class CustomerSettlementPostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        settlement = CustomerSettlement.objects.filter(pk=pk).only("id", "entity_id").first()
+        if settlement is None:
+            raise ValidationError({"detail": "Settlement not found."})
+        _require_ar_manage_permission(user=request.user, entity_id=settlement.entity_id)
         try:
             res = SalesArService.post_settlement(settlement_id=pk, posted_by_id=request.user.id)
         except ValueError as e:
@@ -148,6 +179,10 @@ class CustomerSettlementCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        settlement = CustomerSettlement.objects.filter(pk=pk).only("id", "entity_id").first()
+        if settlement is None:
+            raise ValidationError({"detail": "Settlement not found."})
+        _require_ar_manage_permission(user=request.user, entity_id=settlement.entity_id)
         try:
             res = SalesArService.cancel_settlement(settlement_id=pk, cancelled_by_id=request.user.id)
         except ValueError as e:
@@ -163,6 +198,7 @@ class CustomerStatementAPIView(APIView):
 
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_ar_view_permission(user=request.user, entity_id=entity_id)
         customer = request.query_params.get("customer")
         if not customer:
             raise ValidationError({"customer": "customer query param is required."})

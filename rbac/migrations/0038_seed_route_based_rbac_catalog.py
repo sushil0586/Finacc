@@ -24,7 +24,8 @@ MENU_GROUPS = [
 
 ROUTE_SPECS = [
     {"route": "home", "group": "dashboard", "label": "Home", "feature": "", "access_mode": "setup", "view_permission": "dashboard.home.view", "actions": [], "sort_order": 1},
-    {"route": "dashboard", "group": "dashboard", "label": "Dashboard", "feature": "", "access_mode": "setup", "view_permission": "dashboard.view", "actions": [], "sort_order": 2},
+    {"route": "dashboard-analytics", "group": "dashboard", "label": "Analytics", "feature": "", "access_mode": "setup", "view_permission": "dashboard.analytics.view", "actions": [], "sort_order": 2},
+    {"route": "dashboard", "group": "dashboard", "label": "Dashboard", "feature": "", "access_mode": "setup", "view_permission": "dashboard.view", "actions": [], "sort_order": 3},
 
     {"route": "purchaseinvoice", "group": "purchase", "label": "Purchase Invoice", "feature": "feature_purchase", "access_mode": "operational", "view_permission": "purchase.invoice.view", "actions": ["purchase.invoice.create", "purchase.invoice.update", "purchase.invoice.delete", "purchase.invoice.print", "purchase.invoice.post", "purchase.invoice.unpost"], "sort_order": 1},
     {"route": "purchaseserviceinvoice", "group": "purchase", "label": "Purchase Service Invoice", "feature": "feature_purchase", "access_mode": "operational", "view_permission": "purchase.invoice.view", "actions": ["purchase.invoice.create", "purchase.invoice.update", "purchase.invoice.delete", "purchase.invoice.print", "purchase.invoice.post", "purchase.invoice.unpost"], "sort_order": 2},
