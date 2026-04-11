@@ -19,8 +19,9 @@ class RBACSeedService:
         {"name": "Purchase User", "code": "purchase_user", "priority": 40, "template": "purchase_user"},
         {"name": "Accounts User", "code": "accounts_user", "priority": 50, "template": "accounts_user"},
         {"name": "Report Viewer", "code": "report_viewer", "priority": 60, "template": "report_viewer"},
-        {"name": "Payroll User", "code": "payroll_user", "priority": 70, "template": "payroll_user"},
-        {"name": "Compliance User", "code": "compliance_user", "priority": 80, "template": "compliance_user"},
+        {"name": "Payables User", "code": "payables_user", "priority": 70, "template": "payables_user"},
+        {"name": "Payroll User", "code": "payroll_user", "priority": 80, "template": "payroll_user"},
+        {"name": "Compliance User", "code": "compliance_user", "priority": 90, "template": "compliance_user"},
     )
 
     @classmethod

@@ -189,7 +189,7 @@ def build_asset_event_report(
 ):
     frm = _coerce_date(from_date)
     to = _coerce_date(to_date)
-    qs = FixedAsset.objects.select_related("category", "subentity").filter(entity_id=entity_id)
+    qs = FixedAsset.objects.select_related("category", "subentity", "capitalization_posting_batch", "impairment_posting_batch", "disposal_posting_batch").filter(entity_id=entity_id)
     if entityfin_id:
         qs = qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
@@ -203,6 +203,8 @@ def build_asset_event_report(
         events = []
         if asset.capitalization_date and asset.capitalization_posting_batch_id:
             events.append(("capitalization", asset.capitalization_date, q2(asset.gross_block), asset.capitalization_posting_batch_id))
+        for line in DepreciationRunLine.objects.select_related("run").filter(asset_id=asset.id, run__posting_batch_id__isnull=False).order_by("period_to", "id"):
+            events.append(("depreciation", line.run.posting_date, q2(line.depreciation_amount), line.run.posting_batch_id))
         if q2(asset.impairment_amount) > ZERO and asset.impairment_posting_batch_id:
             batch_created = getattr(asset.impairment_posting_batch, "created_at", None)
             events.append(("impairment", (batch_created.date() if batch_created else None), q2(asset.impairment_amount), asset.impairment_posting_batch_id))

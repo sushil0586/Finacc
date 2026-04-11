@@ -12,8 +12,10 @@ from reports.api.receivables_views import _write_csv, _write_excel, _write_pdf
 from reports.schemas.common import build_report_envelope
 from reports.schemas.payables_reports import PayableAgingScopeSerializer, PayableReportScopeSerializer
 from reports.services.payables import build_ap_aging_report, build_payables_dashboard_summary, build_vendor_outstanding_report
-from reports.services.payables_config import PAYABLE_REPORT_DEFAULTS, resolve_report_columns
+from reports.services.payables_config import PAYABLE_REPORT_DEFAULTS, get_payables_report_config, resolve_report_columns
 from reports.services.payables_meta import build_payables_report_meta
+from reports.services.report_preferences import list_user_report_preferences
+from reports.selectors.financial import resolve_scope_names
 from rbac.services import EffectivePermissionService
 
 
@@ -40,10 +42,21 @@ def _payable_scope_filters(scope):
         "to_date": scope.get("to_date"),
         "as_of_date": scope.get("as_of_date"),
         "vendor": scope.get("vendor"),
+        "vendor_ids": scope.get("vendor_ids"),
         "vendor_group": scope.get("vendor_group"),
         "region": scope.get("region"),
         "currency": scope.get("currency"),
+        "gst_registered": scope.get("gst_registered"),
+        "msme": scope.get("msme"),
+        "voucher_type": scope.get("voucher_type"),
+        "aging_basis": scope.get("aging_basis"),
         "overdue_only": scope.get("overdue_only", False),
+        "show_overdue_only": scope.get("show_overdue_only", False),
+        "show_not_due": scope.get("show_not_due", False),
+        "include_zero_balance": scope.get("include_zero_balance", False),
+        "include_credit_balances": scope.get("include_credit_balances", False),
+        "include_advances_separately": scope.get("include_advances_separately", False),
+        "show_settled": scope.get("show_settled", False),
         "credit_limit_exceeded": scope.get("credit_limit_exceeded", False),
         "outstanding_gt": scope.get("outstanding_gt"),
         "reconcile_gl": scope.get("reconcile_gl", False),
@@ -99,6 +112,20 @@ class _BasePayableAPIView(APIView):
             raise PermissionDenied("You do not have access to this entity.")
         return scope
 
+    def get_permission_codes(self, request, scope):
+        return EffectivePermissionService.permission_codes_for_user(request.user, scope["entity"])
+
+    def assert_report_permission(self, request, scope, report_code, *, view=None):
+        report = get_payables_report_config(report_code, view=view)
+        if not report:
+            return
+        required_permission = report.get("required_permission")
+        if not required_permission:
+            return
+        permission_codes = self.get_permission_codes(request, scope)
+        if required_permission not in permission_codes:
+            raise PermissionDenied("You do not have permission to access this report.")
+
     def build_envelope(self, *, report_code, report_name, payload, scope, request, export_base_path):
         response = build_report_envelope(
             report_code=report_code,
@@ -115,6 +142,7 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_outstanding")
         data = build_vendor_outstanding_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -123,10 +151,21 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
             to_date=scope.get("to_date"),
             as_of_date=scope.get("as_of_date"),
             vendor_id=scope.get("vendor"),
+            vendor_ids=scope.get("vendor_ids"),
             vendor_group=scope.get("vendor_group"),
             region_id=scope.get("region"),
             currency=scope.get("currency"),
+            gst_registered=scope.get("gst_registered"),
+            msme=scope.get("msme"),
+            voucher_type=scope.get("voucher_type"),
+            aging_basis=scope.get("aging_basis") or "due_date",
             overdue_only=scope.get("overdue_only", False),
+            show_overdue_only=scope.get("show_overdue_only", False),
+            show_not_due=scope.get("show_not_due", False),
+            include_zero_balance=scope.get("include_zero_balance", False),
+            include_credit_balances=scope.get("include_credit_balances", False),
+            include_advances_separately=scope.get("include_advances_separately", False),
+            show_settled=scope.get("show_settled", False),
             outstanding_gt=scope.get("outstanding_gt"),
             credit_limit_exceeded=scope.get("credit_limit_exceeded", False),
             search=scope.get("search"),
@@ -134,6 +173,7 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
             sort_order=scope.get("sort_order", "desc"),
             page=scope.get("page", 1),
             page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
+            view=scope.get("view") or "summary",
             reconcile_gl=scope.get("reconcile_gl", False),
             include_trace=scope.get("include_trace", True),
         )
@@ -154,6 +194,7 @@ class ApAgingReportAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "ap_aging", view=scope.get("view") or "summary")
         data = build_ap_aging_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -190,13 +231,21 @@ class PayablesReportsMetaAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
-        return Response(
-            build_payables_report_meta(
-                entity_id=scope["entity"],
-                entityfinid_id=scope.get("entityfinid"),
-                subentity_id=scope.get("subentity"),
-            )
+        permission_codes = self.get_permission_codes(request, scope)
+        payload = build_payables_report_meta(
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            permission_codes=permission_codes,
         )
+        if not payload.get("reports"):
+            raise PermissionDenied("You do not have permission to access payables reports.")
+        payload["user_preferences"] = list_user_report_preferences(
+            user=request.user,
+            entity_id=scope["entity"],
+            report_codes=[row["code"] for row in payload["reports"]],
+        )
+        return Response(payload)
 
 
 class PayablesDashboardSummaryAPIView(_BasePayableAPIView):
@@ -204,6 +253,7 @@ class PayablesDashboardSummaryAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "payables_dashboard_summary")
         payload = build_payables_dashboard_summary(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -249,6 +299,8 @@ class _VendorOutstandingExportMixin(_BasePayableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_outstanding")
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         data = build_vendor_outstanding_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -273,25 +325,30 @@ class _VendorOutstandingExportMixin(_BasePayableExportAPIView):
         )
         rows = [
             [
-                row["vendor_name"],
                 row["vendor_code"],
+                row["vendor_name"],
+                row["outstanding"],
+                row["not_due"],
+                row["bucket_0_30"],
+                row["bucket_31_60"],
+                row["bucket_61_90"],
+                row["bucket_91_180"],
+                row["bucket_181_plus"],
+                row["oldest_due_date"],
+                row["gstin"],
                 row["opening_balance"],
                 row["bill_amount"],
                 row["payment_amount"],
-                row["credit_note"],
-                row["net_outstanding"],
-                row["overdue_amount"],
-                row["unapplied_advance"],
-                row["credit_limit"],
-                row["credit_days"],
                 row["last_bill_date"],
                 row["last_payment_date"],
-                row["currency"],
-                row["gstin"],
             ]
             for row in data["rows"]
         ]
-        subtitle = f"Entity: {scope['entity']} | As of: {scope.get('as_of_date') or scope.get('to_date')}"
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"As of: {scope.get('as_of_date') or scope.get('to_date') or ''}"
+        )
         headers = _export_headers("vendor_outstanding")
         return scope, data, headers, rows, subtitle
 
@@ -299,9 +356,15 @@ class _VendorOutstandingExportMixin(_BasePayableExportAPIView):
 class VendorOutstandingExcelAPIView(_VendorOutstandingExportMixin):
     def get(self, request):
         scope, _data, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Vendor Outstanding", subtitle, headers, rows, numeric_columns=set(range(3, 12)))
+        content = _write_excel(
+            "Vendor Outstanding",
+            subtitle,
+            headers,
+            rows,
+            numeric_columns={2, 3, 4, 5, 6, 7, 8, 11, 12, 13},
+        )
         return self.export_response(
-            filename=f"VendorOutstanding_Entity{scope['entity']}.xlsx",
+            filename=f"VendorOutstanding_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.xlsx",
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -312,7 +375,7 @@ class VendorOutstandingCSVAPIView(_VendorOutstandingExportMixin):
         scope, _data, headers, rows, _subtitle = self.report_data(request)
         content = _write_csv(headers, rows)
         return self.export_response(
-            filename=f"VendorOutstanding_Entity{scope['entity']}.csv",
+            filename=f"VendorOutstanding_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.csv",
             content=content,
             content_type="text/csv",
         )
@@ -323,7 +386,7 @@ class VendorOutstandingPDFAPIView(_VendorOutstandingExportMixin):
         scope, _data, headers, rows, subtitle = self.report_data(request)
         content = _write_pdf("Vendor Outstanding Report", subtitle, headers, rows)
         return self.export_response(
-            filename=f"VendorOutstanding_Entity{scope['entity']}.pdf",
+            filename=f"VendorOutstanding_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.pdf",
             content=content,
             content_type="application/pdf",
         )
@@ -338,6 +401,7 @@ class _ApAgingExportMixin(_BasePayableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "ap_aging", view=scope.get("view") or "summary")
         data = build_ap_aging_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -404,7 +468,7 @@ class _ApAgingExportMixin(_BasePayableExportAPIView):
             title = "AP Aging Summary Report"
             headers = _export_headers("ap_aging", view="summary", feature_state={"view": "summary"})
             numeric_columns = set(range(3, 12))
-        subtitle = f"Entity: {scope['entity']} | As of: {scope.get('as_of_date') or scope.get('to_date')} | View: {scope.get('view') or 'summary'}"
+        subtitle = f"As of: {scope.get('as_of_date') or scope.get('to_date')} | View: {scope.get('view') or 'summary'}"
         return scope, headers, rows, subtitle, title, numeric_columns
 
 
@@ -413,7 +477,7 @@ class ApAgingExcelAPIView(_ApAgingExportMixin):
         scope, headers, rows, subtitle, title, numeric_columns = self.report_data(request)
         content = _write_excel(title, subtitle, headers, rows, numeric_columns=numeric_columns)
         return self.export_response(
-            filename=f"ApAging_Entity{scope['entity']}_{scope.get('view') or 'summary'}.xlsx",
+            filename=f"ApAging_{scope.get('view') or 'summary'}_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.xlsx",
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -424,7 +488,7 @@ class ApAgingCSVAPIView(_ApAgingExportMixin):
         scope, headers, rows, _subtitle, _title, _numeric_columns = self.report_data(request)
         content = _write_csv(headers, rows)
         return self.export_response(
-            filename=f"ApAging_Entity{scope['entity']}_{scope.get('view') or 'summary'}.csv",
+            filename=f"ApAging_{scope.get('view') or 'summary'}_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.csv",
             content=content,
             content_type="text/csv",
         )
@@ -435,7 +499,7 @@ class ApAgingPDFAPIView(_ApAgingExportMixin):
         scope, headers, rows, subtitle, title, _numeric_columns = self.report_data(request)
         content = _write_pdf(title, subtitle, headers, rows)
         return self.export_response(
-            filename=f"ApAging_Entity{scope['entity']}_{scope.get('view') or 'summary'}.pdf",
+            filename=f"ApAging_{scope.get('view') or 'summary'}_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.pdf",
             content=content,
             content_type="application/pdf",
         )

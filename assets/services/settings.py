@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from assets.models import AssetSettings
+from assets.models import AssetSettings, default_asset_policy_controls
 
 DEFAULT_POLICY_CONTROLS = {
     "capitalization_basis": {"manual_or_posting", "manual_only", "posting_only"},
@@ -42,6 +42,13 @@ class AssetSettingsService:
                 raise ValueError(f"policy_controls.{key} must be one of: {allowed}.")
             normalized[key] = val
         return normalized
+
+    @staticmethod
+    def resolve_policy_controls(settings_obj: AssetSettings | None) -> dict:
+        controls = default_asset_policy_controls()
+        if settings_obj and settings_obj.policy_controls:
+            controls.update(settings_obj.policy_controls)
+        return controls
 
     @staticmethod
     def upsert_settings(*, entity_id: int, subentity_id: int | None, updates: dict, user_id: int | None = None) -> AssetSettings:

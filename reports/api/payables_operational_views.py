@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from rest_framework.response import Response
 
 from reports.api.payables_views import (
@@ -32,11 +34,17 @@ def _column_values(row, keys):
     return [row.get(key) for key in keys]
 
 
+def _safe_filename(value):
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    return text.strip("._-") or "report"
+
+
 class VendorLedgerStatementAPIView(_BasePayableAPIView):
     serializer_class = PayableVendorLedgerScopeSerializer
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_ledger_statement")
         payload = build_vendor_ledger_statement(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -65,6 +73,7 @@ class VendorSettlementHistoryAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_settlement_history")
         payload = build_vendor_settlement_history_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -95,6 +104,7 @@ class VendorNoteRegisterAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_note_register")
         payload = build_vendor_note_register(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -125,6 +135,7 @@ class PayablesClosePackAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "payables_close_pack")
         include_sections = [
             code
             for code, enabled in [
@@ -162,6 +173,7 @@ class _VendorLedgerExportMixin(_BasePayableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_ledger_statement")
         data = build_vendor_ledger_statement(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -185,7 +197,14 @@ class _VendorLedgerExportMixin(_BasePayableExportAPIView):
         headers = _export_headers("vendor_ledger_statement", feature_state=feature_state)
         keys = resolve_report_column_keys("vendor_ledger_statement", enabled_features=feature_state, export=True)
         rows = [_column_values(row, keys) for row in data["rows"]]
-        subtitle = f"Vendor: {data['vendor']['vendor_name']} | From: {data['from_date']} | To: {data['to_date']}"
+        subtitle = (
+            f"Entity: {data['entity_name']} | "
+            f"Subentity: {data['subentity_name'] or 'All subentities'} | "
+            f"Vendor: {data['vendor']['vendor_name']} | "
+            f"Period: {data['from_date']} to {data['to_date']} | "
+            f"Opening Balance: {'On' if feature_state['include_opening'] else 'Off'} | "
+            f"Running Balance: {'On' if feature_state['include_running_balance'] else 'Off'}"
+        )
         return scope, headers, rows, subtitle
 
 
@@ -193,21 +212,21 @@ class VendorLedgerStatementExcelAPIView(_VendorLedgerExportMixin):
     def get(self, request):
         scope, headers, rows, subtitle = self.report_data(request)
         content = _write_excel("Vendor Ledger Statement", subtitle, headers, rows, numeric_columns={4, 5, 6})
-        return self.export_response(filename=f"VendorLedger_{scope['vendor']}.xlsx", content=content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        return self.export_response(filename=f"VendorLedger_{_safe_filename(subtitle)}.xlsx", content=content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 class VendorLedgerStatementCSVAPIView(_VendorLedgerExportMixin):
     def get(self, request):
-        scope, headers, rows, _subtitle = self.report_data(request)
+        scope, headers, rows, subtitle = self.report_data(request)
         content = _write_csv(headers, rows)
-        return self.export_response(filename=f"VendorLedger_{scope['vendor']}.csv", content=content, content_type="text/csv")
+        return self.export_response(filename=f"VendorLedger_{_safe_filename(subtitle)}.csv", content=content, content_type="text/csv")
 
 
 class VendorLedgerStatementPDFAPIView(_VendorLedgerExportMixin):
     def get(self, request):
         scope, headers, rows, subtitle = self.report_data(request)
         content = _write_pdf("Vendor Ledger Statement", subtitle, headers, rows)
-        return self.export_response(filename=f"VendorLedger_{scope['vendor']}.pdf", content=content, content_type="application/pdf")
+        return self.export_response(filename=f"VendorLedger_{_safe_filename(subtitle)}.pdf", content=content, content_type="application/pdf")
 
 
 class VendorLedgerStatementPrintAPIView(VendorLedgerStatementPDFAPIView):
@@ -219,6 +238,7 @@ class _VendorSettlementHistoryExportMixin(_BasePayableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_settlement_history")
         data = build_vendor_settlement_history_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -275,6 +295,7 @@ class _VendorNoteRegisterExportMixin(_BasePayableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_note_register")
         data = build_vendor_note_register(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -328,6 +349,7 @@ class _PayablesClosePackExportMixin(_BasePayableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "payables_close_pack")
         include_sections = [
             code
             for code, enabled in [

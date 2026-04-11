@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,6 +18,7 @@ from reports.serializers.purchase_register_serializer import (
 )
 from reports.services.payables_config import build_related_report_links, get_payables_meta_entry, resolve_report_columns
 from reports.services.purchase_register_service import PurchaseRegisterService
+from rbac.services import EffectivePermissionService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -37,8 +39,18 @@ def _purchase_register_feature_state(request):
     }
 
 
-def _purchase_register_meta(*, cleaned_filters, feature_state):
-    report_meta = get_payables_meta_entry("purchase_register", enabled_features=feature_state)
+def _format_scope_date(value):
+    if not value:
+        return None
+    if hasattr(value, "strftime"):
+        return value.strftime("%d %b %Y")
+    return str(value)
+
+
+def _purchase_register_meta(*, cleaned_filters, feature_state, permission_codes=None):
+    report_meta = get_payables_meta_entry("purchase_register", enabled_features=feature_state, permission_codes=permission_codes)
+    if report_meta is None:
+        raise PermissionDenied("You do not have permission to access this report.")
     return {
         "report_code": "purchase-register",
         "registry_code": "purchase_register",
@@ -69,6 +81,7 @@ def _purchase_register_meta(*, cleaned_filters, feature_state):
             from_date=cleaned_filters.get("from_date") or cleaned_filters.get("posting_from_date"),
             to_date=cleaned_filters.get("to_date") or cleaned_filters.get("posting_to_date"),
             vendor_id=cleaned_filters.get("vendor"),
+            permission_codes=permission_codes,
         ),
     }
 
@@ -124,6 +137,10 @@ class PurchaseRegisterAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=cleaned_filters.get("entityfinid"),
             subentity_id=cleaned_filters.get("subentity"),
         )
+        permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, cleaned_filters.get("entity"))
+        report_meta = get_payables_meta_entry("purchase_register", enabled_features=feature_state, permission_codes=permission_codes)
+        if report_meta is None:
+            raise PermissionDenied("You do not have permission to access this report.")
         queryset = service.annotate_register_fields(queryset, include_outstanding=include_outstanding).order_by(
             "bill_date",
             "posting_date",
@@ -177,6 +194,7 @@ class PurchaseRegisterAPIView(ScopedEntitlementMixin, APIView):
 
     def get(self, request):
         payload, cleaned_filters, paginator, feature_state = self.get_service_payload(request)
+        permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, cleaned_filters.get("entity"))
         response = build_report_envelope(
             report_code="purchase-register",
             report_name="Purchase Register",
@@ -214,7 +232,7 @@ class PurchaseRegisterAPIView(ScopedEntitlementMixin, APIView):
                 "enable_drilldown": True,
             },
         )
-        response["_meta"] = _purchase_register_meta(cleaned_filters=cleaned_filters, feature_state=feature_state)
+        response["_meta"] = _purchase_register_meta(cleaned_filters=cleaned_filters, feature_state=feature_state, permission_codes=permission_codes)
         response["available_drilldowns"] = response["_meta"].get("available_drilldowns", [])
         response["available_exports"] = response["_meta"].get("available_exports", [])
         response["rows"] = response.get("results", [])
@@ -269,7 +287,7 @@ class _BasePurchaseRegisterExportAPIView(PurchaseRegisterAPIView):
             if include_outstanding:
                 values.insert(17, row.get("outstanding_amount"))
             rows.append(values)
-        subtitle = f"Entity: {cleaned_filters.get('entity')} | From: {cleaned_filters.get('from_date')} | To: {cleaned_filters.get('to_date')}"
+        subtitle = f"Period: {_format_scope_date(cleaned_filters.get('from_date')) or 'Start'} to {_format_scope_date(cleaned_filters.get('to_date')) or 'End'}"
         return payload, headers, rows, subtitle
 
 

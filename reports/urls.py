@@ -74,6 +74,7 @@ from reports.api.payables_views import (
     PayablesDashboardSummaryAPIView,
     PayablesReportsMetaAPIView,
 )
+from reports.api.report_preferences_view import ReportPreferenceAPIView
 from reports.api.payables_operational_views import (
     PayablesClosePackAPIView,
     PayablesClosePackCSVAPIView,
@@ -220,9 +221,20 @@ urlpatterns = [
     path("payables/vendor-outstanding/csv/", VendorOutstandingCSVAPIView.as_view(), name="vendor-outstanding-report-csv"),
     path("payables/vendor-outstanding/print/", VendorOutstandingPrintAPIView.as_view(), name="vendor-outstanding-report-print"),
     path("payables/aging/", ApAgingReportAPIView.as_view(), name="ap-aging-report"),
+    path("payables/accountspayableaging/", ApAgingReportAPIView.as_view(), name="accountspayableaging-report"),
+    path("accounts-payable-aging/", ApAgingReportAPIView.as_view(), name="accounts-payable-aging-report"),
     path("payables/aging/excel/", ApAgingExcelAPIView.as_view(), name="ap-aging-report-excel"),
+    path("payables/accountspayableaging/excel/", ApAgingExcelAPIView.as_view(), name="accountspayableaging-report-excel"),
+    path("accounts-payable-aging/excel/", ApAgingExcelAPIView.as_view(), name="accounts-payable-aging-report-excel"),
     path("payables/aging/pdf/", ApAgingPDFAPIView.as_view(), name="ap-aging-report-pdf"),
+    path("payables/accountspayableaging/pdf/", ApAgingPDFAPIView.as_view(), name="accountspayableaging-report-pdf"),
+    path("accounts-payable-aging/pdf/", ApAgingPDFAPIView.as_view(), name="accounts-payable-aging-report-pdf"),
     path("payables/aging/csv/", ApAgingCSVAPIView.as_view(), name="ap-aging-report-csv"),
+    path("payables/accountspayableaging/csv/", ApAgingCSVAPIView.as_view(), name="accountspayableaging-report-csv"),
+    path("accounts-payable-aging/csv/", ApAgingCSVAPIView.as_view(), name="accounts-payable-aging-report-csv"),
     path("payables/aging/print/", ApAgingPrintAPIView.as_view(), name="ap-aging-report-print"),
+    path("payables/accountspayableaging/print/", ApAgingPrintAPIView.as_view(), name="accountspayableaging-report-print"),
+    path("accounts-payable-aging/print/", ApAgingPrintAPIView.as_view(), name="accounts-payable-aging-report-print"),
+    path("preferences/", ReportPreferenceAPIView.as_view(), name="report-preferences"),
 ]
 

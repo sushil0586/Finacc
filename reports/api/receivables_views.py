@@ -5,9 +5,11 @@ from io import BytesIO, StringIO
 
 from django.http import HttpResponse
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfgen import canvas as pdf_canvas
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -135,8 +137,47 @@ def _write_csv(headers, rows):
     return stream.getvalue().encode("utf-8")
 
 
+def _estimate_pdf_col_widths(headers, rows, *, available_width, min_width=42, max_width=150):
+    sample_rows = rows[:20] if rows else []
+    weights = []
+    for index, header in enumerate(headers):
+        cell_lengths = [len(str(header or ''))]
+        for row in sample_rows:
+            if index < len(row):
+                cell_lengths.append(len(str(row[index] or '')))
+        weights.append(max(cell_lengths))
+
+    total_weight = sum(weights) or 1
+    widths = []
+    for weight in weights:
+        share = available_width * (weight / total_weight)
+        widths.append(max(min_width, min(max_width, share)))
+
+    total_width = sum(widths)
+    if total_width > available_width:
+        scale = available_width / total_width
+        widths = [width * scale for width in widths]
+
+    return widths
+
+
+def _decorate_pdf(canvas, doc, title):
+    canvas.saveState()
+    width, height = doc.pagesize
+    top_y = height - 28
+    canvas.setFillColor(colors.HexColor("#1f4e79"))
+    canvas.rect(18, top_y, width - 36, 10, fill=1, stroke=0)
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#64748b"))
+    canvas.drawRightString(width - 18, 12, f"Page {doc.page}")
+    canvas.drawString(18, 12, "Finacc ERP")
+    canvas.restoreState()
+
+
 def _write_pdf(title, subtitle, headers, rows):
     buffer = BytesIO()
+    page_width, _page_height = landscape(A4)
+    available_width = page_width - 36
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
@@ -147,30 +188,101 @@ def _write_pdf(title, subtitle, headers, rows):
         title=title,
     )
     styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "PayablesPdfTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        leading=21,
+        textColor=colors.HexColor("#163b66"),
+        spaceAfter=4,
+    )
+    subtitle_style = ParagraphStyle(
+        "PayablesPdfSubtitle",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#475569"),
+    )
+    chip_label_style = ParagraphStyle(
+        "PayablesPdfChipLabel",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.HexColor("#1f2937"),
+    )
+    chip_value_style = ParagraphStyle(
+        "PayablesPdfChipValue",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.HexColor("#334155"),
+    )
     story = [
-        Paragraph(f"<b>{title}</b>", styles["Title"]),
-        Spacer(1, 6),
-        Paragraph(subtitle, styles["Normal"]),
-        Spacer(1, 10),
+        Paragraph(title, title_style),
+        Spacer(1, 3),
     ]
-    table = Table([headers] + rows, repeatRows=1)
+
+    subtitle_parts = [part.strip() for part in str(subtitle or '').split('|') if part.strip()]
+    if subtitle_parts:
+        chip_rows = []
+        current_row = []
+        for part in subtitle_parts:
+            label, value = (part.split(':', 1) + [''])[:2] if ':' in part else ('', part)
+            if label:
+                chip = Paragraph(f"<b>{label.strip()}:</b> {value.strip()}", chip_value_style)
+            else:
+                chip = Paragraph(part, chip_value_style)
+            current_row.append(chip)
+            if len(current_row) == 4:
+                chip_rows.append(current_row)
+                current_row = []
+        if current_row:
+            chip_rows.append(current_row)
+
+        for chip_row in chip_rows:
+            chip_table = Table([chip_row], colWidths=[available_width / len(chip_row)] * len(chip_row))
+            chip_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fbff")),
+                ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#c7d4e2")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#d7e2ec")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            story.append(chip_table)
+            story.append(Spacer(1, 4))
+    else:
+        story.append(Paragraph("", subtitle_style))
+        story.append(Spacer(1, 4))
+
+    col_widths = _estimate_pdf_col_widths(headers, rows, available_width=available_width)
+    table = Table([headers] + rows, repeatRows=1, colWidths=col_widths)
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F5597")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 9),
+                ("FONTSIZE", (0, 0), (-1, 0), 8.5),
                 ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e2ec")),
+                ("FONTSIZE", (0, 1), (-1, -1), 7.4),
+                ("LEADING", (0, 0), (-1, -1), 8.5),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#f2f6fb")]),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
     story.append(table)
-    doc.build(story)
+    doc.build(story, onFirstPage=lambda canvas, doc_: _decorate_pdf(canvas, doc_, title), onLaterPages=lambda canvas, doc_: _decorate_pdf(canvas, doc_, title))
     pdf = buffer.getvalue()
     buffer.close()
     return pdf

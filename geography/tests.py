@@ -110,3 +110,36 @@ class GeographyIntegrityTests(TestCase):
         self.assertEqual(by_district.data[0]["id"], city.id)
         self.assertEqual(by_district.data[0]["district_id"], district.id)
         self.assertEqual(by_district.data[0]["distt"], district.id)
+
+    def test_geography_api_supports_search_filters(self):
+        country = Country.objects.create(countryname="India", countrycode="IN")
+        state = State.objects.create(statename="Punjab", statecode="03", country=country)
+        other_state = State.objects.create(statename="Haryana", statecode="06", country=country)
+        district = District.objects.create(districtname="Fatehgarh Sahib", districtcode="FGS", state=state)
+        other_district = District.objects.create(districtname="Ludhiana", districtcode="LDH", state=state)
+        City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=district)
+        City.objects.create(cityname="Khanna", citycode="KHA", pincode="141401", distt=other_district)
+
+        country_search = self.client.get("/api/geography/country?search=ind")
+        state_search = self.client.get(f"/api/geography/state?country={country.id}&search=pun")
+        district_search = self.client.get(f"/api/geography/district?state={state.id}&search=fateh")
+        city_search = self.client.get(f"/api/geography/city?district_id={district.id}&search=sir")
+
+        self.assertEqual(country_search.status_code, 200)
+        self.assertEqual(state_search.status_code, 200)
+        self.assertEqual(district_search.status_code, 200)
+        self.assertEqual(city_search.status_code, 200)
+
+        self.assertEqual(len(country_search.data), 1)
+        self.assertEqual(country_search.data[0]["id"], country.id)
+
+        self.assertEqual(len(state_search.data), 1)
+        self.assertEqual(state_search.data[0]["id"], state.id)
+        self.assertNotIn(other_state.id, [row["id"] for row in state_search.data])
+
+        self.assertEqual(len(district_search.data), 1)
+        self.assertEqual(district_search.data[0]["id"], district.id)
+        self.assertNotIn(other_district.id, [row["id"] for row in district_search.data])
+
+        self.assertEqual(len(city_search.data), 1)
+        self.assertEqual(city_search.data[0]["id"], district.cities.first().id)

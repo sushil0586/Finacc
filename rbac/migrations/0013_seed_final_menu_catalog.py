@@ -11,6 +11,7 @@ MENU_CATALOG = [
     {"code": "dashboard", "name": "Dashboard", "menu_type": "group", "route_path": "", "route_name": "dashboard", "sort_order": 10, "parent_code": None, "icon": "layout-dashboard"},
     {"code": "dashboard.command-center", "name": "Command Center", "menu_type": "group", "route_path": "", "route_name": "dashboard-command-center", "sort_order": 1, "parent_code": "dashboard", "icon": "gauge"},
     {"code": "dashboard.command-center.home", "name": "Home", "menu_type": "screen", "route_path": "home", "route_name": "home", "sort_order": 1, "parent_code": "dashboard.command-center", "icon": "home"},
+    {"code": "dashboard.command-center.analytics", "name": "Analytics", "menu_type": "screen", "route_path": "dashboard-analytics", "route_name": "dashboard-analytics", "sort_order": 2, "parent_code": "dashboard.command-center", "icon": "chart-column"},
     {"code": "masters", "name": "Masters", "menu_type": "group", "route_path": "", "route_name": "masters", "sort_order": 20, "parent_code": None, "icon": "database"},
     {"code": "masters.accounts", "name": "Accounts Master", "menu_type": "group", "route_path": "", "route_name": "masters-accounts", "sort_order": 1, "parent_code": "masters", "icon": "book-open"},
     {"code": "masters.accounts.accounthead", "name": "Account Heads", "menu_type": "screen", "route_path": "accounthead", "route_name": "accounthead", "sort_order": 1, "parent_code": "masters.accounts", "icon": "folder-tree"},

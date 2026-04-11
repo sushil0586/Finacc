@@ -11,6 +11,7 @@ from reports.serializers.sales_register_serializer import (
     SalesRegisterTotalsSerializer,
 )
 from reports.services.sales_register_service import SalesRegisterService
+from sales.views.rbac import require_sales_scope_permission
 
 
 class SalesRegisterPagination(PageNumberPagination):
@@ -30,6 +31,14 @@ class SalesRegisterAPIView(APIView):
         service = self.service_class()
         queryset = service.get_base_queryset()
         queryset, cleaned_filters = service.apply_filters(queryset, request.query_params)
+        require_sales_scope_permission(
+            user=request.user,
+            entity_id=cleaned_filters["entity"],
+            permission_codes=("reports.sales_register.view", "reports.sales_register.export"),
+            access_mode="operational",
+            feature_code="feature_reporting",
+            message="Missing permission: reports.sales_register.view",
+        )
         queryset = service.annotate_register_fields(queryset).order_by(
             "bill_date",
             "posting_date",

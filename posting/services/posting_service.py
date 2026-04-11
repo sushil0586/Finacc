@@ -77,10 +77,14 @@ class PostingService:
 
     # ---------- advisory lock (Postgres optional) ----------
     def _pg_advisory_lock(self, key: int) -> None:
+        if connection.vendor != "postgresql":
+            return
         with connection.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(%s)", [key])
 
     def _lock_for_txn(self, txn_type: str, txn_id: int) -> None:
+        if connection.vendor != "postgresql":
+            return
         # stable int key: entity_id + txn_type hash + txn_id
         # safe enough for advisory locking
         h = abs(hash((self.entity_id, txn_type, txn_id))) % (2**31 - 1)

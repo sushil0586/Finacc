@@ -23,6 +23,23 @@ class SalesApiTestBase(TestCase):
 
 
 class SalesChoicesApiTests(SalesApiTestBase):
+    def setUp(self):
+        super().setUp()
+        self.permission_entity = SimpleNamespace(id=11)
+        self.mock_entity_for_user = patch("sales.views.rbac.EffectivePermissionService.entity_for_user", return_value=self.permission_entity)
+        self.mock_permission_codes = patch(
+            "sales.views.rbac.EffectivePermissionService.permission_codes_for_user",
+            return_value=["sales.invoice.view", "sales.settings.view"],
+        )
+        self.mock_subscription_access = patch("sales.views.rbac.SubscriptionService.assert_entity_access", return_value=self.permission_entity)
+        self.mock_entity_for_user.start()
+        self.mock_permission_codes.start()
+        self.mock_subscription_access.start()
+
+    def tearDown(self):
+        patch.stopall()
+        super().tearDown()
+
     def test_choices_requires_entity_id(self):
         resp = self.client.get("/api/sales/choices/")
         self.assertEqual(resp.status_code, 400)
@@ -40,6 +57,23 @@ class SalesChoicesApiTests(SalesApiTestBase):
 
 
 class SalesSettingsApiTests(SalesApiTestBase):
+    def setUp(self):
+        super().setUp()
+        self.permission_entity = SimpleNamespace(id=10)
+        self.mock_entity_for_user = patch("sales.views.rbac.EffectivePermissionService.entity_for_user", return_value=self.permission_entity)
+        self.mock_permission_codes = patch(
+            "sales.views.rbac.EffectivePermissionService.permission_codes_for_user",
+            return_value=["sales.settings.view", "sales.settings.update"],
+        )
+        self.mock_subscription_access = patch("sales.views.rbac.SubscriptionService.assert_entity_access", return_value=self.permission_entity)
+        self.mock_entity_for_user.start()
+        self.mock_permission_codes.start()
+        self.mock_subscription_access.start()
+
+    def tearDown(self):
+        patch.stopall()
+        super().tearDown()
+
     def test_settings_requires_entity_id(self):
         resp = self.client.get("/api/sales/settings/")
         self.assertEqual(resp.status_code, 400)

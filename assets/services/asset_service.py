@@ -4,12 +4,13 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Max, Q, Sum
+from django.db.models import Max, Q
 from django.utils import timezone
 
-from assets.models import AssetCategory, AssetSettings, DepreciationRun, FixedAsset
+from assets.models import AssetSettings, DepreciationRun, FixedAsset, default_asset_policy_controls
 from assets.services.depreciation import attach_preview_lines, preview_run, q2 as dep_q2
 from assets.services.settings import AssetSettingsService
+from entity.models import SubEntity
 from financial.models import Ledger
 from posting.models import TxnType
 from posting.services.posting_service import JLInput, PostingService
@@ -26,8 +27,83 @@ def _resolve_entityfin_id(instance, fallback=None):
     return getattr(instance, "entityfinid_id", None) or fallback
 
 
-def _jl_for_ledger(*, ledger_id: int, drcr: bool, amount: Decimal, description: str) -> JLInput:
-    ledger = Ledger.objects.filter(id=ledger_id).only("id", "accounthead_id").first()
+def _validate_entity_scope(*, obj, entity_id: int, field_name: str) -> None:
+    if obj is None:
+        return
+    obj_entity_id = getattr(obj, "entity_id", None)
+    if obj_entity_id is not None and obj_entity_id != entity_id:
+        raise ValueError(f"Selected {field_name} belongs to a different entity.")
+
+
+def _validate_asset_scope(*, entity_id: int, subentity=None, entityfinid=None, category=None, ledger=None, vendor_account=None) -> None:
+    _validate_entity_scope(obj=subentity, entity_id=entity_id, field_name="subentity")
+    _validate_entity_scope(obj=entityfinid, entity_id=entity_id, field_name="entityfinid")
+    _validate_entity_scope(obj=category, entity_id=entity_id, field_name="category")
+    _validate_entity_scope(obj=ledger, entity_id=entity_id, field_name="ledger")
+    _validate_entity_scope(obj=vendor_account, entity_id=entity_id, field_name="vendor_account")
+    if category is not None and getattr(category, "subentity_id", None) is not None:
+        category_subentity_id = getattr(category, "subentity_id", None)
+        subentity_id = getattr(subentity, "id", None)
+        if subentity_id is None:
+            raise ValueError("Selected category belongs to a subentity and requires the same subentity on the asset.")
+        if category_subentity_id != subentity_id:
+            raise ValueError("Selected category belongs to a different subentity.")
+
+
+def _asset_settings_and_controls(*, entity_id: int, subentity_id: int | None = None) -> tuple[AssetSettings, dict]:
+    settings = AssetSettingsService.get_settings(entity_id, subentity_id)
+    controls = default_asset_policy_controls()
+    controls.update(settings.policy_controls or {})
+    return settings, controls
+
+
+def _policy_block(rule: str, message: str) -> None:
+    if rule in {"hard", "block"}:
+        raise ValueError(message)
+
+
+def _ensure_non_negative_nbv(*, asset: FixedAsset, rule: str) -> None:
+    if q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount) < ZERO:
+        _policy_block(rule, "Asset net book value cannot be negative.")
+
+
+def _ensure_tag_for_posting(*, asset: FixedAsset, settings: AssetSettings, controls: dict) -> None:
+    if asset.asset_tag:
+        return
+    if settings.require_asset_tag or controls.get("allow_posting_without_tag") == "off":
+        raise ValueError("Asset tag is required before posting this asset.")
+
+
+def _ensure_locked_period(*, entityfinid, posting_date: date, rule: str) -> None:
+    if entityfinid and entityfinid.books_locked_until and posting_date <= entityfinid.books_locked_until:
+        _policy_block(rule, "The selected posting date falls inside a locked books period.")
+
+
+def _ensure_backdated_capitalization(*, asset: FixedAsset, capitalization_date: date, rule: str) -> None:
+    if capitalization_date < asset.acquisition_date:
+        _policy_block(rule, "Capitalization date cannot be earlier than the acquisition date.")
+
+
+def _ensure_backdated_disposal(*, asset: FixedAsset, disposal_date: date, rule: str) -> None:
+    baseline_date = asset.capitalization_date or asset.acquisition_date
+    if disposal_date < baseline_date:
+        _policy_block(rule, "Disposal date cannot be earlier than the asset capitalization date.")
+
+
+def _ensure_capitalization_threshold(*, asset: FixedAsset, settings: AssetSettings, controls: dict) -> None:
+    threshold = q2(asset.category.capitalization_threshold or settings.capitalization_threshold)
+    if threshold <= ZERO:
+        return
+    amount = q2(asset.gross_block)
+    if amount < threshold:
+        _policy_block(
+            controls.get("capitalization_threshold_rule", "warn"),
+            f"Asset gross block {amount} is below the capitalization threshold {threshold}.",
+        )
+
+
+def _jl_for_ledger(*, entity_id: int, ledger_id: int, drcr: bool, amount: Decimal, description: str) -> JLInput:
+    ledger = Ledger.objects.filter(id=ledger_id, entity_id=entity_id).only("id", "accounthead_id", "entity_id").first()
     if not ledger or not ledger.accounthead_id:
         raise ValueError(f"Ledger {ledger_id} must be linked to an account head for posting.")
     return JLInput(accounthead_id=ledger.accounthead_id, ledger_id=ledger_id, drcr=drcr, amount=amount, description=description)
@@ -70,13 +146,24 @@ class AssetService:
         entity = data["entity"]
         entity_id = entity.id
         subentity = data.get("subentity")
+        entityfinid = data.get("entityfinid")
+        category = data["category"]
+        ledger = data.get("ledger")
+        vendor_account = data.get("vendor_account")
+        _validate_asset_scope(
+            entity_id=entity_id,
+            subentity=subentity,
+            entityfinid=entityfinid,
+            category=category,
+            ledger=ledger,
+            vendor_account=vendor_account,
+        )
         subentity_id = subentity.id if subentity else None
         settings = AssetSettingsService.get_settings(entity_id, subentity_id)
         payload = dict(data)
         if not payload.get("asset_code") and settings.auto_number_assets:
             payload["asset_code"] = AssetService.generate_asset_code(entity_id=entity_id, settings=settings)
 
-        category = payload["category"]
         payload.setdefault("useful_life_months", category.useful_life_months or settings.default_useful_life_months)
         payload.setdefault("depreciation_method", category.depreciation_method or settings.default_depreciation_method)
         if payload.get("residual_value") in (None, ""):
@@ -84,6 +171,7 @@ class AssetService:
             payload["residual_value"] = q2(q2(payload.get("gross_block")) * residual_percent / Decimal("100.00"))
         payload.setdefault("net_book_value", q2(payload.get("gross_block")))
         asset = FixedAsset.objects.create(created_by_id=user_id, updated_by_id=user_id, **payload)
+        _ensure_non_negative_nbv(asset=asset, rule=(AssetSettingsService.resolve_policy_controls(settings).get("negative_nbv_rule") or "block"))
         return asset
 
     @staticmethod
@@ -93,8 +181,18 @@ class AssetService:
             if instance.capitalization_posting_batch_id and key in immutable_if_posted:
                 continue
             setattr(instance, key, value)
+        _validate_asset_scope(
+            entity_id=instance.entity_id,
+            subentity=instance.subentity,
+            entityfinid=instance.entityfinid,
+            category=instance.category,
+            ledger=instance.ledger,
+            vendor_account=instance.vendor_account,
+        )
+        _, controls = _asset_settings_and_controls(entity_id=instance.entity_id, subentity_id=instance.subentity_id)
         instance.updated_by_id = user_id
         instance.net_book_value = q2(instance.gross_block) - q2(instance.accumulated_depreciation) - q2(instance.impairment_amount)
+        _ensure_non_negative_nbv(asset=instance, rule=controls.get("negative_nbv_rule", "block"))
         instance.save()
         return instance
 
@@ -112,6 +210,7 @@ class AssetService:
             raise ValueError("Only draft or capital-WIP assets can be capitalized.")
         if asset.capitalization_posting_batch_id:
             raise ValueError("This asset is already capitalized.")
+        settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
         asset_ledger_id = asset.ledger_id or asset.category.asset_ledger_id
         if not asset_ledger_id:
             raise ValueError("Asset ledger is required on asset or asset category before capitalization.")
@@ -120,6 +219,10 @@ class AssetService:
         amount = q2(asset.gross_block)
         if amount <= ZERO:
             raise ValueError("Asset gross block must be greater than zero for capitalization.")
+        _ensure_capitalization_threshold(asset=asset, settings=settings, controls=controls)
+        _ensure_tag_for_posting(asset=asset, settings=settings, controls=controls)
+        _ensure_backdated_capitalization(asset=asset, capitalization_date=capitalization_date, rule=controls.get("backdated_capitalization_rule", "warn"))
+        _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=capitalization_date, rule=controls.get("depreciation_lock_rule", "hard"))
 
         posting = PostingService(
             entity_id=asset.entity_id,
@@ -135,8 +238,8 @@ class AssetService:
             posting_date=capitalization_date,
             narration=narration or f"Capitalization of asset {asset.asset_code}",
             jl_inputs=[
-                _jl_for_ledger(ledger_id=asset_ledger_id, drcr=True, amount=amount, description=asset.asset_name),
-                _jl_for_ledger(ledger_id=counter_ledger_id, drcr=False, amount=amount, description=asset.asset_name),
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=asset_ledger_id, drcr=True, amount=amount, description=asset.asset_name),
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=counter_ledger_id, drcr=False, amount=amount, description=asset.asset_name),
             ],
         )
         asset.status = FixedAsset.AssetStatus.ACTIVE
@@ -146,6 +249,7 @@ class AssetService:
         asset.capitalization_posting_batch = entry.posting_batch
         asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount)
         asset.updated_by_id = user_id
+        _ensure_non_negative_nbv(asset=asset, rule=controls.get("negative_nbv_rule", "block"))
         asset.save()
         return asset
 
@@ -168,6 +272,8 @@ class AssetService:
     @staticmethod
     @transaction.atomic
     def calculate_run(*, run: DepreciationRun, category_id: int | None = None, user_id: int | None = None) -> DepreciationRun:
+        _, controls = _asset_settings_and_controls(entity_id=run.entity_id, subentity_id=run.subentity_id)
+        _ensure_locked_period(entityfinid=run.entityfinid, posting_date=run.period_to, rule=controls.get("depreciation_lock_rule", "hard"))
         if run.status == DepreciationRun.RunStatus.POSTED:
             raise ValueError("Posted depreciation run cannot be recalculated.")
         if run.status == DepreciationRun.RunStatus.CANCELLED:
@@ -186,11 +292,15 @@ class AssetService:
     @staticmethod
     @transaction.atomic
     def post_run(*, run: DepreciationRun, user_id: int | None = None) -> DepreciationRun:
+        _, controls = _asset_settings_and_controls(entity_id=run.entity_id, subentity_id=run.subentity_id)
+        _ensure_locked_period(entityfinid=run.entityfinid, posting_date=run.posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
         if run.status != DepreciationRun.RunStatus.CALCULATED:
             raise ValueError("Depreciation run must be in calculated state before posting.")
         lines = list(run.lines.select_related("asset", "asset__category"))
         if not lines:
             raise ValueError("Depreciation run has no lines to post.")
+        for line in lines:
+            _ensure_tag_for_posting(asset=line.asset, settings=AssetSettingsService.get_settings(line.asset.entity_id, line.asset.subentity_id), controls=AssetSettingsService.resolve_policy_controls(AssetSettingsService.get_settings(line.asset.entity_id, line.asset.subentity_id)))
 
         aggregated: dict[tuple[int, int], Decimal] = {}
         for line in lines:
@@ -205,8 +315,8 @@ class AssetService:
         for (exp_ledger, acc_ledger), amount in aggregated.items():
             if amount <= ZERO:
                 continue
-            jl_inputs.append(_jl_for_ledger(ledger_id=exp_ledger, drcr=True, amount=amount, description=f"Depreciation run {run.run_code}"))
-            jl_inputs.append(_jl_for_ledger(ledger_id=acc_ledger, drcr=False, amount=amount, description=f"Depreciation run {run.run_code}"))
+            jl_inputs.append(_jl_for_ledger(entity_id=run.entity_id, ledger_id=exp_ledger, drcr=True, amount=amount, description=f"Depreciation run {run.run_code}"))
+            jl_inputs.append(_jl_for_ledger(entity_id=run.entity_id, ledger_id=acc_ledger, drcr=False, amount=amount, description=f"Depreciation run {run.run_code}"))
 
         posting = PostingService(
             entity_id=run.entity_id,
@@ -228,6 +338,7 @@ class AssetService:
             asset = line.asset
             asset.accumulated_depreciation = q2(asset.accumulated_depreciation) + q2(line.depreciation_amount)
             asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount)
+            _ensure_non_negative_nbv(asset=asset, rule=controls.get("negative_nbv_rule", "block"))
             asset.updated_by_id = user_id
             asset.save(update_fields=["accumulated_depreciation", "net_book_value", "updated_by", "updated_at"])
 
@@ -259,6 +370,7 @@ class AssetService:
             raise ValueError("Asset category must define impairment expense and impairment reserve ledgers.")
         if amount > q2(asset.net_book_value):
             raise ValueError("Impairment amount cannot exceed current net book value.")
+        _, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
 
         posting = PostingService(
             entity_id=asset.entity_id,
@@ -274,14 +386,15 @@ class AssetService:
             posting_date=posting_date,
             narration=narration or f"Impairment of asset {asset.asset_code}",
             jl_inputs=[
-                _jl_for_ledger(ledger_id=category.impairment_expense_ledger_id, drcr=True, amount=amount, description=asset.asset_name),
-                _jl_for_ledger(ledger_id=category.impairment_reserve_ledger_id, drcr=False, amount=amount, description=asset.asset_name),
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.impairment_expense_ledger_id, drcr=True, amount=amount, description=asset.asset_name),
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.impairment_reserve_ledger_id, drcr=False, amount=amount, description=asset.asset_name),
             ],
         )
         asset.impairment_amount = q2(asset.impairment_amount) + amount
         asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount)
         asset.impairment_posting_batch = entry.posting_batch
         asset.updated_by_id = user_id
+        _ensure_non_negative_nbv(asset=asset, rule=controls.get("negative_nbv_rule", "block"))
         asset.save(update_fields=["impairment_amount", "net_book_value", "impairment_posting_batch", "updated_by", "updated_at"])
         return asset
 
@@ -298,7 +411,13 @@ class AssetService:
     ) -> FixedAsset:
         if asset.status not in {FixedAsset.AssetStatus.ACTIVE, FixedAsset.AssetStatus.HELD_FOR_SALE, FixedAsset.AssetStatus.CAPITAL_WIP}:
             raise ValueError("Only active, held-for-sale, or capital-WIP assets can be transferred.")
-        asset.subentity_id = subentity_id
+        if subentity_id is not None:
+            subentity = SubEntity.objects.filter(id=subentity_id, entity_id=asset.entity_id, isactive=True).only("id", "entity_id").first()
+            if subentity is None:
+                raise ValueError("Selected subentity belongs to a different entity or is inactive.")
+            asset.subentity_id = subentity.id
+        else:
+            asset.subentity_id = None
         asset.location_name = location_name
         asset.department_name = department_name
         asset.custodian_name = custodian_name
@@ -322,34 +441,43 @@ class AssetService:
         if asset.status != FixedAsset.AssetStatus.ACTIVE:
             raise ValueError("Only active assets can be disposed.")
         category = asset.category
+        settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
         asset_ledger_id = asset.ledger_id or category.asset_ledger_id
         if not asset_ledger_id or not category.accumulated_depreciation_ledger_id:
             raise ValueError("Asset and accumulated depreciation ledgers are required for disposal.")
+        _validate_asset_scope(
+            entity_id=asset.entity_id,
+            category=category,
+            ledger=asset.ledger or category.asset_ledger,
+        )
+        _ensure_backdated_disposal(asset=asset, disposal_date=disposal_date, rule=controls.get("backdated_disposal_rule", "hard"))
         proceeds = q2(sale_proceeds)
         gross = q2(asset.gross_block)
         acc_dep = q2(asset.accumulated_depreciation)
         impairment = q2(asset.impairment_amount)
         nbv = q2(gross - acc_dep - impairment)
         gain_loss = q2(proceeds - nbv)
+        if nbv < ZERO:
+            _policy_block(controls.get("negative_nbv_rule", "block"), "Asset net book value cannot be negative before disposal.")
 
         jl_inputs = []
         if acc_dep > ZERO:
-            jl_inputs.append(_jl_for_ledger(ledger_id=category.accumulated_depreciation_ledger_id, drcr=True, amount=acc_dep, description=asset.asset_name))
+            jl_inputs.append(_jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.accumulated_depreciation_ledger_id, drcr=True, amount=acc_dep, description=asset.asset_name))
         if impairment > ZERO:
             if not category.impairment_reserve_ledger_id:
                 raise ValueError("Impairment reserve ledger is required to dispose an impaired asset.")
-            jl_inputs.append(_jl_for_ledger(ledger_id=category.impairment_reserve_ledger_id, drcr=True, amount=impairment, description=asset.asset_name))
+            jl_inputs.append(_jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.impairment_reserve_ledger_id, drcr=True, amount=impairment, description=asset.asset_name))
         if proceeds > ZERO:
-            jl_inputs.append(_jl_for_ledger(ledger_id=proceeds_ledger_id, drcr=True, amount=proceeds, description=asset.asset_name))
+            jl_inputs.append(_jl_for_ledger(entity_id=asset.entity_id, ledger_id=proceeds_ledger_id, drcr=True, amount=proceeds, description=asset.asset_name))
         if gain_loss < ZERO:
             if not category.loss_on_sale_ledger_id:
                 raise ValueError("Loss on sale ledger is required when disposal creates a loss.")
-            jl_inputs.append(_jl_for_ledger(ledger_id=category.loss_on_sale_ledger_id, drcr=True, amount=abs(gain_loss), description=asset.asset_name))
-        jl_inputs.append(_jl_for_ledger(ledger_id=asset_ledger_id, drcr=False, amount=gross, description=asset.asset_name))
+            jl_inputs.append(_jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.loss_on_sale_ledger_id, drcr=True, amount=abs(gain_loss), description=asset.asset_name))
+        jl_inputs.append(_jl_for_ledger(entity_id=asset.entity_id, ledger_id=asset_ledger_id, drcr=False, amount=gross, description=asset.asset_name))
         if gain_loss > ZERO:
             if not category.gain_on_sale_ledger_id:
                 raise ValueError("Gain on sale ledger is required when disposal creates a gain.")
-            jl_inputs.append(_jl_for_ledger(ledger_id=category.gain_on_sale_ledger_id, drcr=False, amount=gain_loss, description=asset.asset_name))
+            jl_inputs.append(_jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.gain_on_sale_ledger_id, drcr=False, amount=gain_loss, description=asset.asset_name))
 
         posting = PostingService(
             entity_id=asset.entity_id,

@@ -7,6 +7,7 @@ from math import pow
 
 from assets.models import AssetSettings
 from assets.models import DepreciationRun, DepreciationRunLine, FixedAsset
+from assets.services.settings import AssetSettingsService
 
 Q2 = Decimal("0.01")
 ZERO = Decimal("0.00")
@@ -102,7 +103,8 @@ def preview_run(*, assets_qs, period_from: date, period_to: date) -> list[Deprec
         scope_key = (asset.entity_id, asset.subentity_id)
         if scope_key not in settings_cache:
             settings_cache[scope_key] = AssetSettings.objects.filter(entity_id=asset.entity_id, subentity_id=asset.subentity_id).first() or AssetSettings.objects.filter(entity_id=asset.entity_id, subentity_id__isnull=True).first()
-        proration_mode = ((settings_cache[scope_key].policy_controls or {}).get("depreciation_proration") if settings_cache[scope_key] else "daily") or "daily"
+        controls = AssetSettingsService.resolve_policy_controls(settings_cache[scope_key])
+        proration_mode = controls.get("depreciation_proration", "daily") or "daily"
         amount, annual_rate = _depreciation_amount(asset, period_from=period_from, period_to=period_to, proration_mode=proration_mode)
         if amount <= ZERO:
             continue

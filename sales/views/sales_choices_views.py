@@ -5,11 +5,15 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.entitlements import ScopedEntitlementMixin
 from sales.services.sales_choices_service import SalesChoicesService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
-class SalesChoicesAPIView(APIView):
+class SalesChoicesAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_SALES
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
         entity_id = request.query_params.get("entity_id")
@@ -18,6 +22,11 @@ class SalesChoicesAPIView(APIView):
         subentity_id = request.query_params.get("subentity_id")
         if subentity_id == "0":
             subentity_id = None
+        self.enforce_scope(
+            request,
+            entity_id=int(entity_id),
+            subentity_id=int(subentity_id) if subentity_id else None,
+        )
         data = SalesChoicesService.get_choices(
             entity_id=int(entity_id),
             subentity_id=int(subentity_id) if subentity_id else None,
