@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from reports.schemas.common import build_report_envelope
+from reports.selectors.financial import resolve_scope_names
 from reports.schemas.receivables_reports import ReceivableAgingScopeSerializer, ReceivableReportScopeSerializer
 from reports.services.receivables import build_customer_outstanding_report, build_receivable_aging_report
 
@@ -80,6 +81,20 @@ def _attach_receivable_actions(payload, request, *, export_base_path):
         "print": f"{export_base_path}print/?{query}",
     }
     return payload
+
+
+def _format_scope_date(value):
+    if not value:
+        return None
+    if hasattr(value, "strftime"):
+        return value.strftime("%d %b %Y")
+    return str(value)
+
+
+def _safe_filename(value):
+    text = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or "").strip())
+    text = text.strip("._-")
+    return text or "report"
 
 
 def _workbook_styles():
@@ -453,7 +468,13 @@ class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
             ]
             for row in data["rows"]
         ]
-        subtitle = f"Entity: {scope['entity']} | As of: {scope.get('as_of_date') or scope.get('to_date')}"
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"As of: {_format_scope_date(scope.get('as_of_date') or scope.get('to_date')) or 'Selected date'}"
+        )
         return scope, data, headers, rows, subtitle
 
 
@@ -462,7 +483,7 @@ class CustomerOutstandingExcelAPIView(_CustomerOutstandingExportMixin):
         scope, _data, headers, rows, subtitle = self.report_data(request)
         content = _write_excel("Customer Outstanding", subtitle, headers, rows, numeric_columns=set(range(3, 12)))
         return self.export_response(
-            filename=f"CustomerOutstanding_Entity{scope['entity']}.xlsx",
+            filename=f"CustomerOutstanding_{_safe_filename(subtitle)}.xlsx",
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -473,7 +494,7 @@ class CustomerOutstandingCSVAPIView(_CustomerOutstandingExportMixin):
         scope, _data, headers, rows, _subtitle = self.report_data(request)
         content = _write_csv(headers, rows)
         return self.export_response(
-            filename=f"CustomerOutstanding_Entity{scope['entity']}.csv",
+            filename=f"CustomerOutstanding_{_safe_filename(_subtitle)}.csv",
             content=content,
             content_type="text/csv",
         )
@@ -484,7 +505,7 @@ class CustomerOutstandingPDFAPIView(_CustomerOutstandingExportMixin):
         scope, _data, headers, rows, subtitle = self.report_data(request)
         content = _write_pdf("Customer Outstanding Report", subtitle, headers, rows)
         return self.export_response(
-            filename=f"CustomerOutstanding_Entity{scope['entity']}.pdf",
+            filename=f"CustomerOutstanding_{_safe_filename(subtitle)}.pdf",
             content=content,
             content_type="application/pdf",
         )
