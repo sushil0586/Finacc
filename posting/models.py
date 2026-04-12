@@ -33,6 +33,8 @@ class TxnType(models.TextChoices):
     PURCHASE_DEBIT_NOTE = "PDN", "Purchase Debit Note"
     JOURNAL_CASH = "C", "Journal (Cash)"
     JOURNAL_BANK = "B", "Journal (Bank)"
+    INVENTORY_TRANSFER = "IT", "Inventory Transfer"
+    INVENTORY_ADJUSTMENT = "IA", "Inventory Adjustment"
     RECEIPT = "RV", "Receipt Voucher"
     PAYMENT = "PV", "Payment Voucher"
 
@@ -275,6 +277,16 @@ class InventoryMove(models.Model):
         ADJ = "ADJ", "Adjustment"
         REV = "REV", "Reversal"
 
+    class MovementNature(models.TextChoices):
+        PURCHASE = "PURCHASE", "Purchase"
+        SALE = "SALE", "Sale"
+        TRANSFER = "TRANSFER", "Transfer"
+        ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+        OPENING = "OPENING", "Opening Stock"
+        RETURN = "RETURN", "Return"
+        REVERSAL = "REVERSAL", "Reversal"
+        OTHER = "OTHER", "Other"
+
     class CostSource(models.TextChoices):
         PURCHASE = "PURCHASE", "Purchase"
         FIFO = "FIFO", "FIFO"
@@ -297,6 +309,8 @@ class InventoryMove(models.Model):
 
     # Optional: switch to FK if you have Godown model
     location = models.ForeignKey("entity.Godown", on_delete=models.PROTECT, null=True, blank=True)
+    source_location = models.ForeignKey("entity.Godown", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    destination_location = models.ForeignKey("entity.Godown", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
 
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True, related_name="inv_moves_uom")
     base_uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True, related_name="inv_moves_base_uom")
@@ -313,6 +327,14 @@ class InventoryMove(models.Model):
     cost_meta = models.JSONField(null=True, blank=True)
 
     move_type = models.CharField(max_length=10, choices=MoveType.choices, db_index=True)
+    movement_nature = models.CharField(
+        max_length=20,
+        choices=MovementNature.choices,
+        default=MovementNature.OTHER,
+        db_index=True,
+    )
+    movement_group = models.UUIDField(null=True, blank=True, db_index=True)
+    movement_reason = models.CharField(max_length=120, default="", blank=True, db_index=True)
 
     posting_date = models.DateField(db_index=True)
     posted_at = models.DateTimeField(null=True, blank=True, db_index=True)

@@ -8,6 +8,7 @@ import re
 
 
 
+from entity.models import Godown
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
@@ -179,6 +180,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    location = serializers.PrimaryKeyRelatedField(queryset=Godown.objects.all(), required=False, allow_null=True)
 
     # display fields
     doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
@@ -202,6 +204,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "entity",
             "entityfinid",
             "subentity",
+            "location",
 
             "doc_type",
             "doc_type_name",

@@ -7,8 +7,9 @@ from typing import Any, Iterable, List, Optional
 
 from django.db import transaction
 
+from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import PostingService, JLInput, IMInput
-from posting.models import TxnType
+from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
 
@@ -432,6 +433,12 @@ class SalesInvoicePostingAdapter:
 
                 base = q2(getattr(ln, "taxable_value", None) or ZERO2)
                 unit_cost = q4(base / qty_for_cost)
+                location_id = resolve_posting_location_id(
+                    entity_id=entity_id,
+                    subentity_id=int(subentity_id) if subentity_id else None,
+                    godown_id=getattr(header, "godown_id", None),
+                    location_id=getattr(header, "location_id", None),
+                )
 
                 im.append(IMInput(
                     product_id=int(getattr(ln, "product_id")),
@@ -441,6 +448,8 @@ class SalesInvoicePostingAdapter:
                     unit_cost=unit_cost,
                     move_type=inventory_move_type,  # OUT for invoice, IN for CN return
                     cost_source="SALES",
+                    movement_nature=InventoryMove.MovementNature.SALE if inventory_move_type == InventoryMove.MoveType.OUT else InventoryMove.MovementNature.RETURN,
+                    movement_reason=str(doc_type or "sale"),
                     cost_meta={
                         "doc_type": doc_type,
                         "line_no": getattr(ln, "line_no", None),
@@ -452,7 +461,9 @@ class SalesInvoicePostingAdapter:
                         "affects_inventory": affects_inventory,
                     },
                     detail_id=int(getattr(ln, "id", 0) or 0) or None,
-                    location_id=int(getattr(header, "godown_id", None) or getattr(header, "location_id", None) or 0) or None,
+                    location_id=location_id,
+                    source_location_id=location_id if inventory_move_type == InventoryMove.MoveType.OUT else None,
+                    destination_location_id=location_id if inventory_move_type != InventoryMove.MoveType.OUT else None,
                 ))
 
         # =========================

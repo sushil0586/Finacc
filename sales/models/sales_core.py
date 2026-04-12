@@ -15,6 +15,7 @@ GSTIN_VALIDATOR = RegexValidator(
 
 # ✅ Adjust import to your base class
 from core.models.base import EntityScopedModel  # change path to your actual base
+from entity.models import Godown
 
 
 # -------------------------
@@ -159,6 +160,8 @@ class SalesInvoiceHeader(EntityScopedModel):
         related_name="sales_invoices",
         db_index=True,
     )
+
+    location = models.ForeignKey(Godown, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
 
     # Place of supply
     place_of_supply_state_code = models.CharField(max_length=2, blank=True, default="")

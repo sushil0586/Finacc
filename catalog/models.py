@@ -142,6 +142,17 @@ class ProductStatus(models.TextChoices):
     UPCOMING = 'upcoming', _('Upcoming')
 
 
+class ProductClassification(models.TextChoices):
+    TRADING = 'trading_item', _('Trading Item')
+    RAW_MATERIAL = 'raw_material', _('Raw Material')
+    WIP = 'wip', _('Work In Progress')
+    FINISHED_GOOD = 'finished_good', _('Finished Good')
+    CONSUMABLE = 'consumable', _('Consumable')
+    SERVICE = 'service_item', _('Service Item')
+    ASSET_SPARE = 'asset_spare', _('Asset Spare')
+    OTHER = 'other', _('Other')
+
+
 class Product(EntityScopedModel):
     productname = models.CharField(max_length=200)
     sku = models.CharField(max_length=100)
@@ -191,8 +202,27 @@ class Product(EntityScopedModel):
 
     # GST / compliance flags
     is_service = models.BooleanField(default=False)
+    item_classification = models.CharField(
+        max_length=30,
+        choices=ProductClassification.choices,
+        default=ProductClassification.TRADING,
+        db_index=True,
+    )
     is_batch_managed = models.BooleanField(default=False)
     is_serialized = models.BooleanField(default=False)
+    is_expiry_tracked = models.BooleanField(
+        default=False,
+        help_text="Mark items that need expiry tracking in future stock and batch reports.",
+    )
+    shelf_life_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Expected shelf life in days for expiry-sensitive items.",
+    )
+    expiry_warning_days = models.PositiveIntegerField(
+        default=30,
+        help_text="Warn when remaining shelf life reaches this many days.",
+    )
 
     # for section 9(5) cases
     is_ecomm_9_5_service = models.BooleanField(default=False)
@@ -233,6 +263,19 @@ class Product(EntityScopedModel):
         # Not enforcing hard because many systems keep UQC optional initially.
         if self.launch_date and self.discontinue_date and self.discontinue_date < self.launch_date:
             raise ValidationError({"discontinue_date": "Discontinue date cannot be before launch date."})
+
+        if self.shelf_life_days is not None and self.shelf_life_days <= 0:
+            raise ValidationError({"shelf_life_days": "Shelf life days must be greater than 0."})
+        if self.expiry_warning_days is not None and self.expiry_warning_days < 0:
+            raise ValidationError({"expiry_warning_days": "Expiry warning days cannot be negative."})
+        if (
+            self.shelf_life_days is not None
+            and self.expiry_warning_days is not None
+            and self.expiry_warning_days > self.shelf_life_days
+        ):
+            raise ValidationError({"expiry_warning_days": "Expiry warning days cannot exceed shelf life days."})
+        if self.is_expiry_tracked and self.shelf_life_days is None:
+            raise ValidationError({"shelf_life_days": "Shelf life days are required when expiry tracking is enabled."})
 
 
 # ----------------------------------------------------------------------

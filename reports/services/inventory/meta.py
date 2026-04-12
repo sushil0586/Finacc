@@ -102,6 +102,33 @@ def _report_registry() -> list[dict]:
             'default_include_negative': True,
         },
         {
+            'code': 'inventory_location_stock',
+            'name': 'Location Stock',
+            'path': '/api/reports/inventory/location-stock/',
+            'category': 'inventory',
+            'required_permission': 'reports.inventory.location_stock.view',
+            'scope_modes': ['financial_year', 'month', 'quarter', 'year', 'custom', 'as_of'],
+            'supports': {
+                'entityfinid': True,
+                'subentity': True,
+                'date_range': True,
+                'as_of_date': True,
+                'product_filters': True,
+                'category_filters': True,
+                'hsn_filters': True,
+                'location_filters': True,
+                'search': True,
+                'pagination': True,
+                'drilldown': True,
+                'valuation_method': True,
+                'sort': True,
+            },
+            'default_scope_mode': INVENTORY_REPORT_DEFAULTS['default_scope_mode'],
+            'default_valuation_method': INVENTORY_REPORT_DEFAULTS['default_valuation_method'],
+            'default_include_zero': INVENTORY_REPORT_DEFAULTS['show_zero_balances_default'],
+            'default_include_negative': True,
+        },
+        {
             'code': 'inventory_stock_movement',
             'name': 'Stock Movement',
             'path': '/api/reports/inventory/stock-movement/',
@@ -294,7 +321,7 @@ def build_inventory_report_meta(entity_id: int) -> dict:
         .values('id', 'code', 'description', 'is_service')
     )
     locations = list(
-        Godown.objects.filter(is_active=True)
+        Godown.objects.filter(entity_id=entity_id, is_active=True)
         .order_by('name', 'id')
         .values('id', 'name', 'code', 'city', 'state')
     )
@@ -339,6 +366,7 @@ def build_inventory_report_meta(entity_id: int) -> dict:
             'reports.inventory.stock_summary.view',
             'reports.inventory.stock_ledger.view',
             'reports.inventory.stock_aging.view',
+            'reports.inventory.location_stock.view',
             'reports.inventory.stock_movement.view',
             'reports.inventory.stock_day_book.view',
             'reports.inventory.stock_book_summary.view',

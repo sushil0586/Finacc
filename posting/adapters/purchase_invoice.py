@@ -7,8 +7,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from django.db import transaction
 
+from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import PostingService, JLInput, IMInput
-from posting.models import TxnType
+from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
 
@@ -578,6 +579,12 @@ class PurchaseInvoicePostingAdapter:
 
                 unit_cost = q4((base + cap_share) / qty_for_cost)
 
+                location_id = resolve_posting_location_id(
+                    entity_id=entity_id,
+                    subentity_id=int(subentity_id) if subentity_id else None,
+                    godown_id=getattr(header, "godown_id", None),
+                    location_id=getattr(header, "location_id", None),
+                )
                 im.append(IMInput(
                     product_id=int(getattr(ln, "product_id")),
                     qty=qty_for_cost,  # qty positive; move_type controls IN vs OUT
@@ -586,6 +593,8 @@ class PurchaseInvoicePostingAdapter:
                     unit_cost=unit_cost,
                     move_type=inventory_move_type,  # IN for invoice, OUT for CN return
                     cost_source="PURCHASE",
+                    movement_nature=InventoryMove.MovementNature.PURCHASE if inventory_move_type == InventoryMove.MoveType.IN_ else InventoryMove.MovementNature.RETURN,
+                    movement_reason=str(doc_type or "purchase"),
                     cost_meta={
                         "doc_type": doc_type,
                         "line_no": getattr(ln, "line_no", None),
@@ -598,7 +607,9 @@ class PurchaseInvoicePostingAdapter:
                         "affects_inventory": affects_inventory,
                     },
                     detail_id=int(getattr(ln, "id", 0) or 0) or None,
-                    location_id=int(getattr(header, "godown_id", None) or getattr(header, "location_id", None) or 0) or None,
+                    location_id=location_id,
+                    destination_location_id=location_id if inventory_move_type == InventoryMove.MoveType.IN_ else None,
+                    source_location_id=location_id if inventory_move_type != InventoryMove.MoveType.IN_ else None,
                 ))
 
         # =========================

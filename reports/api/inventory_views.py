@@ -25,6 +25,7 @@ from reports.services.inventory.control import (
     build_inventory_non_moving_stock,
     build_inventory_reorder_status,
 )
+from reports.services.inventory.location_stock import build_inventory_location_stock
 from reports.services.inventory.operational import (
     build_inventory_stock_book_detail,
     build_inventory_stock_book_summary,
@@ -255,6 +256,7 @@ class InventoryReportsMetaAPIView(ScopedEntitlementMixin, APIView):
             "reports.inventory.stock_summary.view",
             "reports.inventory.stock_ledger.view",
             "reports.inventory.stock_aging.view",
+            "reports.inventory.location_stock.view",
             "reports.inventory.stock_movement.view",
             "reports.inventory.stock_day_book.view",
             "reports.inventory.stock_book_summary.view",
@@ -746,6 +748,137 @@ class InventoryStockAgingPrintAPIView(InventoryStockAgingPDFAPIView):
     export_mode = "inline"
 
 
+class InventoryLocationStockAPIView(_BaseInventoryReportAPIView):
+    export_base_path = "/api/reports/inventory/location-stock/"
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "reports.inventory.location_stock.view")
+        data = build_inventory_location_stock(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            valuation_method=scope.get("valuation_method", "fifo"),
+            product_ids=scope.get("product_ids") or None,
+            category_ids=scope.get("category_ids") or None,
+            hsn_ids=scope.get("hsn_ids") or None,
+            location_ids=scope.get("location_ids") or None,
+            include_zero=scope.get("include_zero", True),
+            include_negative=scope.get("include_negative", True),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by") or "value",
+            sort_order=scope.get("sort_order", "desc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", INVENTORY_REPORT_DEFAULTS["default_page_size"]),
+        )
+        response = build_report_envelope(
+            report_code="inventory_location_stock",
+            report_name="Location Stock",
+            payload=data,
+            filters=self.build_filters(scope),
+            defaults=INVENTORY_REPORT_DEFAULTS,
+        )
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        return Response(_attach_location_drilldowns(payload, "inventory_location_stock"))
+
+
+class _BaseInventoryLocationStockExportAPIView(_BaseInventoryReportAPIView):
+    export_mode = "attachment"
+
+    def export_response(self, *, filename, content, content_type):
+        response = HttpResponse(content=content, content_type=content_type)
+        disposition = "inline" if self.export_mode == "inline" else "attachment"
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+        return response
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "reports.inventory.location_stock.view")
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        data = build_inventory_location_stock(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            valuation_method=scope.get("valuation_method", "fifo"),
+            product_ids=scope.get("product_ids") or None,
+            category_ids=scope.get("category_ids") or None,
+            hsn_ids=scope.get("hsn_ids") or None,
+            location_ids=scope.get("location_ids") or None,
+            include_zero=scope.get("include_zero", True),
+            include_negative=scope.get("include_negative", True),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by") or "value",
+            sort_order=scope.get("sort_order", "desc"),
+            page=1,
+            page_size=100000,
+            paginate=False,
+        )
+        headers = [
+            "Location",
+            "Code",
+            "City",
+            "State",
+            "Products",
+            "Movements",
+            "Closing Qty",
+            "Closing Value",
+            "Rate",
+            "Low Stock",
+            "Negative Stock",
+            "Zero Stock",
+            "First Movement",
+            "Last Movement",
+            "Status",
+        ]
+        rows = [_location_stock_row_export(row) for row in data["rows"]]
+        subtitle = _location_stock_subtitle(scope, scope_names)
+        return headers, rows, subtitle
+
+
+class InventoryLocationStockExcelAPIView(_BaseInventoryLocationStockExportAPIView):
+    def get(self, request):
+        headers, rows, subtitle = self.report_data(request)
+        content = _write_excel("Inventory Location Stock", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 9, 10, 11, 12})
+        return self.export_response(
+            filename=f"InventoryLocationStock_{_safe_filename(subtitle)}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class InventoryLocationStockCSVAPIView(_BaseInventoryLocationStockExportAPIView):
+    def get(self, request):
+        headers, rows, subtitle = self.report_data(request)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"InventoryLocationStock_{_safe_filename(subtitle)}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class InventoryLocationStockPDFAPIView(_BaseInventoryLocationStockExportAPIView):
+    def get(self, request):
+        headers, rows, subtitle = self.report_data(request)
+        col_widths = [90, 52, 54, 54, 48, 52, 58, 68, 52, 52, 56, 52, 62, 62, 52]
+        content = _write_pdf("Inventory Location Stock", subtitle, headers, rows, col_widths=col_widths)
+        return self.export_response(
+            filename=f"InventoryLocationStock_{_safe_filename(subtitle)}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class InventoryLocationStockPrintAPIView(InventoryLocationStockPDFAPIView):
+    export_mode = "inline"
+
+
 class InventoryNonMovingStockAPIView(_BaseInventoryReportAPIView):
     export_base_path = "/api/reports/inventory/non-moving-stock/"
 
@@ -1125,6 +1258,10 @@ def _book_detail_row_export(row: dict) -> list:
         row.get("category_name"),
         row.get("location_name"),
         row.get("move_type"),
+        row.get("source_location_name"),
+        row.get("destination_location_name"),
+        row.get("movement_nature"),
+        row.get("movement_reason"),
         row.get("qty_in"),
         row.get("qty_out"),
         row.get("unit_cost"),
@@ -1133,6 +1270,26 @@ def _book_detail_row_export(row: dict) -> list:
         row.get("opening_value"),
         row.get("running_qty"),
         row.get("running_value"),
+    ]
+
+
+def _location_stock_row_export(row: dict) -> list:
+    return [
+        row.get("location_name"),
+        row.get("location_code"),
+        row.get("city"),
+        row.get("state"),
+        row.get("product_count"),
+        row.get("movement_count"),
+        row.get("closing_qty"),
+        row.get("closing_value"),
+        row.get("rate"),
+        row.get("low_stock_count"),
+        row.get("negative_stock_count"),
+        row.get("zero_stock_count"),
+        _format_scope_date(row.get("first_movement_date")),
+        _format_scope_date(row.get("last_movement_date")),
+        row.get("stock_status"),
     ]
 
 
@@ -1165,6 +1322,16 @@ def _book_detail_subtitle(scope, scope_names):
         f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
         f"From: {_format_scope_date(scope.get('from_date') or scope.get('as_of_date') or scope.get('as_on_date'))} | "
         f"To: {_format_scope_date(scope.get('to_date') or scope.get('as_of_date') or scope.get('as_on_date'))} | "
+        f"Valuation: {scope.get('valuation_method') or INVENTORY_REPORT_DEFAULTS['default_valuation_method']}"
+    )
+
+
+def _location_stock_subtitle(scope, scope_names):
+    return (
+        f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+        f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
+        f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+        f"As of: {_format_scope_date(scope.get('as_of_date') or scope.get('to_date') or scope.get('as_on_date'))} | "
         f"Valuation: {scope.get('valuation_method') or INVENTORY_REPORT_DEFAULTS['default_valuation_method']}"
     )
 
@@ -1209,6 +1376,10 @@ _INVENTORY_DRILLDOWNS = {
         {"code": "inventory_stock_summary", "label": "Stock Summary"},
         {"code": "inventory_stock_ledger", "label": "Stock Ledger"},
     ],
+    "inventory_location_stock": [
+        {"code": "inventory_stock_summary", "label": "Stock Summary"},
+        {"code": "inventory_stock_ledger", "label": "Stock Ledger"},
+    ],
 }
 
 
@@ -1237,6 +1408,14 @@ def _attach_control_drilldowns(payload, report_code: str):
     payload.setdefault("actions", {})
     payload["actions"]["can_drilldown"] = True
     payload["available_drilldowns"] = _CONTROL_DRILLDOWNS.get(report_code, [])
+    return payload
+
+
+def _attach_location_drilldowns(payload, report_code: str):
+    payload = payload.copy()
+    payload.setdefault("actions", {})
+    payload["actions"]["can_drilldown"] = True
+    payload["available_drilldowns"] = _INVENTORY_DRILLDOWNS.get(report_code, [])
     return payload
 
 
@@ -1640,6 +1819,10 @@ class _BaseInventoryStockBookDetailExportAPIView(_BaseInventoryReportAPIView):
             "Category",
             "Location",
             "Move Type",
+            "Source Location",
+            "Destination Location",
+            "Nature",
+            "Reason",
             "Qty In",
             "Qty Out",
             "Unit Cost",
@@ -1657,7 +1840,7 @@ class _BaseInventoryStockBookDetailExportAPIView(_BaseInventoryReportAPIView):
 class InventoryStockBookDetailExcelAPIView(_BaseInventoryStockBookDetailExportAPIView):
     def get(self, request):
         headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Book Detail", subtitle, headers, rows, numeric_columns={6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+        content = _write_excel("Inventory Stock Book Detail", subtitle, headers, rows, numeric_columns={12, 13, 14, 15, 16, 17, 18, 19})
         return self.export_response(
             filename=f"InventoryStockBookDetail_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1679,7 +1862,7 @@ class InventoryStockBookDetailCSVAPIView(_BaseInventoryStockBookDetailExportAPIV
 class InventoryStockBookDetailPDFAPIView(_BaseInventoryStockBookDetailExportAPIView):
     def get(self, request):
         headers, rows, subtitle = self.report_data(request)
-        col_widths = [74, 80, 112, 58, 88, 82, 54, 58, 58, 60, 68, 60, 68, 60, 68]
+        col_widths = [74, 80, 112, 58, 88, 82, 54, 74, 74, 56, 80, 52, 52, 60, 68, 60, 68, 60, 68]
         content = _write_pdf("Inventory Stock Book Detail", subtitle, headers, rows, col_widths=col_widths)
         return self.export_response(
             filename=f"InventoryStockBookDetail_{_safe_filename(subtitle)}.pdf",
