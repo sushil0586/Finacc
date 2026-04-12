@@ -60,6 +60,11 @@ class IMInput:
     cost_meta: Optional[dict] = None
     detail_id: Optional[int] = None
     location_id: Optional[int] = None
+    source_location_id: Optional[int] = None
+    destination_location_id: Optional[int] = None
+    movement_nature: str = InventoryMove.MovementNature.OTHER
+    movement_group: Optional[uuid.UUID] = None
+    movement_reason: str = ""
 
 
 class PostingService:
@@ -290,6 +295,9 @@ class PostingService:
 
             unit_cost = q4(m.unit_cost)
             ext_cost = q2(abs(base_qty) * unit_cost)
+            movement_group = m.movement_group
+            if movement_group is None and str(m.movement_nature or "").upper() == InventoryMove.MovementNature.TRANSFER:
+                movement_group = uuid.uuid4()
 
             im_rows.append(InventoryMove(
                 entry=entry,
@@ -304,6 +312,8 @@ class PostingService:
 
                 product_id=m.product_id,
                 location_id=m.location_id,
+                source_location_id=m.source_location_id,
+                destination_location_id=m.destination_location_id,
                 uom_id=m.uom_id,
                 base_uom_id=m.base_uom_id,
 
@@ -318,6 +328,9 @@ class PostingService:
                 cost_meta=m.cost_meta,
 
                 move_type=m.move_type,
+                movement_nature=m.movement_nature or InventoryMove.MovementNature.OTHER,
+                movement_group=movement_group,
+                movement_reason=m.movement_reason or "",
                 posting_date=posting_date,
                 posted_at=now_dt if mark_posted else None,
                 created_by_id=self.user_id,

@@ -15,6 +15,7 @@ from entity.models import (
     EntityOwnershipV2,
     EntityTaxProfile,
     GstRegistrationType,
+    Godown,
     SubEntity,
     SubEntityAddress,
     SubEntityCapability,
@@ -123,6 +124,12 @@ class SubEntityCapabilityInline(admin.StackedInline):
     can_delete = False
 
 
+class GodownInline(admin.TabularInline):
+    model = Godown
+    extra = 0
+    fk_name = "subentity"
+
+
 @admin.register(SubEntity)
 class SubEntityAdmin(admin.ModelAdmin):
     list_display = ["id", "subentityname", "subentity_code", "entity", "branch_type", "is_head_office", "isactive"]
@@ -133,6 +140,7 @@ class SubEntityAdmin(admin.ModelAdmin):
         SubEntityAddressInline,
         SubEntityContactInline,
         SubEntityGstRegistrationInline,
+        GodownInline,
     ]
 
 
@@ -141,6 +149,15 @@ class EntityFinancialYearAdmin(admin.ModelAdmin):
     list_display = ["id", "entity", "desc", "year_code", "period_status", "is_year_closed", "isactive"]
     search_fields = ["entity__entityname", "desc", "year_code", "assessment_year_label"]
     list_filter = ["period_status", "is_year_closed", "is_audit_closed", "isactive"]
+
+
+@admin.register(Godown)
+class GodownAdmin(admin.ModelAdmin):
+    list_display = ["id", "entity", "subentity", "name", "code", "city", "state", "is_default", "is_active"]
+    search_fields = ["name", "code", "entity__entityname", "subentity__subentityname", "city", "state"]
+    list_filter = ["is_active", "is_default", "entity", "subentity", "state"]
+    autocomplete_fields = ["entity", "subentity"]
+    list_select_related = ["entity", "subentity"]
 
 
 admin.site.register(UnitType, UnitTypeAdmin)

@@ -48,6 +48,8 @@ class InventoryReportAPITests(APITestCase):
         )
 
         self.godown = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
             name='Main Warehouse',
             code='WH-01',
             address='Industrial Area',
@@ -153,6 +155,9 @@ class InventoryReportAPITests(APITestCase):
             ext_cost=Decimal('600000.00'),
             cost_source=InventoryMove.CostSource.PURCHASE,
             move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            destination_location=self.godown,
+            movement_reason='purchase',
             posting_date='2025-04-10',
             posted_at=timezone.now(),
             created_by=self.user,
@@ -165,6 +170,7 @@ class InventoryReportAPITests(APITestCase):
         self._grant_inventory_permission('reports.inventory.stock_day_book.view')
         self._grant_inventory_permission('reports.inventory.stock_book_summary.view')
         self._grant_inventory_permission('reports.inventory.stock_book_detail.view')
+        self._grant_inventory_permission('reports.inventory.location_stock.view')
         self._grant_inventory_permission('reports.inventory.non_moving_stock.view')
         self._grant_inventory_permission('reports.inventory.reorder_status.view')
 
@@ -230,6 +236,7 @@ class InventoryReportAPITests(APITestCase):
         max_stock: Decimal,
         posting_date: str,
         txn_id: int,
+        location: Godown | None = None,
     ) -> Product:
         product = Product.objects.create(
             entity=self.entity,
@@ -290,7 +297,7 @@ class InventoryReportAPITests(APITestCase):
             detail_id=1,
             voucher_no=f'PUR-{txn_id}',
             product=product,
-            location=self.godown,
+            location=location or self.godown,
             uom=self.uom,
             base_uom=self.uom,
             qty=qty,
@@ -300,6 +307,9 @@ class InventoryReportAPITests(APITestCase):
             ext_cost=(qty * unit_cost).quantize(Decimal('0.01')),
             cost_source=InventoryMove.CostSource.PURCHASE,
             move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            destination_location=location or self.godown,
+            movement_reason='purchase',
             posting_date=posting_date,
             posted_at=timezone.now(),
             created_by=self.user,
@@ -972,6 +982,66 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('attachment', pdf.headers.get('Content-Disposition', '').lower())
         self.assertIn('inline', print_response.headers.get('Content-Disposition', '').lower())
 
+    def test_inventory_location_stock_returns_rows_and_exports(self):
+        secondary_godown = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            name='Secondary Warehouse',
+            code='WH-02',
+            address='Export Zone',
+            city='Delhi',
+            state='Delhi',
+            pincode='110001',
+            is_active=True,
+        )
+        self._create_purchase_stock(
+            productname='Router',
+            sku='RT-001',
+            qty=Decimal('8.0000'),
+            unit_cost=Decimal('12000.0000'),
+            reorder_level=Decimal('3.0000'),
+            min_stock=Decimal('2.0000'),
+            max_stock=Decimal('20.0000'),
+            posting_date='2025-04-08',
+            txn_id=3001,
+            location=self.godown,
+        )
+        self._create_purchase_stock(
+            productname='Switch',
+            sku='SW-001',
+            qty=Decimal('12.0000'),
+            unit_cost=Decimal('8000.0000'),
+            reorder_level=Decimal('4.0000'),
+            min_stock=Decimal('2.0000'),
+            max_stock=Decimal('18.0000'),
+            posting_date='2025-04-09',
+            txn_id=3002,
+            location=secondary_godown,
+        )
+
+        response = self.client.get(reverse('reports_api:inventory-location-stock'), self._scope())
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['report_code'], 'inventory_location_stock')
+        self.assertEqual(data['summary']['location_count'], 2)
+        self.assertEqual(len(data['rows']), 2)
+        self.assertTrue(any(row['location_name'] == 'Main Warehouse' for row in data['rows']))
+        self.assertTrue(any(row['location_name'] == 'Secondary Warehouse' for row in data['rows']))
+
+        excel = self.client.get(reverse('reports_api:inventory-location-stock-excel'), self._scope())
+        csv_response = self.client.get(reverse('reports_api:inventory-location-stock-csv'), self._scope())
+        pdf = self.client.get(reverse('reports_api:inventory-location-stock-pdf'), self._scope())
+        print_response = self.client.get(reverse('reports_api:inventory-location-stock-print'), self._scope())
+
+        self.assertEqual(excel.status_code, 200)
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(print_response.status_code, 200)
+        self.assertIn('attachment', excel.headers.get('Content-Disposition', '').lower())
+        self.assertIn('attachment', csv_response.headers.get('Content-Disposition', '').lower())
+        self.assertIn('attachment', pdf.headers.get('Content-Disposition', '').lower())
+        self.assertIn('inline', print_response.headers.get('Content-Disposition', '').lower())
+
     def test_inventory_operational_reports_return_rows_and_totals(self):
         scope = {
             **self._scope(),
@@ -1010,6 +1080,8 @@ class InventoryReportAPITests(APITestCase):
         self.assertEqual(day_book_data['summary']['closing_qty'], '15.0000')
         self.assertEqual(book_summary_data['summary']['closing_qty'], '15.0000')
         self.assertEqual(book_detail_data['summary']['closing_qty'], '15.0000')
+        self.assertEqual(book_detail_data['rows'][0]['movement_nature'], 'PURCHASE')
+        self.assertEqual(book_detail_data['rows'][0]['destination_location_name'], 'Main Warehouse')
 
     def test_inventory_operational_export_routes_return_files(self):
         scope = {

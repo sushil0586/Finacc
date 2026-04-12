@@ -199,6 +199,8 @@ class ProductAdmin(admin.ModelAdmin):
         "sales_account",
         "purchase_account",
         "is_service",
+        "item_classification",
+        "is_expiry_tracked",
         "product_status",
         "isactive",
         "createdon",
@@ -212,8 +214,10 @@ class ProductAdmin(admin.ModelAdmin):
         "brand",
         "product_status",
         "is_service",
+        "item_classification",
         "is_batch_managed",
         "is_serialized",
+        "is_expiry_tracked",
         "isactive",
     )
     ordering = ("productname",)

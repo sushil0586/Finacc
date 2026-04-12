@@ -8,6 +8,7 @@ from django.utils import timezone
 from geography.models import State
 from financial.models import Ledger, account
 from catalog.models import Product,UnitOfMeasure
+from entity.models import Godown
 
 User = settings.AUTH_USER_MODEL
 
@@ -260,6 +261,7 @@ class PurchaseInvoiceHeader(models.Model):
 
     # SaaS scope
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
+    location = models.ForeignKey(Godown, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, null=True, blank=True)
     entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, null=True, blank=True)
     created_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True,

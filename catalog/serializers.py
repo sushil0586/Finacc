@@ -34,6 +34,7 @@ from .models import (
     GstType,
     CessType,
     ProductStatus,
+    ProductClassification,
 )
 
 # ----------------------------------------------------------------------
@@ -653,8 +654,12 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             "purchase_account",
 
             "is_service",
+            "item_classification",
             "is_batch_managed",
             "is_serialized",
+            "is_expiry_tracked",
+            "shelf_life_days",
+            "expiry_warning_days",
             "is_ecomm_9_5_service",
 
             "default_is_rcm",     # ✅ NEW
@@ -761,6 +766,19 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
         if launch_date and discontinue_date and discontinue_date < launch_date:
             raise serializers.ValidationError({"discontinue_date": "Discontinue date cannot be before launch date."})
 
+        shelf_life_days = attrs.get("shelf_life_days", getattr(self.instance, "shelf_life_days", None))
+        expiry_warning_days = attrs.get("expiry_warning_days", getattr(self.instance, "expiry_warning_days", None))
+        is_expiry_tracked = attrs.get("is_expiry_tracked", getattr(self.instance, "is_expiry_tracked", False))
+
+        if shelf_life_days is not None and shelf_life_days <= 0:
+            raise serializers.ValidationError({"shelf_life_days": "Shelf life days must be greater than 0."})
+        if expiry_warning_days is not None and expiry_warning_days < 0:
+            raise serializers.ValidationError({"expiry_warning_days": "Expiry warning days cannot be negative."})
+        if shelf_life_days is not None and expiry_warning_days is not None and expiry_warning_days > shelf_life_days:
+            raise serializers.ValidationError({"expiry_warning_days": "Expiry warning days cannot exceed shelf life days."})
+        if is_expiry_tracked and shelf_life_days is None:
+            raise serializers.ValidationError({"shelf_life_days": "Shelf life days are required when expiry tracking is enabled."})
+
         return attrs
 
 
@@ -783,6 +801,10 @@ class ProductListSerializer(serializers.ModelSerializer):
             "base_uom",
             "base_uom_code",
             "is_service",
+            "item_classification",
+            "is_expiry_tracked",
+            "shelf_life_days",
+            "expiry_warning_days",
             "product_status",
             "isactive",
             "createdon",

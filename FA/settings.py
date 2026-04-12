@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     "receipts",
     "vouchers",
     "posting",
+    "inventory_ops",
     "assets",
     "sales.apps.SalesConfig",
     "withholding",

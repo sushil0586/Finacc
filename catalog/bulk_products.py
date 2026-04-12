@@ -71,6 +71,12 @@ def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     return Decimal(str(value))
 
 
+def _to_int(value: Any, default: int | None = None) -> int | None:
+    if value in (None, "", "-", "--"):
+        return default
+    return int(str(value))
+
+
 def _read_xlsx(content: bytes) -> dict[str, list[dict[str, Any]]]:
     wb = load_workbook(filename=io.BytesIO(content), data_only=True)
     sheet_lookup = {str(name).strip().lower(): name for name in wb.sheetnames}
@@ -170,8 +176,12 @@ def template_payload() -> dict[str, list[dict[str, Any]]]:
                 "sales_account_code": "",
                 "purchase_account_code": "",
                 "is_service": False,
+                "item_classification": "trading_item",
                 "is_batch_managed": False,
                 "is_serialized": False,
+                "is_expiry_tracked": False,
+                "shelf_life_days": "",
+                "expiry_warning_days": 30,
                 "is_ecomm_9_5_service": False,
                 "default_is_rcm": False,
                 "is_itc_eligible": True,
@@ -289,8 +299,12 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
                 "sales_account_code": getattr(p.sales_account, "ledger_code", "") or "",
                 "purchase_account_code": getattr(p.purchase_account, "ledger_code", "") or "",
                 "is_service": p.is_service,
+                "item_classification": p.item_classification,
                 "is_batch_managed": p.is_batch_managed,
                 "is_serialized": p.is_serialized,
+                "is_expiry_tracked": p.is_expiry_tracked,
+                "shelf_life_days": p.shelf_life_days if p.shelf_life_days is not None else "",
+                "expiry_warning_days": p.expiry_warning_days,
                 "is_ecomm_9_5_service": p.is_ecomm_9_5_service,
                 "default_is_rcm": p.default_is_rcm,
                 "is_itc_eligible": p.is_itc_eligible,
@@ -428,6 +442,19 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
             _parse_date(row.get("discontinue_date"))
         except Exception as exc:
             errors.append({"sheet": "products_basic", "row": idx, "field": "launch_date", "message": str(exc)})
+
+        try:
+            shelf_life_days = _to_int(row.get("shelf_life_days"), default=None)
+            expiry_warning_days = _to_int(row.get("expiry_warning_days"), default=None)
+            if shelf_life_days is not None and shelf_life_days <= 0:
+                raise ValueError("Shelf life days must be greater than 0.")
+            if expiry_warning_days is not None and expiry_warning_days < 0:
+                raise ValueError("Expiry warning days cannot be negative.")
+            if shelf_life_days is not None and expiry_warning_days is not None and expiry_warning_days > shelf_life_days:
+                raise ValueError("Expiry warning days cannot exceed shelf life days.")
+        except Exception as exc:
+            field = "shelf_life_days" if "Shelf life" in str(exc) else "expiry_warning_days"
+            errors.append({"sheet": "products_basic", "row": idx, "field": field, "message": str(exc)})
 
         category = (row.get("category") or "").strip().lower()
         base_uom = (row.get("base_uom_code") or "").strip().lower()
@@ -648,8 +675,12 @@ def commit_payload(
                 obj.sales_account = acc_code_map.get(str(row.get("sales_account_code") or "").strip())
                 obj.purchase_account = acc_code_map.get(str(row.get("purchase_account_code") or "").strip())
                 obj.is_service = _to_bool(row.get("is_service"))
+                obj.item_classification = (row.get("item_classification") or obj.item_classification or "trading_item")
                 obj.is_batch_managed = _to_bool(row.get("is_batch_managed"))
                 obj.is_serialized = _to_bool(row.get("is_serialized"))
+                obj.is_expiry_tracked = _to_bool(row.get("is_expiry_tracked"))
+                obj.shelf_life_days = _to_int(row.get("shelf_life_days"), default=None)
+                obj.expiry_warning_days = _to_int(row.get("expiry_warning_days"), default=30)
                 obj.is_ecomm_9_5_service = _to_bool(row.get("is_ecomm_9_5_service"))
                 obj.default_is_rcm = _to_bool(row.get("default_is_rcm"))
                 obj.is_itc_eligible = _to_bool(row.get("is_itc_eligible"), default=True)

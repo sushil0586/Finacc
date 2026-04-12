@@ -721,14 +721,17 @@ class EntityFinancialYear(TrackingModel):
     
 
 class Godown(models.Model):
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="godowns", null=True, blank=True)
+    subentity = models.ForeignKey("SubEntity", on_delete=models.SET_NULL, null=True, blank=True, related_name="godowns")
     name = models.CharField(max_length=150)
-    code = models.CharField(max_length=50, unique=True)
+    code = models.CharField(max_length=50)
     address = models.TextField()
     city = models.CharField(max_length=100)
     state = models.CharField(max_length=100)
     pincode = models.CharField(max_length=10)
     capacity = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    is_default = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -736,9 +739,51 @@ class Godown(models.Model):
         ordering = ['name']
         verbose_name = "Godown"
         verbose_name_plural = "Godowns"
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "code"], name="uq_godown_entity_code"),
+            models.UniqueConstraint(fields=["entity", "name"], name="uq_godown_entity_name"),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            models.Index(fields=["entity", "subentity", "is_active"]),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.code})"
+
+    @property
+    def display_name(self) -> str:
+        parts = []
+        if self.subentity_id and getattr(self.subentity, "subentityname", None):
+            parts.append(str(self.subentity.subentityname))
+        elif self.entity_id and getattr(self.entity, "entityname", None):
+            parts.append(str(self.entity.entityname))
+        parts.append(self.name)
+        return " - ".join([part for part in parts if part])
+
+    def clean(self):
+        self.name = (self.name or "").strip()
+        self.code = (self.code or "").strip().upper()
+
+        if self.subentity_id and not self.entity_id:
+            self.entity_id = self.subentity.entity_id
+
+        if not self.entity_id:
+            raise ValidationError({"entity": "Entity is required for a godown."})
+
+        if self.subentity_id and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the same entity as the godown."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+        if self.is_default and self.entity_id:
+            qs = Godown.objects.filter(entity_id=self.entity_id, is_active=True)
+            if self.subentity_id:
+                qs = qs.filter(subentity_id=self.subentity_id)
+            else:
+                qs = qs.filter(subentity__isnull=True)
+            qs.exclude(pk=self.pk).update(is_default=False)
 
 
 

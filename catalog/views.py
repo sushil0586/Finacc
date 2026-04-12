@@ -55,6 +55,7 @@ from .models import (
     ProductImage,
     OpeningStockByLocation,
     ProductPlanning,
+    ProductClassification,
 )
 from .serializers import (
     ProductCategorySerializer,
@@ -427,6 +428,7 @@ class ProductPageBootstrapAPIView(APIView):
             "gst_types": [{"value": choice.value, "label": choice.label} for choice in GstType],
             "cess_types": [{"value": choice.value, "label": choice.label} for choice in CessType],
             "product_statuses": [{"value": choice.value, "label": choice.label} for choice in ProductStatus],
+            "item_classifications": [{"value": choice.value, "label": choice.label} for choice in ProductClassification],
 
             "product_categories": ProductCategorySerializer(categories, many=True).data,
             "brands": BrandSerializer(brands, many=True).data,

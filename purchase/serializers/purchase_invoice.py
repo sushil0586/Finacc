@@ -10,6 +10,7 @@ from withholding.models import WithholdingSection, WithholdingTaxType
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 
+from entity.models import Godown
 from purchase.models.purchase_core import (
     PurchaseInvoiceHeader,
     PurchaseInvoiceLine,
@@ -204,6 +205,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     lines = PurchaseInvoiceLineSerializer(many=True, required=False)
     charges = PurchaseChargeLineSerializer(many=True, required=False)
     custom_fields = serializers.JSONField(source="custom_fields_json", required=False)
+    location = serializers.PrimaryKeyRelatedField(queryset=Godown.objects.all(), required=False, allow_null=True)
     vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
     vendor_ledger_id = serializers.SerializerMethodField()
@@ -362,6 +364,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             "entity",
             "entityfinid",
             "subentity",
+            "location",
 
             "preview_doc_no",
             "preview_purchase_number",

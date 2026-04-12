@@ -9,11 +9,12 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 
-from entity.models import Entity
+from entity.models import Entity, Godown, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup
 from posting.static_account_service import StaticAccountMappingService
 from posting.services.balances import ledger_balance_map
+from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import (
     JLInput,
     PostingService,
@@ -334,3 +335,80 @@ class StaticAccountMappingServiceTests(TestCase):
         self.assertEqual(mapping.ledger_id, self.party_ledger.id)
         self.assertEqual(row.account_id, self.party_account.id)
         self.assertEqual(row.ledger_id, self.party_ledger.id)
+
+
+class PostingLocationResolverTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username="loc_resolver", email="loc_resolver@test.com", password="x")
+        cls.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
+        cls.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        cls.entity = Entity.objects.create(
+            entityname="Location Co",
+            legalname="Location Co Pvt Ltd",
+            unitType=cls.unit_type,
+            GstRegitrationType=cls.gst_type,
+            createdby=cls.user,
+        )
+        cls.subentity = SubEntity.objects.create(entity=cls.entity, subentityname="Branch A")
+        cls.other_entity = Entity.objects.create(
+            entityname="Other Location Co",
+            legalname="Other Location Co Pvt Ltd",
+            unitType=cls.unit_type,
+            GstRegitrationType=cls.gst_type,
+            createdby=cls.user,
+        )
+        cls.entity_godown = Godown.objects.create(
+            entity=cls.entity,
+            name="Entity Store",
+            code="ENT-01",
+            address="Demo",
+            city="City",
+            state="State",
+            pincode="123456",
+            is_active=True,
+        )
+        cls.subentity_godown = Godown.objects.create(
+            entity=cls.entity,
+            subentity=cls.subentity,
+            name="Branch Store",
+            code="SUB-01",
+            address="Demo",
+            city="City",
+            state="State",
+            pincode="123456",
+            is_active=True,
+        )
+
+    def test_explicit_godown_is_respected(self):
+        resolved = resolve_posting_location_id(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            godown_id=self.subentity_godown.id,
+        )
+        self.assertEqual(resolved, self.subentity_godown.id)
+
+    def test_falls_back_to_subentity_godown(self):
+        resolved = resolve_posting_location_id(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+        )
+        self.assertEqual(resolved, self.subentity_godown.id)
+
+    def test_cross_entity_location_rejected(self):
+        foreign = Godown.objects.create(
+            entity=self.other_entity,
+            name="Foreign Store",
+            code="FOR-01",
+            address="Demo",
+            city="City",
+            state="State",
+            pincode="123456",
+            is_active=True,
+        )
+        with self.assertRaises(ValueError):
+            resolve_posting_location_id(
+                entity_id=self.entity.id,
+                subentity_id=self.subentity.id,
+                godown_id=foreign.id,
+            )
