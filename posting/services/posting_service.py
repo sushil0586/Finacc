@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Optional, List, Iterable
@@ -65,6 +66,9 @@ class IMInput:
     movement_nature: str = InventoryMove.MovementNature.OTHER
     movement_group: Optional[uuid.UUID] = None
     movement_reason: str = ""
+    batch_number: str = ""
+    manufacture_date: Optional[date] = None
+    expiry_date: Optional[date] = None
 
 
 class PostingService:
@@ -311,6 +315,9 @@ class PostingService:
                 voucher_no=voucher_no,
 
                 product_id=m.product_id,
+                batch_number=getattr(m, "batch_number", "") or "",
+                manufacture_date=getattr(m, "manufacture_date", None),
+                expiry_date=getattr(m, "expiry_date", None),
                 location_id=m.location_id,
                 source_location_id=m.source_location_id,
                 destination_location_id=m.destination_location_id,

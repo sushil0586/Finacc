@@ -306,6 +306,9 @@ class InventoryMove(models.Model):
     voucher_no = models.CharField(max_length=50, null=True, blank=True, db_index=True)
 
     product = models.ForeignKey(Product, on_delete=models.PROTECT,  related_name="+",)
+    batch_number = models.CharField(max_length=80, blank=True, default="")
+    manufacture_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
 
     # Optional: switch to FK if you have Godown model
     location = models.ForeignKey("entity.Godown", on_delete=models.PROTECT, null=True, blank=True)
@@ -353,6 +356,8 @@ class InventoryMove(models.Model):
             Index(fields=["entity", "product", "posting_date"], name="ix_im_p_entity_product_date"),
             Index(fields=["posting_batch"], name="ix_im_batch"),
             Index(fields=["location", "product", "posting_date"], name="ix_im_loc_product_date"),
+            Index(fields=["product", "batch_number"], name="ix_im_product_batch"),
+            Index(fields=["product", "expiry_date"], name="ix_im_product_expiry"),
         ]
 
     def __str__(self) -> str:

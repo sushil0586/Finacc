@@ -1319,6 +1319,9 @@ class SalesInvoiceService:
         for fld in [
             "product",
             "productDesc",
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
             "uom",
             "hsn_sac_code",
             "is_service",
