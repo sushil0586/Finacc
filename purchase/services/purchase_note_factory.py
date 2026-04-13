@@ -196,6 +196,9 @@ class PurchaseNoteFactory:
                     product_desc=ln.product_desc,
                     is_service=ln.is_service,
                     hsn_sac=ln.hsn_sac,
+                    batch_number=getattr(ln, "batch_number", "") or "",
+                    manufacture_date=getattr(ln, "manufacture_date", None),
+                    expiry_date=getattr(ln, "expiry_date", None),
 
                     uom=ln.uom,
                     qty=ln.qty,

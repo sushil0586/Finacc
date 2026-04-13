@@ -10,6 +10,7 @@ from django.apps import apps
 
 from purchase.models.purchase_core import (
     PurchaseInvoiceHeader,
+    PurchaseInvoiceLine,
     Status,
     ItcClaimStatus,
 )
@@ -80,6 +81,41 @@ class PurchaseInvoiceActions:
         if doc_type == int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE):
             return TxnType.PURCHASE_DEBIT_NOTE
         return TxnType.PURCHASE
+
+    @staticmethod
+    def _backfill_note_batch_fields_from_reference(h: PurchaseInvoiceHeader) -> None:
+        if int(getattr(h, "doc_type", 0)) not in (
+            int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+            int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            return
+        ref = getattr(h, "ref_document", None)
+        if not ref:
+            return
+
+        source_lines = list(
+            PurchaseInvoiceLine.objects.filter(header=ref).order_by("line_no", "id")
+        )
+        note_lines = list(
+            PurchaseInvoiceLine.objects.filter(header=h).order_by("line_no", "id")
+        )
+
+        updated_fields = set()
+        for src_line, note_line in zip(source_lines, note_lines):
+            if not note_line.batch_number and src_line.batch_number:
+                note_line.batch_number = src_line.batch_number
+                updated_fields.add(note_line.id)
+            if note_line.manufacture_date is None and src_line.manufacture_date is not None:
+                note_line.manufacture_date = src_line.manufacture_date
+                updated_fields.add(note_line.id)
+            if note_line.expiry_date is None and src_line.expiry_date is not None:
+                note_line.expiry_date = src_line.expiry_date
+                updated_fields.add(note_line.id)
+
+        for line_id in updated_fields:
+            line = next((item for item in note_lines if item.id == line_id), None)
+            if line:
+                line.save(update_fields=["batch_number", "manufacture_date", "expiry_date"])
 
     @staticmethod
     def _reverse_move_type(move_type: str) -> str:
@@ -255,6 +291,9 @@ class PurchaseInvoiceActions:
 
         # Safety: if someone bypassed confirm, allocate here too
         PurchaseInvoiceActions._allocate_final_number_if_missing(h)
+
+        # Backfill batch fields on CN/DN lines from source invoice if needed.
+        PurchaseInvoiceActions._backfill_note_batch_fields_from_reference(h)
 
         PurchaseInvoiceService.rebuild_tax_summary(h)
 

@@ -15,12 +15,13 @@ class NavItem:
     bill_date: Any  # date
 
     def to_dict(self) -> Dict[str, Any]:
+        bill_date = self.bill_date
         return {
             "id": self.id,
             "doc_no": self.doc_no,
             "purchase_number": self.purchase_number,
             "status": self.status,
-            "bill_date": self.bill_date,
+            "bill_date": bill_date.isoformat() if hasattr(bill_date, "isoformat") else str(bill_date) if bill_date else None,
         }
 
 

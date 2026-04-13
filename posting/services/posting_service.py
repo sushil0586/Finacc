@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Optional, List, Iterable
@@ -34,6 +34,20 @@ def q4(x) -> Decimal:
         return Decimal(x or 0).quantize(Q4, rounding=ROUND_HALF_UP)
     except Exception:
         return Decimal("0.0000")
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
 
 
 @dataclass
@@ -332,7 +346,7 @@ class PostingService:
                 ext_cost=ext_cost,
 
                 cost_source=m.cost_source,
-                cost_meta=m.cost_meta,
+                cost_meta=_json_safe(m.cost_meta) if m.cost_meta is not None else None,
 
                 move_type=m.move_type,
                 movement_nature=m.movement_nature or InventoryMove.MovementNature.OTHER,

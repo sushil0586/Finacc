@@ -292,12 +292,13 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 "cumulative_tds": "0.00",
                 "last_updated_at": None,
             }
+        last_updated_at = getattr(row, "updated_at", None)
         return {
             "contract_ref": ref,
             "exists": True,
             "cumulative_taxable": str(row.cumulative_taxable or 0),
             "cumulative_tds": str(row.cumulative_tds or 0),
-            "last_updated_at": row.updated_at,
+            "last_updated_at": last_updated_at.isoformat() if hasattr(last_updated_at, "isoformat") else str(last_updated_at) if last_updated_at else None,
         }
 
     def to_representation(self, instance):
