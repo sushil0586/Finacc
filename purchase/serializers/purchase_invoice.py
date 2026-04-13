@@ -68,6 +68,9 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "product_desc",
             "is_service",
             "hsn_sac",
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
             "uom",
 
             # display (read-only)
@@ -112,6 +115,9 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "cess_amount": {"help_text": "Computed by backend from cess percent and taxable value."},
             "line_total": {"help_text": "Computed by backend from taxable value, GST, and cess."},
             "itc_block_reason": {"help_text": "Backend may auto-fill when ITC is not eligible."},
+            "batch_number": {"help_text": "Optional batch number for batch-managed products."},
+            "manufacture_date": {"help_text": "Optional manufacture date for batch-managed products."},
+            "expiry_date": {"help_text": "Optional expiry date for expiry-tracked products."},
         }
 
     def get_product_name(self, obj) -> str:
@@ -155,6 +161,16 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
                     {"product_desc": "Description is required when product is not provided."}
                 )
             attrs["is_service"] = True
+        else:
+            batch_number = (attrs.get("batch_number") or "").strip()
+            manufacture_date = attrs.get("manufacture_date")
+            expiry_date = attrs.get("expiry_date")
+            if bool(getattr(product, "is_batch_managed", False)) and not batch_number:
+                raise serializers.ValidationError({"batch_number": "Batch number is required for batch-managed products."})
+            if bool(getattr(product, "is_expiry_tracked", False)) and expiry_date in (None, ""):
+                raise serializers.ValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
+            if manufacture_date and expiry_date and manufacture_date > expiry_date:
+                raise serializers.ValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
 
         free_qty = q4(attrs.get("free_qty"))
         if free_qty < 0:

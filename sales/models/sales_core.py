@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -321,6 +322,9 @@ class SalesInvoiceLine(EntityScopedModel):
         blank=True,
     )
     productDesc = models.CharField(max_length=200, blank=True, default="")
+    batch_number = models.CharField(max_length=80, blank=True, default="")
+    manufacture_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
     uom = models.ForeignKey(
         "catalog.UnitOfMeasure",
         on_delete=models.PROTECT,
@@ -396,10 +400,24 @@ class SalesInvoiceLine(EntityScopedModel):
             models.Index(fields=["header"], name="ix_sales_line_hdr"),
             models.Index(fields=["entity", "entityfinid", "subentity", "product"], name="ix_sales_line_product"),
             models.Index(fields=["entity", "entityfinid", "subentity", "hsn_sac_code"], name="ix_sales_line_hsn"),
+            models.Index(fields=["product", "batch_number"], name="ix_sales_line_product_batch"),
+            models.Index(fields=["product", "expiry_date"], name="ix_sales_line_product_expiry"),
         ]
 
     def __str__(self) -> str:
         return f"Line {self.line_no} - {self.product_id}"
+
+    def clean(self):
+        super().clean()
+        product = getattr(self, "product", None)
+        if product is None:
+            return
+        if getattr(product, "is_batch_managed", False) and not (self.batch_number or "").strip():
+            raise ValidationError({"batch_number": "Batch number is required for batch-managed products."})
+        if getattr(product, "is_expiry_tracked", False) and self.expiry_date is None:
+            raise ValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
+        if self.manufacture_date and self.expiry_date and self.manufacture_date > self.expiry_date:
+            raise ValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
 
 
 # -------------------------

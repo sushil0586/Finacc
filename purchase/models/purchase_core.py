@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -331,6 +332,9 @@ class PurchaseInvoiceLine(models.Model):
     product_desc = models.CharField(max_length=500, null=True, blank=True)
     is_service = models.BooleanField(default=False)
     hsn_sac = models.CharField(max_length=10, null=True, blank=True)
+    batch_number = models.CharField(max_length=80, blank=True, default="")
+    manufacture_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
 
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True)
 
@@ -393,10 +397,24 @@ class PurchaseInvoiceLine(models.Model):
         indexes = [
             models.Index(fields=["header", "product"], name="ix_pur_line_header_product"),
             models.Index(fields=["header", "hsn_sac"], name="ix_pur_line_header_hsn"),
+            models.Index(fields=["product", "batch_number"], name="ix_pur_line_product_batch"),
+            models.Index(fields=["product", "expiry_date"], name="ix_pur_line_product_expiry"),
         ]
 
     def __str__(self):
         return f"PurchaseLine({self.header_id}, {self.line_no})"
+
+    def clean(self):
+        super().clean()
+        product = getattr(self, "product", None)
+        if product is None:
+            return
+        if getattr(product, "is_batch_managed", False) and not (self.batch_number or "").strip():
+            raise ValidationError({"batch_number": "Batch number is required for batch-managed products."})
+        if getattr(product, "is_expiry_tracked", False) and self.expiry_date is None:
+            raise ValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
+        if self.manufacture_date and self.expiry_date and self.manufacture_date > self.expiry_date:
+            raise ValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
 
 
 class PurchaseTaxSummary(models.Model):

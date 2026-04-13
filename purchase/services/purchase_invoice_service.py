@@ -14,6 +14,7 @@ from django.db import transaction
 from django.db.models import Max, Q
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
+from catalog.models import Product
 from financial.gstin import validate_financial_gstin
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from withholding.models import WithholdingBaseRule
@@ -484,7 +485,8 @@ class PurchaseInvoiceService:
         # NOTE: we will validate amounts AFTER we compute authoritative values
         # Here we only check regime consistency if amounts were provided and obviously wrong.
         for i, ln in enumerate(lines, start=1):
-            product_id = ln.get("product")
+            product_ref = ln.get("product")
+            product_id = getattr(product_ref, "pk", product_ref)
             purchase_account_id = ln.get("purchase_account")
             product_desc = (ln.get("product_desc") or "").strip()
             if not product_id:
@@ -502,6 +504,21 @@ class PurchaseInvoiceService:
             free_qty = q4(ln.get("free_qty", ZERO4))
             if free_qty < 0:
                 raise ValueError(f"Line {i}: free_qty cannot be negative")
+
+            if product_id:
+                product = Product.objects.filter(pk=int(product_id)).only(
+                    "id", "is_batch_managed", "is_expiry_tracked"
+                ).first()
+                if product:
+                    batch_number = str(ln.get("batch_number") or "").strip()
+                    manufacture_date = ln.get("manufacture_date") or None
+                    expiry_date = ln.get("expiry_date") or None
+                    if bool(getattr(product, "is_batch_managed", False)) and not batch_number:
+                        raise ValueError(f"Line {i}: batch_number is required for batch-managed products.")
+                    if bool(getattr(product, "is_expiry_tracked", False)) and expiry_date in (None, ""):
+                        raise ValueError(f"Line {i}: expiry_date is required for expiry-tracked products.")
+                    if manufacture_date and expiry_date and str(manufacture_date) > str(expiry_date):
+                        raise ValueError(f"Line {i}: expiry_date must be on or after manufacture_date.")
 
             # discount sanity (if present)
             dt = (ln.get("discount_type") or "N")
@@ -874,13 +891,16 @@ class PurchaseInvoiceService:
                         setattr(obj, k, v)
                 if not ln.get("line_no"):
                     obj.line_no = obj.line_no
+                obj.full_clean()
                 obj.save()
                 sent_ids.add(line_id)
             else:
                 if not ln.get("line_no"):
                     ln["line_no"] = next_line_no
                     next_line_no += 1
-                obj = PurchaseInvoiceLine.objects.create(header=header, **{k: v for k, v in ln.items() if k != "id"})
+                obj = PurchaseInvoiceLine(header=header, **{k: v for k, v in ln.items() if k != "id"})
+                obj.full_clean()
+                obj.save()
                 sent_ids.add(obj.id)
 
         for line_id, obj in existing.items():
@@ -1370,7 +1390,9 @@ class PurchaseInvoiceService:
             else:
                 max_ln = max(max_ln, int(ln_no))
             ln["line_no"] = ln_no
-            objs.append(PurchaseInvoiceLine(header=header, **ln))
+            obj = PurchaseInvoiceLine(header=header, **ln)
+            obj.full_clean()
+            objs.append(obj)
         if objs:
             PurchaseInvoiceLine.objects.bulk_create(objs)
 

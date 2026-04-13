@@ -42,6 +42,9 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "product",
             "product_name",
             "productDesc",
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
             "uom",
             "uom_code",
             "hsn_sac_code",
@@ -77,7 +80,10 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "cess_amount": {
                 "help_text": "Provisional only. Backend recomputes when cess_percent > 0; manual cess survives only when cess_percent is 0."
-            }
+            },
+            "batch_number": {"help_text": "Optional batch number for batch-managed products."},
+            "manufacture_date": {"help_text": "Optional manufacture date for batch-managed products."},
+            "expiry_date": {"help_text": "Optional expiry date for expiry-tracked products."},
         }
 
     def get_gstRateAmount(self, obj) -> str:
@@ -134,6 +140,16 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
                     {"productDesc": "Description is required when product is not provided."}
                 )
             attrs["is_service"] = True if is_service in (None, False) else bool(is_service)
+        else:
+            batch_number = (attrs.get("batch_number") or "").strip()
+            manufacture_date = attrs.get("manufacture_date")
+            expiry_date = attrs.get("expiry_date")
+            if bool(getattr(product, "is_batch_managed", False)) and not batch_number:
+                raise serializers.ValidationError({"batch_number": "Batch number is required for batch-managed products."})
+            if bool(getattr(product, "is_expiry_tracked", False)) and expiry_date in (None, ""):
+                raise serializers.ValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
+            if manufacture_date and expiry_date and manufacture_date > expiry_date:
+                raise serializers.ValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
 
         return attrs
 
