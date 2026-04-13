@@ -40,6 +40,7 @@ def _sections(schema: list[dict]) -> list[dict]:
             ordered_groups.append(group)
     sections = [{"key": group, "title": group.replace("_", " ").title(), "source": "settings"} for group in ordered_groups]
     sections.append({"key": "numbering_series", "title": "Numbering Series", "source": "numbering_series"})
+    sections.append({"key": "stock_policy", "title": "Stock Policy", "source": "stock_policy"})
     sections.append({"key": "lock_periods", "title": "Lock Periods", "source": "lock_periods"})
     sections.append({"key": "choice_overrides", "title": "Choice Overrides", "source": "choice_overrides"})
     return sections
@@ -91,6 +92,7 @@ SALES_SETTINGS_SCHEMA = _with_help(
         "enable_round_off": "Enables round-off handling for invoice totals.",
         "round_grand_total_to": "Number of decimal places to retain after round-off.",
         "policy_controls": "Advanced enterprise policy controls for delete/confirm/match/settlement behavior.",
+        "stock_policy": "Sales stock discipline for batch, expiry, FEFO, and negative stock handling.",
     },
 )
 
@@ -323,6 +325,11 @@ class SalesSettingsAPIView(APIView):
     def _payload(self, *, entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int]) -> dict:
         settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
+        stock_policy = SalesSettingsService.get_stock_policy_payload(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+        )
         choice_catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
         payload = {
             "seller": SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id),
@@ -349,6 +356,7 @@ class SalesSettingsAPIView(APIView):
                 "round_grand_total_to": settings_obj.round_grand_total_to,
                 "policy_controls": policy_controls,
             },
+            "stock_policy": stock_policy,
             "schema": SALES_SETTINGS_SCHEMA,
             "sections": _sections(SALES_SETTINGS_SCHEMA),
             "current_doc_numbers": self._current_doc_numbers(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj),
@@ -362,6 +370,7 @@ class SalesSettingsAPIView(APIView):
                 "has_lock_periods": True,
                 "has_choice_overrides": True,
                 "has_policy_controls": True,
+                "has_stock_policy": True,
                 "has_doc_number_preview": bool(entityfinid_id),
                 "has_numbering_management": bool(entityfinid_id),
             },
@@ -400,12 +409,22 @@ class SalesSettingsAPIView(APIView):
         settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         try:
             for key, value in settings_updates.items():
+                if key == "stock_policy":
+                    continue
                 if key in EDITABLE_FIELDS:
                     if key == "policy_controls":
                         value = SalesSettingsService.normalize_policy_controls(value)
                     setattr(settings_obj, key, value)
         except ValueError as exc:
             raise ValidationError({"detail": str(exc)})
+
+        if "stock_policy" in request.data:
+            SalesSettingsService.upsert_stock_policy(
+                entity_id=entity_id,
+                subentity_id=subentity_id,
+                entityfinid_id=entityfinid_id,
+                raw=request.data.get("stock_policy"),
+            )
 
         if "numbering_series" in request.data:
             rows = request.data.get("numbering_series") or []

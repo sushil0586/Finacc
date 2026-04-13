@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.db.models import Prefetch, Q
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
@@ -23,6 +25,7 @@ from sales.services.sales_choices_service import SalesChoicesService
 from core.invoice_ui_contracts import sales_invoice_ui_contract
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
+from sales.services.sales_stock_balance_service import SalesStockBalanceService
 from sales.services.sales_compliance_service import SalesComplianceService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
@@ -290,6 +293,53 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             "pan": account_pan(customer),
         }
 
+    def _stock_policy_payload(self, entity_id: int, entityfinid_id: int | None, subentity_id: int | None):
+        policy = SalesSettingsService.get_stock_policy(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+        )
+        return {
+            "scope_level": policy.scope_level,
+            "scope_key": policy.scope_key,
+            "is_default": bool(policy.is_default),
+            "mode": policy.mode,
+            "allow_negative_stock": bool(policy.allow_negative_stock),
+            "batch_required_for_sales": bool(policy.batch_required_for_sales),
+            "expiry_validation_required": bool(policy.expiry_validation_required),
+            "fefo_required": bool(policy.fefo_required),
+            "allow_manual_batch_override": bool(policy.allow_manual_batch_override),
+            "allow_oversell": bool(policy.allow_oversell),
+        }
+
+    def _sales_settings_payload(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
+        settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
+        policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
+        return {
+            "default_doc_code_invoice": settings_obj.default_doc_code_invoice,
+            "default_doc_code_cn": settings_obj.default_doc_code_cn,
+            "default_doc_code_dn": settings_obj.default_doc_code_dn,
+            "default_workflow_action": settings_obj.default_workflow_action,
+            "auto_derive_tax_regime": settings_obj.auto_derive_tax_regime,
+            "allow_mixed_taxability_in_one_invoice": settings_obj.allow_mixed_taxability_in_one_invoice,
+            "enable_einvoice": settings_obj.enable_einvoice,
+            "enable_eway": settings_obj.enable_eway,
+            "einvoice_entity_applicable": settings_obj.einvoice_entity_applicable,
+            "eway_value_threshold": settings_obj.eway_value_threshold,
+            "compliance_applicability_mode": settings_obj.compliance_applicability_mode,
+            "auto_generate_einvoice_on_confirm": settings_obj.auto_generate_einvoice_on_confirm,
+            "auto_generate_einvoice_on_post": settings_obj.auto_generate_einvoice_on_post,
+            "auto_generate_eway_on_confirm": settings_obj.auto_generate_eway_on_confirm,
+            "auto_generate_eway_on_post": settings_obj.auto_generate_eway_on_post,
+            "prefer_irp_generate_einvoice_and_eway_together": settings_obj.prefer_irp_generate_einvoice_and_eway_together,
+            "enforce_statutory_cancel_before_business_cancel": settings_obj.enforce_statutory_cancel_before_business_cancel,
+            "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
+            "enable_round_off": settings_obj.enable_round_off,
+            "round_grand_total_to": settings_obj.round_grand_total_to,
+            "policy_controls": policy_controls,
+            "stock_policy": self._stock_policy_payload(entity_id, entityfinid_id, subentity_id),
+        }
+
 
 class SalesInvoiceFormMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
@@ -322,6 +372,7 @@ class SalesInvoiceDetailFormMetaAPIView(SalesMetaBaseAPIView):
             {
                 "entityfinid_id": entityfinid_id,
                 "invoice_id": invoice_id,
+                "settings": self._sales_settings_payload(entity_id, entityfinid_id, subentity_id),
                 "invoice": SalesInvoiceHeaderSerializer(
                     header,
                     context={"request": request, "line_mode": line_mode},
@@ -391,6 +442,97 @@ class SalesInvoiceLinesMetaAPIView(SalesMetaBaseAPIView):
                 "count": product_payload["count"],
             }
         )
+
+
+class SalesStockBalanceHintAPIView(SalesMetaBaseAPIView):
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        line_mode = self._parse_line_mode(request)
+        product_id = self._parse_int(request.query_params.get("product"), "product", required=True)
+        qty_raw = request.query_params.get("qty")
+        batch_number = (request.query_params.get("batch_number") or "").strip()
+        expiry_date_raw = (request.query_params.get("expiry_date") or "").strip()
+        bill_date_raw = (request.query_params.get("bill_date") or "").strip()
+        location_id = self._parse_int(request.query_params.get("location_id"), "location_id", required=False)
+
+        if line_mode == "service":
+            return Response(
+                {
+                    "status": "info",
+                    "message": "Stock check is not applicable for service items.",
+                    "requested_qty": "0.0000",
+                    "available_qty": "0.0000",
+                    "shortage_qty": "0.0000",
+                    "batch_required": False,
+                    "expiry_required": False,
+                    "fefo_required": False,
+                }
+            )
+
+        try:
+            qty = Decimal(str(qty_raw or 0))
+        except (TypeError, ValueError, ArithmeticError):
+            raise serializers.ValidationError({"qty": "qty must be numeric"})
+
+        bill_date = parse_date(bill_date_raw) if bill_date_raw else timezone.localdate()
+        if bill_date_raw and not bill_date:
+            raise serializers.ValidationError({"bill_date": "Use YYYY-MM-DD format."})
+
+        expiry_date = parse_date(expiry_date_raw) if expiry_date_raw else None
+        if expiry_date_raw and not expiry_date:
+            raise serializers.ValidationError({"expiry_date": "Use YYYY-MM-DD format."})
+
+        from catalog.models import Product
+
+        product = Product.objects.filter(entity_id=entity_id, id=product_id).only(
+            "id",
+            "productname",
+            "is_service",
+            "is_batch_managed",
+            "is_expiry_tracked",
+        ).first()
+        if not product:
+            raise NotFound("Product not found for current scope.")
+
+        policy = SalesSettingsService.get_stock_policy(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+        )
+
+        hint = SalesStockBalanceService.build_hint(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            bill_date=bill_date,
+            product=product,
+            requested_qty=qty,
+            batch_number=batch_number,
+            expiry_date=expiry_date,
+            location_id=location_id,
+            policy=policy,
+        )
+        hint.update(
+            {
+                "entity_id": entity_id,
+                "entityfinid_id": entityfinid_id,
+                "subentity_id": subentity_id,
+                "line_mode": line_mode,
+                "policy": {
+                    "scope_level": policy.scope_level,
+                    "scope_key": policy.scope_key,
+                    "is_default": policy.is_default,
+                    "mode": policy.mode,
+                    "allow_negative_stock": policy.allow_negative_stock,
+                    "batch_required_for_sales": policy.batch_required_for_sales,
+                    "expiry_validation_required": policy.expiry_validation_required,
+                    "fefo_required": policy.fefo_required,
+                    "allow_manual_batch_override": policy.allow_manual_batch_override,
+                    "allow_oversell": policy.allow_oversell,
+                },
+            }
+        )
+        return Response(hint)
 
 
 class SalesInvoiceSummaryAPIView(SalesMetaBaseAPIView):
@@ -503,9 +645,8 @@ class SalesArSettlementFormMetaAPIView(SalesMetaBaseAPIView):
 class SalesSettingsMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
-        settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
-        policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
         seller = SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id)
+        settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
         current_doc_numbers = {
             "invoice": SalesSettingsService.get_current_doc_no(
                 entity_id=entity_id,
@@ -537,29 +678,7 @@ class SalesSettingsMetaAPIView(SalesMetaBaseAPIView):
                 "financial_years": self._financial_years(entity_id),
                 "subentities": self._subentities(entity_id),
                 "seller": seller,
-                "settings": {
-                    "default_doc_code_invoice": settings_obj.default_doc_code_invoice,
-                    "default_doc_code_cn": settings_obj.default_doc_code_cn,
-                    "default_doc_code_dn": settings_obj.default_doc_code_dn,
-                    "default_workflow_action": settings_obj.default_workflow_action,
-                    "auto_derive_tax_regime": settings_obj.auto_derive_tax_regime,
-                    "allow_mixed_taxability_in_one_invoice": settings_obj.allow_mixed_taxability_in_one_invoice,
-                    "enable_einvoice": settings_obj.enable_einvoice,
-                    "enable_eway": settings_obj.enable_eway,
-                    "einvoice_entity_applicable": settings_obj.einvoice_entity_applicable,
-                    "eway_value_threshold": settings_obj.eway_value_threshold,
-                    "compliance_applicability_mode": settings_obj.compliance_applicability_mode,
-                    "auto_generate_einvoice_on_confirm": settings_obj.auto_generate_einvoice_on_confirm,
-                    "auto_generate_einvoice_on_post": settings_obj.auto_generate_einvoice_on_post,
-                    "auto_generate_eway_on_confirm": settings_obj.auto_generate_eway_on_confirm,
-                    "auto_generate_eway_on_post": settings_obj.auto_generate_eway_on_post,
-                    "prefer_irp_generate_einvoice_and_eway_together": settings_obj.prefer_irp_generate_einvoice_and_eway_together,
-                    "enforce_statutory_cancel_before_business_cancel": settings_obj.enforce_statutory_cancel_before_business_cancel,
-                    "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
-                    "enable_round_off": settings_obj.enable_round_off,
-                    "round_grand_total_to": settings_obj.round_grand_total_to,
-                    "policy_controls": policy_controls,
-                },
+                "settings": self._sales_settings_payload(entity_id, entityfinid_id, subentity_id),
                 "current_doc_numbers": current_doc_numbers,
             }
         )
