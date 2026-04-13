@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db.models import Prefetch, Q
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated

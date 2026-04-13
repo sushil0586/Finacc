@@ -13,6 +13,7 @@ from rest_framework.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_withholding_service import SalesWithholdingService
@@ -20,10 +21,12 @@ from sales.services.compliance_audit_service import ComplianceAuditService
 from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails, account
 from financial.profile_access import account_gstno, account_partytype, account_region_state
+from catalog.models import Product
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from sales.services.profile_resolvers import entity_primary_gstin, entity_primary_state
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
+from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import PostingService, JLInput, IMInput
 
 
@@ -43,6 +46,7 @@ from sales.models import (
     SalesLockPeriod,
 )
 from sales.services.sales_ar_service import SalesArService
+from sales.services.sales_stock_policy_service import ResolvedSalesStockPolicy
 
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
@@ -112,6 +116,353 @@ class SalesInvoiceService:
     def _policy_level(controls: dict, key: str, default: str = "hard") -> str:
         val = str(controls.get(key, default)).lower().strip()
         return val if val in {"off", "warn", "hard"} else default
+
+    @staticmethod
+    def _stock_policy(header: SalesInvoiceHeader) -> ResolvedSalesStockPolicy:
+        return SalesSettingsService.get_stock_policy(
+            entity_id=header.entity_id,
+            subentity_id=header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+
+    @staticmethod
+    def _inventory_move_type_for_header(header: SalesInvoiceHeader) -> str | None:
+        doc_type = int(getattr(header, "doc_type", SalesInvoiceHeader.DocType.TAX_INVOICE))
+        if doc_type == int(SalesInvoiceHeader.DocType.DEBIT_NOTE):
+            return None
+        if doc_type == int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
+            return InventoryMove.MoveType.IN_
+        return InventoryMove.MoveType.OUT
+
+    @staticmethod
+    def _stock_issue_qty(line: SalesInvoiceLine) -> Decimal:
+        qty = q4(getattr(line, "qty", None) or ZERO4)
+        free_qty = q4(getattr(line, "free_qty", None) or ZERO4)
+        return q4(qty + free_qty)
+
+    @classmethod
+    def _build_stock_balance_maps(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        product_ids: list[int],
+        location_id: int | None,
+    ) -> tuple[dict[tuple[int, str, int | None], Decimal], dict[tuple[int, str, int | None, object], Decimal]]:
+        if not product_ids:
+            return {}, {}
+
+        qs = InventoryMove.objects.filter(
+            entity_id=header.entity_id,
+            posting_date__lte=header.bill_date,
+            product_id__in=product_ids,
+            product__is_service=False,
+        )
+        if getattr(header, "entityfinid_id", None):
+            qs = qs.filter(entityfin_id=header.entityfinid_id)
+        if header.subentity_id is not None:
+            qs = qs.filter(subentity_id=header.subentity_id)
+        if location_id is not None:
+            qs = qs.filter(location_id=location_id)
+
+        rows = qs.values(
+            "product_id",
+            "batch_number",
+            "expiry_date",
+            "move_type",
+            "base_qty",
+            "location_id",
+        )
+
+        by_product_batch: dict[tuple[int, str, int | None], Decimal] = defaultdict(lambda: ZERO4)
+        by_product_batch_expiry: dict[tuple[int, str, int | None, object], Decimal] = defaultdict(lambda: ZERO4)
+        for row in rows:
+            product_id = int(row["product_id"])
+            batch_number = str(row.get("batch_number") or "").strip()
+            expiry_date = row.get("expiry_date")
+            row_location_id = row.get("location_id")
+            base_qty = q4(row.get("base_qty") or ZERO4)
+            move_type = str(row.get("move_type") or "").upper()
+            signed_qty = -abs(base_qty) if move_type == InventoryMove.MoveType.OUT else abs(base_qty)
+            key = (product_id, batch_number, row_location_id)
+            by_product_batch[key] = q4(by_product_batch[key] + signed_qty)
+            expiry_key = (product_id, batch_number, row_location_id, expiry_date)
+            by_product_batch_expiry[expiry_key] = q4(by_product_batch_expiry[expiry_key] + signed_qty)
+
+        return by_product_batch, by_product_batch_expiry
+
+    @classmethod
+    def _allocate_batches_for_post(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        lines: list[SalesInvoiceLine],
+    ) -> None:
+        policy = cls._stock_policy(header)
+        move_type = cls._inventory_move_type_for_header(header)
+        if move_type != InventoryMove.MoveType.OUT:
+            return
+
+        mode = str(getattr(policy, "mode", "") or "").upper()
+        enforce_expiry = mode == "STRICT" or bool(policy.expiry_validation_required)
+        enforce_fefo = mode == "STRICT" or bool(policy.fefo_required)
+        require_batch_for_sales = bool(policy.batch_required_for_sales) or mode == "STRICT"
+
+        location_id = resolve_posting_location_id(
+            entity_id=header.entity_id,
+            subentity_id=header.subentity_id,
+            godown_id=getattr(header, "godown_id", None),
+            location_id=getattr(header, "location_id", None),
+        )
+
+        product_ids = sorted({
+            int(getattr(line, "product_id", 0) or 0)
+            for line in lines
+            if getattr(line, "product_id", None)
+        })
+        if not product_ids:
+            return
+
+        products = {
+            product.id: product
+            for product in Product.objects.filter(id__in=product_ids).only("id", "productname", "is_batch_managed", "is_expiry_tracked")
+        }
+        available_by_key, available_by_expiry = cls._build_stock_balance_maps(
+            header=header,
+            product_ids=product_ids,
+            location_id=location_id,
+        )
+
+        earliest_batch: dict[tuple[int, int | None], tuple[object, str, Decimal]] = {}
+
+        def _best_batch_for_product(product_id: int) -> tuple[object, str, Decimal] | None:
+            candidate_key = (product_id, location_id)
+            candidate = earliest_batch.get(candidate_key)
+            if candidate is not None:
+                return candidate
+            candidates = []
+            for (pid, batch, loc_id, exp_date), balance in available_by_expiry.items():
+                if pid != product_id or loc_id != location_id:
+                    continue
+                if q4(balance) <= ZERO4 or not batch:
+                    continue
+                candidates.append((exp_date or date.max, batch, q4(balance)))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            candidate = candidates[0]
+            earliest_batch[candidate_key] = candidate
+            return candidate
+
+        def _available_expiry_for_batch(product_id: int, batch_number: str) -> object | None:
+            expiries = []
+            for (pid, batch, loc_id, exp_date), balance in available_by_expiry.items():
+                if pid != product_id or loc_id != location_id or batch != batch_number:
+                    continue
+                if q4(balance) <= ZERO4:
+                    continue
+                expiries.append(exp_date)
+            if not expiries:
+                return None
+            non_null = sorted([d for d in expiries if d is not None])
+            if non_null:
+                return non_null[0]
+            return None
+
+        for line in lines:
+            product_id = int(getattr(line, "product_id", 0) or 0)
+            if not product_id:
+                continue
+            product = products.get(product_id)
+            if not product or bool(getattr(product, "is_service", False)):
+                continue
+
+            is_batch_managed = bool(getattr(product, "is_batch_managed", False))
+            if not (is_batch_managed or require_batch_for_sales):
+                continue
+
+            issue_qty = cls._stock_issue_qty(line)
+            if issue_qty <= ZERO4:
+                continue
+
+            batch_number = str(getattr(line, "batch_number", "") or "").strip()
+            expiry_date = getattr(line, "expiry_date", None)
+            line_no = int(getattr(line, "line_no", 0) or 0) or 0
+
+            candidate = _best_batch_for_product(product_id) if (enforce_fefo or not batch_number) else None
+            if not batch_number:
+                if candidate is None:
+                    raise ValidationError({
+                        "lines": [f"Line {line_no or '-'}: no available batch found for {getattr(product, 'productname', product_id)}."]
+                    })
+                candidate_expiry, candidate_batch, _ = candidate
+                line.batch_number = candidate_batch
+                if expiry_date is None and candidate_expiry not in (None, ""):
+                    line.expiry_date = candidate_expiry
+                if getattr(line, "manufacture_date", None) is None and candidate_expiry not in (None, ""):
+                    # leave manufacture date blank; it is not derivable from expiry.
+                    pass
+                if hasattr(line, "updated_by"):
+                    pass
+                line.save(update_fields=["batch_number", "expiry_date", "updated_at"])
+                batch_number = candidate_batch
+                expiry_date = getattr(line, "expiry_date", None)
+
+            available_qty = q4(available_by_key.get((product_id, batch_number, location_id), ZERO4))
+            if available_qty <= ZERO4:
+                raise ValidationError({
+                    "lines": [
+                        f"Line {line_no or '-'}: batch '{batch_number}' is not available for {getattr(product, 'productname', product_id)}."
+                    ]
+                })
+            if issue_qty > available_qty:
+                raise ValidationError({
+                    "lines": [
+                        f"Line {line_no or '-'}: batch '{batch_number}' has insufficient stock for {getattr(product, 'productname', product_id)}. "
+                        f"Required {issue_qty}, available {available_qty}."
+                    ]
+                })
+
+            if enforce_expiry:
+                if expiry_date is None:
+                    expiry_date = _available_expiry_for_batch(product_id, batch_number)
+                    if expiry_date is not None:
+                        line.expiry_date = expiry_date
+                        line.save(update_fields=["expiry_date", "updated_at"])
+                if expiry_date is None:
+                    raise ValidationError({
+                        "lines": [
+                            f"Line {line_no or '-'}: expiry date is required for batch '{batch_number}'."
+                        ]
+                    })
+                if expiry_date < header.bill_date:
+                    raise ValidationError({
+                        "lines": [
+                            f"Line {line_no or '-'}: batch '{batch_number}' is expired and cannot be sold."
+                        ]
+                    })
+
+            if enforce_fefo and not bool(policy.allow_manual_batch_override):
+                candidate = _best_batch_for_product(product_id)
+                if candidate is not None:
+                    candidate_expiry, candidate_batch, _ = candidate
+                    if batch_number != candidate_batch:
+                        expiry_text = f" ({candidate_expiry.isoformat()})" if hasattr(candidate_expiry, "isoformat") else ""
+                        raise ValidationError({
+                            "lines": [
+                                f"Line {line_no or '-'}: FEFO requires batch '{candidate_batch}'{expiry_text}."
+                            ]
+                        })
+
+    @classmethod
+    def _validate_stock_policy_on_post(cls, *, header: SalesInvoiceHeader, lines: list[SalesInvoiceLine]) -> None:
+        move_type = cls._inventory_move_type_for_header(header)
+        if move_type != InventoryMove.MoveType.OUT:
+            return
+
+        policy = cls._stock_policy(header)
+        mode = str(getattr(policy, "mode", "") or "").upper()
+        enforce_negative = mode == "STRICT" or not bool(policy.allow_negative_stock)
+
+        location_id = resolve_posting_location_id(
+            entity_id=header.entity_id,
+            subentity_id=header.subentity_id,
+            godown_id=getattr(header, "godown_id", None),
+            location_id=getattr(header, "location_id", None),
+        )
+
+        product_ids = sorted({
+            int(getattr(line, "product_id", 0) or 0)
+            for line in lines
+            if getattr(line, "product_id", None)
+        })
+        if not product_ids:
+            return
+
+        products = {
+            product.id: product
+            for product in Product.objects.filter(id__in=product_ids).only("id", "productname", "is_batch_managed", "is_expiry_tracked")
+        }
+        available_by_key, available_by_expiry = cls._build_stock_balance_maps(
+            header=header,
+            product_ids=product_ids,
+            location_id=location_id,
+        )
+
+        requested_by_key: dict[tuple[int, str, int | None], Decimal] = defaultdict(lambda: ZERO4)
+        line_refs: dict[tuple[int, str, int | None], list[int]] = defaultdict(list)
+        earliest_batch: dict[tuple[int, int | None], tuple[object, str, Decimal]] = {}
+
+        for line in lines:
+            product_id = int(getattr(line, "product_id", 0) or 0)
+            if not product_id:
+                continue
+            product = products.get(product_id)
+            if not product or bool(getattr(product, "is_service", False)):
+                continue
+
+            issue_qty = cls._stock_issue_qty(line)
+            if issue_qty <= ZERO4:
+                continue
+
+            batch_number = str(getattr(line, "batch_number", "") or "").strip()
+            expiry_date = getattr(line, "expiry_date", None)
+            line_no = int(getattr(line, "line_no", 0) or 0) or 0
+            key = (product_id, batch_number, location_id)
+            requested_by_key[key] = q4(requested_by_key[key] + issue_qty)
+            if line_no > 0:
+                line_refs[key].append(line_no)
+
+            if bool(getattr(product, "is_expiry_tracked", False)):
+                if expiry_date is None:
+                    raise ValidationError({"lines": [f"Line {line_no or '-'}: expiry date is required for expiry-tracked products."]})
+                if expiry_date < header.bill_date:
+                    raise ValidationError({"lines": [f"Line {line_no or '-'}: expired stock cannot be sold."]})
+
+            if bool(getattr(product, "is_batch_managed", False)):
+                candidate_key = (product_id, location_id)
+                candidate = earliest_batch.get(candidate_key)
+                if candidate is None:
+                    candidates = []
+                    for (pid, batch, loc_id, exp_date), balance in available_by_expiry.items():
+                        if pid != product_id or loc_id != location_id:
+                            continue
+                        if q4(balance) <= ZERO4 or not batch:
+                            continue
+                        candidates.append((exp_date or date.max, batch, q4(balance)))
+                    if candidates:
+                        candidates.sort(key=lambda item: (item[0], item[1]))
+                        candidate = candidates[0]
+                        earliest_batch[candidate_key] = candidate
+                if candidate and not bool(policy.allow_manual_batch_override):
+                    candidate_expiry, candidate_batch, _ = candidate
+                    if batch_number and batch_number != candidate_batch:
+                        expiry_text = f" ({candidate_expiry.isoformat()})" if hasattr(candidate_expiry, "isoformat") else ""
+                        raise ValidationError({
+                            "lines": [
+                                f"Line {line_no or '-'}: FEFO requires batch '{candidate_batch}'{expiry_text}."
+                            ]
+                        })
+
+        if not enforce_negative:
+            return
+
+        shortages = []
+        for key, requested_qty in requested_by_key.items():
+            product_id, batch_number, _ = key
+            available_qty = q4(available_by_key.get(key, ZERO4))
+            if requested_qty <= available_qty:
+                continue
+            product = products.get(product_id)
+            product_name = getattr(product, "productname", f"Product {product_id}") if product else f"Product {product_id}"
+            batch_text = f", batch '{batch_number}'" if batch_number else ""
+            refs = ",".join(str(x) for x in sorted(set(line_refs.get(key, [])))) if line_refs.get(key) else "-"
+            shortages.append(
+                f"Line(s) {refs}: insufficient stock for {product_name}{batch_text}. "
+                f"Required {requested_qty}, available {available_qty}."
+            )
+
+        if shortages:
+            raise ValidationError({"lines": shortages})
 
     @staticmethod
     def _resolve_customer_ledger_id(customer_id: Optional[int]) -> Optional[int]:
@@ -1869,6 +2220,8 @@ class SalesInvoiceService:
             raise ValueError("Shipping detail is required when E-Way is applicable.")
         cls._apply_tcs(header=header, user=user)
         cls.recompute_settlement_fields(header=header)
+        cls._allocate_batches_for_post(header=header, lines=list(header.lines.all()))
+        cls._validate_stock_policy_on_post(header=header, lines=list(header.lines.all()))
         
 
         # âœ… issue doc_no ONLY NOW
@@ -1953,6 +2306,8 @@ class SalesInvoiceService:
         # reload lines list from DB (avoid stale in-memory objects)
         header.refresh_from_db()
         lines = list(header.lines.all())
+        cls._allocate_batches_for_post(header=header, lines=lines)
+        cls._validate_stock_policy_on_post(header=header, lines=lines)
 
         # ---- GL/Stock Posting (same as purchase adapter call) ----
         SalesInvoicePostingAdapter.post_sales_invoice(

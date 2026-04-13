@@ -16,6 +16,12 @@ from sales.models.sales_settings import (
     SalesSettings,
     SalesLockPeriod,
     SalesChoiceOverride,
+    SalesStockPolicy,
+)
+from sales.services.sales_stock_policy_service import (
+    DEFAULT_STOCK_POLICY,
+    ResolvedSalesStockPolicy,
+    SalesStockPolicyService,
 )
 
 ENFORCEMENT_LEVELS = {"off", "warn", "hard"}
@@ -25,6 +31,7 @@ SETTLEMENT_MODES = {"off", "basic"}
 ALLOCATION_POLICIES = {"manual", "fifo"}
 OVER_SETTLEMENT_RULES = {"block", "warn"}
 ON_OFF = {"off", "on"}
+STOCK_POLICY_MODES = {"RELAXED", "CONTROLLED", "STRICT"}
 
 DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "delete_policy": "draft_only",
@@ -219,6 +226,95 @@ class SalesSettingsService:
             merged.update(raw)
         return merged
 
+    @staticmethod
+    def normalize_stock_policy(raw: Any) -> Dict[str, Any]:
+        if raw in (None, ""):
+            return {}
+        if not isinstance(raw, dict):
+            raise ValueError("stock_policy must be a JSON object.")
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw.items():
+            if key == "mode":
+                mode = str(value or "").upper().strip()
+                if mode not in STOCK_POLICY_MODES:
+                    raise ValueError("stock_policy.mode must be one of: RELAXED, CONTROLLED, STRICT.")
+                normalized[key] = mode
+                continue
+
+            if key in DEFAULT_STOCK_POLICY:
+                normalized[key] = bool(value)
+        return normalized
+
+    @staticmethod
+    def build_stock_policy_scope_level(*, entityfinid_id: Optional[int], subentity_id: Optional[int]) -> str:
+        if entityfinid_id and subentity_id:
+            return SalesStockPolicy.ScopeLevel.ENTITY_SUBENTITY_FY
+        if subentity_id:
+            return SalesStockPolicy.ScopeLevel.ENTITY_SUBENTITY
+        if entityfinid_id:
+            return SalesStockPolicy.ScopeLevel.ENTITY_FY
+        return SalesStockPolicy.ScopeLevel.ENTITY
+
+    @staticmethod
+    def get_stock_policy_payload(*, entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int]) -> Dict[str, Any]:
+        policy = SalesStockPolicyService.resolve(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+        )
+        return {
+            "id": getattr(policy.policy, "id", None),
+            "scope_level": policy.scope_level,
+            "scope_key": policy.scope_key,
+            "is_default": bool(policy.is_default),
+            "mode": policy.mode,
+            "allow_negative_stock": bool(policy.allow_negative_stock),
+            "batch_required_for_sales": bool(policy.batch_required_for_sales),
+            "expiry_validation_required": bool(policy.expiry_validation_required),
+            "fefo_required": bool(policy.fefo_required),
+            "allow_manual_batch_override": bool(policy.allow_manual_batch_override),
+            "allow_oversell": bool(policy.allow_oversell),
+        }
+
+    @staticmethod
+    def upsert_stock_policy(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        entityfinid_id: Optional[int],
+        raw: Any,
+    ) -> Optional[SalesStockPolicy]:
+        if raw in (None, ""):
+            return None
+
+        normalized = SalesSettingsService.normalize_stock_policy(raw)
+        if not normalized:
+            return None
+
+        scope_level = SalesSettingsService.build_stock_policy_scope_level(
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+        )
+        policy = SalesStockPolicy.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id if entityfinid_id else None,
+            subentity_id=subentity_id if subentity_id else None,
+            scope_level=scope_level,
+        ).first()
+        if not policy:
+            policy = SalesStockPolicy(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id if entityfinid_id else None,
+                subentity_id=subentity_id if subentity_id else None,
+                scope_level=scope_level,
+            )
+
+        for key, value in normalized.items():
+            setattr(policy, key, value)
+        policy.save()
+        return policy
+
 
     @staticmethod
     def get_seller_profile(*, entity_id: int, subentity_id: int | None) -> dict:
@@ -407,6 +503,19 @@ class SalesSettingsService:
     @staticmethod
     def get_policy(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None) -> SalesPolicy:
         return SalesPolicy(settings=SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id))
+
+    @staticmethod
+    def get_stock_policy(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        entityfinid_id: Optional[int] = None,
+    ) -> ResolvedSalesStockPolicy:
+        return SalesStockPolicyService.resolve(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+        )
 
     # ----------------------------
     # Lock period enforcement

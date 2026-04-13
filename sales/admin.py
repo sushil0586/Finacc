@@ -8,7 +8,7 @@ from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterG
 from sales.services.providers.mastergst_client import MasterGSTClient
 
 
-from sales.models.sales_settings import SalesSettings, SalesLockPeriod, SalesChoiceOverride
+from sales.models.sales_settings import SalesSettings, SalesLockPeriod, SalesChoiceOverride, SalesStockPolicy
 from sales.models.sales_core import (
     SalesInvoiceHeader,
     SalesInvoiceLine,
@@ -777,6 +777,14 @@ class SalesChoiceOverrideAdmin(admin.ModelAdmin):
     list_display = ("entity", "subentity", "choice_group", "choice_key", "is_enabled", "override_label")
     list_filter = ("choice_group", "is_enabled", "entity")
     search_fields = ("choice_group", "choice_key", "override_label")
+
+
+@admin.register(SalesStockPolicy)
+class SalesStockPolicyAdmin(admin.ModelAdmin):
+    list_display = ("entity", "entityfinid", "subentity", "scope_level", "mode", "is_active", "updated_at")
+    list_filter = ("entity", "scope_level", "mode", "is_active")
+    search_fields = ("scope_key", "entity__entityname", "subentity__subentityname")
+    autocomplete_fields = ("entity", "entityfinid", "subentity")
 
 
 @admin.register(SalesComplianceActionLog)

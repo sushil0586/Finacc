@@ -4,6 +4,7 @@ from unittest.mock import patch
 from datetime import date
 
 from django.test import SimpleTestCase
+from rest_framework.exceptions import ValidationError
 
 from sales.models import SalesInvoiceHeader, SalesSettings
 from sales.services.sales_invoice_service import SalesInvoiceService
@@ -84,6 +85,133 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         self.assertEqual(SalesInvoiceService._reverse_move_type("IN"), "OUT")
         self.assertEqual(SalesInvoiceService._reverse_move_type("OUT"), "IN")
         self.assertEqual(SalesInvoiceService._reverse_move_type("ADJ"), "REV")
+
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_validate_stock_policy_blocks_shortage_when_negative_stock_disabled(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="STRICT",
+            allow_negative_stock=False,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        mocked_build_maps.return_value = (
+            {(1, "B1", 5): Decimal("1.0000")},
+            {},
+        )
+        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs.__iter__.return_value = iter([
+            SimpleNamespace(
+                id=1,
+                productname="A-B",
+                is_service=False,
+                is_batch_managed=True,
+                is_expiry_tracked=False,
+            )
+        ])
+
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=5,
+            godown_id=None,
+        )
+        lines = [
+            SimpleNamespace(
+                product_id=1,
+                qty=Decimal("2.000"),
+                free_qty=Decimal("0.000"),
+                batch_number="B1",
+                expiry_date=date(2026, 5, 1),
+                line_no=1,
+            )
+        ]
+
+        with self.assertRaisesMessage(ValidationError, "insufficient stock"):
+            SalesInvoiceService._validate_stock_policy_on_post(header=header, lines=lines)
+
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_allocate_batches_auto_picks_earliest_available_batch(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="STRICT",
+            allow_negative_stock=False,
+            batch_required_for_sales=True,
+            expiry_validation_required=True,
+            fefo_required=True,
+            allow_manual_batch_override=False,
+        )
+        mocked_build_maps.return_value = (
+            {(1, "B-A", 5): Decimal("3.0000"), (1, "B-B", 5): Decimal("4.0000")},
+            {
+                (1, "B-B", 5, date(2026, 6, 1)): Decimal("4.0000"),
+                (1, "B-A", 5, date(2026, 5, 1)): Decimal("3.0000"),
+            },
+        )
+        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs.__iter__.return_value = iter([
+            SimpleNamespace(
+                id=1,
+                productname="A-B",
+                is_service=False,
+                is_batch_managed=True,
+                is_expiry_tracked=True,
+            )
+        ])
+
+        saved = []
+
+        class Line:
+            product_id = 1
+            qty = Decimal("1.000")
+            free_qty = Decimal("0.000")
+            batch_number = ""
+            manufacture_date = None
+            expiry_date = None
+            line_no = 1
+
+            def save(self, update_fields=None):
+                saved.append(list(update_fields or []))
+
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=5,
+            godown_id=None,
+        )
+
+        line = Line()
+        SalesInvoiceService._allocate_batches_for_post(header=header, lines=[line])
+
+        self.assertEqual(line.batch_number, "B-A")
+        self.assertEqual(line.expiry_date, date(2026, 5, 1))
+        self.assertTrue(saved)
+        self.assertIn("batch_number", saved[0])
 
     def test_recompute_settlement_fields_open(self):
         header = SimpleNamespace(

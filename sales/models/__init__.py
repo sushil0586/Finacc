@@ -9,6 +9,7 @@ from .sales_settings import (
     SalesSettings,
     SalesLockPeriod,
     SalesChoiceOverride,
+    SalesStockPolicy,
 )
 from .sales_addons import (
     SalesChargeType,

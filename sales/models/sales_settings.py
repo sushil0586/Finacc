@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.db import models
 from django.db.models import Q
+from django.core.exceptions import ValidationError
 
 from core.models.base import EntityScopedModel,TrackingModel
 from sales.models.sales_core import SalesInvoiceHeader  # adjust path if needed
@@ -204,3 +205,105 @@ class SalesChoiceOverride(TrackingModel):
 
     def __str__(self) -> str:
         return f"{self.choice_group}:{self.choice_key} ({'on' if self.is_enabled else 'off'})"
+
+
+class SalesStockPolicy(TrackingModel):
+    """
+    Sales stock governance policy with scoped inheritance.
+
+    Scope levels:
+      - entity default
+      - entity + branch
+      - entity + financial year
+      - entity + branch + financial year
+
+    Resolution is handled in the service layer. This model stores the scoped
+    rule set and can be edited independently from the core Sales settings row.
+    """
+
+    class ScopeLevel(models.TextChoices):
+        ENTITY = "ENTITY", "Entity"
+        ENTITY_SUBENTITY = "ENTITY_SUBENTITY", "Entity + Branch"
+        ENTITY_FY = "ENTITY_FY", "Entity + Financial Year"
+        ENTITY_SUBENTITY_FY = "ENTITY_SUBENTITY_FY", "Entity + Branch + Financial Year"
+
+    class Mode(models.TextChoices):
+        RELAXED = "RELAXED", "Relaxed"
+        CONTROLLED = "CONTROLLED", "Controlled"
+        STRICT = "STRICT", "Strict"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, related_name="sales_stock_policies")
+    entityfinid = models.ForeignKey(
+        "entity.EntityFinancialYear",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="sales_stock_policies",
+    )
+    subentity = models.ForeignKey(
+        "entity.SubEntity",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="sales_stock_policies",
+    )
+
+    scope_level = models.CharField(max_length=32, choices=ScopeLevel.choices, db_index=True)
+    mode = models.CharField(max_length=20, choices=Mode.choices, default=Mode.RELAXED, db_index=True)
+
+    allow_negative_stock = models.BooleanField(default=True)
+    batch_required_for_sales = models.BooleanField(default=False)
+    expiry_validation_required = models.BooleanField(default=False)
+    fefo_required = models.BooleanField(default=False)
+    allow_manual_batch_override = models.BooleanField(default=True)
+    allow_oversell = models.BooleanField(default=False)
+
+    scope_key = models.CharField(max_length=120, unique=True, editable=False, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                name="ck_sales_stock_policy_scope_level",
+                check=Q(scope_level__isnull=False),
+            ),
+            models.CheckConstraint(
+                name="ck_sales_stock_policy_mode",
+                check=Q(mode__isnull=False),
+            ),
+            models.CheckConstraint(
+                name="ck_sales_stock_policy_entity_nn",
+                check=Q(entity__isnull=False),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "scope_level"], name="ix_sales_stock_policy_scope"),
+            models.Index(fields=["entity", "entityfinid", "subentity"], name="ix_sales_stock_policy_ids"),
+            models.Index(fields=["entity", "mode"], name="ix_sales_stock_policy_mode"),
+        ]
+
+    def _build_scope_key(self) -> str:
+        parts = [f"entity:{self.entity_id}"]
+        if self.entityfinid_id:
+            parts.append(f"fy:{self.entityfinid_id}")
+        if self.subentity_id:
+            parts.append(f"sub:{self.subentity_id}")
+        parts.append(f"scope:{self.scope_level}")
+        return "|".join(parts)
+
+    def clean(self):
+        if self.scope_level == self.ScopeLevel.ENTITY and (self.entityfinid_id or self.subentity_id):
+            raise ValidationError({"scope_level": "ENTITY scope cannot carry branch or financial-year references."})
+        if self.scope_level == self.ScopeLevel.ENTITY_FY and (not self.entityfinid_id or self.subentity_id):
+            raise ValidationError({"scope_level": "ENTITY_FY scope requires financial year only."})
+        if self.scope_level == self.ScopeLevel.ENTITY_SUBENTITY and (not self.subentity_id or self.entityfinid_id):
+            raise ValidationError({"scope_level": "ENTITY_SUBENTITY scope requires branch only."})
+        if self.scope_level == self.ScopeLevel.ENTITY_SUBENTITY_FY and (not self.subentity_id or not self.entityfinid_id):
+            raise ValidationError({"scope_level": "ENTITY_SUBENTITY_FY scope requires both branch and financial year."})
+        self.scope_key = self._build_scope_key()
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"SalesStockPolicy({self.scope_key})"
