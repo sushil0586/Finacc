@@ -575,6 +575,104 @@ def _trading_account_export_table(report):
     return headers, rows
 
 
+def _balance_sheet_row_label(row, depth=0):
+    label = (
+        row.get("label")
+        or row.get("name")
+        or row.get("title")
+        or row.get("ledger_name")
+        or row.get("accounthead_name")
+        or row.get("accounttype_name")
+        or "-"
+    )
+    return f"{'  ' * depth}{label}"
+
+
+def _balance_sheet_row_period_value(row, period_key):
+    period_values = row.get("period_values") or {}
+    if period_key in period_values:
+        return period_values.get(period_key)
+
+    amounts_by_period = row.get("amounts_by_period") or {}
+    if period_key in amounts_by_period:
+        return amounts_by_period.get(period_key)
+
+    for item in row.get("periods") or []:
+        item_key = str(item.get("key") or item.get("code") or item.get("label") or item.get("name") or "")
+        if item_key == period_key:
+            return item.get("amount") or item.get("value") or item.get("closing")
+
+    return None
+
+
+def _balance_sheet_flatten_rows(rows, *, section_label, period_keys, depth=0):
+    flattened = []
+    for row in rows or []:
+        flattened.append(
+            {
+                "section": section_label if depth == 0 else "",
+                "particulars": _balance_sheet_row_label(row, depth=depth),
+                "account_head": row.get("accounthead_name") or "-",
+                "account_type": row.get("accounttype_name") or "-",
+                "period_values": [_balance_sheet_row_period_value(row, period_key) for period_key in period_keys],
+                "amount": row.get("amount"),
+            }
+        )
+        children = row.get("children") or []
+        if children:
+            flattened.extend(
+                _balance_sheet_flatten_rows(
+                    children,
+                    section_label=section_label,
+                    period_keys=period_keys,
+                    depth=depth + 1,
+                )
+            )
+    return flattened
+
+
+def _balance_sheet_export_table(report):
+    periods = report.get("periods") or []
+    period_keys = [str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or f"period_{index}") for index, period in enumerate(periods, start=1)]
+    period_labels = [str(period.get("period_label") or period.get("label") or period.get("name") or period.get("code") or period.get("period_key") or f"Period {index}") for index, period in enumerate(periods, start=1)]
+
+    headers = ["Section", "Particulars", "Account Head", "Account Type", *period_labels, "Amount"]
+    rows = []
+
+    for section_label, section_rows in (
+        ("Assets", report.get("assets") or []),
+        ("Liabilities & Equity", report.get("liabilities_and_equity") or []),
+    ):
+        for item in _balance_sheet_flatten_rows(section_rows, section_label=section_label, period_keys=period_keys):
+            rows.append(
+                [
+                    item["section"],
+                    item["particulars"],
+                    item["account_head"],
+                    item["account_type"],
+                    *item["period_values"],
+                    item["amount"],
+                ]
+            )
+        rows.append(
+            [
+                section_label,
+                f"{section_label} Total",
+                "",
+                "",
+                *["" for _ in period_keys],
+                report.get("totals", {}).get("assets" if section_label == "Assets" else "liabilities_and_equity") or "0.00",
+            ]
+        )
+
+    assets_total = Decimal(str(report.get("totals", {}).get("assets") or "0"))
+    liabilities_total = Decimal(str(report.get("totals", {}).get("liabilities_and_equity") or "0"))
+    balance_diff = assets_total - liabilities_total
+    rows.append(["", "Balance Difference", "", "", *["" for _ in period_keys], f"{balance_diff:.2f}"])
+
+    return headers, rows
+
+
 class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
@@ -1130,15 +1228,186 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             period_by=scope.get("period_by"),
             reporting_policy=reporting_policy,
         )
-        return Response(
-            build_report_envelope(
-                report_code="balance_sheet",
-                report_name="Balance Sheet",
-                payload=data,
-                filters=self.build_filters(scope),
-                defaults=REPORT_DEFAULTS,
-            )
+        response = build_report_envelope(
+            report_code="balance_sheet",
+            report_name="Balance Sheet",
+            payload=data,
+            filters=self.build_filters(scope),
+            defaults=REPORT_DEFAULTS,
         )
+        response = _attach_financial_actions(
+            response,
+            request,
+            export_base_path="/api/reports/financial/balance-sheet/",
+        )
+        query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
+        base_url = "/api/reports/financial/balance-sheet/"
+        query_suffix = f"?{query}" if query else ""
+        response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
+        response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
+        response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
+        response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
+        response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
+        return Response(response)
+
+
+def _balance_sheet_subtitle(scope_names, scope, report):
+    view_type = scope.get("view_type") or "summary"
+    group_by = scope.get("account_group") or scope.get("group_by") or "accounthead"
+    stock_mode = report.get("reporting", {}).get("stock_valuation_mode") or scope.get("stock_valuation_mode") or "auto"
+    stock_method = report.get("reporting", {}).get("stock_valuation_method") or scope.get("stock_valuation_method") or "fifo"
+    balance_diff = Decimal(str(report.get("totals", {}).get("assets") or "0")) - Decimal(str(report.get("totals", {}).get("liabilities_and_equity") or "0"))
+    subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
+    return (
+        f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+        f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
+        f"Subentity: {subentity_label} | "
+        f"Scope: {scope.get('scope_mode') or 'financial_year'} | "
+        f"View: {view_type} | "
+        f"Group by: {group_by} | "
+        f"Stock: {stock_mode}/{stock_method} | "
+        f"Delta: {balance_diff:.2f}"
+    )
+
+
+class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
+    export_mode = "attachment"
+    export_orientation = "landscape"
+
+    def export_response(self, *, filename, content, content_type):
+        response = HttpResponse(content=content, content_type=content_type)
+        disposition = "inline" if self.export_mode == "inline" else "attachment"
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+        return response
+
+    def build_orientation(self, request):
+        orientation = str(
+            getattr(self, "export_orientation", None)
+            or request.query_params.get("orientation")
+            or "landscape"
+        ).strip().lower()
+        return orientation if orientation in {"landscape", "portrait"} else "landscape"
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        reporting_policy = resolve_financial_reporting_policy(scope["entity"])
+        data = build_balance_sheet(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            group_by=scope.get("account_group") or scope.get("group_by"),
+            view_type=scope.get("view_type"),
+            posted_only=scope.get("posted_only", REPORT_DEFAULTS["balance_sheet_posted_only_default"]),
+            hide_zero_rows=scope.get("hide_zero_rows", REPORT_DEFAULTS["balance_sheet_hide_zero_rows_default"]),
+            include_zero_balances=scope.get("include_zero_balances", REPORT_DEFAULTS["show_zero_balances_default"]),
+            account_group=scope.get("account_group"),
+            ledger_ids=scope.get("ledger_ids"),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "asc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+            period_by=scope.get("period_by"),
+            reporting_policy=reporting_policy,
+        )
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        subtitle = _balance_sheet_subtitle(scope_names, scope, data)
+        return scope, data, subtitle
+
+
+class BalanceSheetExcelAPIView(_BaseBalanceSheetExportAPIView):
+    def get(self, request):
+        _scope, data, subtitle = self.report_data(request)
+        headers, rows = _balance_sheet_export_table(data)
+        content = _write_excel(
+            "Balance Sheet",
+            subtitle,
+            headers,
+            rows,
+            numeric_columns=set(range(5, len(headers) + 1)),
+            orientation=self.build_orientation(request),
+        )
+        return self.export_response(
+            filename=f"BalanceSheet_{_safe_filename(subtitle)}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class BalanceSheetCSVAPIView(_BaseBalanceSheetExportAPIView):
+    def get(self, request):
+        _scope, data, subtitle = self.report_data(request)
+        headers, rows = _balance_sheet_export_table(data)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"BalanceSheet_{_safe_filename(subtitle)}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class BalanceSheetPDFAPIView(_BaseBalanceSheetExportAPIView):
+    def get(self, request):
+        scope, data, subtitle = self.report_data(request)
+        orientation = self.build_orientation(request)
+        pagesize = landscape(A4) if orientation == "landscape" else A4
+        headers, rows = _balance_sheet_export_table(data)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        balance_diff = Decimal(str(data.get("totals", {}).get("assets") or "0")) - Decimal(str(data.get("totals", {}).get("liabilities_and_equity") or "0"))
+        periods = data.get("periods") or []
+        meta_items = [
+            ("Entity", scope_names["entity_name"] or "Selected entity"),
+            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
+            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
+            ("Scope", scope.get("scope_mode") or "financial_year"),
+            ("View", scope.get("view_type") or "summary"),
+            ("Group by", scope.get("account_group") or scope.get("group_by") or "accounthead"),
+            ("Stock", f"{scope.get('stock_valuation_mode') or data.get('reporting', {}).get('stock_valuation_mode') or 'auto'}/{scope.get('stock_valuation_method') or data.get('reporting', {}).get('stock_valuation_method') or 'fifo'}"),
+            ("Balance Status", "Balanced" if balance_diff == 0 else "Mismatch"),
+            ("Difference", f"{balance_diff:.2f}"),
+        ]
+        if orientation == "portrait":
+            col_widths = [54, 160, 82, 82] + [42] * len(periods) + [60]
+        else:
+            col_widths = [60, 175, 90, 90] + [52] * len(periods) + [72]
+        content = _write_pdf(
+            "Balance Sheet",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            meta_items=meta_items,
+            numeric_columns=set(range(5, len(headers) + 1)),
+            pagesize=pagesize,
+        )
+        return self.export_response(
+            filename=f"BalanceSheet_{_safe_filename(subtitle)}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class BalanceSheetPrintAPIView(BalanceSheetPDFAPIView):
+    export_mode = "inline"
+
+
+class BalanceSheetExcelLandscapeAPIView(BalanceSheetExcelAPIView):
+    export_orientation = "landscape"
+
+
+class BalanceSheetExcelPortraitAPIView(BalanceSheetExcelAPIView):
+    export_orientation = "portrait"
+
+
+class BalanceSheetPDFLandscapeAPIView(BalanceSheetPDFAPIView):
+    export_orientation = "landscape"
+
+
+class BalanceSheetPDFPortraitAPIView(BalanceSheetPDFAPIView):
+    export_orientation = "portrait"
 
 
 class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
