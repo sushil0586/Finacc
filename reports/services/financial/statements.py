@@ -371,6 +371,13 @@ def _profit_loss_policy(reporting_policy):
     }
 
 
+def _profit_loss_percent(value, base):
+    base_amount = Decimal(str(base or 0))
+    if base_amount == 0:
+        return Decimal("0.00")
+    return (Decimal(str(value or 0)) / base_amount) * Decimal("100")
+
+
 def _balance_sheet_policy(reporting_policy):
     base = FINANCIAL_REPORTING_POLICY_DEFAULTS.get("balance_sheet", {})
     cfg = ((reporting_policy or {}).get("balance_sheet") or {})
@@ -503,7 +510,7 @@ def _iter_period_ranges(start_date, end_date, period_by):
         if period_by == "month":
             period_end = _last_day_of_month(cursor)
         elif period_by == "quarter":
-            period_end = _quarter_end(cursor)
+            period_end = _last_day_of_month(_add_months(cursor, 2))
         else:
             period_end = _year_end(cursor)
         if period_end > end_date:
@@ -615,6 +622,10 @@ def _build_profit_loss_snapshot(
     adjusted_income = total_income + gross_profit
     adjusted_expense = total_expense + gross_loss
     net_profit = adjusted_income - adjusted_expense
+    gross_result = gross_profit - gross_loss
+    gross_margin_percent = _profit_loss_percent(gross_result, adjusted_income)
+    net_margin_percent = _profit_loss_percent(net_profit, adjusted_income)
+    expense_ratio_percent = _profit_loss_percent(adjusted_expense, adjusted_income)
 
     pl_policy = _profit_loss_policy(reporting_policy)
     accounting_only_notes = None
@@ -672,6 +683,10 @@ def _build_profit_loss_snapshot(
             "expense_rows": expense_count,
             "opening_inventory_valuation": f"{opening_inventory:.2f}",
             "closing_inventory_valuation": f"{closing_inventory:.2f}",
+            "gross_result": f"{gross_result:.2f}",
+            "gross_margin_percent": f"{gross_margin_percent:.2f}",
+            "net_margin_percent": f"{net_margin_percent:.2f}",
+            "expense_ratio_percent": f"{expense_ratio_percent:.2f}",
             "accounting_only_notes_count": (accounting_only_notes or {}).get("totals", {}).get("count", 0),
             "accounting_only_notes_taxable_amount": (accounting_only_notes or {}).get("totals", {}).get("taxable_amount", "0.00"),
             "accounting_only_notes_estimated_profit_impact": (accounting_only_notes or {}).get("totals", {}).get("estimated_profit_impact", "0.00"),
@@ -819,7 +834,10 @@ def build_profit_and_loss(
 
     if period_by and from_date and to_date and from_date <= to_date:
         periods = []
-        for period_start, period_end in _iter_period_ranges(from_date, to_date, period_by):
+        period_meta = []
+        income_period_maps = []
+        expense_period_maps = []
+        for index, (period_start, period_end) in enumerate(_iter_period_ranges(from_date, to_date, period_by), start=1):
             period_snapshot = _build_profit_loss_snapshot(
                 entity_id=entity_id,
                 entityfin_id=entityfin_id,
@@ -842,20 +860,44 @@ def build_profit_and_loss(
                 reporting_policy=reporting_policy,
             )
             period_snapshot["period_key"] = (
-                f"{period_end.year}-Q{((period_end.month - 1) // 3) + 1}"
+                f"Q{index}"
                 if period_by == "quarter"
                 else period_end.strftime("%Y")
                 if period_by == "year"
                 else period_end.strftime("%Y-%m")
             )
             period_snapshot["period_label"] = (
-                f"Q{((period_end.month - 1) // 3) + 1} {period_end.year}"
+                f"Q{index}"
                 if period_by == "quarter"
                 else period_end.strftime("%Y")
                 if period_by == "year"
                 else period_end.strftime("%b %Y")
             )
+            period_meta.append(
+                {
+                    "period_key": period_snapshot["period_key"],
+                    "period_label": period_snapshot["period_label"],
+                }
+            )
+            income_period_maps.append(
+                _build_profit_loss_period_map(
+                    period_snapshot["income"],
+                    group_by,
+                    period_snapshot["period_key"],
+                    period_snapshot["period_label"],
+                )
+            )
+            expense_period_maps.append(
+                _build_profit_loss_period_map(
+                    period_snapshot["expenses"],
+                    group_by,
+                    period_snapshot["period_key"],
+                    period_snapshot["period_label"],
+                )
+            )
             periods.append(period_snapshot)
+        _attach_profit_loss_period_rows(snapshot["income"], income_period_maps, period_meta, group_by)
+        _attach_profit_loss_period_rows(snapshot["expenses"], expense_period_maps, period_meta, group_by)
         response["periods"] = periods
 
     return response
@@ -948,6 +990,66 @@ def _build_side_rows(
         for child in row.get("children", []):
             child.pop("amount_value", None)
     return paged_rows, total_rows
+
+
+def _profit_loss_row_identity(row, group_by):
+    group_id = row.get("group_id")
+    if group_id is not None:
+        return f"group:{group_by}:{group_id}"
+
+    ledger_id = row.get("ledger_id")
+    if ledger_id is not None:
+        return f"ledger:{ledger_id}"
+
+    accounthead_id = row.get("accounthead_id")
+    if accounthead_id is not None:
+        return f"accounthead:{accounthead_id}"
+
+    accounttype_id = row.get("accounttype_id")
+    if accounttype_id is not None:
+        return f"accounttype:{accounttype_id}"
+
+    fallback_label = row.get("label") or row.get("ledger_name") or row.get("accounthead_name") or row.get("accounttype_name")
+    return f"row:{fallback_label or 'row'}"
+
+
+def _build_profit_loss_period_map(rows, group_by, period_key, period_label):
+    period_map = {}
+    for row in rows:
+        row_id = _profit_loss_row_identity(row, group_by)
+        period_map[row_id] = {
+            "key": period_key,
+            "label": period_label,
+            "code": period_key,
+            "name": period_label,
+            "title": period_label,
+            "amount": row.get("amount", "0.00"),
+            "value": row.get("amount", "0.00"),
+        }
+        if row.get("children"):
+            period_map.update(_build_profit_loss_period_map(row["children"], group_by, period_key, period_label))
+    return period_map
+
+
+def _attach_profit_loss_period_rows(rows, period_maps, period_meta, group_by):
+    for row in rows:
+        row_id = _profit_loss_row_identity(row, group_by)
+        row["periods"] = []
+        for index, meta in enumerate(period_meta):
+            period_values = period_maps[index].get(row_id)
+            if period_values is None:
+                period_values = {
+                    "key": meta["period_key"],
+                    "label": meta["period_label"],
+                    "code": meta["period_key"],
+                    "name": meta["period_label"],
+                    "title": meta["period_label"],
+                    "amount": "0.00",
+                    "value": "0.00",
+                }
+            row["periods"].append(period_values)
+        if row.get("children"):
+            _attach_profit_loss_period_rows(row["children"], period_maps, period_meta, group_by)
 
 
 def _inventory_keyword(*values):
@@ -1239,6 +1341,14 @@ def _last_day_of_month(d):
     return first_next - timedelta(days=1)
 
 
+def _add_months(d, months):
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, _last_day_of_month(date(year, month, 1)).day)
+    return date(year, month, day)
+
+
 def _quarter_end(d):
     quarter = ((d.month - 1) // 3) + 1
     last_month = quarter * 3
@@ -1255,7 +1365,7 @@ def _iter_period_ends(start_date, end_date, period_by):
         if period_by == "month":
             period_end = _last_day_of_month(cursor)
         elif period_by == "quarter":
-            period_end = _quarter_end(cursor)
+            period_end = _last_day_of_month(_add_months(cursor, 2))
         else:
             period_end = _year_end(cursor)
         if period_end > end_date:
@@ -1375,7 +1485,10 @@ def build_balance_sheet(
 
     if period_by and from_date and to_date and from_date <= to_date:
         periods = []
-        for period_end in _iter_period_ends(from_date, to_date, period_by):
+        period_meta = []
+        asset_period_maps = []
+        liability_period_maps = []
+        for index, period_end in enumerate(_iter_period_ends(from_date, to_date, period_by), start=1):
             period_snapshot = _build_snapshot(
                 entity_id=entity_id,
                 entityfin_id=entityfin_id,
@@ -1397,20 +1510,44 @@ def build_balance_sheet(
                 reporting_policy=reporting_policy,
             )
             period_snapshot["period_key"] = (
-                f"{period_end.year}-Q{((period_end.month - 1) // 3) + 1}"
+                f"Q{index}"
                 if period_by == "quarter"
                 else period_end.strftime("%Y")
                 if period_by == "year"
                 else period_end.strftime("%Y-%m")
             )
             period_snapshot["period_label"] = (
-                f"Q{((period_end.month - 1) // 3) + 1} {period_end.year}"
+                f"Q{index}"
                 if period_by == "quarter"
                 else period_end.strftime("%Y")
                 if period_by == "year"
                 else period_end.strftime("%b %Y")
             )
+            period_meta.append(
+                {
+                    "period_key": period_snapshot["period_key"],
+                    "period_label": period_snapshot["period_label"],
+                }
+            )
+            asset_period_maps.append(
+                _build_profit_loss_period_map(
+                    period_snapshot["assets"],
+                    group_by,
+                    period_snapshot["period_key"],
+                    period_snapshot["period_label"],
+                )
+            )
+            liability_period_maps.append(
+                _build_profit_loss_period_map(
+                    period_snapshot["liabilities_and_equity"],
+                    group_by,
+                    period_snapshot["period_key"],
+                    period_snapshot["period_label"],
+                )
+            )
             periods.append(period_snapshot)
+        _attach_profit_loss_period_rows(snapshot["assets"], asset_period_maps, period_meta, group_by)
+        _attach_profit_loss_period_rows(snapshot["liabilities_and_equity"], liability_period_maps, period_meta, group_by)
         response["periods"] = periods
 
     return response

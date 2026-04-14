@@ -1,5 +1,5 @@
 # services/trading_account.py
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Tuple, List, Dict, Optional
 
@@ -19,6 +19,34 @@ def Q2(x) -> Decimal:
     """Quantize to 2 decimals with standard rounding (no -0.00)."""
     q = Decimal(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return q if q != Decimal("-0.00") else Decimal("0.00")
+
+
+def _last_day_of_month(d):
+    first_next = (d.replace(day=1) + timedelta(days=32)).replace(day=1)
+    return first_next - timedelta(days=1)
+
+
+def _add_months(d, months):
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, _last_day_of_month(date(year, month, 1)).day)
+    return date(year, month, day)
+
+
+def _iter_period_ranges(start_date, end_date, period_by):
+    cursor = start_date
+    while cursor <= end_date:
+        if period_by == "month":
+            period_end = _last_day_of_month(cursor)
+        elif period_by == "quarter":
+            period_end = _last_day_of_month(_add_months(cursor, 2))
+        else:
+            period_end = date(cursor.year, 12, 31)
+        if period_end > end_date:
+            period_end = end_date
+        yield cursor, period_end
+        cursor = period_end + timedelta(days=1)
 
 def _in_rate(qty: Decimal, unit_cost, ext_cost) -> Decimal:
     """Reliable IN rate: prefer unit_cost, else ext_cost/qty, else 0."""
@@ -589,6 +617,7 @@ def build_trading_account_dynamic(
     subentity_id: Optional[int] = None,
     startdate: str,
     enddate: str,
+    period_by: Optional[str] = None,
     posted_only: bool = True,
     hide_zero_rows: bool = True,
     view_type: str = "summary",
@@ -720,6 +749,7 @@ def build_trading_account_dynamic(
             "fold_returns": bool(fold_returns),
             "round": int(round_decimals),
             "valuation_method": method,
+            "period_by": period_by,
             "posted_only": bool(posted_only),
             "hide_zero_rows": bool(hide_zero_rows),
             "account_group": account_group,
@@ -747,4 +777,34 @@ def build_trading_account_dynamic(
     }
     if warns:
         resp["warnings"] = warns
+
+    period_by = (period_by or "").strip().lower() or None
+    if period_by in {"month", "quarter", "year"}:
+        periods = []
+        for index, (period_start, period_end) in enumerate(_iter_period_ranges(start, end, period_by), start=1):
+            period_resp = build_trading_account_dynamic(
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+                startdate=period_start.isoformat(),
+                enddate=period_end.isoformat(),
+                period_by=None,
+                posted_only=posted_only,
+                hide_zero_rows=hide_zero_rows,
+                view_type=view_type,
+                account_group=account_group,
+                ledger_ids=ledger_ids,
+                valuation_method=valuation_method,
+                detailsingroup_values=detailsingroup_values,
+                level=level,
+                fold_returns=fold_returns,
+                round_decimals=round_decimals,
+                inventory_breakdown=inventory_breakdown,
+                inventory_include_zero=inventory_include_zero,
+                inventory_product_ids=inventory_product_ids,
+            )
+            period_resp["period_key"] = f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y") if period_by == "year" else period_end.strftime("%Y-%m")
+            period_resp["period_label"] = f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y") if period_by == "year" else period_end.strftime("%b %Y")
+            periods.append(period_resp)
+        resp["periods"] = periods
     return resp
