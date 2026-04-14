@@ -53,11 +53,14 @@ def _balance_sheet_bucket(head, acc_type):
 
 
 def _balance_sheet_bucket_for_amount(amount, head, acc_type):
+    bucket = _balance_sheet_bucket(head, acc_type)
+    if bucket in {"asset", "liability"}:
+        return bucket
     if amount > 0:
         return "asset"
     if amount < 0:
         return "liability"
-    return _balance_sheet_bucket(head, acc_type)
+    return bucket
 
 
 def _resolve_effective_head_and_type(ledger, amount):
@@ -241,6 +244,7 @@ def _raw_balance_rows(
             "amount_decimal": amount,
             "amount": f"{abs(amount):.2f}",
             "bucket": _balance_sheet_bucket_for_amount(amount, head, acc_type),
+            "classification_reason": getattr(classify_financial_head(head, acc_type), "reason", ""),
             **_ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id),
         }
         if search_text:
@@ -1210,6 +1214,8 @@ def _build_snapshot(
 
     asset_total = sum((abs(row["amount_decimal"]) for row in assets_source), Decimal("0.00"))
     liability_total = sum((abs(row["amount_decimal"]) for row in liabilities_source), Decimal("0.00"))
+    raw_asset_total = asset_total
+    raw_liability_total = liability_total
 
     pnl = build_profit_and_loss(
         entity_id=entity_id,
@@ -1311,6 +1317,18 @@ def _build_snapshot(
             "inventory_adjustment_to_profit": pnl["totals"].get("stock_adjustment", f"{stock_context['inventory_delta']:.2f}"),
             "opening_inventory_valuation": f"{stock_context['opening_inventory']:.2f}",
             "closing_inventory_valuation": f"{stock_context['closing_inventory']:.2f}",
+        },
+        "diagnostics": {
+            "raw_asset_total": f"{raw_asset_total:.2f}",
+            "raw_liability_total": f"{raw_liability_total:.2f}",
+            "net_profit_adjustment": f"{net_profit:.2f}",
+            "final_asset_total": f"{asset_total:.2f}",
+            "final_liability_total": f"{liability_total:.2f}",
+            "difference": f"{(asset_total - liability_total):.2f}",
+            "stock_effective_mode": stock_context["effective_mode"],
+            "stock_valuation_method": stock_context["valuation_method"],
+            "inventory_gl_total": f"{stock_context['gl_inventory_total']:.2f}",
+            "inventory_delta": f"{stock_context['inventory_delta']:.2f}",
         },
         "stock_valuation": {
             "requested_mode": stock_context["requested_mode"],

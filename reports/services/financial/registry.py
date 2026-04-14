@@ -21,6 +21,44 @@ FINANCIAL_HUB_SECTIONS = [
         "tag": "Books",
         "codes": ["daybook", "cashbook"],
     },
+    {
+        "title": "Controls & Close",
+        "tag": "Utilities",
+        "cards": [
+            {
+                "code": "controls_phase_one",
+                "name": "Control Center",
+                "path": "/reports/controls/phase-one",
+                "route_name": "controls-phase-one",
+                "category": "control_center",
+                "scope_modes": ["financial_year"],
+                "supports": {
+                    "entityfinid": True,
+                    "subentity": True,
+                    "drilldown": False,
+                    "date_range": False,
+                    "as_of_date": False,
+                },
+                "defaults": {},
+            },
+            {
+                "code": "year_end_close",
+                "name": "Year-End Close",
+                "path": "/reports/controls/year-end-close",
+                "route_name": "controls-year-end-close",
+                "category": "control_center",
+                "scope_modes": ["financial_year"],
+                "supports": {
+                    "entityfinid": True,
+                    "subentity": True,
+                    "drilldown": False,
+                    "date_range": False,
+                    "as_of_date": False,
+                },
+                "defaults": {},
+            }
+        ],
+    },
 ]
 
 FINANCIAL_HUB_FEATURED_REPORTS = [
@@ -31,6 +69,8 @@ FINANCIAL_HUB_FEATURED_REPORTS = [
     "trading_account",
     "daybook",
     "cashbook",
+    "controls_phase_one",
+    "year_end_close",
 ]
 
 
@@ -49,11 +89,14 @@ def build_financial_hub(report_registry: Iterable[dict] | None) -> dict:
     sections = []
     for section in FINANCIAL_HUB_SECTIONS:
         section_reports = []
-        for code in section["codes"]:
-            report = registry_by_code.get(code)
-            if not report:
-                continue
-            section_reports.append(_build_report_card(report))
+        if section.get("codes"):
+            for code in section["codes"]:
+                report = registry_by_code.get(code)
+                if not report:
+                    continue
+                section_reports.append(_build_report_card(report))
+        for report_card in section.get("cards") or []:
+            section_reports.append(_build_static_report_card(report_card))
         if section_reports:
             sections.append(
                 {
@@ -98,4 +141,17 @@ def _build_report_card(report: dict) -> dict:
             )
             if key in report
         },
+    }
+
+
+def _build_static_report_card(report: dict) -> dict:
+    return {
+        "code": report.get("code"),
+        "name": report.get("name"),
+        "path": report.get("path"),
+        "route_name": report.get("route_name"),
+        "category": report.get("category"),
+        "scope_modes": list(report.get("scope_modes") or []),
+        "supports": dict(report.get("supports") or {}),
+        "defaults": dict(report.get("defaults") or {}),
     }

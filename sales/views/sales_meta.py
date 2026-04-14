@@ -535,6 +535,60 @@ class SalesStockBalanceHintAPIView(SalesMetaBaseAPIView):
         return Response(hint)
 
 
+class SalesAvailableBatchesAPIView(SalesMetaBaseAPIView):
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        line_mode = self._parse_line_mode(request)
+        product_id = self._parse_int(request.query_params.get("product"), "product", required=True)
+        bill_date_raw = (request.query_params.get("bill_date") or "").strip()
+        location_id = self._parse_int(request.query_params.get("location_id"), "location_id", required=False)
+
+        if line_mode == "service":
+            return Response(
+                {
+                    "entity_id": entity_id,
+                    "entityfinid_id": entityfinid_id,
+                    "subentity_id": subentity_id,
+                    "product_id": product_id,
+                    "items": [],
+                    "count": 0,
+                }
+            )
+
+        bill_date = parse_date(bill_date_raw) if bill_date_raw else timezone.localdate()
+        if bill_date_raw and not bill_date:
+            raise serializers.ValidationError({"bill_date": "Use YYYY-MM-DD format."})
+
+        from catalog.models import Product
+
+        product = Product.objects.filter(entity_id=entity_id, id=product_id).only(
+            "id",
+            "productname",
+            "is_service",
+            "is_batch_managed",
+            "is_expiry_tracked",
+        ).first()
+        if not product:
+            raise NotFound("Product not found for current scope.")
+
+        policy = SalesSettingsService.get_stock_policy(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+        )
+        return Response(
+            SalesStockBalanceService.list_available_batches(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                bill_date=bill_date,
+                product=product,
+                location_id=location_id,
+                policy=policy,
+            )
+        )
+
+
 class SalesInvoiceSummaryAPIView(SalesMetaBaseAPIView):
     def get(self, request, pk: int):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)

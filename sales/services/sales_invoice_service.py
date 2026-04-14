@@ -46,6 +46,7 @@ from sales.models import (
     SalesLockPeriod,
 )
 from sales.services.sales_ar_service import SalesArService
+from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.sales_stock_policy_service import ResolvedSalesStockPolicy
 
 ZERO2 = Decimal("0.00")

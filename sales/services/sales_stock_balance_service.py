@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any
 
 from entity.models import Godown
 from posting.common.location_resolver import resolve_posting_location_id
@@ -93,6 +94,65 @@ class SalesStockBalanceService:
         return batch_number, expiry_date, balance
 
     @classmethod
+    def _build_available_batch_rows(
+        cls,
+        *,
+        entity_id: int,
+        entityfinid_id: int | None,
+        subentity_id: int | None,
+        product_id: int,
+        bill_date,
+        location_id: int | None,
+    ) -> list[dict[str, Any]]:
+        qs = InventoryMove.objects.filter(
+            entity_id=entity_id,
+            posting_date__lte=bill_date,
+            product_id=product_id,
+            product__is_service=False,
+        )
+        if entityfinid_id:
+            qs = qs.filter(entityfin_id=entityfinid_id)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        if location_id is not None:
+            qs = qs.filter(location_id=location_id)
+
+        rows = qs.values("batch_number", "manufacture_date", "expiry_date", "move_type", "base_qty", "location_id")
+        batch_map: dict[tuple[str, int | None], dict[str, Any]] = {}
+
+        for row in rows:
+            batch_number = str(row.get("batch_number") or "").strip()
+            if not batch_number:
+                continue
+            row_location_id = row.get("location_id")
+            key = (batch_number, row_location_id)
+            item = batch_map.setdefault(
+                key,
+                {
+                    "batch_number": batch_number,
+                    "location_id": row_location_id,
+                    "manufacture_date": None,
+                    "expiry_date": None,
+                    "available_qty": ZERO4,
+                },
+            )
+            signed_qty = _q4(cls._signed_move_qty(row))
+            item["available_qty"] = _q4(item["available_qty"] + signed_qty)
+            if item["manufacture_date"] is None and row.get("manufacture_date") is not None:
+                item["manufacture_date"] = row.get("manufacture_date")
+            if item["expiry_date"] is None and row.get("expiry_date") is not None:
+                item["expiry_date"] = row.get("expiry_date")
+
+        available_rows: list[dict[str, Any]] = []
+        for item in batch_map.values():
+            if _q4(item["available_qty"]) <= ZERO4:
+                continue
+            available_rows.append(item)
+
+        available_rows.sort(key=lambda item: (item.get("expiry_date") or date.max, item.get("batch_number") or ""))
+        return available_rows
+
+    @classmethod
     def build_hint(
         cls,
         *,
@@ -111,7 +171,6 @@ class SalesStockBalanceService:
         resolved_location_id = resolve_posting_location_id(
             entity_id=entity_id,
             subentity_id=subentity_id,
-            godown_id=getattr(product, "godown_id", None),
             location_id=location_id,
         )
 
@@ -244,4 +303,87 @@ class SalesStockBalanceService:
             "best_batch_available_qty": str(suggested_batch_available),
             "product_id": int(product.id),
             "product_name": getattr(product, "productname", None),
+        }
+
+    @classmethod
+    def list_available_batches(
+        cls,
+        *,
+        entity_id: int,
+        entityfinid_id: int | None,
+        subentity_id: int | None,
+        bill_date,
+        product,
+        location_id: int | None = None,
+        policy=None,
+    ) -> dict:
+        resolved_location_id = resolve_posting_location_id(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            location_id=location_id,
+        )
+
+        resolved_location_name = None
+        if resolved_location_id:
+            resolved_location_name = Godown.objects.filter(id=resolved_location_id).values_list("name", flat=True).first()
+
+        if not product or bool(getattr(product, "is_service", False)):
+            return {
+                "entity_id": entity_id,
+                "entityfinid_id": entityfinid_id,
+                "subentity_id": subentity_id,
+                "product_id": getattr(product, "id", None),
+                "product_name": getattr(product, "productname", None),
+                "resolved_location_id": resolved_location_id,
+                "resolved_location_name": resolved_location_name,
+                "items": [],
+                "count": 0,
+                "policy": {
+                    "mode": str(getattr(policy, "mode", "") or "").upper(),
+                    "batch_required_for_sales": bool(getattr(policy, "batch_required_for_sales", False)),
+                    "expiry_validation_required": bool(getattr(policy, "expiry_validation_required", False)),
+                    "fefo_required": bool(getattr(policy, "fefo_required", False)),
+                    "allow_manual_batch_override": bool(getattr(policy, "allow_manual_batch_override", True)),
+                    "allow_negative_stock": bool(getattr(policy, "allow_negative_stock", True)),
+                    "allow_oversell": bool(getattr(policy, "allow_oversell", True)),
+                },
+            }
+
+        items = cls._build_available_batch_rows(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            product_id=int(product.id),
+            bill_date=bill_date,
+            location_id=resolved_location_id,
+        )
+        return {
+            "entity_id": entity_id,
+            "entityfinid_id": entityfinid_id,
+            "subentity_id": subentity_id,
+            "product_id": int(product.id),
+            "product_name": getattr(product, "productname", None),
+            "resolved_location_id": resolved_location_id,
+            "resolved_location_name": resolved_location_name,
+            "items": [
+                {
+                    "batch_number": row["batch_number"],
+                    "available_qty": str(row["available_qty"]),
+                    "manufacture_date": row["manufacture_date"].isoformat() if row.get("manufacture_date") else None,
+                    "expiry_date": row["expiry_date"].isoformat() if row.get("expiry_date") else None,
+                    "location_id": row.get("location_id"),
+                    "location_name": resolved_location_name,
+                }
+                for row in items
+            ],
+            "count": len(items),
+            "policy": {
+                "mode": str(getattr(policy, "mode", "") or "").upper(),
+                "batch_required_for_sales": bool(getattr(policy, "batch_required_for_sales", False)),
+                "expiry_validation_required": bool(getattr(policy, "expiry_validation_required", False)),
+                "fefo_required": bool(getattr(policy, "fefo_required", False)),
+                "allow_manual_batch_override": bool(getattr(policy, "allow_manual_batch_override", True)),
+                "allow_negative_stock": bool(getattr(policy, "allow_negative_stock", True)),
+                "allow_oversell": bool(getattr(policy, "allow_oversell", True)),
+            },
         }
