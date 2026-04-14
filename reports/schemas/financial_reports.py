@@ -77,6 +77,7 @@ class FinancialReportScopeSerializer(serializers.Serializer):
     page = serializers.IntegerField(required=False, min_value=1)
     page_size = serializers.IntegerField(required=False, min_value=1, max_value=500)
     export = serializers.ChoiceField(choices=("excel", "pdf", "csv"), required=False, allow_null=True)
+    orientation = serializers.ChoiceField(choices=("portrait", "landscape"), required=False, allow_null=True)
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

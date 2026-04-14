@@ -5,7 +5,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from catalog.models import Product, UnitOfMeasure
-from entity.models import Godown
+from entity.models import Godown, SubEntity
 from .models import (
     InventoryAdjustment,
     InventoryAdjustmentLine,
@@ -107,8 +107,15 @@ class GodownWriteSerializer(serializers.Serializer):
         if value is None:
             return value
         entity_id = self.initial_data.get("entity")
-        if entity_id and str(value):
-            entity = value if isinstance(value, SubEntity) else None
+        if not entity_id:
+            raise serializers.ValidationError("Entity is required before choosing a subentity.")
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError) as exc:
+            raise serializers.ValidationError("Entity must be a valid numeric id.") from exc
+        subentity = SubEntity.objects.filter(id=value, entity_id=entity_id).only("id").first()
+        if subentity is None:
+            raise serializers.ValidationError("Subentity must belong to the selected entity.")
         return value
 
     def validate(self, attrs):

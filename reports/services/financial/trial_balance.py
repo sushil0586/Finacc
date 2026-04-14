@@ -65,6 +65,14 @@ def _last_day_of_month(d):
     return first_next - timedelta(days=1)
 
 
+def _add_months(d, months):
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, _last_day_of_month(date(year, month, 1)).day)
+    return date(year, month, day)
+
+
 def _quarter_end(d):
     quarter = ((d.month - 1) // 3) + 1
     last_month = quarter * 3
@@ -81,7 +89,7 @@ def _iter_period_ranges(start_date, end_date, period_by):
         if period_by == "month":
             period_end = _last_day_of_month(cursor)
         elif period_by == "quarter":
-            period_end = _quarter_end(cursor)
+            period_end = _last_day_of_month(_add_months(cursor, 2))
         else:
             period_end = _year_end(cursor)
         if period_end > end_date:
@@ -507,7 +515,7 @@ def build_trial_balance(
         periods = []
         period_meta = []
         period_maps = []
-        for period_start, period_end in _iter_period_ranges(from_date, to_date, period_by):
+        for index, (period_start, period_end) in enumerate(_iter_period_ranges(from_date, to_date, period_by), start=1):
             period_snapshot = _build_snapshot(
                 entity_id=entity_id,
                 entityfin_id=entityfin_id,
@@ -526,14 +534,14 @@ def build_trial_balance(
                 include_pagination=False,
             )
             period_snapshot["period_key"] = (
-                f"{period_end.year}-Q{((period_end.month - 1) // 3) + 1}"
+                f"Q{index}"
                 if period_by == "quarter"
                 else period_end.strftime("%Y")
                 if period_by == "year"
                 else period_end.strftime("%Y-%m")
             )
             period_snapshot["period_label"] = (
-                f"Q{((period_end.month - 1) // 3) + 1} {period_end.year}"
+                f"Q{index}"
                 if period_by == "quarter"
                 else period_end.strftime("%Y")
                 if period_by == "year"

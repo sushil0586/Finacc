@@ -5,6 +5,8 @@ from financial.profile_access import account_partytype
 from entity.models import EntityFinancialYear, SubEntity
 from posting.models import EntryStatus, EntityStaticAccountMap, TxnType
 
+from reports.services.financial.registry import build_financial_hub
+
 
 REPORT_DEFAULTS = {
     "default_page_size": 100,
@@ -29,6 +31,8 @@ REPORT_DEFAULTS = {
     "profit_loss_default_view_type": "summary",
     "profit_loss_posted_only_default": True,
     "profit_loss_hide_zero_rows_default": True,
+    "profit_loss_stock_valuation_mode": "auto",
+    "profit_loss_stock_valuation_method": "fifo",
     "group_balance_sheet_by": "accounthead",
     "balance_sheet_period_by": None,
     "balance_sheet_default_view_type": "summary",
@@ -158,6 +162,8 @@ def _report_registry() -> list[dict]:
                 "view_type": True,
                 "posted_only": True,
                 "hide_zero_rows": True,
+                "stock_valuation": True,
+                "stock_valuation_method": True,
             },
             "default_group_by": REPORT_DEFAULTS["group_profit_loss_by"],
             "default_period_by": REPORT_DEFAULTS["profit_loss_period_by"],
@@ -165,6 +171,8 @@ def _report_registry() -> list[dict]:
             "default_include_zero_balance": False,
             "default_hide_zero_rows": REPORT_DEFAULTS["profit_loss_hide_zero_rows_default"],
             "default_posted_only": REPORT_DEFAULTS["profit_loss_posted_only_default"],
+            "default_stock_valuation_mode": REPORT_DEFAULTS["profit_loss_stock_valuation_mode"],
+            "default_stock_valuation_method": REPORT_DEFAULTS["profit_loss_stock_valuation_method"],
             "aliases": ["income_expenditure"],
         },
         {
@@ -453,6 +461,7 @@ def build_financial_report_meta(entity_id: int) -> dict:
     for row in subentities:
         row["ismainentity"] = row["is_head_office"]
     account_options = _account_option_payload(entity_id)
+    report_registry = _report_registry()
     return {
         "entity_id": entity_id,
         "defaults": REPORT_DEFAULTS,
@@ -530,7 +539,8 @@ def build_financial_report_meta(entity_id: int) -> dict:
             ],
             "comparison_periods": ["month", "quarter", "year"],
         },
-        "reports": _report_registry(),
+        "reports": report_registry,
+        "hub": build_financial_hub(report_registry),
         "financial_years": financial_years,
         "subentities": subentities,
         "actions": {
