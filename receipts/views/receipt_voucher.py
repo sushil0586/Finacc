@@ -14,13 +14,17 @@ from receipts.serializers.receipt_voucher import (
 )
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from helpers.utils.api_validation import (
+    raise_structured_validation_error,
+    raise_scope_type_error,
+    require_query_scope,
+)
+from helpers.utils.document_actions import build_document_action_flags
 
 
 def _raise_validation_error(err: ValueError) -> None:
     payload = err.args[0] if err.args else str(err)
-    if isinstance(payload, dict):
-        raise ValidationError(payload)
-    raise ValidationError({"non_field_errors": [str(payload)]})
+    raise_structured_validation_error(payload)
 
 
 def _receipt_permission_code(action: str) -> str:
@@ -48,8 +52,8 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
         entity = self.request.query_params.get("entity")
         entityfinid = self.request.query_params.get("entityfinid")
         subentity = self.request.query_params.get("subentity")
-        if required and (not entity or not entityfinid):
-            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        if required:
+            require_query_scope(entity, entityfinid)
         if not entity or not entityfinid:
             return None, None, None
         try:
@@ -59,7 +63,7 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
             if subentity_id == 0:
                 subentity_id = None
         except (TypeError, ValueError):
-            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+            raise_scope_type_error()
         return entity_id, entityfinid_id, subentity_id
 
     def get_serializer_class(self):
@@ -106,11 +110,11 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
         payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
         entity_id = payload.get("entity_id", payload.get("entity"))
         if entity_id in (None, "", "null"):
-            raise ValidationError({"detail": "entity is required."})
+            raise ValidationError({"entity": "This field is required."})
         try:
             entity_id = int(entity_id)
         except (TypeError, ValueError):
-            raise ValidationError({"detail": "entity must be an integer."})
+            raise ValidationError({"entity": "Must be an integer."})
         _require_receipt_permission(request.user, entity_id=entity_id, action="create")
         return super().create(request, *args, **kwargs)
 
@@ -123,8 +127,7 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
         entity = self.request.query_params.get("entity")
         entityfinid = self.request.query_params.get("entityfinid")
         subentity = self.request.query_params.get("subentity")
-        if not entity or not entityfinid:
-            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        require_query_scope(entity, entityfinid)
         try:
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
@@ -132,7 +135,7 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             if subentity_id == 0:
                 subentity_id = None
         except (TypeError, ValueError):
-            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+            raise_scope_type_error()
         return entity_id, entityfinid_id, subentity_id
 
     def get_queryset(self):
@@ -174,7 +177,7 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
 
     def perform_destroy(self, instance):
         if int(instance.status) != int(ReceiptVoucherHeader.Status.DRAFT):
-            raise ValidationError({"detail": "Only draft receipt vouchers can be deleted. Use cancel flow."})
+            raise ValidationError({"non_field_errors": ["Only draft receipt vouchers can be deleted. Use cancel flow."]})
         super().perform_destroy(instance)
 
     def destroy(self, request, *args, **kwargs):
@@ -233,7 +236,7 @@ class ReceiptVoucherApprovalAPIView(APIView):
                 _require_receipt_permission(request.user, entity_id=header.entity_id, action="reject")
                 result = ReceiptVoucherService.reject_voucher(pk, rejected_by_id=request.user.id, remarks=remarks)
             else:
-                raise ValidationError({"detail": "action must be submit|approve|reject"})
+                raise ValidationError({"action": "Use submit, approve, or reject."})
         except ValueError as e:
             _raise_validation_error(e)
         out = ReceiptVoucherHeaderSerializer(result.header).data
@@ -283,19 +286,14 @@ class ReceiptVoucherSettlementSummaryAPIView(APIView):
 
     @staticmethod
     def _action_flags(voucher: ReceiptVoucherHeader):
-        is_draft = int(voucher.status) == int(ReceiptVoucherHeader.Status.DRAFT)
-        is_confirmed = int(voucher.status) == int(ReceiptVoucherHeader.Status.CONFIRMED)
-        is_posted = int(voucher.status) == int(ReceiptVoucherHeader.Status.POSTED)
-        is_cancelled = int(voucher.status) == int(ReceiptVoucherHeader.Status.CANCELLED)
-        return {
-            "can_edit": not is_posted and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_cancel": is_draft or is_confirmed,
-            "can_unpost": is_posted,
-            "status": int(voucher.status),
-            "status_name": voucher.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(voucher.status),
+            draft_status=int(ReceiptVoucherHeader.Status.DRAFT),
+            confirmed_status=int(ReceiptVoucherHeader.Status.CONFIRMED),
+            posted_status=int(ReceiptVoucherHeader.Status.POSTED),
+            cancelled_status=int(ReceiptVoucherHeader.Status.CANCELLED),
+            status_name=voucher.get_status_display(),
+        )
 
     @staticmethod
     def _account_block(voucher: ReceiptVoucherHeader, field_name: str):
@@ -318,8 +316,7 @@ class ReceiptVoucherSettlementSummaryAPIView(APIView):
         entity = request.query_params.get("entity")
         entityfinid = request.query_params.get("entityfinid")
         subentity = request.query_params.get("subentity")
-        if not entity or not entityfinid:
-            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        require_query_scope(entity, entityfinid)
         try:
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
@@ -327,7 +324,7 @@ class ReceiptVoucherSettlementSummaryAPIView(APIView):
             if subentity_id == 0:
                 subentity_id = None
         except (TypeError, ValueError):
-            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+            raise_scope_type_error()
         _require_receipt_permission(request.user, entity_id=entity_id, action="view")
 
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)

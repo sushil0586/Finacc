@@ -37,6 +37,7 @@ class TxnType(models.TextChoices):
     INVENTORY_ADJUSTMENT = "IA", "Inventory Adjustment"
     RECEIPT = "RV", "Receipt Voucher"
     PAYMENT = "PV", "Payment Voucher"
+    OPENING_BALANCE = "OB", "Opening Balance"
 
 
 class EntryStatus(models.IntegerChoices):
@@ -55,6 +56,7 @@ class StaticAccountGroup(models.TextChoices):
     TCS = "TCS", "TCS"
     PURCHASE = "PURCHASE", "Purchase Defaults"
     SALES = "SALES", "Sales Defaults"
+    EQUITY = "EQUITY", "Equity / Opening"
     OTHER = "OTHER", "Other"
 
 

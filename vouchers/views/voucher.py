@@ -11,6 +11,12 @@ from vouchers.serializers.voucher import VoucherDetailSerializer, VoucherListSer
 from rbac.services import EffectivePermissionService
 from vouchers.services.voucher_service import VoucherService
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from helpers.utils.api_validation import (
+    raise_structured_validation_error,
+    raise_scope_type_error,
+    require_query_scope,
+)
+from helpers.utils.document_actions import build_document_action_flags
 
 
 
@@ -33,9 +39,7 @@ def _assert_permission(user, *, entity_id: int, voucher_type: str, action: str):
 
 def _raise_validation_error(err: ValueError) -> None:
     payload = err.args[0] if err.args else str(err)
-    if isinstance(payload, dict):
-        raise ValidationError(payload)
-    raise ValidationError({"non_field_errors": [str(payload)]})
+    raise_structured_validation_error(payload)
 
 
 class _VoucherScopeMixin:
@@ -43,8 +47,8 @@ class _VoucherScopeMixin:
         entity = self.request.query_params.get("entity")
         entityfinid = self.request.query_params.get("entityfinid")
         subentity = self.request.query_params.get("subentity")
-        if required and (not entity or not entityfinid):
-            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        if required:
+            require_query_scope(entity, entityfinid)
         if not entity or not entityfinid:
             return None, None, None
         try:
@@ -54,7 +58,7 @@ class _VoucherScopeMixin:
             if subentity_id == 0:
                 subentity_id = None
         except (TypeError, ValueError):
-            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+            raise_scope_type_error()
         return entity_id, entityfinid_id, subentity_id
 
     def _scoped_queryset(self):
@@ -124,7 +128,7 @@ class VoucherRetrieveUpdateDestroyAPIView(_VoucherScopeMixin, generics.RetrieveU
 
     def perform_destroy(self, instance):
         if int(instance.status) != int(VoucherHeader.Status.DRAFT):
-            raise ValidationError({"detail": "Only draft vouchers can be deleted. Use cancel flow."})
+            raise ValidationError({"non_field_errors": ["Only draft vouchers can be deleted. Use cancel flow."]})
         _assert_permission(self.request.user, entity_id=instance.entity_id, voucher_type=instance.voucher_type, action="delete")
         super().perform_destroy(instance)
 
@@ -173,7 +177,7 @@ class VoucherApprovalAPIView(_VoucherScopedActionMixin, APIView):
                 self._require(header, "reject")
                 result = VoucherService.reject_voucher(header.id, rejected_by_id=request.user.id, remarks=remarks)
             else:
-                raise ValidationError({"detail": "action must be submit|approve|reject"})
+                raise ValidationError({"action": "Use submit, approve, or reject."})
         except ValueError as e:
             _raise_validation_error(e)
         out = VoucherDetailSerializer(result.header, context={"request": request}).data
@@ -211,19 +215,14 @@ class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _action_flags(self, voucher: VoucherHeader):
-        is_draft = int(voucher.status) == int(VoucherHeader.Status.DRAFT)
-        is_confirmed = int(voucher.status) == int(VoucherHeader.Status.CONFIRMED)
-        is_posted = int(voucher.status) == int(VoucherHeader.Status.POSTED)
-        is_cancelled = int(voucher.status) == int(VoucherHeader.Status.CANCELLED)
-        return {
-            "can_edit": not is_posted and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_cancel": is_draft or is_confirmed,
-            "can_unpost": is_posted,
-            "status": int(voucher.status),
-            "status_name": voucher.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(voucher.status),
+            draft_status=int(VoucherHeader.Status.DRAFT),
+            confirmed_status=int(VoucherHeader.Status.CONFIRMED),
+            posted_status=int(VoucherHeader.Status.POSTED),
+            cancelled_status=int(VoucherHeader.Status.CANCELLED),
+            status_name=voucher.get_status_display(),
+        )
 
     def _cash_bank_block(self, voucher: VoucherHeader):
         acct = voucher.cash_bank_account

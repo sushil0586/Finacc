@@ -11,6 +11,10 @@ from receipts.models import ReceiptVoucherHeader
 from receipts.serializers.receipt_voucher import ReceiptVoucherHeaderSerializer
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
 from receipts.views.receipt_exports import ReceiptVoucherPDFAPIView
+from receipts.views.receipt_voucher import (
+    ReceiptVoucherApprovalAPIView,
+    ReceiptVoucherListCreateAPIView,
+)
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter
 
 
@@ -61,6 +65,7 @@ class PaymentPostingAdapterTests(SimpleTestCase):
 class ReceiptVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
@@ -71,6 +76,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_get_policy,
         mock_post_adapter,
         mock_fresh_allocs,
+        _mock_sync_tcs,
     ):
         header = SimpleNamespace(
             id=11,
@@ -110,11 +116,12 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         self.assertEqual(header.status, ReceiptVoucherHeader.Status.POSTED)
         mock_post_adapter.assert_called_once()
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.SalesArService.cancel_settlement")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.unpost_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
-    def test_unpost_voucher_cancels_ap_and_reverses_posting(self, mock_header_objects, mock_get_policy, mock_unpost_adapter, mock_cancel_settlement):
+    def test_unpost_voucher_cancels_ap_and_reverses_posting(self, mock_header_objects, mock_get_policy, mock_unpost_adapter, mock_cancel_settlement, _mock_sync_tcs):
         header = SimpleNamespace(
             id=12,
             entity_id=1,
@@ -156,6 +163,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 level="hard",
             )
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
@@ -166,6 +174,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_get_policy,
         mock_post_adapter,
         mock_fresh_allocs,
+        _mock_sync_tcs,
     ):
         row = SimpleNamespace(open_item_id=501, settled_amount=Decimal("120.00"))
         header = SimpleNamespace(
@@ -237,6 +246,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 }],
             )
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
@@ -247,6 +257,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_get_policy,
         mock_post_adapter,
         mock_fresh_allocs,
+        _mock_sync_tcs,
     ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,
@@ -298,6 +309,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=31, posted_by_id=9)
         mock_post_adapter.assert_not_called()
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
     @patch("receipts.services.receipt_voucher_service.SalesArService.post_settlement")
@@ -312,6 +324,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_post_settlement,
         mock_post_adapter,
         mock_fresh_allocs,
+        _mock_sync_tcs,
     ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,
@@ -388,6 +401,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         self.assertEqual(adv_call["lines"][0]["amount"], Decimal("50000.00"))
         mock_post_adapter.assert_called_once()
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
     @patch("receipts.services.receipt_voucher_service.SalesArService.cancel_settlement")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.unpost_receipt_voucher")
@@ -398,6 +412,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_unpost_adapter,
         mock_cancel_settlement,
         mock_get_policy,
+        _mock_sync_tcs,
     ):
         advance_balance = SimpleNamespace(is_open=True, adjusted_amount=Decimal("0.00"), outstanding_amount=Decimal("0.00"), save=MagicMock())
         advance_row = SimpleNamespace(ap_settlement_id=202, save=MagicMock())
@@ -603,10 +618,12 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherAllocation.objects.create")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects.create")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._account_ledger_id")
     def test_draft_create_with_advance_adjustments(
         self,
         mock_account_ledger_id,
+        _mock_sync_tcs,
         mock_get_policy,
         mock_header_create,
         mock_alloc_create,
@@ -649,10 +666,11 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
         self.assertEqual(mock_adv_create.call_args.kwargs["advance_balance_id"], 14)
         self.assertEqual(mock_adv_create.call_args.kwargs["open_item_id"], 55)
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._validate_advance_adjustments")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._validate_adjustment_allocation_links")
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
-    def test_draft_update_with_advance_adjustments(self, mock_get_policy, mock_validate_adj_links, mock_validate_adv):
+    def test_draft_update_with_advance_adjustments(self, mock_get_policy, mock_validate_adj_links, mock_validate_adv, _mock_sync_tcs):
         adv_row = MagicMock()
         adv_row.id = 71
         alloc_row = SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))
@@ -831,6 +849,43 @@ class PaymentVoucherPDFEndpointTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
+
+
+class ReceiptVoucherViewValidationTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    def _request(self, path: str, data=None):
+        request = self.factory.post(path, data or {}, format="json") if data is not None else self.factory.get(path)
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    def test_list_view_reports_missing_scope_as_field_errors(self, mocked_error_log):
+        request = self._request("/api/receipts/receipt-vouchers/")
+
+        response = ReceiptVoucherListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["entity"]), "This query param is required.")
+        self.assertEqual(str(response.data["entityfinid"]), "This query param is required.")
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_approval_view_reports_invalid_action_on_action_field(self, mocked_header_objects, mocked_error_log):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request(
+            "/api/receipts/receipt-vouchers/9/approval/",
+            {"action": "ship"},
+        )
+
+        response = ReceiptVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
+        mocked_error_log.assert_called_once()
 
 
 

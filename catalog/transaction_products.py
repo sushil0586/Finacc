@@ -129,6 +129,7 @@ class TransactionProductCatalogService:
                     "purchase_rate": None,
                     "selling_price": None,
                     "mrp": None,
+                    "primary_barcode": None,
                     "barcode_options": [],
                 }
                 uom_options[uom_obj.id] = option
@@ -199,6 +200,8 @@ class TransactionProductCatalogService:
             }
             if option is not None:
                 option["barcode_options"].append(barcode_row)
+                if barcode.isprimary and option.get("primary_barcode") is None:
+                    option["primary_barcode"] = barcode_row
 
         # Ensure a base-only option still gets through even if no conversion rows exist
         if base_uom and base_uom_id and base_uom_id not in uom_options:
@@ -269,6 +272,7 @@ class TransactionProductCatalogService:
         for option in uom_options:
             barcode_options.extend(option.get("barcode_options", []))
         barcode_options.sort(key=lambda row: (0 if row["isprimary"] else 1, row["uom_code"] or "", row["pack_size"] or 0, row["id"]))
+        default_barcode = barcode_options[0] if barcode_options else None
 
         return {
             "id": product.id,
@@ -276,6 +280,8 @@ class TransactionProductCatalogService:
             "productdesc": product.productdesc,
             "sku": product.sku,
             "is_service": product.is_service,
+            "item_classification": getattr(product, "item_classification", None),
+            "product_status": getattr(product, "product_status", None),
             "is_pieces": product.is_pieces,
             "is_batch_managed": bool(getattr(product, "is_batch_managed", False)),
             "is_expiry_tracked": bool(getattr(product, "is_expiry_tracked", False)),
@@ -283,12 +289,15 @@ class TransactionProductCatalogService:
             "expiry_warning_days": getattr(product, "expiry_warning_days", None),
             "base_uom_id": getattr(product, "base_uom_id", None),
             "base_uom_code": getattr(getattr(product, "base_uom", None), "code", None),
+            "default_uom_id": getattr(product, "base_uom_id", None),
+            "default_uom_code": getattr(getattr(product, "base_uom", None), "code", None),
             "uom_id": getattr(product, "base_uom_id", None),
             "uom": getattr(getattr(product, "base_uom", None), "code", None),
             "uom_options": uom_options,
             "uom_conversions": uom_conversions,
             "price_options": price_options,
             "barcode_options": barcode_options,
+            "default_barcode": default_barcode,
             "default_gst": default_gst,
             "hsn_id": getattr(best_gst, "hsn_id", None) if best_gst is not None else None,
             "hsn": getattr(hsn, "code", None),

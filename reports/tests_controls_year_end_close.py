@@ -84,6 +84,7 @@ class YearEndClosePreviewTests(SimpleTestCase):
         class DummyFinancialYear:
             def __init__(self):
                 self.id = 51
+                self.pk = 51
                 self.finendyear = None
                 self.metadata = {}
                 self.period_status = "open"

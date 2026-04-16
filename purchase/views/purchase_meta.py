@@ -25,6 +25,7 @@ from purchase.models.purchase_statutory import PurchaseStatutoryChallan, Purchas
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.services.purchase_choice_service import PurchaseChoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from helpers.utils.document_actions import build_document_action_flags
 from core.invoice_ui_contracts import purchase_invoice_ui_contract
 from gst_tds.models import GstTdsContractLedger
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
@@ -285,23 +286,18 @@ class PurchaseMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             else:
                 delete_allowed = False
 
-        can_edit = False
-        if is_draft:
-            can_edit = True
-        elif is_confirmed and allow_edit_confirmed:
-            can_edit = True
-
-        return {
-            "can_edit": can_edit and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_unpost": is_posted and allow_unpost_posted,
-            "can_cancel": is_draft or is_confirmed,
-            "can_delete": delete_allowed,
-            "can_rebuild_tax_summary": not is_cancelled,
-            "status": int(header.status),
-            "status_name": header.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(header.status),
+            draft_status=int(PurchaseInvoiceHeader.Status.DRAFT),
+            confirmed_status=int(PurchaseInvoiceHeader.Status.CONFIRMED),
+            posted_status=int(PurchaseInvoiceHeader.Status.POSTED),
+            cancelled_status=int(PurchaseInvoiceHeader.Status.CANCELLED),
+            status_name=header.get_status_display(),
+            allow_edit_confirmed=allow_edit_confirmed,
+            allow_unpost_posted=allow_unpost_posted,
+            include_rebuild_tax_summary=True,
+            can_delete=delete_allowed,
+        )
 
     def _vendor_block(self, header: PurchaseInvoiceHeader):
         vendor = getattr(header, "vendor", None)

@@ -223,16 +223,12 @@ def _raw_balance_rows(
     )
 
     rows = []
+    excluded_rows = []
     search_text = (search or "").strip().lower()
     for item in closing.values():
         ledger = item["ledger"]
         amount = item["amount"]
         head, acc_type = _resolve_effective_head_and_type(ledger, amount)
-        if not _is_balance_sheet_classification(head, acc_type):
-            continue
-        if not include_zero_balances and amount == 0:
-            continue
-
         row = {
             "ledger_id": ledger.id,
             "ledger_code": ledger.ledger_code,
@@ -247,6 +243,12 @@ def _raw_balance_rows(
             "classification_reason": getattr(classify_financial_head(head, acc_type), "reason", ""),
             **_ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id),
         }
+        if not _is_balance_sheet_classification(head, acc_type):
+            excluded_rows.append({**row, "excluded_reason": "not_balance_sheet_classification"})
+            continue
+        if not include_zero_balances and amount == 0:
+            excluded_rows.append({**row, "excluded_reason": "zero_balance_filtered"})
+            continue
         if search_text:
             haystack = " ".join(
                 str(v or "")
@@ -258,10 +260,11 @@ def _raw_balance_rows(
                 )
             ).lower()
             if search_text not in haystack:
+                excluded_rows.append({**row, "excluded_reason": "search_filtered"})
                 continue
         rows.append(row)
 
-    return entity_id, entityfin_id, subentity_id, from_date, to_date, rows
+    return entity_id, entityfin_id, subentity_id, from_date, to_date, rows, excluded_rows
 
 
 def _raw_profit_loss_rows(
@@ -1163,7 +1166,7 @@ def _build_snapshot(
     include_pagination=True,
     reporting_policy=None,
 ):
-    entity_id, entityfin_id, subentity_id, from_date, to_date, rows = _raw_balance_rows(
+    entity_id, entityfin_id, subentity_id, from_date, to_date, rows, excluded_rows = _raw_balance_rows(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -1329,6 +1332,34 @@ def _build_snapshot(
             "stock_valuation_method": stock_context["valuation_method"],
             "inventory_gl_total": f"{stock_context['gl_inventory_total']:.2f}",
             "inventory_delta": f"{stock_context['inventory_delta']:.2f}",
+            "raw_rows": [
+                {
+                    "side": "asset" if row in assets_source else "liability",
+                    "ledger_id": row.get("ledger_id"),
+                    "ledger_name": row.get("ledger_name"),
+                    "ledger_code": row.get("ledger_code"),
+                    "amount": row.get("amount"),
+                    "bucket": row.get("bucket"),
+                    "accounthead_name": row.get("accounthead_name"),
+                    "accounttype_name": row.get("accounttype_name"),
+                    "classification_reason": row.get("classification_reason"),
+                }
+                for row in (assets_source + liabilities_source)
+            ],
+            "excluded_rows": [
+                {
+                    "ledger_id": row.get("ledger_id"),
+                    "ledger_name": row.get("ledger_name"),
+                    "ledger_code": row.get("ledger_code"),
+                    "amount": row.get("amount"),
+                    "bucket": row.get("bucket"),
+                    "accounthead_name": row.get("accounthead_name"),
+                    "accounttype_name": row.get("accounttype_name"),
+                    "classification_reason": row.get("classification_reason"),
+                    "excluded_reason": row.get("excluded_reason"),
+                }
+                for row in excluded_rows
+            ],
         },
         "stock_valuation": {
             "requested_mode": stock_context["requested_mode"],

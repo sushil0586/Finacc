@@ -22,13 +22,7 @@ from entity.models import (
     SubEntityContact,
     SubEntityGstRegistration,
     UserEntityContext,
-    UnitType,
 )
-
-
-class UnitTypeAdmin(ImportExportMixin, admin.ModelAdmin):
-    list_display = ["UnitName", "UnitDesc"]
-    search_fields = ["UnitName", "UnitDesc"]
 
 
 class GstRegitrationTypesAdmin(ImportExportMixin, admin.ModelAdmin):
@@ -160,7 +154,6 @@ class GodownAdmin(admin.ModelAdmin):
     list_select_related = ["entity", "subentity"]
 
 
-admin.site.register(UnitType, UnitTypeAdmin)
 admin.site.register(GstRegistrationType, GstRegitrationTypesAdmin)
 admin.site.register(Constitution)
 admin.site.register(BankDetail)

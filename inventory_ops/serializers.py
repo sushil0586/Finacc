@@ -139,7 +139,10 @@ class GodownWriteSerializer(serializers.Serializer):
 class InventoryTransferLineSerializer(serializers.Serializer):
     product = serializers.IntegerField()
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
-    unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4)
+    unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    manufacture_date = serializers.DateField(required=False, allow_null=True)
+    expiry_date = serializers.DateField(required=False, allow_null=True)
     note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate_qty(self, value):
@@ -148,6 +151,8 @@ class InventoryTransferLineSerializer(serializers.Serializer):
         return value
 
     def validate_unit_cost(self, value):
+        if value is None:
+            return value
         if value < 0:
             raise serializers.ValidationError("Unit cost cannot be negative.")
         return value
@@ -181,7 +186,20 @@ class InventoryTransferLineResponseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = InventoryTransferLine
-        fields = ["id", "product_id", "product_name", "sku", "uom_name", "qty", "unit_cost", "line_value", "note"]
+        fields = [
+            "id",
+            "product_id",
+            "product_name",
+            "sku",
+            "uom_name",
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
+            "qty",
+            "unit_cost",
+            "line_value",
+            "note",
+        ]
 
     def get_line_value(self, obj):
         return (Decimal(obj.qty or 0) * Decimal(obj.unit_cost or 0)).quantize(Decimal("0.01"))
@@ -267,7 +285,10 @@ class InventoryAdjustmentLineSerializer(serializers.Serializer):
     product = serializers.IntegerField()
     direction = serializers.ChoiceField(choices=[choice[0] for choice in InventoryAdjustmentLine.Direction.choices])
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
-    unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4)
+    unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    manufacture_date = serializers.DateField(required=False, allow_null=True)
+    expiry_date = serializers.DateField(required=False, allow_null=True)
     note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate_qty(self, value):
@@ -276,6 +297,8 @@ class InventoryAdjustmentLineSerializer(serializers.Serializer):
         return value
 
     def validate_unit_cost(self, value):
+        if value is None:
+            return value
         if value < 0:
             raise serializers.ValidationError("Unit cost cannot be negative.")
         return value
@@ -306,7 +329,21 @@ class InventoryAdjustmentLineResponseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = InventoryAdjustmentLine
-        fields = ["id", "product_id", "product_name", "sku", "uom_name", "direction", "qty", "unit_cost", "line_value", "note"]
+        fields = [
+            "id",
+            "product_id",
+            "product_name",
+            "sku",
+            "uom_name",
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
+            "direction",
+            "qty",
+            "unit_cost",
+            "line_value",
+            "note",
+        ]
 
     def get_line_value(self, obj):
         return (Decimal(obj.qty or 0) * Decimal(obj.unit_cost or 0)).quantize(Decimal("0.01"))

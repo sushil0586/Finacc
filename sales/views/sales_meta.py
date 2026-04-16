@@ -25,6 +25,7 @@ from sales.services.sales_choices_service import SalesChoicesService
 from core.invoice_ui_contracts import sales_invoice_ui_contract
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
+from helpers.utils.document_actions import build_document_action_flags
 from sales.services.sales_stock_balance_service import SalesStockBalanceService
 from sales.services.sales_compliance_service import SalesComplianceService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
@@ -257,23 +258,18 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
         is_posted = int(header.status) == int(SalesInvoiceHeader.Status.POSTED)
         is_cancelled = int(header.status) == int(SalesInvoiceHeader.Status.CANCELLED)
 
-        can_edit = False
-        if is_draft:
-            can_edit = True
-        elif is_confirmed and allow_edit_confirmed:
-            can_edit = True
-
-        return {
-            "can_edit": can_edit and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_cancel": is_draft or is_confirmed,
-            "can_reverse": is_posted and allow_unpost_posted,
-            "can_unpost": is_posted and allow_unpost_posted,
-            "can_rebuild_tax_summary": not is_cancelled,
-            "status": int(header.status),
-            "status_name": header.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(header.status),
+            draft_status=int(SalesInvoiceHeader.Status.DRAFT),
+            confirmed_status=int(SalesInvoiceHeader.Status.CONFIRMED),
+            posted_status=int(SalesInvoiceHeader.Status.POSTED),
+            cancelled_status=int(SalesInvoiceHeader.Status.CANCELLED),
+            status_name=header.get_status_display(),
+            allow_edit_confirmed=allow_edit_confirmed,
+            allow_unpost_posted=allow_unpost_posted,
+            include_reverse=True,
+            include_rebuild_tax_summary=True,
+        )
 
     def _compliance_action_flags(self, header: SalesInvoiceHeader):
         return SalesComplianceService.compliance_action_flags(header)

@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
+from helpers.utils.settlement_runtime import SettlementVoucherRuntimeMixin
 from posting.adapters.voucher import VoucherPostingAdapter
 from vouchers.models.voucher_core import VoucherHeader, VoucherLine
 from vouchers.services.voucher_settings_service import VoucherSettingsService
@@ -32,52 +33,7 @@ class VoucherResult:
     message: str
 
 
-class VoucherService:
-    @staticmethod
-    def _account_ledger_id(account_obj_or_id) -> Optional[int]:
-        if account_obj_or_id in (None, "", 0):
-            return None
-        if hasattr(account_obj_or_id, "ledger_id"):
-            ledger_id = getattr(account_obj_or_id, "ledger_id", None)
-            return int(ledger_id) if ledger_id else None
-        from financial.models import account as Account
-
-        row = Account.objects.filter(pk=account_obj_or_id).values_list("ledger_id", flat=True).first()
-        return int(row) if row else None
-
-    @staticmethod
-    def _workflow_state(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        st = data.get("_approval_state")
-        if not isinstance(st, dict):
-            st = {
-                "status": "DRAFT",
-                "submitted_by": None,
-                "submitted_at": None,
-                "approved_by": None,
-                "approved_at": None,
-                "rejected_by": None,
-                "rejected_at": None,
-                "remarks": None,
-            }
-        return st
-
-    @staticmethod
-    def _set_workflow_state(payload: Optional[Dict[str, Any]], state: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        data["_approval_state"] = state
-        return data
-
-    @staticmethod
-    def _append_audit(payload: Optional[Dict[str, Any]], event: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        logs = data.get("_audit_log")
-        if not isinstance(logs, list):
-            logs = []
-        logs.append(event)
-        data["_audit_log"] = logs
-        return data
-
+class VoucherService(SettlementVoucherRuntimeMixin):
     @staticmethod
     def _doc_type_id(voucher_type: str, doc_code: str) -> int:
         doc_key = VoucherSettingsService.DOC_KEY_BY_TYPE[voucher_type]

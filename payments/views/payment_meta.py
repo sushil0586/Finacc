@@ -12,6 +12,7 @@ from core.entitlements import ScopedEntitlementMixin
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from helpers.utils.document_actions import build_document_action_flags
 from payments.models import PaymentMode, PaymentVoucherHeader
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_choice_service import PaymentChoiceService
@@ -190,19 +191,14 @@ class PaymentMetaBaseAPIView(ScopedEntitlementMixin, APIView):
         return qs
 
     def _action_flags(self, header: PaymentVoucherHeader):
-        is_draft = int(header.status) == int(PaymentVoucherHeader.Status.DRAFT)
-        is_confirmed = int(header.status) == int(PaymentVoucherHeader.Status.CONFIRMED)
-        is_posted = int(header.status) == int(PaymentVoucherHeader.Status.POSTED)
-        is_cancelled = int(header.status) == int(PaymentVoucherHeader.Status.CANCELLED)
-        return {
-            "can_edit": not is_posted and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_cancel": is_draft or is_confirmed,
-            "can_unpost": is_posted,
-            "status": int(header.status),
-            "status_name": header.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(header.status),
+            draft_status=int(PaymentVoucherHeader.Status.DRAFT),
+            confirmed_status=int(PaymentVoucherHeader.Status.CONFIRMED),
+            posted_status=int(PaymentVoucherHeader.Status.POSTED),
+            cancelled_status=int(PaymentVoucherHeader.Status.CANCELLED),
+            status_name=header.get_status_display(),
+        )
 
     def _account_block(self, obj, field_name: str):
         acct = getattr(obj, field_name, None)

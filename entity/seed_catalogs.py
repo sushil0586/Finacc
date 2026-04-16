@@ -1,14 +1,4 @@
 ENTITY_MASTER_CATALOG = {
-    "unit_types": [
-        {"name": "Head Office", "description": "Primary legal and reporting unit."},
-        {"name": "Branch Office", "description": "Operational branch or regional office."},
-        {"name": "Factory / Plant", "description": "Manufacturing or processing unit."},
-        {"name": "Warehouse / Depot", "description": "Storage, depot, or distribution center."},
-        {"name": "Retail Outlet", "description": "Storefront, showroom, or POS outlet."},
-        {"name": "Project Office", "description": "Project-based or site-specific office."},
-        {"name": "Service Center", "description": "Service or support delivery location."},
-        {"name": "Institution / Campus", "description": "School, college, hospital, trust, or campus unit."},
-    ],
     "gst_registration_types": [
         {"name": "Regular", "description": "Regular GST registration."},
         {"name": "Composition", "description": "Composition taxpayer."},

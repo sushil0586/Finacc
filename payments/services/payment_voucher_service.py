@@ -10,6 +10,7 @@ from django.utils import timezone
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from financial.models import account as FinancialAccount
+from helpers.utils.settlement_runtime import SettlementVoucherRuntimeMixin
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.services.ap_allocation_service import PurchaseApAllocationService
 from purchase.models.purchase_ap import VendorBillOpenItem
@@ -46,71 +47,8 @@ class PaymentVoucherResult:
     message: str
 
 
-class PaymentVoucherService:
+class PaymentVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_WITHHOLDING_TDS_REMARK = "__AUTO_WITHHOLDING_TDS__"
-
-    @staticmethod
-    def _as_pk(value: Any) -> Any:
-        if value in (None, ""):
-            return None
-        return getattr(value, "pk", value)
-
-    @staticmethod
-    def _account_ledger_id(value: Any) -> Optional[int]:
-        account_obj = value if hasattr(value, "ledger_id") else None
-        account_id = getattr(account_obj, "pk", None) or (value if isinstance(value, int) else None)
-        ledger_id = getattr(account_obj, "ledger_id", None)
-        if ledger_id:
-            return int(ledger_id)
-        if not account_id:
-            return None
-        return (
-            FinancialAccount.objects.filter(pk=account_id)
-            .values_list("ledger_id", flat=True)
-            .first()
-        )
-
-    @classmethod
-    def _normalize_allocations(cls, allocations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows_by_open_item: Dict[int, Dict[str, Any]] = {}
-        rows_without_open_item: List[Dict[str, Any]] = []
-        for row in allocations or []:
-            item = dict(row or {})
-            item["open_item"] = cls._as_pk(item.get("open_item"))
-            open_item = item.get("open_item")
-            if open_item in (None, ""):
-                rows_without_open_item.append(item)
-                continue
-
-            open_item = int(open_item)
-            existing = rows_by_open_item.get(open_item)
-            if existing is None:
-                item["open_item"] = open_item
-                item["settled_amount"] = q2(item.get("settled_amount") or ZERO2)
-                item["is_full_settlement"] = bool(item.get("is_full_settlement", False))
-                item["is_advance_adjustment"] = bool(item.get("is_advance_adjustment", False))
-                rows_by_open_item[open_item] = item
-            else:
-                existing["settled_amount"] = q2(existing.get("settled_amount") or ZERO2) + q2(item.get("settled_amount") or ZERO2)
-                existing["is_full_settlement"] = bool(existing.get("is_full_settlement", False) or item.get("is_full_settlement", False))
-                existing["is_advance_adjustment"] = bool(existing.get("is_advance_adjustment", False) or item.get("is_advance_adjustment", False))
-                if not existing.get("id") and item.get("id"):
-                    existing["id"] = item.get("id")
-
-        rows: List[Dict[str, Any]] = list(rows_by_open_item.values())
-        rows.extend(rows_without_open_item)
-        return rows
-
-    @classmethod
-    def _normalize_adjustments(cls, adjustments: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        for row in adjustments or []:
-            item = dict(row or {})
-            item["allocation"] = cls._as_pk(item.get("allocation"))
-            item["ledger_account"] = cls._as_pk(item.get("ledger_account"))
-            item["ledger"] = cls._account_ledger_id(item.get("ledger_account"))
-            rows.append(item)
-        return rows
 
     @classmethod
     def _normalize_advance_adjustments(cls, rows_in: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -122,53 +60,6 @@ class PaymentVoucherService:
             item["open_item"] = cls._as_pk(item.get("open_item"))
             rows.append(item)
         return rows
-
-    @staticmethod
-    def _workflow_state(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        st = data.get("_approval_state")
-        if not isinstance(st, dict):
-            st = {
-                "status": "DRAFT",
-                "submitted_by": None,
-                "submitted_at": None,
-                "approved_by": None,
-                "approved_at": None,
-                "rejected_by": None,
-                "rejected_at": None,
-                "remarks": None,
-            }
-        return st
-
-    @staticmethod
-    def _set_workflow_state(payload: Optional[Dict[str, Any]], state: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        data["_approval_state"] = state
-        return data
-
-    @staticmethod
-    def _append_audit(payload: Optional[Dict[str, Any]], event: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        logs = data.get("_audit_log")
-        if not isinstance(logs, list):
-            logs = []
-        logs.append(event)
-        data["_audit_log"] = logs
-        return data
-
-    @staticmethod
-    def _sum_allocations(allocations: Iterable[Dict[str, Any]]) -> Decimal:
-        total = ZERO2
-        for row in allocations or []:
-            total = q2(total + q2(row.get("settled_amount") or ZERO2))
-        return total
-
-    @staticmethod
-    def _sum_advance_adjustments(rows: Iterable[Dict[str, Any]]) -> Decimal:
-        total = ZERO2
-        for row in rows or []:
-            total = q2(total + q2(row.get("adjusted_amount") or ZERO2))
-        return total
 
     @staticmethod
     def _fresh_allocation_rows(voucher: PaymentVoucherHeader) -> List[PaymentVoucherAllocation]:
@@ -185,18 +76,6 @@ class PaymentVoucherService:
         if not dt:
             raise ValueError(f"DocumentType not found for module='payments' and doc_code='{doc_code}'")
         return dt.id
-
-    @staticmethod
-    def _compute_adjustment_total(adjustments: Iterable[Dict[str, Any]]) -> Decimal:
-        total = ZERO2
-        for row in adjustments or []:
-            amt = q2(row.get("amount") or ZERO2)
-            eff = str(row.get("settlement_effect") or PaymentVoucherAdjustment.Effect.PLUS)
-            if eff == PaymentVoucherAdjustment.Effect.MINUS:
-                total = q2(total - amt)
-            else:
-                total = q2(total + amt)
-        return total
 
     @staticmethod
     def _sum_allocation_rows(allocations: Iterable[Dict[str, Any]]) -> Decimal:

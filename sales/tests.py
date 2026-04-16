@@ -4,16 +4,26 @@ from unittest.mock import patch
 from datetime import date
 
 from django.test import SimpleTestCase
+from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.exceptions import ValidationError
 
 from sales.models import SalesInvoiceHeader, SalesSettings
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.services.sales_stock_balance_service import SalesStockBalanceService
 from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.compliance_error_catalog_service import ComplianceErrorCatalogService
 from sales.services.eway_payload_builder import EWayInput, build_generate_eway_payload
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.providers.mastergst import _extract_error
+from sales.views.sales_invoice_views import (
+    SalesInvoiceCancelAPIView,
+    SalesInvoiceConfirmAPIView,
+    SalesInvoiceListCreateAPIView,
+    SalesInvoicePostAPIView,
+    SalesInvoiceReverseAPIView,
+    SalesInvoiceRetrieveUpdateAPIView,
+)
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
@@ -261,6 +271,27 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
                 customer_id=10,
             )
 
+    def test_align_note_tax_scope_from_original_invoice(self):
+        header_data = {
+            "seller_gstin": "22AAAAA0000A1Z5",
+            "seller_state_code": "22",
+            "place_of_supply_state_code": "22",
+        }
+        original = SimpleNamespace(
+            seller_gstin="03BNDPG2450J1Z3",
+            seller_state_code="03",
+            place_of_supply_state_code="0",
+        )
+
+        SalesInvoiceService._align_note_tax_scope_from_original_invoice(
+            header_data=header_data,
+            original_invoice=original,
+        )
+
+        self.assertEqual(header_data["seller_gstin"], "03BNDPG2450J1Z3")
+        self.assertEqual(header_data["seller_state_code"], "03")
+        self.assertEqual(header_data["place_of_supply_state_code"], "0")
+
     def test_validate_doc_linkage_tax_invoice_disallows_original(self):
         original = SimpleNamespace(entity_id=1, entityfinid_id=1, subentity_id=None, customer_id=10)
         with self.assertRaisesMessage(ValueError, "allowed only for Credit Note / Debit Note"):
@@ -413,6 +444,317 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         mocked_reverse.assert_not_called()
         self.assertTrue(mocked_audit.log_action.called)
         self.assertTrue(mocked_audit.open_exception.called)
+
+
+class SalesStockBalanceServiceUnitTests(SimpleTestCase):
+    @patch("sales.services.sales_stock_balance_service.Godown.objects.filter")
+    @patch("sales.services.sales_stock_balance_service.SalesStockBalanceService._build_balance_maps")
+    @patch("sales.services.sales_stock_balance_service.resolve_posting_location_id", return_value=5)
+    def test_relaxed_mode_skips_shortage_hint_when_no_other_stock_rules(
+        self,
+        mocked_resolve_location,
+        mocked_build_maps,
+        mocked_godown_filter,
+    ):
+        mocked_godown_filter.return_value.values_list.return_value.first.return_value = "Main Location"
+        policy = SimpleNamespace(
+            mode="RELAXED",
+            allow_negative_stock=True,
+            batch_required_for_sales=False,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        product = SimpleNamespace(id=10, productname="P-1", is_service=False)
+
+        hint = SalesStockBalanceService.build_hint(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            bill_date=date(2026, 4, 16),
+            product=product,
+            requested_qty=Decimal("10.0000"),
+            batch_number="",
+            expiry_date=None,
+            location_id=5,
+            policy=policy,
+        )
+
+        self.assertEqual(hint["status"], "info")
+        self.assertEqual(hint["message"], "")
+        self.assertIsNone(hint["available_qty"])
+        self.assertIsNone(hint["shortage_qty"])
+        mocked_build_maps.assert_not_called()
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("sales.services.sales_stock_balance_service.Godown.objects.filter")
+    @patch("sales.services.sales_stock_balance_service.SalesStockBalanceService._best_batch", return_value=None)
+    @patch(
+        "sales.services.sales_stock_balance_service.SalesStockBalanceService._build_balance_maps",
+        return_value=({}, {}, Decimal("3.0000")),
+    )
+    @patch("sales.services.sales_stock_balance_service.resolve_posting_location_id", return_value=5)
+    def test_controlled_mode_returns_warning_for_location_shortage(
+        self,
+        mocked_resolve_location,
+        mocked_build_maps,
+        mocked_best_batch,
+        mocked_godown_filter,
+    ):
+        mocked_godown_filter.return_value.values_list.return_value.first.return_value = "Main Location"
+        policy = SimpleNamespace(
+            mode="CONTROLLED",
+            allow_negative_stock=True,
+            batch_required_for_sales=False,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        product = SimpleNamespace(id=10, productname="P-1", is_service=False)
+
+        hint = SalesStockBalanceService.build_hint(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            bill_date=date(2026, 4, 16),
+            product=product,
+            requested_qty=Decimal("5.0000"),
+            batch_number="",
+            expiry_date=None,
+            location_id=5,
+            policy=policy,
+        )
+
+        self.assertEqual(hint["status"], "warning")
+        self.assertIn("Only 3.0000 available", hint["message"])
+        mocked_build_maps.assert_called_once()
+        mocked_best_batch.assert_called_once()
+        self.assertTrue(mocked_resolve_location.called)
+
+
+class SalesInvoiceViewUnitTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+        self.header = SimpleNamespace(entity_id=1, doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE))
+
+    def _build_request(self, path: str, payload: dict | None = None):
+        request = self.factory.post(path, payload or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    def _build_put_request(self, path: str, payload: dict | None = None):
+        request = self.factory.put(path, payload or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    def _build_patch_request(self, path: str, payload: dict | None = None):
+        request = self.factory.patch(path, payload or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    def _assert_serializer_context(self, mocked_serializer_cls, *, expected_line_mode: str):
+        _, serializer_kwargs = mocked_serializer_cls.call_args
+        serializer_request = serializer_kwargs["context"]["request"]
+        self.assertEqual(serializer_request.method, "POST")
+        self.assertEqual(serializer_request.query_params.get("line_mode"), expected_line_mode)
+        self.assertEqual(serializer_kwargs["context"]["line_mode"], expected_line_mode)
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.confirm")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceHeaderSerializer")
+    @patch.object(SalesInvoiceConfirmAPIView, "_get_scoped_header")
+    def test_confirm_view_serializes_with_line_mode_context(
+        self,
+        mocked_get_header,
+        mocked_serializer_cls,
+        mocked_confirm,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_confirm.return_value = self.header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Confirmed"}
+
+        request = self._build_request("/api/sales/invoices/10/confirm/?line_mode=service")
+
+        response = SalesInvoiceConfirmAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_require_permission.assert_called_once()
+        mocked_confirm.assert_called_once_with(header=self.header, user=self.user)
+        self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="service")
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.confirm")
+    @patch.object(SalesInvoiceConfirmAPIView, "_get_scoped_header")
+    def test_confirm_view_returns_structured_validation_error_payload(
+        self,
+        mocked_get_header,
+        mocked_confirm,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_confirm.side_effect = ValidationError({"customer": ["GSTIN is required."]})
+
+        request = self._build_request("/api/sales/invoices/10/confirm/?line_mode=goods")
+
+        response = SalesInvoiceConfirmAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"customer": ["GSTIN is required."]})
+        mocked_require_permission.assert_called_once()
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.post")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceHeaderSerializer")
+    @patch.object(SalesInvoicePostAPIView, "_get_scoped_header")
+    def test_post_view_serializes_with_line_mode_context(
+        self,
+        mocked_get_header,
+        mocked_serializer_cls,
+        mocked_post,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_post.return_value = self.header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+
+        request = self._build_request("/api/sales/invoices/10/post/?line_mode=goods")
+
+        response = SalesInvoicePostAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_require_permission.assert_called_once()
+        mocked_post.assert_called_once_with(header=self.header, user=self.user)
+        self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="goods")
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.cancel")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceHeaderSerializer")
+    @patch.object(SalesInvoiceCancelAPIView, "_get_scoped_header")
+    def test_cancel_view_passes_reason_and_serializes_with_line_mode_context(
+        self,
+        mocked_get_header,
+        mocked_serializer_cls,
+        mocked_cancel,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_cancel.return_value = self.header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Cancelled"}
+
+        request = self._build_request(
+            "/api/sales/invoices/10/cancel/?line_mode=service",
+            {"reason": "Customer requested cancellation."},
+        )
+
+        response = SalesInvoiceCancelAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_require_permission.assert_called_once()
+        mocked_cancel.assert_called_once_with(
+            header=self.header,
+            user=self.user,
+            reason="Customer requested cancellation.",
+        )
+        self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="service")
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.reverse_posting")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceHeaderSerializer")
+    @patch.object(SalesInvoiceReverseAPIView, "_get_scoped_header")
+    def test_reverse_view_passes_reason_and_serializes_with_line_mode_context(
+        self,
+        mocked_get_header,
+        mocked_serializer_cls,
+        mocked_reverse,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_reverse.return_value = self.header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Confirmed"}
+
+        request = self._build_request(
+            "/api/sales/invoices/10/reverse/?line_mode=goods",
+            {"reason": "Posting reversed for correction."},
+        )
+
+        response = SalesInvoiceReverseAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_require_permission.assert_called_once()
+        mocked_reverse.assert_called_once_with(
+            header=self.header,
+            user=self.user,
+            reason="Posting reversed for correction.",
+        )
+        self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="goods")
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("rest_framework.generics.ListCreateAPIView.create")
+    def test_create_view_returns_structured_validation_error_payload(
+        self,
+        mocked_super_create,
+        mocked_require_permission,
+    ):
+        mocked_super_create.side_effect = ValidationError({"lines": [{"gst_rate": ["This field is required."]}]})
+
+        request = self._build_request(
+            "/api/sales/invoices/?line_mode=goods",
+            {"entity": 1, "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE)},
+        )
+
+        response = SalesInvoiceListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"lines": [{"gst_rate": ["This field is required."]}]})
+        mocked_require_permission.assert_called_once()
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("rest_framework.generics.RetrieveUpdateAPIView.update")
+    @patch.object(SalesInvoiceRetrieveUpdateAPIView, "get_object")
+    def test_update_view_returns_structured_validation_error_payload(
+        self,
+        mocked_get_object,
+        mocked_super_update,
+        mocked_require_permission,
+    ):
+        mocked_get_object.return_value = self.header
+        mocked_super_update.side_effect = ValidationError({"customer": ["This field is required."]})
+
+        request = self._build_put_request(
+            "/api/sales/invoices/10/?line_mode=service",
+            {"customer": None},
+        )
+
+        response = SalesInvoiceRetrieveUpdateAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"customer": ["This field is required."]})
+        mocked_require_permission.assert_called_once()
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("rest_framework.generics.RetrieveUpdateAPIView.partial_update")
+    @patch.object(SalesInvoiceRetrieveUpdateAPIView, "get_object")
+    def test_partial_update_view_returns_structured_validation_error_payload(
+        self,
+        mocked_get_object,
+        mocked_super_partial_update,
+        mocked_require_permission,
+    ):
+        mocked_get_object.return_value = self.header
+        mocked_super_partial_update.side_effect = ValidationError({"bill_date": ["Enter a valid date."]})
+
+        request = self._build_patch_request(
+            "/api/sales/invoices/10/?line_mode=goods",
+            {"bill_date": "bad-date"},
+        )
+
+        response = SalesInvoiceRetrieveUpdateAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"bill_date": ["Enter a valid date."]})
+        mocked_require_permission.assert_called_once()
 
 
 class IRPPayloadBuilderUnitTests(SimpleTestCase):

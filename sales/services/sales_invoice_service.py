@@ -839,6 +839,18 @@ class SalesInvoiceService:
             )
 
     @classmethod
+    def _align_note_tax_scope_from_original_invoice(cls, *, header_data: dict, original_invoice: SalesInvoiceHeader) -> None:
+        """
+        Credit/Debit notes should inherit the original invoice tax scope.
+        This keeps tax regime derivation and downstream caps aligned with the
+        source invoice instead of letting the note drift to a different state
+        combination.
+        """
+        header_data["seller_gstin"] = (original_invoice.seller_gstin or "").strip()
+        header_data["seller_state_code"] = (original_invoice.seller_state_code or "").strip()
+        header_data["place_of_supply_state_code"] = (original_invoice.place_of_supply_state_code or "").strip()
+
+    @classmethod
     def _derive_compliance_flags(cls, *, header: SalesInvoiceHeader, settings_obj: SalesSettings, user=None) -> None:
         is_b2c = int(header.supply_category or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C)
         seller_gstin_ok = cls._is_valid_gstin(header.seller_gstin)
@@ -1320,6 +1332,8 @@ class SalesInvoiceService:
             )
             if original_invoice is not None:
                 header_data["original_invoice"] = original_invoice
+        if original_invoice is not None and doc_type in (int(SalesInvoiceHeader.DocType.CREDIT_NOTE), int(SalesInvoiceHeader.DocType.DEBIT_NOTE)):
+            cls._align_note_tax_scope_from_original_invoice(header_data=header_data, original_invoice=original_invoice)
         cls._validate_doc_linkage(
             doc_type=doc_type,
             original_invoice=original_invoice,
@@ -1350,10 +1364,7 @@ class SalesInvoiceService:
 
         header.status = SalesInvoiceHeader.Status.DRAFT
 
-        cls.apply_dates(header)
-        cls._refresh_party_snapshots(header=header)
-        cls.derive_tax_regime(header)
-        cls._validate_invoice_uniqueness_per_gstin(header=header)
+        cls._prepare_header_for_persistence(header=header)
 
         header.full_clean(exclude=None)
         header.save()
@@ -1361,16 +1372,7 @@ class SalesInvoiceService:
         cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
         cls.validate_charges(header=header, charges=charges_data or [])
         cls.upsert_charges(header=header, incoming_charges=charges_data or [], user=user, allow_delete=True)
-        cls.rebuild_tax_summary(header)
-        cls.compute_and_persist_totals(header, user=user)
-        cls._derive_compliance_flags(
-            header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
-            user=user,
-        )
-        cls._validate_adjustment_caps(header=header)
-        cls._apply_tcs(header=header, user=user)
-        cls.recompute_settlement_fields(header=header)
+        cls._recompute_invoice_state(header=header, user=user)
         header.save(update_fields=[
             "gst_compliance_mode",
             "is_einvoice_applicable",
@@ -1459,6 +1461,8 @@ class SalesInvoiceService:
             )
             if original_invoice is not None:
                 header_data["original_invoice"] = original_invoice
+        if original_invoice is not None and doc_type in (int(SalesInvoiceHeader.DocType.CREDIT_NOTE), int(SalesInvoiceHeader.DocType.DEBIT_NOTE)):
+            cls._align_note_tax_scope_from_original_invoice(header_data=header_data, original_invoice=original_invoice)
         cls._validate_doc_linkage(
             doc_type=doc_type,
             original_invoice=original_invoice,
@@ -1481,10 +1485,7 @@ class SalesInvoiceService:
 
         header.updated_by = user
 
-        cls.apply_dates(header)
-        cls._refresh_party_snapshots(header=header)
-        cls.derive_tax_regime(header)
-        cls._validate_invoice_uniqueness_per_gstin(header=header)
+        cls._prepare_header_for_persistence(header=header)
 
         header.full_clean(exclude=None)
         header.save()
@@ -1494,16 +1495,7 @@ class SalesInvoiceService:
         if charges_data is not None:
             cls.validate_charges(header=header, charges=charges_data)
             cls.upsert_charges(header=header, incoming_charges=charges_data, user=user, allow_delete=True)
-        cls.rebuild_tax_summary(header)
-        cls.compute_and_persist_totals(header, user=user)
-        cls._derive_compliance_flags(
-            header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
-            user=user,
-        )
-        cls._validate_adjustment_caps(header=header)
-        cls._apply_tcs(header=header, user=user)
-        cls.recompute_settlement_fields(header=header)
+        cls._recompute_invoice_state(header=header, user=user)
         header.save(update_fields=[
             "gst_compliance_mode",
             "is_einvoice_applicable",
@@ -2037,12 +2029,39 @@ class SalesInvoiceService:
     # Tax summary rebuild
     # -------------------------
     @classmethod
-    def rebuild_tax_summary(cls, header: SalesInvoiceHeader):
+    def _load_invoice_rows(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        lines: Optional[list[SalesInvoiceLine]] = None,
+        charges: Optional[list[SalesChargeLine]] = None,
+    ) -> tuple[list[SalesInvoiceLine], list[SalesChargeLine]]:
+        return (
+            lines if lines is not None else list(header.lines.all()),
+            charges if charges is not None else list(header.charges.all()),
+        )
+
+    @classmethod
+    def _prepare_header_for_persistence(cls, *, header: SalesInvoiceHeader) -> None:
+        cls.apply_dates(header)
+        cls._refresh_party_snapshots(header=header)
+        cls.derive_tax_regime(header)
+        cls._validate_invoice_uniqueness_per_gstin(header=header)
+
+    @classmethod
+    def rebuild_tax_summary(
+        cls,
+        header: SalesInvoiceHeader,
+        *,
+        lines: Optional[list[SalesInvoiceLine]] = None,
+        charges: Optional[list[SalesChargeLine]] = None,
+    ):
         SalesTaxSummary.objects.filter(header=header).delete()
+        lines, charges = cls._load_invoice_rows(header=header, lines=lines, charges=charges)
 
         buckets: Dict[Tuple[int, str, bool, str, bool], SalesTaxSummary] = {}
 
-        for line in header.lines.all():
+        for line in lines:
             key = (
                 int(header.taxability or SalesInvoiceHeader.Taxability.TAXABLE),
                 (line.hsn_sac_code or "").strip(),
@@ -2076,7 +2095,7 @@ class SalesInvoiceService:
             b.igst_amount = q2(b.igst_amount + q2(line.igst_amount))
             b.cess_amount = q2(b.cess_amount + q2(line.cess_amount))
 
-        for charge in header.charges.all():
+        for charge in charges:
             key = (
                 int(charge.taxability or SalesInvoiceHeader.Taxability.TAXABLE),
                 (charge.hsn_sac_code or "").strip(),
@@ -2116,11 +2135,24 @@ class SalesInvoiceService:
     # Totals compute
     # -------------------------
     @classmethod
-    def compute_and_persist_totals(cls, header: SalesInvoiceHeader, *, user):
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
+    def compute_and_persist_totals(
+        cls,
+        header: SalesInvoiceHeader,
+        *,
+        user,
+        settings_obj=None,
+        lines: Optional[list[SalesInvoiceLine]] = None,
+        charges: Optional[list[SalesChargeLine]] = None,
+    ):
+        settings_obj = settings_obj or cls.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        lines, charges = cls._load_invoice_rows(header=header, lines=lines, charges=charges)
 
         totals = Totals()
-        for line in header.lines.all():
+        for line in lines:
             totals.total_taxable = q2(totals.total_taxable + q2(line.taxable_value))
             totals.total_cgst = q2(totals.total_cgst + q2(line.cgst_amount))
             totals.total_sgst = q2(totals.total_sgst + q2(line.sgst_amount))
@@ -2129,7 +2161,7 @@ class SalesInvoiceService:
             totals.total_discount = q2(totals.total_discount + q2(line.discount_amount))
 
         charge_taxable = ZERO2
-        for charge in header.charges.all():
+        for charge in charges:
             charge_taxable = q2(charge_taxable + q2(charge.taxable_value))
             totals.total_taxable = q2(totals.total_taxable + q2(charge.taxable_value))
             totals.total_cgst = q2(totals.total_cgst + q2(charge.cgst_amount))
@@ -2177,14 +2209,48 @@ class SalesInvoiceService:
                 "total_sgst",
                 "total_igst",
                 "total_cess",
-            "total_discount",
-            "total_other_charges",
-            "round_off",
-            "grand_total",
-            "updated_by",
-            "updated_at",
-        ]
-    )
+                "total_discount",
+                "total_other_charges",
+                "round_off",
+                "grand_total",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+
+    @classmethod
+    def _recompute_invoice_state(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        user,
+        settings_obj=None,
+        lines: Optional[list[SalesInvoiceLine]] = None,
+        charges: Optional[list[SalesChargeLine]] = None,
+    ) -> tuple[list[SalesInvoiceLine], list[SalesChargeLine]]:
+        settings_obj = settings_obj or cls.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        lines, charges = cls._load_invoice_rows(header=header, lines=lines, charges=charges)
+        cls.rebuild_tax_summary(header, lines=lines, charges=charges)
+        cls.compute_and_persist_totals(
+            header,
+            user=user,
+            settings_obj=settings_obj,
+            lines=lines,
+            charges=charges,
+        )
+        cls._derive_compliance_flags(
+            header=header,
+            settings_obj=settings_obj,
+            user=user,
+        )
+        cls._validate_adjustment_caps(header=header)
+        cls._apply_tcs(header=header, user=user)
+        cls.recompute_settlement_fields(header=header)
+        return lines, charges
 
     # -------------------------
     # Status transitions
@@ -2201,28 +2267,28 @@ class SalesInvoiceService:
         if lock_level == "hard":
             cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=header.bill_date)
         require_lines_level = cls._policy_level(controls, "require_lines_on_confirm", default="hard")
-        if require_lines_level == "hard" and not header.lines.exists():
+        lines, charges = cls._load_invoice_rows(header=header)
+        if require_lines_level == "hard" and not lines:
             raise ValueError("At least one invoice line is required before confirm.")
 
-        # âœ… recompute everything first
-        cls.apply_dates(header)
-        cls._refresh_party_snapshots(header=header)
-        cls.derive_tax_regime(header)
-        cls.rebuild_tax_summary(header)
-        cls.compute_and_persist_totals(header, user=user)
-        cls._derive_compliance_flags(
+        settings_obj = cls.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        cls._prepare_header_for_persistence(header=header)
+        lines, charges = cls._recompute_invoice_state(
             header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
             user=user,
+            settings_obj=settings_obj,
+            lines=lines,
+            charges=charges,
         )
         cls._validate_b2b_gstin_requirements(header=header)
-        cls._validate_adjustment_caps(header=header)
         if header.is_eway_applicable and not header.shipping_detail_id:
             raise ValueError("Shipping detail is required when E-Way is applicable.")
-        cls._apply_tcs(header=header, user=user)
-        cls.recompute_settlement_fields(header=header)
-        cls._allocate_batches_for_post(header=header, lines=list(header.lines.all()))
-        cls._validate_stock_policy_on_post(header=header, lines=list(header.lines.all()))
+        cls._allocate_batches_for_post(header=header, lines=lines)
+        cls._validate_stock_policy_on_post(header=header, lines=lines)
         
 
         # âœ… issue doc_no ONLY NOW
@@ -2285,28 +2351,23 @@ class SalesInvoiceService:
         cls.ensure_doc_number(header=header, user=user)
         cls._validate_invoice_uniqueness_per_gstin(header=header)
 
-        # ---- safety recompute (same idea as purchase hook: rebuild + totals) ----
-        # If you prefer no recompute at post time, you can remove these, but recommended.
-        cls.apply_dates(header)
-        cls._refresh_party_snapshots(header=header)
-        cls.derive_tax_regime(header)
-        cls.rebuild_tax_summary(header)
-        cls.compute_and_persist_totals(header, user=user)
-        cls._derive_compliance_flags(
+        settings_obj = cls.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        lines, charges = cls._load_invoice_rows(header=header)
+        cls._prepare_header_for_persistence(header=header)
+        lines, charges = cls._recompute_invoice_state(
             header=header,
-            settings_obj=cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None)),
             user=user,
+            settings_obj=settings_obj,
+            lines=lines,
+            charges=charges,
         )
         cls._validate_b2b_gstin_requirements(header=header)
-        cls._validate_adjustment_caps(header=header)
         if header.is_eway_applicable and not header.shipping_detail_id:
             raise ValueError("Shipping detail is required when E-Way is applicable.")
-        cls._apply_tcs(header=header, user=user)
-        cls.recompute_settlement_fields(header=header)
-
-        # reload lines list from DB (avoid stale in-memory objects)
-        header.refresh_from_db()
-        lines = list(header.lines.all())
         cls._allocate_batches_for_post(header=header, lines=lines)
         cls._validate_stock_policy_on_post(header=header, lines=lines)
 

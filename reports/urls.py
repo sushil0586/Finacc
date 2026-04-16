@@ -79,7 +79,8 @@ from reports.api.book_views import (
     DaybookPDFPortraitAPIView,
     DaybookPrintAPIView,
 )
-from reports.api.controls_views import PhaseOneControlsHubAPIView
+from reports.api.controls_views import PhaseOneControlsHubAPIView, PhaseOneOpeningGenerateAPIView, PhaseOneOpeningPolicyAPIView, PhaseOneOpeningPreviewAPIView
+from reports.api.controls_views import PhaseOnePostingSetupApplyAPIView, PhaseOnePostingSetupPreviewAPIView
 from reports.api.controls_close_views import YearEndCloseExecuteAPIView, YearEndClosePreviewAPIView
 from reports.api.purchase_register_view import (
     PurchaseRegisterAPIView,
@@ -252,6 +253,11 @@ urlpatterns = [
     path("financial/cashbook/csv/", CashbookCSVAPIView.as_view(), name="financial-cashbook-csv"),
     path("financial/cashbook/print/", CashbookPrintAPIView.as_view(), name="financial-cashbook-print"),
     path("controls/phase-one/meta/", PhaseOneControlsHubAPIView.as_view(), name="controls-phase-one-meta"),
+    path("controls/phase-one/opening-policy/", PhaseOneOpeningPolicyAPIView.as_view(), name="controls-phase-one-opening-policy"),
+    path("controls/phase-one/opening-preview/", PhaseOneOpeningPreviewAPIView.as_view(), name="controls-phase-one-opening-preview"),
+    path("controls/phase-one/opening-generate/", PhaseOneOpeningGenerateAPIView.as_view(), name="controls-phase-one-opening-generate"),
+    path("controls/posting-setup/preview/", PhaseOnePostingSetupPreviewAPIView.as_view(), name="controls-posting-setup-preview"),
+    path("controls/posting-setup/apply/", PhaseOnePostingSetupApplyAPIView.as_view(), name="controls-posting-setup-apply"),
     path("controls/year-end-close/meta/", YearEndClosePreviewAPIView.as_view(), name="controls-year-end-close-meta"),
     path("controls/year-end-close/execute/", YearEndCloseExecuteAPIView.as_view(), name="controls-year-end-close-execute"),
     path("purchases/register/", PurchaseRegisterAPIView.as_view(), name="purchase-register"),

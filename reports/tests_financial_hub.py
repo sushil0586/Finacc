@@ -19,8 +19,10 @@ class FinancialHubRegistryTests(SimpleTestCase):
             "trading_account",
             "daybook",
             "cashbook",
+            "controls_phase_one",
+            "year_end_close",
         ])
-        self.assertEqual([section["tag"] for section in hub["sections"]], ["Statements", "Statements", "Books"])
+        self.assertEqual([section["tag"] for section in hub["sections"]], ["Statements", "Statements", "Books", "Utilities"])
 
         all_codes = [
             report["code"]
@@ -37,6 +39,8 @@ class FinancialHubRegistryTests(SimpleTestCase):
                 "trading_account",
                 "daybook",
                 "cashbook",
+                "controls_phase_one",
+                "year_end_close",
             ],
         )
 
@@ -62,3 +66,15 @@ class FinancialHubRegistryTests(SimpleTestCase):
         self.assertEqual(policy["profit_loss"]["accounting_only_notes_disclosure"], "summary")
         self.assertEqual(policy["profit_loss"]["accounting_only_notes_split"], "purchase_sales")
         self.assertTrue(policy["balance_sheet"]["include_accounting_only_notes_disclosure"])
+
+    def test_reporting_policy_includes_opening_defaults(self):
+        policy = _sanitize({})
+
+        self.assertEqual(policy["opening"]["opening_mode"], "hybrid")
+        self.assertEqual(policy["opening"]["batch_materialization"], "single_batch")
+        self.assertEqual(policy["opening"]["opening_posting_date_strategy"], "first_day_of_new_year")
+        self.assertTrue(policy["opening"]["require_closed_source_year"])
+        self.assertFalse(policy["opening"]["allow_partial_opening"])
+        self.assertEqual(policy["opening"]["grouped_sections"], ["assets", "liabilities", "stock", "equity"])
+        self.assertTrue(policy["opening"]["carry_forward"]["cash_bank"])
+        self.assertTrue(policy["opening"]["reset"]["trading"])

@@ -11,6 +11,10 @@ from payments.models import PaymentVoucherHeader
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
+from payments.views.payment_voucher import (
+    PaymentVoucherApprovalAPIView,
+    PaymentVoucherListCreateAPIView,
+)
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
 from withholding.models import WithholdingBaseRule
 
@@ -599,8 +603,10 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
     @patch("payments.services.payment_voucher_service.PaymentVoucherAllocation.objects.create")
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects.create")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._account_ledger_id")
     def test_draft_create_with_advance_adjustments(
         self,
+        mock_account_ledger_id,
         mock_get_policy,
         mock_header_create,
         mock_alloc_create,
@@ -610,6 +616,7 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
         mock_validate_allocations,
         mock_validate_adv,
     ):
+        mock_account_ledger_id.return_value = None
         header = MagicMock()
         header.id = 61
         header.entity_id = 1
@@ -824,6 +831,43 @@ class PaymentVoucherPDFEndpointTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
+
+
+class PaymentVoucherViewValidationTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    def _request(self, path: str, data=None):
+        request = self.factory.post(path, data or {}, format="json") if data is not None else self.factory.get(path)
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    def test_list_view_reports_missing_scope_as_field_errors(self, mocked_error_log):
+        request = self._request("/api/payments/payment-vouchers/")
+
+        response = PaymentVoucherListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["entity"]), "This query param is required.")
+        self.assertEqual(str(response.data["entityfinid"]), "This query param is required.")
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_approval_view_reports_invalid_action_on_action_field(self, mocked_header_objects, mocked_error_log):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request(
+            "/api/payments/payment-vouchers/9/approval/",
+            {"action": "ship"},
+        )
+
+        response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
+        mocked_error_log.assert_called_once()
 
 
 class PaymentVoucherCashGuardTests(SimpleTestCase):

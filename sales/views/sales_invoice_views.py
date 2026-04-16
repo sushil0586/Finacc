@@ -49,6 +49,22 @@ class _SalesScopeMixin:
     permission_classes = [IsAuthenticated]
     line_mode = None  # None | "service" | "goods"
 
+    def _serialize_invoice(self, header: SalesInvoiceHeader):
+        return SalesInvoiceHeaderSerializer(
+            header,
+            context={"request": self.request, "line_mode": self._get_line_mode()},
+        ).data
+
+    @staticmethod
+    def _error_payload(exc):
+        detail = getattr(exc, "detail", None)
+        if detail is not None:
+            return detail
+        message_dict = getattr(exc, "message_dict", None)
+        if message_dict is not None:
+            return message_dict
+        return {"detail": str(exc)}
+
     @staticmethod
     def _scope_filters(request):
         payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
@@ -187,8 +203,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         try:
             return super().create(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
 
 class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdateAPIView):
@@ -240,8 +255,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
         try:
             return super().update(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -254,8 +268,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
         try:
             return super().partial_update(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -288,9 +301,8 @@ class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):
         try:
             header = SalesInvoiceService.confirm(header=header, user=request.user)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(SalesInvoiceHeaderSerializer(header, context={"request": request}).data, status=status.HTTP_200_OK)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
 
 
 class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
@@ -305,9 +317,8 @@ class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
         try:
             header = SalesInvoiceService.post(header=header, user=request.user)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(SalesInvoiceHeaderSerializer(header, context={"request": request}).data, status=status.HTTP_200_OK)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
 
 
 class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
@@ -323,9 +334,8 @@ class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
         try:
             header = SalesInvoiceService.cancel(header=header, user=request.user, reason=reason)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(SalesInvoiceHeaderSerializer(header, context={"request": request}).data, status=status.HTTP_200_OK)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
 
 
 class SalesInvoiceReverseAPIView(_SalesScopeMixin, APIView):
@@ -341,9 +351,8 @@ class SalesInvoiceReverseAPIView(_SalesScopeMixin, APIView):
         try:
             header = SalesInvoiceService.reverse_posting(header=header, user=request.user, reason=reason)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            detail = getattr(e, "message_dict", None) or str(e)
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(SalesInvoiceHeaderSerializer(header, context={"request": request}).data, status=status.HTTP_200_OK)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
 
 
 class SalesInvoiceSettlementAPIView(_SalesScopeMixin, APIView):
@@ -368,5 +377,5 @@ class SalesInvoiceSettlementAPIView(_SalesScopeMixin, APIView):
                 note=note,
             )
         except Exception as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(SalesInvoiceHeaderSerializer(header, context={"request": request}).data, status=status.HTTP_200_OK)
+            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)

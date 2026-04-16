@@ -4,7 +4,7 @@ from rest_framework.test import APIClient
 
 from Authentication.models import User
 from entity.models import Entity
-from financial.models import AccountAddress, AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, Ledger, ShippingDetails, account, accountHead
+from financial.models import AccountAddress, AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
 from geography.models import City, Country, District, State
 from financial.seeding import FinancialSeedService
 from financial.serializers_ledger import AccountProfileV2ReadSerializer, AccountProfileV2WriteSerializer
@@ -265,9 +265,11 @@ class FinancialSeedTemplateTests(TestCase):
 
         advance_payable_head = accountHead.objects.get(entity=self.entity, code=6000)
         advance_receivable_head = accountHead.objects.get(entity=self.entity, code=6100)
+        party_type = accounttype.objects.get(entity=self.entity, accounttypename="Party")
 
         self.assertEqual(advance_payable_head.accounttype.accounttypename, "Current Liabilities")
         self.assertEqual(advance_receivable_head.accounttype.accounttypename, "Current Assets")
+        self.assertTrue(party_type.isactive)
 
     def test_indian_accounting_final_seed_creates_static_ready_ledgers(self):
         FinancialSeedService.seed_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")

@@ -16,11 +16,22 @@ os.makedirs(LOG_DIR, exist_ok=True)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+
+def _cast_boolish_env(value):
+    if isinstance(value, bool):
+        return value
+    raw = str(value or '').strip().lower()
+    if raw in {'1', 'true', 't', 'yes', 'y', 'on', 'debug', 'dev', 'development'}:
+        return True
+    if raw in {'0', 'false', 'f', 'no', 'n', 'off', 'release', 'prod', 'production', ''}:
+        return False
+    raise ValueError(f'Invalid truth value: {value}')
+
 # ---------------------------------------------------------------------------
 # Security
 # ---------------------------------------------------------------------------
 SECRET_KEY = config('SECRET_KEY')
-DEBUG = config('DEBUG', default=False, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=_cast_boolish_env)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost', cast=Csv())
 
 # RBAC bypass must be enabled explicitly.
@@ -29,14 +40,14 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost', cast=Csv())
 RBAC_DEV_ALLOW_ALL_ACCESS = config(
     'RBAC_DEV_ALLOW_ALL_ACCESS',
     default=False,
-    cast=bool,
+    cast=_cast_boolish_env,
 )
 
 # ---------------------------------------------------------------------------
 # Test / conditional app flags
 # ---------------------------------------------------------------------------
 RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == 'test'
-ENABLE_PAYROLL_IN_TESTS = config('ENABLE_PAYROLL_IN_TESTS', default=False, cast=bool)
+ENABLE_PAYROLL_IN_TESTS = config('ENABLE_PAYROLL_IN_TESTS', default=False, cast=_cast_boolish_env)
 
 AUTH_USER_MODEL = "Authentication.User"
 
@@ -147,6 +158,10 @@ DATABASES = {
         'HOST': config('DB_HOST', default='localhost'),
         'PORT': config('DB_PORT', default=''),
     }
+}
+
+DATABASES['default']['TEST'] = {
+    'NAME': config('DB_TEST_NAME', default=f"test_{DATABASES['default']['NAME']}"),
 }
 
 # ---------------------------------------------------------------------------

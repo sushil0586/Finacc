@@ -118,10 +118,11 @@ def classify_financial_head(head, acc_type) -> FinancialClassification:
     Central accounting rules shared by Trading, P&L, and Balance Sheet.
     Rule 1: Opening stock belongs only to Trading.
     Rule 2: Closing stock/inventory belongs to Trading and Balance Sheet.
-    Rule 3: Purchases, Sales, and direct income/expense heads belong to Trading.
-    Rule 4: Indirect income/expense heads belong to Profit & Loss.
-    Rule 5: Structural asset/liability/equity heads belong to Balance Sheet.
-    Rule 6: Fallback to explicit detailsingroup when metadata is incomplete.
+    Rule 3: Statement group / detailsingroup is the primary routing rule.
+    Rule 4: Purchases, Sales, and direct income/expense heads fall back to Trading
+            only when statement-group metadata is incomplete.
+    Rule 5: Indirect income/expense heads belong to Profit & Loss.
+    Rule 6: Structural asset/liability/equity heads belong to Balance Sheet.
     """
     if _is_opening_stock_head(head, acc_type):
         return FinancialClassification(include_in_trading=True, reason="opening_stock")
@@ -132,6 +133,22 @@ def classify_financial_head(head, acc_type) -> FinancialClassification:
             include_in_balance_sheet=True,
             reason="closing_stock_or_inventory",
         )
+
+    detailsingroup = _detailsingroup_value(head)
+    if detailsingroup == TRADING_GROUP:
+        return FinancialClassification(include_in_trading=True, reason="fallback_detailsingroup_trading")
+    if detailsingroup == PROFIT_LOSS_GROUP:
+        return FinancialClassification(
+            include_in_profit_loss=True,
+            profit_loss_side=(
+                "income"
+                if _type_code(acc_type) == "4200" or _type_name(acc_type) == "indirect income"
+                else "expense"
+            ),
+            reason="fallback_detailsingroup_profit_loss",
+        )
+    if detailsingroup == BALANCE_SHEET_GROUP:
+        return FinancialClassification(include_in_balance_sheet=True, reason="fallback_detailsingroup_balance_sheet")
 
     if _is_purchase_or_sales_head(head, acc_type) or _is_direct_type(acc_type):
         return FinancialClassification(include_in_trading=True, reason="direct_trading")
@@ -145,17 +162,5 @@ def classify_financial_head(head, acc_type) -> FinancialClassification:
 
     if _is_balance_sheet_type(acc_type):
         return FinancialClassification(include_in_balance_sheet=True, reason="structural_balance_sheet")
-
-    detailsingroup = _detailsingroup_value(head)
-    if detailsingroup == TRADING_GROUP:
-        return FinancialClassification(include_in_trading=True, reason="fallback_detailsingroup_trading")
-    if detailsingroup == PROFIT_LOSS_GROUP:
-        return FinancialClassification(
-            include_in_profit_loss=True,
-            profit_loss_side="expense",
-            reason="fallback_detailsingroup_profit_loss",
-        )
-    if detailsingroup == BALANCE_SHEET_GROUP:
-        return FinancialClassification(include_in_balance_sheet=True, reason="fallback_detailsingroup_balance_sheet")
 
     return FinancialClassification(reason="unclassified")

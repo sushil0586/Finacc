@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from financial.models import account as FinancialAccount
+from helpers.utils.settlement_runtime import SettlementVoucherRuntimeMixin
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_ar_service import SalesArService
@@ -48,45 +49,8 @@ class ReceiptVoucherResult:
     message: str
 
 
-class ReceiptVoucherService:
+class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_WITHHOLDING_TCS_REMARK = "__AUTO_WITHHOLDING_TCS__"
-
-    @staticmethod
-    def _as_pk(value: Any) -> Any:
-        if value in (None, ""):
-            return None
-        return getattr(value, "pk", value)
-
-    @classmethod
-    def _normalize_allocations(cls, allocations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows_by_open_item: Dict[int, Dict[str, Any]] = {}
-        rows_without_open_item: List[Dict[str, Any]] = []
-        for row in allocations or []:
-            item = dict(row or {})
-            item["open_item"] = cls._as_pk(item.get("open_item"))
-            open_item = item.get("open_item")
-            if open_item in (None, ""):
-                rows_without_open_item.append(item)
-                continue
-
-            open_item = int(open_item)
-            existing = rows_by_open_item.get(open_item)
-            if existing is None:
-                item["open_item"] = open_item
-                item["settled_amount"] = q2(item.get("settled_amount") or ZERO2)
-                item["is_full_settlement"] = bool(item.get("is_full_settlement", False))
-                item["is_advance_adjustment"] = bool(item.get("is_advance_adjustment", False))
-                rows_by_open_item[open_item] = item
-            else:
-                existing["settled_amount"] = q2(existing.get("settled_amount") or ZERO2) + q2(item.get("settled_amount") or ZERO2)
-                existing["is_full_settlement"] = bool(existing.get("is_full_settlement", False) or item.get("is_full_settlement", False))
-                existing["is_advance_adjustment"] = bool(existing.get("is_advance_adjustment", False) or item.get("is_advance_adjustment", False))
-                if not existing.get("id") and item.get("id"):
-                    existing["id"] = item.get("id")
-
-        rows: List[Dict[str, Any]] = list(rows_by_open_item.values())
-        rows.extend(rows_without_open_item)
-        return rows
 
     @staticmethod
     def _runtime_tcs_document_no(header: ReceiptVoucherHeader) -> str:
@@ -175,25 +139,6 @@ class ReceiptVoucherService:
         )
 
     @classmethod
-    def _normalize_adjustments(cls, adjustments: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        for row in adjustments or []:
-            item = dict(row or {})
-            item["allocation"] = cls._as_pk(item.get("allocation"))
-            item["ledger_account"] = cls._as_pk(item.get("ledger_account"))
-            item["ledger"] = cls._account_ledger_id(item.get("ledger_account"))
-            rows.append(item)
-        return rows
-
-    @staticmethod
-    def _account_ledger_id(value: Any) -> Optional[int]:
-        account_id = ReceiptVoucherService._as_pk(value)
-        if account_id in (None, ""):
-            return None
-        acct = FinancialAccount.objects.filter(pk=account_id).only("id", "ledger_id").first()
-        return getattr(acct, "ledger_id", None)
-
-    @classmethod
     def _normalize_advance_adjustments(cls, rows_in: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         merged: Dict[tuple, Dict[str, Any]] = {}
         rows_without_keys: List[Dict[str, Any]] = []
@@ -225,39 +170,6 @@ class ReceiptVoucherService:
         rows: List[Dict[str, Any]] = list(merged.values())
         rows.extend(rows_without_keys)
         return rows
-
-    @staticmethod
-    def _workflow_state(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        st = data.get("_approval_state")
-        if not isinstance(st, dict):
-            st = {
-                "status": "DRAFT",
-                "submitted_by": None,
-                "submitted_at": None,
-                "approved_by": None,
-                "approved_at": None,
-                "rejected_by": None,
-                "rejected_at": None,
-                "remarks": None,
-            }
-        return st
-
-    @staticmethod
-    def _set_workflow_state(payload: Optional[Dict[str, Any]], state: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        data["_approval_state"] = state
-        return data
-
-    @staticmethod
-    def _append_audit(payload: Optional[Dict[str, Any]], event: Dict[str, Any]) -> Dict[str, Any]:
-        data = dict(payload or {})
-        logs = data.get("_audit_log")
-        if not isinstance(logs, list):
-            logs = []
-        logs.append(event)
-        data["_audit_log"] = logs
-        return data
 
     @staticmethod
     def _safe_state_code_from_header(header: ReceiptVoucherHeader) -> str:
@@ -587,20 +499,6 @@ class ReceiptVoucherService:
         SalesAdvanceAdjustment.objects.filter(**filters).delete()
 
     @staticmethod
-    def _sum_allocations(allocations: Iterable[Dict[str, Any]]) -> Decimal:
-        total = ZERO2
-        for row in allocations or []:
-            total = q2(total + q2(row.get("settled_amount") or ZERO2))
-        return total
-
-    @staticmethod
-    def _sum_advance_adjustments(rows: Iterable[Dict[str, Any]]) -> Decimal:
-        total = ZERO2
-        for row in rows or []:
-            total = q2(total + q2(row.get("adjusted_amount") or ZERO2))
-        return total
-
-    @staticmethod
     def _fresh_allocation_rows(voucher: ReceiptVoucherHeader) -> List[ReceiptVoucherAllocation]:
         # Posting paths may create allocations after the voucher was loaded with
         # prefetched relations. Always requery allocations to avoid stale
@@ -615,18 +513,6 @@ class ReceiptVoucherService:
         if not dt:
             raise ValueError(f"DocumentType not found for module='receipts' and doc_code='{doc_code}'")
         return dt.id
-
-    @staticmethod
-    def _compute_adjustment_total(adjustments: Iterable[Dict[str, Any]]) -> Decimal:
-        total = ZERO2
-        for row in adjustments or []:
-            amt = q2(row.get("amount") or ZERO2)
-            eff = str(row.get("settlement_effect") or ReceiptVoucherAdjustment.Effect.PLUS)
-            if eff == ReceiptVoucherAdjustment.Effect.MINUS:
-                total = q2(total - amt)
-            else:
-                total = q2(total + amt)
-        return total
 
     @staticmethod
     def _effective_settlement_amount(cash_received_amount: Decimal, adjustment_total: Decimal) -> Decimal:

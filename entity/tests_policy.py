@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.exceptions import ValidationError
 
 from Authentication.models import User
-from entity.models import Constitution, Entity, EntityPolicy, GstRegistrationType, UnitType
+from entity.models import Constitution, Entity, EntityPolicy, GstRegistrationType
 from entity.onboarding_services import EntityOnboardingService
 from geography.models import City, Country, District, State
 
@@ -19,7 +19,6 @@ class EntityPolicyTests(TestCase):
         self.state = State.objects.create(statename="Punjab", statecode="03", country=self.country)
         self.district = District.objects.create(districtname="Fatehgarh", districtcode="FGS", state=self.state)
         self.city = City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Unit", UnitDesc="Unit")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.constitution = Constitution.objects.create(
             constitutionname="Proprietorship",
@@ -33,7 +32,6 @@ class EntityPolicyTests(TestCase):
             "entity": {
                 "entityname": "Policy Entity",
                 "legalname": "Policy Entity Pvt Ltd",
-                "unitType": self.unit_type,
                 "GstRegitrationType": self.gst_type,
                 "gstno": "03APXPB5894F1Z3",
                 "panno": "APXPB5894F",

@@ -344,7 +344,9 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
             int(ReceiptVoucherHeader.Status.POSTED),
             int(ReceiptVoucherHeader.Status.CANCELLED),
         ):
-            raise serializers.ValidationError("Cannot edit a POSTED or CANCELLED receipt voucher.")
+            raise serializers.ValidationError(
+                {"non_field_errors": ["Cannot edit a POSTED or CANCELLED receipt voucher."]}
+            )
         return attrs
 
     def create(self, validated_data):

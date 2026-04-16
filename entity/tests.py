@@ -3,7 +3,10 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from Authentication.models import User
-from entity.models import BankDetail, BankAccount, Constitution, Entity, EntityConstitution, EntityFinancialYear, EntityDetail, GstRegistrationType, SubEntity, UnitType
+from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity
+from entity.models import EntityBankAccountV2 as BankAccount
+from entity.onboarding_serializers import EntityOnboardingCreateSerializer
+from entity.onboarding_services import EntityOnboardingService
 from entity.seeding import EntitySeedService
 from financial.models import FinancialSettings, Ledger, account, accountHead
 from rbac.models import Role as RbacRole
@@ -24,7 +27,6 @@ class EntityContextV2Tests(TestCase):
         self.state = State.objects.create(statename="Karnataka", statecode="KA", country=self.country)
         self.district = District.objects.create(districtname="Bangalore", districtcode="BLR", state=self.state)
         self.city = City.objects.create(cityname="Bangalore", citycode="BLR", pincode="560001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Unit", UnitDesc="Unit")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.constitution = Constitution.objects.create(
             constitutionname="Private Limited",
@@ -37,7 +39,6 @@ class EntityContextV2Tests(TestCase):
             entityname="Demo Entity",
             entitydesc="Demo",
             legalname="Demo Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             address="Address",
             ownername="Owner",
@@ -81,10 +82,9 @@ class EntityOnboardingTests(TestCase):
             password="secret123",
         )
         self.country = Country.objects.create(countryname="India", countrycode="IN")
-        self.state = State.objects.create(statename="Punjab", statecode="PB", country=self.country)
+        self.state = State.objects.create(statename="Punjab", statecode="03", country=self.country)
         self.district = District.objects.create(districtname="Fatehgarh", districtcode="FGS", state=self.state)
         self.city = City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Unit", UnitDesc="Unit")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.constitution = Constitution.objects.create(
             constitutionname="Proprietorship",
@@ -99,7 +99,6 @@ class EntityOnboardingTests(TestCase):
             "entity": {
                 "entityname": "ABC Enterprises",
                 "legalname": "ABC Enterprises",
-                "unitType": self.unit_type.id,
                 "GstRegitrationType": self.gst_type.id,
                 "gstno": "03APXPB5894F1Z3",
                 "panno": "APXPB5894F",
@@ -134,7 +133,29 @@ class EntityOnboardingTests(TestCase):
                 }
             ],
             "constitution_details": [
-                {"shareholder": "Owner Name", "pan": "APXPB5894F", "sharepercentage": "100.00"}
+                {
+                    "shareholder": "Owner Name",
+                    "pan": "APXPB5894F",
+                    "sharepercentage": "100.00",
+                    "effective_from": "2026-04-01",
+                    "effective_to": "2027-03-31",
+                    "account_preference": "capital",
+                    "agreement_reference": "Deed-001",
+                }
+            ],
+            "ownership_details": [
+                {
+                    "ownership_type": "proprietor",
+                    "name": "Owner Name",
+                    "pan_number": "APXPB5894F",
+                    "sharepercentage": "100.00",
+                    "capital_contribution": "100000.00",
+                    "effective_from": "2026-04-01",
+                    "effective_to": "2027-03-31",
+                    "account_preference": "capital",
+                    "agreement_reference": "Deed-001",
+                    "is_primary": True,
+                }
             ],
             "seed_options": {
                 "template_code": "indian_accounting_final",
@@ -161,13 +182,226 @@ class EntityOnboardingTests(TestCase):
         self.assertIsNotNone(entity.customer_account_id)
         self.assertTrue(CustomerSubscription.objects.filter(customer_account=entity.customer_account).exists())
         self.assertTrue(UserEntityAccess.objects.filter(entity=entity, user=self.user, is_owner=True).exists())
+        constitution = entity.constitutions_v2.first()
+        self.assertIsNotNone(constitution)
+        self.assertEqual(constitution.account_preference, "capital")
+        self.assertEqual(constitution.agreement_reference, "Deed-001")
+        ownership = entity.ownerships_v2.first()
+        self.assertIsNotNone(ownership)
+        self.assertEqual(ownership.account_preference, "capital")
+        self.assertEqual(ownership.agreement_reference, "Deed-001")
+        self.assertTrue(ownership.is_primary)
+
+    def test_new_onboarding_derives_constitution_rows_from_ownership_rows(self):
+        payload = {
+            "entity": {
+                "entityname": "Ownership Only Entity",
+                "legalname": "Ownership Only Entity",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "ownership@example.com",
+                "address": "4369 GT Road",
+                "address2": "Sirhind",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "ownership_details": [
+                {
+                    "ownership_type": "proprietor",
+                    "name": "Owner Name",
+                    "pan_number": "APXPB5894F",
+                    "sharepercentage": "100.00",
+                    "capital_contribution": "100000.00",
+                    "effective_from": "2026-04-01",
+                    "effective_to": "2027-03-31",
+                    "account_preference": "capital",
+                    "agreement_reference": "Deed-010",
+                    "is_primary": True,
+                }
+            ],
+            "seed_options": {
+                "template_code": "indian_accounting_final",
+                "seed_financial": True,
+                "seed_rbac": True,
+                "seed_default_subentity": True,
+                "seed_default_roles": True,
+            },
+        }
+
+        serializer = EntityOnboardingCreateSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        result = EntityOnboardingService.create_entity(actor=self.user, payload=serializer.validated_data)
+        entity = result["entity"]
+        self.assertEqual(entity.constitutions_v2.count(), 1)
+        self.assertEqual(entity.ownerships_v2.count(), 1)
+        self.assertEqual(entity.constitutions_v2.first().agreement_reference, "Deed-010")
+        self.assertEqual(entity.ownerships_v2.first().agreement_reference, "Deed-010")
+        self.assertTrue(entity.ownerships_v2.first().is_primary)
+
+    def test_new_onboarding_rejects_gst_state_code_mismatch(self):
+        other_state = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        payload = {
+            "entity": {
+                "entityname": "Mismatch GST Entity",
+                "legalname": "Mismatch GST Entity",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "mismatch@example.com",
+                "address": "4369 GT Road",
+                "address2": "Sirhind",
+                "country": self.country.id,
+                "state": other_state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "seed_options": {
+                "template_code": "indian_accounting_final",
+                "seed_financial": True,
+                "seed_rbac": True,
+                "seed_default_subentity": True,
+                "seed_default_roles": True,
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("gstno", response.data["entity"])
+        self.assertIn("must match state code", str(response.data["entity"]["gstno"][0]))
+
+    def test_unified_onboarding_submit_supports_authenticated_dashboard_creation(self):
+        payload = {
+            "entity": {
+                "entityname": "Unified Dashboard Entity",
+                "legalname": "Unified Dashboard Entity Pvt Ltd",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "dashboard@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "seed_options": {
+                "template_code": "indian_accounting_final",
+                "seed_financial": True,
+                "seed_rbac": True,
+                "seed_default_subentity": True,
+                "seed_default_roles": True,
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/submit/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["entity_name"], "Unified Dashboard Entity")
+        entity = Entity.objects.get(id=response.data["entity_id"])
+        self.assertTrue(FinancialSettings.objects.filter(entity=entity).exists())
+        self.assertTrue(accountHead.objects.filter(entity=entity, accounttype__accounttypecode="1009").exists())
+        self.assertTrue(Ledger.objects.filter(entity=entity, ledger_code=7000).exists())
+        self.assertIn("posting_static_accounts", response.data)
+        self.assertGreaterEqual(response.data["posting_static_accounts"]["created"], 0)
+
+    def test_unified_onboarding_submit_supports_public_signup(self):
+        self.client.force_authenticate(user=None)
+
+        payload = {
+            "user": {
+                "email": "submitfounder@example.com",
+                "username": "submitfounder@example.com",
+                "first_name": "Submit",
+                "last_name": "Founder",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Submit Entity",
+                    "legalname": "Submit Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "submitfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+                "seed_options": {
+                    "template_code": "indian_accounting_final",
+                    "seed_financial": True,
+                    "seed_rbac": True,
+                    "seed_default_subentity": True,
+                    "seed_default_roles": True,
+                },
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/submit/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["user"]["email"], "submitfounder@example.com")
+        self.assertEqual(response.data["onboarding"]["entity_name"], "Submit Entity")
 
     def test_onboarding_meta_returns_bootstrap_dropdowns(self):
         response = self.client.get("/api/entity/onboarding/meta/")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["defaults"]["seed_options"]["template_code"], "indian_accounting_final")
-        self.assertTrue(len(response.data["dropdowns"]["unit_types"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["gst_registration_types"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["constitutions"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["countries"]) >= 1)
@@ -191,9 +425,7 @@ class EntityOnboardingTests(TestCase):
         first = EntitySeedService.seed_master_data(actor=self.user)
         second = EntitySeedService.seed_master_data(actor=self.user)
 
-        self.assertGreaterEqual(first["unit_type_count"], 1)
         self.assertEqual(first, second)
-        self.assertGreaterEqual(UnitType.objects.count(), first["unit_type_count"])
         self.assertGreaterEqual(GstRegistrationType.objects.count(), first["gst_registration_type_count"])
         self.assertGreaterEqual(Constitution.objects.count(), first["constitution_count"])
 
@@ -201,7 +433,6 @@ class EntityOnboardingTests(TestCase):
         entity = Entity.objects.create(
             entityname="Existing Entity",
             legalname="Existing Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             gstno="03APXPB5894F1Z3",
             panno="APXPB5894F",
@@ -217,7 +448,6 @@ class EntityOnboardingTests(TestCase):
             const=self.constitution,
             createdby=self.user,
         )
-        EntityDetail.objects.create(entity=entity, style="Standard", gstno=entity.gstno)
         fy = EntityFinancialYear.objects.create(
             entity=entity,
             createdby=self.user,
@@ -249,12 +479,26 @@ class EntityOnboardingTests(TestCase):
             email="branch@example.com",
             ismainentity=True,
         )
-        constitution = EntityConstitution.objects.create(
+        constitution = EntityConstitutionV2.objects.create(
             entity=entity,
             createdby=self.user,
             shareholder="Owner",
             pan="APXPB5894F",
-            sharepercentage="100.00",
+            share_percentage="100.00",
+            account_preference="capital",
+            agreement_reference="Deed-002",
+        )
+        ownership = EntityOwnershipV2.objects.create(
+            entity=entity,
+            createdby=self.user,
+            ownership_type="proprietor",
+            name="Owner",
+            pan_number="APXPB5894F",
+            share_percentage="100.00",
+            capital_contribution="100000.00",
+            account_preference="capital",
+            agreement_reference="Deed-002",
+            is_primary=True,
         )
 
         response = self.client.get(f"/api/entity/onboarding/entity/{entity.id}/")
@@ -265,12 +509,16 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(response.data["bank_accounts"][0]["id"], bank.id)
         self.assertEqual(response.data["subentities"][0]["id"], subentity.id)
         self.assertEqual(response.data["constitution_details"][0]["id"], constitution.id)
+        self.assertEqual(response.data["ownership_details"][0]["id"], ownership.id)
+        self.assertEqual(response.data["constitution_details"][0]["account_preference"], "capital")
+        self.assertEqual(response.data["constitution_details"][0]["agreement_reference"], "Deed-002")
+        self.assertEqual(response.data["ownership_details"][0]["account_preference"], "capital")
+        self.assertEqual(response.data["ownership_details"][0]["agreement_reference"], "Deed-002")
 
     def test_onboarding_detail_can_update_nested_entity_payload(self):
         entity = Entity.objects.create(
             entityname="Existing Entity",
             legalname="Existing Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             phoneoffice="9855966534",
             phoneresidence="9855966534",
@@ -306,7 +554,6 @@ class EntityOnboardingTests(TestCase):
             "entity": {
                 "entityname": "Updated Entity",
                 "legalname": "Updated Entity Pvt Ltd",
-                "unitType": self.unit_type.id,
                 "GstRegitrationType": self.gst_type.id,
                 "phoneoffice": "9999999999",
                 "phoneresidence": "9999999999",
@@ -356,10 +603,9 @@ class RegisterAndEntityOnboardingTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.country = Country.objects.create(countryname="India", countrycode="IN")
-        self.state = State.objects.create(statename="Punjab", statecode="PB", country=self.country)
+        self.state = State.objects.create(statename="Punjab", statecode="03", country=self.country)
         self.district = District.objects.create(districtname="Fatehgarh", districtcode="FGS", state=self.state)
         self.city = City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Unit", UnitDesc="Unit")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.seed_user = User.objects.create_user(
             username="seed_user",
@@ -386,7 +632,6 @@ class RegisterAndEntityOnboardingTests(TestCase):
                 "entity": {
                     "entityname": "New Entity",
                     "legalname": "New Entity Pvt Ltd",
-                    "unitType": self.unit_type.id,
                     "GstRegitrationType": self.gst_type.id,
                     "gstno": "03APXPB5894F1Z3",
                     "panno": "APXPB5894F",
@@ -451,7 +696,6 @@ class RegisterAndEntityOnboardingTests(TestCase):
                 "entity": {
                     "entityname": "Trial Entity",
                     "legalname": "Trial Entity Pvt Ltd",
-                    "unitType": self.unit_type.id,
                     "GstRegitrationType": self.gst_type.id,
                     "gstno": "03APXPB5894F1Z3",
                     "panno": "APXPB5894F",
@@ -495,7 +739,6 @@ class RegisterAndEntityOnboardingTests(TestCase):
             "entity": {
                 "entityname": "Flat Entity",
                 "legalname": "Flat Entity Pvt Ltd",
-                "unitType": self.unit_type.id,
                 "GstRegitrationType": self.gst_type.id,
                 "gstno": "03APXPB5894F1Z3",
                 "panno": "APXPB5894F",

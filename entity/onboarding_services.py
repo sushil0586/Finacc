@@ -14,6 +14,7 @@ from entity.models import (
     EntityContact,
     EntityFinancialYear,
     EntityGstRegistration,
+    EntityOwnershipV2,
     EntityTaxProfile,
     SubEntity,
     SubEntityAddress,
@@ -26,6 +27,7 @@ from entity.policy import EntityPolicyService
 from financial.seeding import FinancialSeedService
 from rbac.seeding import RBACSeedService
 from rbac.models import UserRoleAssignment
+from posting.services.static_accounts import StaticAccountService
 from subscriptions.services import SubscriptionService
 from numbering.seeding import NumberingSeedService, NumberingSeedSpec
 
@@ -315,8 +317,64 @@ class EntityOnboardingService:
         payload.pop("sharepercentage", None)
         payload.setdefault("constitution_code", "OWNER")
         payload.setdefault("constitution_name", "Ownership")
+        payload.setdefault("account_preference", "capital")
         payload.setdefault("isactive", True)
         return payload
+
+    @staticmethod
+    def _normalize_ownership_row(row):
+        payload = dict(row)
+        payload.pop("entity", None)
+        payload.pop("entity_id", None)
+        if payload.get("name") in (None, ""):
+            payload["name"] = payload.get("shareholder") or payload.get("constitution_name")
+        if payload.get("pan_number") in (None, ""):
+            payload["pan_number"] = payload.get("pan")
+        if payload.get("share_percentage") in (None, "") and payload.get("sharepercentage") not in (None, ""):
+            payload["share_percentage"] = payload.get("sharepercentage")
+        payload.pop("sharepercentage", None)
+        payload.setdefault("ownership_type", EntityOwnershipV2.OwnershipType.OTHER)
+        payload.setdefault("account_preference", EntityOwnershipV2.AccountPreference.AUTO)
+        payload.setdefault("is_primary", False)
+        payload.setdefault("isactive", True)
+        return payload
+
+    @staticmethod
+    def _ownership_to_constitution_row(row):
+        payload = dict(row)
+        payload.pop("entity", None)
+        payload.pop("entity_id", None)
+        ownership_name = payload.get("name") or payload.get("shareholder")
+        ownership_pan = payload.get("pan_number") or payload.get("pan")
+        if payload.get("share_percentage") in (None, "") and payload.get("sharepercentage") not in (None, ""):
+            payload["share_percentage"] = payload.get("sharepercentage")
+        payload.pop("sharepercentage", None)
+        payload.pop("ownership_type", None)
+        payload.pop("name", None)
+        payload.pop("email", None)
+        payload.pop("mobile", None)
+        payload.pop("pan_number", None)
+        payload.pop("capital_contribution", None)
+        payload.pop("designation", None)
+        payload.pop("remarks", None)
+        payload.pop("is_primary", None)
+        payload["shareholder"] = ownership_name
+        payload["pan"] = ownership_pan
+        payload.setdefault("constitution_code", "OWNER")
+        payload.setdefault("constitution_name", "Ownership")
+        payload.setdefault("account_preference", "capital")
+        payload.setdefault("isactive", True)
+        return payload
+
+    @classmethod
+    def _normalize_ownership_rows(cls, *, ownership_rows):
+        rows = [dict(row) for row in ownership_rows]
+        if not rows:
+            return rows
+        normalized = [cls._normalize_ownership_row(row) for row in rows]
+        if not any(bool(row.get("is_primary")) for row in normalized):
+            normalized[0]["is_primary"] = True
+        return normalized
 
     @classmethod
     def _normalize_subentity_rows(cls, *, subentity_rows):
@@ -392,7 +450,7 @@ class EntityOnboardingService:
                         mode=policy.gstin_state_match_mode,
                         field="entity.gst.state",
                         code="entity.gstin_state_mismatch",
-                        message=f"GSTIN {row.gstin} does not match state code {state_code}.",
+                        message=f"GSTIN {row.gstin} must match state code {state_code}.",
                         warnings=warnings,
                     )
         return warnings
@@ -422,7 +480,7 @@ class EntityOnboardingService:
                             mode=policy.subentity_gstin_state_match_mode,
                             field="subentity.gst.state",
                             code="subentity.gstin_state_mismatch",
-                            message=f"GSTIN {row.gstin} for subentity '{subentity.subentityname}' does not match state code {state_code}.",
+                            message=f"GSTIN {row.gstin} for subentity '{subentity.subentityname}' must match state code {state_code}.",
                             warnings=warnings,
                         )
         return warnings
@@ -445,6 +503,14 @@ class EntityOnboardingService:
         bank_rows = [dict(row) for row in payload.get("bank_accounts", [])]
         subentity_rows = cls._normalize_subentity_rows(subentity_rows=payload.get("subentities", []))
         constitution_rows = [dict(row) for row in payload.get("constitution_details", [])]
+        ownership_rows = cls._normalize_ownership_rows(
+            ownership_rows=payload.get("ownership_details", []) or payload.get("constitution_details", [])
+        )
+        if not constitution_rows and ownership_rows:
+            constitution_rows = [
+                cls._normalize_constitution_row(cls._ownership_to_constitution_row(row))
+                for row in ownership_rows
+            ]
         seed_options = dict(payload.get("seed_options") or {})
 
         entity_profile_data = cls._extract_entity_profile_data(entity_data)
@@ -524,6 +590,8 @@ class EntityOnboardingService:
 
         validation_warnings = cls._collect_validation_warnings(entity=entity)
 
+        posting_static_accounts_summary = StaticAccountService.seed_static_account_master()
+
         constitution_ids = []
         for row in constitution_rows:
             constitution = EntityConstitutionV2.objects.create(
@@ -532,6 +600,15 @@ class EntityOnboardingService:
                 **cls._normalize_constitution_row(row),
             )
             constitution_ids.append(constitution.id)
+
+        ownership_ids = []
+        for row in ownership_rows:
+            ownership = EntityOwnershipV2.objects.create(
+                entity=entity,
+                createdby=actor,
+                **row,
+            )
+            ownership_ids.append(ownership.id)
 
         financial_summary = {}
         if seed_options.get("seed_financial", True):
@@ -575,6 +652,8 @@ class EntityOnboardingService:
             "bank_account_ids": bank_ids,
             "subentity_ids": subentity_ids,
             "constitution_ids": constitution_ids,
+            "ownership_ids": ownership_ids,
+            "posting_static_accounts": posting_static_accounts_summary,
             "financial": financial_summary,
             "rbac": rbac_summary,
             "numbering": numbering_summary,
@@ -616,7 +695,6 @@ class EntityOnboardingService:
             "short_name": entity.short_name,
             "organization_status": entity.organization_status,
             "business_type": entity.business_type,
-            "unitType": entity.unitType_id,
             "GstRegitrationType": getattr(gst_row, "registration_type_id", None),
             "gst_registration_status": entity.gst_registration_status,
             "website": entity.website,
@@ -725,6 +803,7 @@ class EntityOnboardingService:
             "bank_accounts": entity.bank_accounts_v2.all().order_by("id"),
             "subentities": subentity_rows,
             "constitution_details": entity.constitutions_v2.all().order_by("id"),
+            "ownership_details": entity.ownerships_v2.all().order_by("id"),
         }
 
     @classmethod
@@ -838,15 +917,39 @@ class EntityOnboardingService:
             for obj_id, obj in existing.items():
                 if obj_id not in keep_ids:
                     obj.delete()
+
+        constitution_payload = payload.get("constitution_details")
+        ownership_payload = payload.get("ownership_details")
+        if (constitution_payload is None or not constitution_payload) and ownership_payload:
+            constitution_payload = [
+                cls._normalize_constitution_row(cls._ownership_to_constitution_row(item))
+                for item in ownership_payload
+            ]
         cls._upsert_nested(
             model=EntityConstitutionV2,
             parent_instance=entity,
             related_name="constitutions_v2",
             parent_field="entity",
             items=(
-                [cls._normalize_constitution_row(item) for item in payload.get("constitution_details", [])]
-                if payload.get("constitution_details") is not None
+                [cls._normalize_constitution_row(item) for item in constitution_payload]
+                if constitution_payload is not None
                 else None
+            ),
+            actor=actor,
+        )
+        cls._upsert_nested(
+            model=EntityOwnershipV2,
+            parent_instance=entity,
+            related_name="ownerships_v2",
+            parent_field="entity",
+            items=(
+                [cls._normalize_ownership_row(item) for item in ownership_payload]
+                if ownership_payload is not None
+                else (
+                    [cls._normalize_ownership_row(item) for item in constitution_payload]
+                    if constitution_payload is not None
+                    else None
+                )
             ),
             actor=actor,
         )
