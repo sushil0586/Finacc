@@ -12,6 +12,7 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
+from numbering.models import DocumentNumberSeries, DocumentType
 from posting.models import InventoryMove
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from inventory_ops.services import InventoryAdjustmentService
@@ -123,6 +124,10 @@ class InventoryOpsTests(APITestCase):
         )
         self._grant_inventory_permission('inventory.transfer.view')
         self._grant_inventory_permission('inventory.transfer.create')
+        self._grant_inventory_permission('inventory.transfer.update')
+        self._grant_inventory_permission('inventory.transfer.post')
+        self._grant_inventory_permission('inventory.transfer.unpost')
+        self._grant_inventory_permission('inventory.transfer.cancel')
         self._grant_inventory_permission('inventory.adjustment.view')
         self._grant_inventory_permission('inventory.adjustment.create')
         self._grant_inventory_permission('inventory.location.view')
@@ -164,13 +169,14 @@ class InventoryOpsTests(APITestCase):
         )
 
     def _grant_inventory_permission(self, permission_code: str):
+        action = permission_code.rsplit('.', 1)[-1]
         permission, _ = Permission.objects.get_or_create(
             code=permission_code,
             defaults={
                 'name': permission_code,
                 'module': 'inventory',
                 'resource': 'transfer',
-                'action': 'create' if permission_code.endswith('.create') else 'view',
+                'action': action,
                 'description': permission_code,
                 'scope_type': Permission.SCOPE_ENTITY,
                 'is_system_defined': True,
@@ -257,17 +263,27 @@ class InventoryOpsTests(APITestCase):
         delete_resp = self.client.delete(reverse('inventory_ops:inventory-godown-master-detail', kwargs={'pk': godown_id}))
         self.assertEqual(delete_resp.status_code, 204)
 
-    def test_create_transfer_posts_inventory_only_moves(self):
+    def test_create_transfer_saves_draft_without_posting_moves(self):
         response = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
         self.assertEqual(response.status_code, 201)
         body = response.json()
-        self.assertEqual(body['transfer']['status'], 'POSTED')
-        self.assertIsNotNone(body['transfer']['posting_entry_id'])
+        self.assertEqual(body['transfer']['status'], 'DRAFT')
+        self.assertIsNone(body['transfer']['posting_entry_id'])
         self.assertAlmostEqual(float(body['transfer']['total_qty']), 5.0)
         self.assertAlmostEqual(float(body['transfer']['total_value']), 125000.0)
 
         transfer_id = body['transfer']['id']
         self.assertTrue(body['transfer']['transfer_no'].startswith('ITF-'))
+        self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 0)
+
+    def test_transfer_post_unpost_and_cancel_flow(self):
+        created = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
+        self.assertEqual(created.status_code, 201)
+        transfer_id = created.json()['transfer']['id']
+
+        post_resp = self.client.post(reverse('inventory_ops:inventory-transfer-post', kwargs={'pk': transfer_id}), {}, format='json')
+        self.assertEqual(post_resp.status_code, 200)
+        self.assertEqual(post_resp.json()['transfer']['status'], 'POSTED')
         self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 2)
 
         moves = list(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').order_by('id'))
@@ -277,6 +293,36 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(moves[1].movement_nature, InventoryMove.MovementNature.TRANSFER)
         self.assertEqual(moves[1].source_location_id, self.source.id)
         self.assertEqual(moves[1].destination_location_id, self.destination.id)
+
+        unpost_resp = self.client.post(reverse('inventory_ops:inventory-transfer-unpost', kwargs={'pk': transfer_id}), {}, format='json')
+        self.assertEqual(unpost_resp.status_code, 200)
+        self.assertEqual(unpost_resp.json()['transfer']['status'], 'DRAFT')
+        self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 0)
+
+        cancel_resp = self.client.post(reverse('inventory_ops:inventory-transfer-cancel', kwargs={'pk': transfer_id}), {}, format='json')
+        self.assertEqual(cancel_resp.status_code, 200)
+        self.assertEqual(cancel_resp.json()['transfer']['status'], 'CANCELLED')
+
+    def test_transfer_update_replaces_lines_for_draft(self):
+        created = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
+        transfer_id = created.json()['transfer']['id']
+        payload = self._transfer_payload()
+        payload['lines'][0]['qty'] = '3.0000'
+        payload['lines'][0]['note'] = 'Updated quantity'
+        response = self.client.patch(reverse('inventory_ops:inventory-transfer-detail', kwargs={'pk': transfer_id}), payload, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['transfer']['status'], 'DRAFT')
+        self.assertAlmostEqual(float(response.json()['transfer']['total_qty']), 3.0)
+        self.assertEqual(response.json()['transfer']['lines'][0]['note'], 'Updated quantity')
+
+    def test_transfer_derives_unit_cost_from_source_stock_when_missing(self):
+        payload = self._transfer_payload()
+        payload['lines'][0]['unit_cost'] = None
+        response = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+        self.assertEqual(response.status_code, 201)
+        transfer = response.json()['transfer']
+        self.assertEqual(transfer['status'], 'DRAFT')
+        self.assertAlmostEqual(float(transfer['lines'][0]['unit_cost']), 25000.0)
 
     def test_transfer_requires_batch_for_batch_managed_items(self):
         payload = self._transfer_payload()
@@ -397,6 +443,7 @@ class InventoryOpsTests(APITestCase):
                     'direction': 'DECREASE',
                     'qty': '8.0000',
                     'batch_number': 'B-1',
+                    'expiry_date': '2026-05-01',
                 }
             ],
         }
@@ -427,3 +474,78 @@ class InventoryOpsTests(APITestCase):
         response = self.client.get(reverse('inventory_ops:inventory-adjustments-list'), {'entity': self.entity.id})
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(len(response.json()['rows']), 1)
+
+    def test_inventory_settings_returns_defaults_and_numbering_rows(self):
+        response = self.client.get(
+            reverse('inventory_ops:inventory-settings'),
+            {'entity': self.entity.id, 'entityfinid': self.entityfin.id, 'subentity': self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['settings']['default_doc_code_transfer'], 'ITF')
+        self.assertEqual(body['settings']['default_doc_code_adjustment'], 'IAD')
+        self.assertEqual(len(body['numbering_series']), 2)
+        self.assertTrue(DocumentType.objects.filter(module='inventory_ops', doc_key='INVENTORY_TRANSFER').exists())
+
+    def test_inventory_settings_patch_updates_codes_and_series(self):
+        response = self.client.patch(
+            reverse('inventory_ops:inventory-settings'),
+            {
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin.id,
+                'subentity': self.subentity.id,
+                'settings': {
+                    'default_doc_code_transfer': 'TRF',
+                    'default_doc_code_adjustment': 'ADJ',
+                    'default_workflow_action': 'draft',
+                    'auto_derive_transfer_cost': True,
+                    'allow_manual_transfer_cost_override': False,
+                    'require_batch_for_batch_managed_items': True,
+                },
+                'numbering_series': [
+                    {
+                        'series_key': 'inventory_transfer',
+                        'doc_code': 'TRF',
+                        'prefix': 'TRF',
+                        'suffix': '',
+                        'starting_number': 10,
+                        'current_number': 12,
+                        'number_padding': 4,
+                        'separator': '/',
+                        'reset_frequency': 'yearly',
+                        'include_year': False,
+                        'include_month': False,
+                        'custom_format': '',
+                        'is_active': True,
+                    },
+                    {
+                        'series_key': 'inventory_adjustment',
+                        'doc_code': 'ADJ',
+                        'prefix': 'ADJ',
+                        'suffix': '',
+                        'starting_number': 2,
+                        'current_number': 3,
+                        'number_padding': 4,
+                        'separator': '/',
+                        'reset_frequency': 'yearly',
+                        'include_year': False,
+                        'include_month': False,
+                        'custom_format': '',
+                        'is_active': True,
+                    },
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['settings']['default_doc_code_transfer'], 'TRF')
+        self.assertEqual(body['settings']['default_doc_code_adjustment'], 'ADJ')
+        transfer_series = DocumentNumberSeries.objects.get(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_code='TRF',
+        )
+        self.assertEqual(transfer_series.prefix, 'TRF')
+        self.assertEqual(transfer_series.current_number, 12)

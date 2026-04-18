@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from catalog.models import Product, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, Godown, SubEntity
+from helpers.models import TrackingModel
 
 
 class InventoryTransferStatus(models.TextChoices):
@@ -121,3 +122,56 @@ class InventoryAdjustmentLine(models.Model):
 
     def __str__(self) -> str:
         return f"{self.adjustment_id} -> {self.product_id}"
+
+
+DEFAULT_INVENTORY_OPS_POLICY_CONTROLS = {
+    "auto_derive_transfer_cost": True,
+    "show_transfer_cost_readonly": True,
+    "allow_manual_transfer_cost_override": False,
+    "require_confirm_before_post": True,
+    "allow_unpost_posted": True,
+    "allow_cancel_draft": True,
+    "unpost_target_status": "draft",
+    "require_reason_on_adjustment": True,
+    "positive_adjustment_cost_mode": "required_if_no_default",
+    "block_negative_adjustment_without_stock": True,
+    "require_batch_for_batch_managed_items": True,
+    "require_expiry_when_expiry_tracked": True,
+    "transfer_shortage_rule": "block",
+    "adjustment_shortage_rule": "block",
+}
+
+
+def default_inventory_ops_policy_controls():
+    return dict(DEFAULT_INVENTORY_OPS_POLICY_CONTROLS)
+
+
+class InventoryOpsSettings(TrackingModel):
+    class DefaultWorkflowAction(models.TextChoices):
+        DRAFT = "draft", "Save as Draft"
+        CONFIRM = "confirm", "Auto Confirm on Save"
+        POST = "post", "Auto Post on Save"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, related_name="inventory_ops_settings")
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, related_name="inventory_ops_settings")
+
+    default_doc_code_transfer = models.CharField(max_length=10, default="ITF")
+    default_doc_code_adjustment = models.CharField(max_length=10, default="IAD")
+    default_workflow_action = models.CharField(
+        max_length=10,
+        choices=DefaultWorkflowAction.choices,
+        default=DefaultWorkflowAction.DRAFT,
+        db_index=True,
+    )
+    policy_controls = models.JSONField(default=default_inventory_ops_policy_controls, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("entity", "subentity"), name="uq_inventory_ops_settings_entity_subentity"),
+        ]
+        indexes = [
+            models.Index(fields=["entity"], name="ix_inv_ops_settings_entity"),
+        ]
+
+    def __str__(self):
+        return f"InventoryOpsSettings(entity={self.entity_id}, subentity={self.subentity_id})"

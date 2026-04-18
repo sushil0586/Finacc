@@ -206,9 +206,11 @@ class InventoryTransferLineResponseSerializer(serializers.ModelSerializer):
 
 
 class InventoryTransferResponseSerializer(serializers.ModelSerializer):
+    source_location_id = serializers.IntegerField(read_only=True)
     source_location_name = serializers.CharField(source="source_location.name", read_only=True)
     source_location_code = serializers.CharField(source="source_location.code", read_only=True)
     source_location_display_name = serializers.CharField(source="source_location.display_name", read_only=True, allow_null=True)
+    destination_location_id = serializers.IntegerField(read_only=True)
     destination_location_name = serializers.CharField(source="destination_location.name", read_only=True)
     destination_location_code = serializers.CharField(source="destination_location.code", read_only=True)
     destination_location_display_name = serializers.CharField(source="destination_location.display_name", read_only=True, allow_null=True)
@@ -226,9 +228,11 @@ class InventoryTransferResponseSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "source_location_id",
             "source_location_name",
             "source_location_code",
             "source_location_display_name",
+            "destination_location_id",
             "destination_location_name",
             "destination_location_code",
             "destination_location_display_name",
