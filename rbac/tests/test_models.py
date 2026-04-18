@@ -1,3 +1,6 @@
+import importlib
+
+from django.apps import apps as global_apps
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
@@ -199,19 +202,25 @@ class RBACModelTests(TestCase):
             "reports.vendornoteregister.view",
         }
         for code in required_codes:
-            Permission.objects.create(
+            Permission.objects.update_or_create(
                 code=code,
-                name=code,
-                module="reports",
-                resource="payables",
-                action="view",
+                defaults={
+                    "name": code,
+                    "module": "reports",
+                    "resource": "payables",
+                    "action": "view",
+                    "isactive": True,
+                },
             )
-        Permission.objects.create(
+        Permission.objects.update_or_create(
             code="reports.payablesclosepack.view",
-            name="Payables Close Pack",
-            module="reports",
-            resource="payables",
-            action="view",
+            defaults={
+                "name": "Payables Close Pack",
+                "module": "reports",
+                "resource": "payables",
+                "action": "view",
+                "isactive": True,
+            },
         )
 
         template_permissions = set(
@@ -220,3 +229,196 @@ class RBACModelTests(TestCase):
 
         self.assertTrue(required_codes.issubset(template_permissions))
         self.assertNotIn("reports.payablesclosepack.view", template_permissions)
+
+    def test_admin_full_access_reconcile_migration_grants_all_active_permissions(self):
+        migration = importlib.import_module("rbac.migrations.0064_sync_admin_full_access")
+        super_admin_role = Role.objects.create(
+            entity=self.entity,
+            name="Entity Super Admin",
+            code="entity.super_admin",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        entity_admin_role = Role.objects.create(
+            entity=self.entity,
+            name="Entity Admin",
+            code="entity.admin",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        active_permission = Permission.objects.create(
+            code="reports.inventory.synthetic_full_access.view",
+            name="View Synthetic Inventory Reports",
+            module="reports",
+            resource="inventory_synthetic_full_access",
+            action="view",
+        )
+        inactive_permission = Permission.objects.create(
+            code="reports.inventory.synthetic_hidden",
+            name="Hidden Inventory Reports",
+            module="reports",
+            resource="inventory_synthetic_hidden",
+            action="hidden",
+            isactive=False,
+        )
+        stale_link = RolePermission.objects.create(
+            role=super_admin_role,
+            permission=active_permission,
+            effect=RolePermission.EFFECT_DENY,
+            isactive=False,
+            metadata={"seed": "old_seed"},
+        )
+
+        migration.forwards(global_apps, None)
+
+        stale_link.refresh_from_db()
+        self.assertEqual(stale_link.effect, RolePermission.EFFECT_ALLOW)
+        self.assertTrue(stale_link.isactive)
+        self.assertEqual(stale_link.metadata["seed"], migration.SEED_TAG)
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=entity_admin_role,
+                permission=active_permission,
+                effect=RolePermission.EFFECT_ALLOW,
+                isactive=True,
+            ).exists()
+        )
+        self.assertFalse(
+            RolePermission.objects.filter(
+                role__in=[super_admin_role, entity_admin_role],
+                permission=inactive_permission,
+            ).exists()
+        )
+
+    def test_document_workflow_restore_migration_reactivates_sales_confirm_and_cancel(self):
+        migration = importlib.import_module("rbac.migrations.0065_restore_document_workflow_permissions")
+        super_admin_role = Role.objects.create(
+            entity=self.entity,
+            name="Entity Super Admin",
+            code="entity.super_admin",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        entity_admin_role = Role.objects.create(
+            entity=self.entity,
+            name="Entity Admin",
+            code="entity.admin",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        sales_confirm, _ = Permission.objects.update_or_create(
+            code="sales.invoice.confirm",
+            defaults={
+                "name": "Confirm Sales Invoice",
+                "module": "sales",
+                "resource": "invoice",
+                "action": "confirm",
+                "isactive": False,
+            },
+        )
+        RolePermission.objects.create(
+            role=super_admin_role,
+            permission=sales_confirm,
+            effect=RolePermission.EFFECT_DENY,
+            isactive=False,
+            metadata={"seed": "stale_sales_workflow"},
+        )
+
+        migration.forwards(global_apps, None)
+
+        sales_confirm.refresh_from_db()
+        self.assertTrue(sales_confirm.isactive)
+        self.assertTrue(
+            Permission.objects.filter(code="sales.invoice.cancel", isactive=True).exists()
+        )
+        self.assertTrue(
+            Permission.objects.filter(code="sales.credit_note.confirm", isactive=True).exists()
+        )
+        self.assertTrue(
+            Permission.objects.filter(code="purchase.debit_note.cancel", isactive=True).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=super_admin_role,
+                permission__code="sales.invoice.confirm",
+                effect=RolePermission.EFFECT_ALLOW,
+                isactive=True,
+            ).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=entity_admin_role,
+                permission__code="sales.invoice.cancel",
+                effect=RolePermission.EFFECT_ALLOW,
+                isactive=True,
+            ).exists()
+        )
+
+    def test_core_module_restore_migration_reactivates_voucher_and_report_permissions(self):
+        migration = importlib.import_module("rbac.migrations.0066_restore_core_module_permissions")
+        super_admin_role = Role.objects.create(
+            entity=self.entity,
+            name="Entity Super Admin",
+            code="entity.super_admin",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        payment_confirm, _ = Permission.objects.update_or_create(
+            code="voucher.payment.confirm",
+            defaults={
+                "name": "Confirm Payment Voucher",
+                "module": "voucher",
+                "resource": "payment",
+                "action": "confirm",
+                "isactive": False,
+            },
+        )
+        vendor_outstanding, _ = Permission.objects.update_or_create(
+            code="reports.vendoroutstanding.view",
+            defaults={
+                "name": "View Vendor Outstanding",
+                "module": "reports",
+                "resource": "vendoroutstanding",
+                "action": "view",
+                "isactive": False,
+            },
+        )
+        RolePermission.objects.create(
+            role=super_admin_role,
+            permission=payment_confirm,
+            effect=RolePermission.EFFECT_DENY,
+            isactive=False,
+            metadata={"seed": "stale_core_module"},
+        )
+
+        migration.forwards(global_apps, None)
+
+        payment_confirm.refresh_from_db()
+        vendor_outstanding.refresh_from_db()
+        self.assertTrue(payment_confirm.isactive)
+        self.assertTrue(vendor_outstanding.isactive)
+        self.assertTrue(
+            Permission.objects.filter(code="payment.voucher.confirm", isactive=True).exists()
+        )
+        self.assertTrue(
+            Permission.objects.filter(code="voucher.receipt.approve", isactive=True).exists()
+        )
+        self.assertTrue(
+            Permission.objects.filter(code="reports.payablesclosepack.view", isactive=True).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=super_admin_role,
+                permission__code="voucher.payment.confirm",
+                effect=RolePermission.EFFECT_ALLOW,
+                isactive=True,
+            ).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=super_admin_role,
+                permission__code="reports.vendoroutstanding.view",
+                effect=RolePermission.EFFECT_ALLOW,
+                isactive=True,
+            ).exists()
+        )
