@@ -55,6 +55,8 @@ urlpatterns = [
     path("api/sales/", include("sales.urls.api")),
     path("api/posting/", include("posting.urls")),
     path("api/inventory-ops/", include("inventory_ops.urls")),
+    path("api/commerce/", include(("commerce.urls", "commerce"), namespace="commerce")),
+    path("api/manufacturing/", include("manufacturing.urls")),
     path("api/", include("withholding.urls")),
     path("api/gst-tds/", include("gst_tds.urls")),
 
