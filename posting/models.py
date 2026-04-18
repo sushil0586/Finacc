@@ -17,6 +17,7 @@ ZERO4 = Decimal("0.0000")
 
 
 class TxnType(models.TextChoices):
+    MANUFACTURING_WORK_ORDER = "MWO", "Manufacturing Work Order"
     SALES = "S", "Sales"
     SALES_CREDIT_NOTE = "SCN", "Sales Credit Note"
     SALES_DEBIT_NOTE = "SDN", "Sales Debit Note"
@@ -280,6 +281,7 @@ class InventoryMove(models.Model):
         REV = "REV", "Reversal"
 
     class MovementNature(models.TextChoices):
+        PRODUCTION = "PRODUCTION", "Production"
         PURCHASE = "PURCHASE", "Purchase"
         SALE = "SALE", "Sale"
         TRANSFER = "TRANSFER", "Transfer"
