@@ -1,6 +1,6 @@
 from django.db import transaction
 
-from entity.models import Constitution, GstRegistrationType, UnitType
+from entity.models import Constitution, GstRegistrationType
 from entity.seed_catalogs import ENTITY_MASTER_CATALOG
 
 
@@ -15,34 +15,18 @@ class EntitySeedService:
     @classmethod
     @transaction.atomic
     def seed_master_data(cls, *, actor=None, include_inactive=False):
-        unit_types = cls._seed_unit_types(actor=actor)
         gst_types = cls._seed_gst_registration_types(actor=actor)
         constitutions = cls._seed_constitutions(actor=actor)
         if not include_inactive:
             cls._reactivate_seeded_rows(
-                unit_types=unit_types,
                 gst_types=gst_types,
                 constitutions=constitutions,
             )
 
         return {
-            "unit_type_count": len(unit_types),
             "gst_registration_type_count": len(gst_types),
             "constitution_count": len(constitutions),
         }
-
-    @staticmethod
-    def _seed_unit_types(*, actor=None):
-        rows = []
-        for spec in ENTITY_MASTER_CATALOG["unit_types"]:
-            obj, _ = UnitType.objects.get_or_create(
-                UnitName=spec["name"],
-                defaults={"UnitDesc": spec["description"]},
-            )
-            obj.UnitDesc = spec["description"]
-            obj.save(update_fields=["UnitDesc"])
-            rows.append(obj)
-        return rows
 
     @staticmethod
     def _seed_gst_registration_types(*, actor=None):
@@ -80,8 +64,8 @@ class EntitySeedService:
         return rows
 
     @staticmethod
-    def _reactivate_seeded_rows(*, unit_types, gst_types, constitutions):
-        for row in [*unit_types, *gst_types, *constitutions]:
+    def _reactivate_seeded_rows(*, gst_types, constitutions):
+        for row in [*gst_types, *constitutions]:
             if hasattr(row, "isactive") and not row.isactive:
                 row.isactive = True
                 row.save(update_fields=["isactive"])

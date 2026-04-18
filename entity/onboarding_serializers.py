@@ -6,12 +6,26 @@ from entity.models import (
     Entity,
     EntityBankAccountV2,
     EntityConstitutionV2,
+    EntityOwnershipV2,
     EntityFinancialYear,
     GstRegistrationType,
     SubEntity,
-    UnitType,
 )
 from geography.models import City, Country, District, State
+
+
+def _gst_state_code_mismatch_message(*, gstno, state, label="GSTIN"):
+    gst_value = str(gstno or "").strip().upper()
+    if not gst_value or not state:
+        return None
+
+    state_code = str(getattr(state, "statecode", "") or "").strip().zfill(2)
+    if not state_code:
+        return None
+
+    if gst_value[:2] != state_code:
+        return f"{label} {gst_value} must match state code {state_code}."
+    return None
 
 
 class OnboardingEntityPayloadSerializer(serializers.Serializer):
@@ -22,7 +36,6 @@ class OnboardingEntityPayloadSerializer(serializers.Serializer):
     short_name = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     organization_status = serializers.ChoiceField(choices=Entity.OrganizationStatus.choices, required=False, allow_blank=True, allow_null=True)
     business_type = serializers.ChoiceField(choices=Entity.BusinessType.choices, required=False, allow_blank=True, allow_null=True)
-    unitType = serializers.PrimaryKeyRelatedField(queryset=UnitType.objects.all(), required=False, allow_null=True)
     GstRegitrationType = serializers.PrimaryKeyRelatedField(queryset=GstRegistrationType.objects.all(), required=False, allow_null=True)
     gst_registration_status = serializers.ChoiceField(choices=Entity.GstStatus.choices, required=False, allow_blank=True, allow_null=True)
     website = serializers.URLField(required=False, allow_blank=True, allow_null=True)
@@ -125,6 +138,16 @@ class OnboardingEntityPayloadSerializer(serializers.Serializer):
 
         return super().to_internal_value(mutable)
 
+    def validate(self, attrs):
+        message = _gst_state_code_mismatch_message(
+            gstno=attrs.get("gstno"),
+            state=attrs.get("state"),
+            label="GSTIN",
+        )
+        if message:
+            raise serializers.ValidationError({"gstno": message})
+        return attrs
+
 
 class OnboardingFinancialYearSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
@@ -218,6 +241,16 @@ class OnboardingSubEntitySerializer(serializers.Serializer):
             mutable["email_primary"] = mutable.get("email")
         return super().to_internal_value(mutable)
 
+    def validate(self, attrs):
+        message = _gst_state_code_mismatch_message(
+            gstno=attrs.get("gstno"),
+            state=attrs.get("state"),
+            label="Branch GSTIN",
+        )
+        if message:
+            raise serializers.ValidationError({"gstno": message})
+        return attrs
+
 
 class OnboardingConstitutionSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False)
@@ -229,6 +262,8 @@ class OnboardingConstitutionSerializer(serializers.Serializer):
     sharepercentage = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True)
     effective_from = serializers.DateField(required=False, allow_null=True)
     effective_to = serializers.DateField(required=False, allow_null=True)
+    account_preference = serializers.ChoiceField(choices=EntityConstitutionV2.AccountPreference.choices, required=False, allow_blank=True, allow_null=True)
+    agreement_reference = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     isactive = serializers.BooleanField(required=False)
 
     def to_internal_value(self, data):
@@ -241,6 +276,8 @@ class OnboardingConstitutionSerializer(serializers.Serializer):
             mutable["constitution_code"] = "OWNER"
         if mutable.get("constitution_name") in (None, ""):
             mutable["constitution_name"] = "Ownership"
+        if mutable.get("account_preference") in (None, ""):
+            mutable["account_preference"] = EntityConstitutionV2.AccountPreference.CAPITAL
         return super().to_internal_value(mutable)
 
     def to_representation(self, instance):
@@ -255,9 +292,77 @@ class OnboardingConstitutionSerializer(serializers.Serializer):
                 "sharepercentage": instance.share_percentage,
                 "effective_from": instance.effective_from,
                 "effective_to": instance.effective_to,
+                "account_preference": instance.account_preference,
+                "agreement_reference": instance.agreement_reference,
                 "isactive": instance.isactive,
             }
             return payload
+        payload = super().to_representation(instance)
+        if "share_percentage" in payload:
+            payload["sharepercentage"] = payload["share_percentage"]
+        return payload
+
+
+class OnboardingOwnershipSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False)
+    ownership_type = serializers.ChoiceField(choices=EntityOwnershipV2.OwnershipType.choices, required=False, allow_blank=True, allow_null=True)
+    name = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+    mobile = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    pan_number = serializers.CharField(max_length=10, required=False, allow_blank=True, allow_null=True)
+    share_percentage = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    sharepercentage = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True, write_only=True)
+    capital_contribution = serializers.DecimalField(max_digits=15, decimal_places=2, required=False, allow_null=True)
+    effective_from = serializers.DateField(required=False, allow_null=True)
+    effective_to = serializers.DateField(required=False, allow_null=True)
+    account_preference = serializers.ChoiceField(choices=EntityOwnershipV2.AccountPreference.choices, required=False, allow_blank=True, allow_null=True)
+    agreement_reference = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    designation = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_primary = serializers.BooleanField(required=False)
+    isactive = serializers.BooleanField(required=False)
+
+    def to_internal_value(self, data):
+        mutable = dict(data)
+        if mutable.get("name") in (None, ""):
+            mutable["name"] = mutable.get("shareholder") or mutable.get("constitution_name")
+        if mutable.get("pan_number") in (None, ""):
+            mutable["pan_number"] = mutable.get("pan")
+        if mutable.get("share_percentage") in (None, "") and mutable.get("sharepercentage") not in (None, ""):
+            mutable["share_percentage"] = mutable.get("sharepercentage")
+        if mutable.get("account_preference") in (None, ""):
+            mutable["account_preference"] = EntityOwnershipV2.AccountPreference.AUTO
+        if mutable.get("ownership_type") in (None, ""):
+            mutable["ownership_type"] = EntityOwnershipV2.OwnershipType.OTHER
+        if mutable.get("agreement_reference") in ("", None):
+            mutable["agreement_reference"] = None
+        if mutable.get("designation") in ("", None):
+            mutable["designation"] = None
+        if mutable.get("remarks") in ("", None):
+            mutable["remarks"] = None
+        return super().to_internal_value(mutable)
+
+    def to_representation(self, instance):
+        if isinstance(instance, EntityOwnershipV2):
+            return {
+                "id": instance.id,
+                "ownership_type": instance.ownership_type,
+                "name": instance.name,
+                "email": instance.email,
+                "mobile": instance.mobile,
+                "pan_number": instance.pan_number,
+                "share_percentage": instance.share_percentage,
+                "sharepercentage": instance.share_percentage,
+                "capital_contribution": instance.capital_contribution,
+                "effective_from": instance.effective_from,
+                "effective_to": instance.effective_to,
+                "account_preference": instance.account_preference,
+                "agreement_reference": instance.agreement_reference,
+                "designation": instance.designation,
+                "remarks": instance.remarks,
+                "is_primary": instance.is_primary,
+                "isactive": instance.isactive,
+            }
         payload = super().to_representation(instance)
         if "share_percentage" in payload:
             payload["sharepercentage"] = payload["share_percentage"]
@@ -270,6 +375,7 @@ class OnboardingSeedOptionsSerializer(serializers.Serializer):
     seed_rbac = serializers.BooleanField(required=False, default=True)
     seed_default_subentity = serializers.BooleanField(required=False, default=True)
     seed_default_roles = serializers.BooleanField(required=False, default=True)
+    seed_numbering = serializers.BooleanField(required=False, default=True)
 
 
 class EntityPolicySerializer(serializers.Serializer):
@@ -288,6 +394,7 @@ class EntityOnboardingCreateSerializer(serializers.Serializer):
     bank_accounts = OnboardingBankAccountSerializer(many=True, required=False)
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
     constitution_details = OnboardingConstitutionSerializer(many=True, required=False)
+    ownership_details = OnboardingOwnershipSerializer(many=True, required=False)
     seed_options = OnboardingSeedOptionsSerializer(required=False)
 
     def validate_financial_years(self, value):
@@ -306,6 +413,7 @@ class EntityOnboardingUpdateSerializer(serializers.Serializer):
     bank_accounts = OnboardingBankAccountSerializer(many=True, required=False)
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
     constitution_details = OnboardingConstitutionSerializer(many=True, required=False)
+    ownership_details = OnboardingOwnershipSerializer(many=True, required=False)
 
     def validate_financial_years(self, value):
         if value == []:
@@ -325,6 +433,7 @@ class EntityOnboardingDetailResponseSerializer(serializers.Serializer):
     bank_accounts = OnboardingBankAccountSerializer(many=True)
     subentities = serializers.ListField(child=serializers.DictField())
     constitution_details = OnboardingConstitutionSerializer(many=True)
+    ownership_details = OnboardingOwnershipSerializer(many=True)
 
 
 class OnboardingUserPayloadSerializer(serializers.Serializer):
@@ -366,6 +475,7 @@ class RegisterAndOnboardSerializer(serializers.Serializer):
                 "bank_accounts": entity_payload.pop("bank_accounts", mutable.get("bank_accounts")),
                 "subentities": entity_payload.pop("subentities", mutable.get("subentities")),
                 "constitution_details": entity_payload.pop("constitution_details", mutable.get("constitution_details")),
+                "ownership_details": entity_payload.pop("ownership_details", mutable.get("ownership_details")),
                 "seed_options": mutable.get("seed_options"),
             }
             onboarding_payload["entity"] = entity_payload
@@ -381,6 +491,7 @@ class EntityOnboardingResponseSerializer(serializers.Serializer):
     bank_account_ids = serializers.ListField(child=serializers.IntegerField())
     subentity_ids = serializers.ListField(child=serializers.IntegerField())
     constitution_ids = serializers.ListField(child=serializers.IntegerField())
+    posting_static_accounts = serializers.DictField(required=False)
     financial = serializers.DictField()
     rbac = serializers.DictField()
     validation_warnings = serializers.ListField(child=serializers.DictField(), required=False)

@@ -11,6 +11,7 @@ from core.entitlements import ScopedEntitlementMixin
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from helpers.utils.document_actions import build_document_action_flags
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherDetailSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
@@ -146,19 +147,14 @@ class VoucherMetaBaseAPIView(ScopedEntitlementMixin, APIView):
         return qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
 
     def _action_flags(self, header: VoucherHeader):
-        is_draft = int(header.status) == int(VoucherHeader.Status.DRAFT)
-        is_confirmed = int(header.status) == int(VoucherHeader.Status.CONFIRMED)
-        is_posted = int(header.status) == int(VoucherHeader.Status.POSTED)
-        is_cancelled = int(header.status) == int(VoucherHeader.Status.CANCELLED)
-        return {
-            "can_edit": not is_posted and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_cancel": is_draft or is_confirmed,
-            "can_unpost": is_posted,
-            "status": int(header.status),
-            "status_name": header.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(header.status),
+            draft_status=int(VoucherHeader.Status.DRAFT),
+            confirmed_status=int(VoucherHeader.Status.CONFIRMED),
+            posted_status=int(VoucherHeader.Status.POSTED),
+            cancelled_status=int(VoucherHeader.Status.CANCELLED),
+            status_name=header.get_status_display(),
+        )
 
     def _account_block(self, obj, field_name: str, ledger_field_name: str):
         acct = getattr(obj, field_name, None)

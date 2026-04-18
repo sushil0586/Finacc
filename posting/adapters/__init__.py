@@ -1,6 +1,7 @@
 from django.apps import apps
 
 from .payment_voucher import PaymentVoucherPostingAdapter, PaymentVoucherPostingConfig
+from .year_opening import YearOpeningPostingAdapter
 from .purchase_invoice import PurchaseInvoicePostingAdapter, PurchaseInvoicePostingConfig
 from .voucher import VoucherPostingAdapter, VoucherPostingConfig
 
@@ -12,6 +13,7 @@ else:
 __all__ = [
     "PaymentVoucherPostingAdapter",
     "PaymentVoucherPostingConfig",
+    "YearOpeningPostingAdapter",
     "PayrollPostingAdapter",
     "PurchaseInvoicePostingAdapter",
     "PurchaseInvoicePostingConfig",

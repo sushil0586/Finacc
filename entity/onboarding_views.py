@@ -4,7 +4,7 @@ from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from entity.models import Constitution, Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity
 from entity.onboarding_serializers import (
     CityOptionSerializer,
     CountryOptionSerializer,
@@ -29,6 +29,41 @@ def _entity_primary_gst(entity):
     return row.gstin if row else None
 
 
+def _build_onboarding_payload(entity, result):
+    return {
+        "entity_id": entity.id,
+        "entity_name": entity.entityname,
+        "gstno": _entity_primary_gst(entity),
+        "financial_year_ids": result["financial_year_ids"],
+        "bank_account_ids": result["bank_account_ids"],
+        "subentity_ids": result["subentity_ids"],
+        "constitution_ids": result["constitution_ids"],
+        "posting_static_accounts": result.get("posting_static_accounts", {}),
+        "financial": result["financial"],
+        "rbac": result["rbac"],
+        "validation_warnings": result.get("validation_warnings", []),
+        "subscription": SubscriptionService.build_subscription_snapshot(entity=entity),
+    }
+
+
+def _build_register_payload(result):
+    entity = result["onboarding"]["entity"]
+    onboarding_payload = _build_onboarding_payload(entity, result["onboarding"])
+    return {
+        "user": {
+            "id": result["user"].id,
+            "email": result["user"].email,
+            "username": result["user"].username,
+            "first_name": result["user"].first_name,
+            "last_name": result["user"].last_name,
+        },
+        "intent": result.get("intent"),
+        "onboarding": onboarding_payload,
+        "verification": result["verification"],
+        "subscription": result["subscription"],
+    }
+
+
 class EntityOnboardingCreateAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -38,20 +73,7 @@ class EntityOnboardingCreateAPIView(APIView):
 
         result = EntityOnboardingService.create_entity(actor=request.user, payload=serializer.validated_data)
         entity = result["entity"]
-        response_payload = {
-            "entity_id": entity.id,
-            "entity_name": entity.entityname,
-            "gstno": _entity_primary_gst(entity),
-            "financial_year_ids": result["financial_year_ids"],
-            "bank_account_ids": result["bank_account_ids"],
-            "subentity_ids": result["subentity_ids"],
-            "constitution_ids": result["constitution_ids"],
-            "financial": result["financial"],
-            "rbac": result["rbac"],
-            "validation_warnings": result.get("validation_warnings", []),
-            "subscription": SubscriptionService.build_subscription_snapshot(entity=entity),
-        }
-        output = EntityOnboardingResponseSerializer(response_payload)
+        output = EntityOnboardingResponseSerializer(_build_onboarding_payload(entity, result))
         return Response(output.data, status=status.HTTP_201_CREATED)
 
 
@@ -99,34 +121,35 @@ class RegisterAndEntityOnboardingCreateAPIView(APIView):
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
             ip_address=_client_ip(request),
         )
-        entity = result["onboarding"]["entity"]
-        onboarding_payload = {
-            "entity_id": entity.id,
-            "entity_name": entity.entityname,
-            "gstno": _entity_primary_gst(entity),
-            "financial_year_ids": result["onboarding"]["financial_year_ids"],
-            "bank_account_ids": result["onboarding"]["bank_account_ids"],
-            "subentity_ids": result["onboarding"]["subentity_ids"],
-            "constitution_ids": result["onboarding"]["constitution_ids"],
-            "financial": result["onboarding"]["financial"],
-            "rbac": result["onboarding"]["rbac"],
-            "validation_warnings": result["onboarding"].get("validation_warnings", []),
-            "subscription": result["subscription"],
-        }
-        response_payload = {
-            "user": {
-                "id": result["user"].id,
-                "email": result["user"].email,
-                "username": result["user"].username,
-                "first_name": result["user"].first_name,
-                "last_name": result["user"].last_name,
-            },
-            "intent": result.get("intent"),
-            "onboarding": onboarding_payload,
-            "verification": result["verification"],
-            "subscription": result["subscription"],
-        }
-        output = RegisterAndOnboardResponseSerializer(response_payload)
+        output = RegisterAndOnboardResponseSerializer(_build_register_payload(result))
+        return Response(output.data, status=status.HTTP_201_CREATED)
+
+
+class EntityOnboardingSubmitAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        payload = dict(request.data)
+
+        if request.user.is_authenticated and "user" not in payload:
+            onboarding_payload = payload.get("onboarding") if isinstance(payload.get("onboarding"), dict) else payload
+            serializer = EntityOnboardingCreateSerializer(data=onboarding_payload)
+            serializer.is_valid(raise_exception=True)
+
+            result = EntityOnboardingService.create_entity(actor=request.user, payload=serializer.validated_data)
+            entity = result["entity"]
+            output = EntityOnboardingResponseSerializer(_build_onboarding_payload(entity, result))
+            return Response(output.data, status=status.HTTP_201_CREATED)
+
+        serializer = RegisterAndOnboardSerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+
+        result = EntityOnboardingService.register_user_and_create_entity(
+            payload=serializer.validated_data,
+            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            ip_address=_client_ip(request),
+        )
+        output = RegisterAndOnboardResponseSerializer(_build_register_payload(result))
         return Response(output.data, status=status.HTTP_201_CREATED)
 
 
@@ -138,15 +161,20 @@ class EntityOnboardingMetaAPIView(APIView):
         payload = {
             "version": "v2",
             "workflow": {
+                "unified_submit_flow": {
+                    "endpoint": "/api/entity/onboarding/submit/",
+                    "role": "primary",
+                    "description": "Accepts authenticated dashboard entity creation or public signup plus onboarding in one contract.",
+                },
                 "public_signup_flow": {
                     "endpoint": "/api/entity/onboarding/register/",
-                    "role": "primary",
-                    "description": "Creates the user, tenant, subscription, first entity, first head office subentity, and seeded setup.",
+                    "role": "compatibility",
+                    "description": "Compatibility wrapper for the public signup plus onboarding flow.",
                 },
                 "additional_entity_flow": {
                     "endpoint": "/api/entity/onboarding/create/",
-                    "role": "primary",
-                    "description": "Creates an additional entity under the current tenant after subscription and membership checks.",
+                    "role": "compatibility",
+                    "description": "Compatibility wrapper for authenticated dashboard entity creation.",
                 },
                 "auth_register_flow": {
                     "endpoint": "/api/auth/register",
@@ -161,6 +189,7 @@ class EntityOnboardingMetaAPIView(APIView):
                     "seed_rbac": True,
                     "seed_default_subentity": True,
                     "seed_default_roles": True,
+                    "seed_numbering": True,
                 },
                 "policy": {
                     "gstin_state_match_mode": "hard",
@@ -186,12 +215,14 @@ class EntityOnboardingMetaAPIView(APIView):
                     "bank_accounts",
                     "subentities",
                     "constitution_details",
+                    "ownership_details",
                     "seed_options",
                 ],
                 "arrays_allow_empty": [
                     "bank_accounts",
                     "subentities",
                     "constitution_details",
+                    "ownership_details",
                 ],
                 "arrays_required_non_empty": [
                     "financial_years",
@@ -204,14 +235,6 @@ class EntityOnboardingMetaAPIView(APIView):
                 "date_format": "Use ISO date/date-time strings.",
             },
             "dropdowns": {
-                "unit_types": [
-                    {
-                        "id": row.id,
-                        "label": row.UnitName,
-                        "description": row.UnitDesc,
-                    }
-                    for row in UnitType.objects.all().order_by("UnitName")
-                ],
                 "gst_registration_types": [
                     {
                         "id": row.id,
@@ -237,6 +260,8 @@ class EntityOnboardingMetaAPIView(APIView):
                 "gst_registration_status": [{"value": value, "label": label} for value, label in Entity.GstStatus.choices],
                 "msme_category": [{"value": value, "label": label} for value, label in Entity.MsmeCategory.choices],
                 "branch_type": [{"value": value, "label": label} for value, label in SubEntity.BranchType.choices],
+                "ownership_type": [{"value": value, "label": label} for value, label in EntityOwnershipV2.OwnershipType.choices],
+                "ownership_account_preference": [{"value": value, "label": label} for value, label in EntityConstitutionV2.AccountPreference.choices],
                 "financial_year_status": [{"value": value, "label": label} for value, label in EntityFinancialYear.PeriodStatus.choices],
             },
             "geography_filters": {

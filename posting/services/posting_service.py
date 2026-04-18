@@ -11,6 +11,7 @@ from django.db import transaction, connection, models
 from django.db.models import Sum, Q
 from django.utils import timezone
 
+from entity.models import EntityFinancialYear
 from financial.models import account as FinancialAccount
 from posting.models import (
     PostingBatch, Entry, JournalLine, InventoryMove,
@@ -196,6 +197,101 @@ class PostingService:
         self._account_ledger_cache[account_id] = int(resolved) if resolved else None
         return int(resolved) if resolved else None
 
+    @staticmethod
+    def _as_date(value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            return value.date()
+        except Exception:
+            return None
+
+    def _resolve_financial_year_by_id(self) -> EntityFinancialYear | None:
+        base_qs = (
+            EntityFinancialYear.objects
+            .filter(entity_id=self.entity_id)
+            .only(
+                "id",
+                "desc",
+                "year_code",
+                "finstartyear",
+                "finendyear",
+                "period_status",
+                "is_year_closed",
+                "books_locked_until",
+                "gst_locked_until",
+                "inventory_locked_until",
+                "ap_ar_locked_until",
+            )
+        )
+
+        if self.entityfin_id:
+            return base_qs.filter(pk=self.entityfin_id).first()
+
+        return None
+
+    def _resolve_financial_year_by_date(self, posting_date) -> EntityFinancialYear | None:
+        posting_day = self._as_date(posting_date)
+        if not posting_day:
+            return None
+
+        return (
+            EntityFinancialYear.objects
+            .filter(
+                entity_id=self.entity_id,
+                finstartyear__date__lte=posting_day,
+                finendyear__date__gte=posting_day,
+            )
+            .only(
+                "id",
+                "desc",
+                "year_code",
+                "finstartyear",
+                "finendyear",
+                "period_status",
+                "is_year_closed",
+                "books_locked_until",
+                "gst_locked_until",
+                "inventory_locked_until",
+                "ap_ar_locked_until",
+            )
+            .order_by("-finstartyear", "-id")
+            .first()
+        )
+
+    def _resolve_financial_year(self, posting_date) -> EntityFinancialYear | None:
+        return self._resolve_financial_year_by_date(posting_date) or self._resolve_financial_year_by_id()
+
+    def _assert_financial_year_open(self, posting_date) -> None:
+        posting_day = self._as_date(posting_date)
+        fy_by_date = self._resolve_financial_year_by_date(posting_date)
+        fy_by_id = self._resolve_financial_year_by_id()
+
+        if posting_day and fy_by_date and fy_by_id and fy_by_date.id != fy_by_id.id:
+            selected_label = getattr(fy_by_id, "desc", None) or getattr(fy_by_id, "year_code", None) or fy_by_id.id
+            date_label = getattr(fy_by_date, "desc", None) or getattr(fy_by_date, "year_code", None) or fy_by_date.id
+            raise ValueError(
+                f"Posting date {posting_day.isoformat()} belongs to {date_label}, but the request is scoped to {selected_label}. "
+                "Please align the voucher year with the posting date."
+            )
+
+        fy = fy_by_date or fy_by_id
+        if not fy:
+            return
+
+        if bool(getattr(fy, "is_year_closed", False)) or getattr(fy, "period_status", None) == EntityFinancialYear.PeriodStatus.CLOSED:
+            label = (getattr(fy, "desc", None) or getattr(fy, "year_code", None) or fy.id)
+            raise ValueError(f"Financial year {label} is closed. Please switch to the active year before posting.")
+
+        books_locked_until = getattr(fy, "books_locked_until", None)
+        if posting_day and books_locked_until and posting_day <= books_locked_until:
+            label = (getattr(fy, "desc", None) or getattr(fy, "year_code", None) or fy.id)
+            raise ValueError(f"Financial year {label} is locked up to {books_locked_until.isoformat()}. Please use a later posting date.")
+
     @transaction.atomic
     def post(
         self,
@@ -214,6 +310,8 @@ class PostingService:
         if use_advisory_lock:
             # Postgres only; comment out if you need cross-db
             self._lock_for_txn(txn_type, txn_id)
+
+        self._assert_financial_year_open(posting_date)
 
         # 1) New batch revision and deactivate old
         revision = self._next_revision(txn_type, txn_id)

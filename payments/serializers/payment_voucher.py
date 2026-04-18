@@ -342,7 +342,9 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
             int(PaymentVoucherHeader.Status.POSTED),
             int(PaymentVoucherHeader.Status.CANCELLED),
         ):
-            raise serializers.ValidationError("Cannot edit a POSTED or CANCELLED payment voucher.")
+            raise serializers.ValidationError(
+                {"non_field_errors": ["Cannot edit a POSTED or CANCELLED payment voucher."]}
+            )
         return attrs
 
     def create(self, validated_data):

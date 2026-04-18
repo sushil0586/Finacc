@@ -350,9 +350,14 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
         uom = attrs.get("uom", getattr(self.instance, "uom", None))
         self._validate_entity_scoped_fk(field_name="uom", obj=uom, entity=entity, label="UOM")
 
+        if product and getattr(product, "is_service", False):
+            raise serializers.ValidationError({"uom": "Service items do not support barcode rows."})
+
         pack_size = attrs.get("pack_size", None)
         if pack_size in (None, 0, "0", ""):
             attrs["pack_size"] = 1
+        elif pack_size and int(pack_size) <= 0:
+            raise serializers.ValidationError({"pack_size": "Pack size must be greater than 0."})
 
         mrp = attrs.get("mrp", None)
         sp = attrs.get("selling_price", None)
@@ -360,6 +365,19 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
             raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
 
         if product and uom:
+            allowed_uom_ids = {product.base_uom_id} if getattr(product, "base_uom_id", None) else set()
+            allowed_uom_ids.update(
+                product.uom_conversions.values_list("from_uom_id", flat=True)
+            )
+            allowed_uom_ids.update(
+                product.uom_conversions.values_list("to_uom_id", flat=True)
+            )
+            allowed_uom_ids.discard(None)
+            if allowed_uom_ids and uom.id not in allowed_uom_ids:
+                raise serializers.ValidationError({
+                    "uom": "Select the base UOM or a UOM already linked through product conversions."
+                })
+
             barcode = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
             pack_size = attrs.get("pack_size", getattr(self.instance, "pack_size", 1)) or 1
 
@@ -400,6 +418,7 @@ class ProductUomConversionSerializer(EntityScopedValidationMixin, serializers.Mo
 
     def validate(self, attrs):
         entity = self._target_entity(attrs)
+        product = self.context.get("product") or getattr(self.instance, "product", None)
         from_uom = attrs.get("from_uom", getattr(self.instance, "from_uom", None))
         to_uom = attrs.get("to_uom", getattr(self.instance, "to_uom", None))
 
@@ -412,6 +431,16 @@ class ProductUomConversionSerializer(EntityScopedValidationMixin, serializers.Mo
         factor = attrs.get("factor", getattr(self.instance, "factor", None))
         if factor is not None and factor <= 0:
             raise serializers.ValidationError({"factor": "factor must be greater than 0."})
+
+        base_uom = getattr(product, "base_uom", None)
+        if product and not base_uom:
+            raise serializers.ValidationError({"from_uom": "Select a base UOM on the product before adding conversions."})
+
+        if base_uom and from_uom and to_uom:
+            if base_uom.id not in (from_uom.id, to_uom.id):
+                raise serializers.ValidationError({
+                    "from_uom": "Each conversion must include the product base UOM."
+                })
 
         return attrs
 
@@ -682,6 +711,42 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             "images",
         )
 
+    @staticmethod
+    def _normalize_barcode_rows(barcodes_data):
+        if not barcodes_data:
+            return
+
+        first_primary_idx = next(
+            (idx for idx, row in enumerate(barcodes_data) if bool(row.get("isprimary"))),
+            None,
+        )
+        if first_primary_idx is None:
+            first_primary_idx = 0
+
+        for idx, row in enumerate(barcodes_data):
+            row["isprimary"] = idx == first_primary_idx
+
+    @staticmethod
+    def _ensure_primary_barcode(product):
+        if not product.base_uom_id:
+            return
+
+        existing_rows = product.barcode_details.order_by("id")
+        if not existing_rows.exists():
+            ProductBarcode.objects.create(
+                product=product,
+                uom=product.base_uom,
+                isprimary=True,
+                pack_size=1,
+            )
+            return
+
+        if not existing_rows.filter(isprimary=True).exists():
+            first_row = existing_rows.first()
+            if first_row:
+                first_row.isprimary = True
+                first_row.save(update_fields=["isprimary"])
+
     def validate(self, attrs):
         entity = self._target_entity(attrs)
 
@@ -703,6 +768,13 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             entity=entity,
             label="Base UOM",
         )
+
+        base_uom = attrs.get("base_uom", getattr(self.instance, "base_uom", None))
+        if self.instance and "base_uom" in attrs and base_uom and self.instance.base_uom_id != base_uom.id:
+            if self.instance.uom_conversions.exists():
+                raise serializers.ValidationError({
+                    "base_uom": "Clear existing UOM conversions before changing the base UOM."
+                })
         self._validate_entity_scoped_fk(
             field_name="sales_account",
             obj=attrs.get("sales_account", getattr(self.instance, "sales_account", None)),
@@ -716,6 +788,27 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             label="Purchase account",
         )
 
+        item_classification = attrs.get(
+            "item_classification",
+            getattr(self.instance, "item_classification", ProductClassification.TRADING),
+        ) or ProductClassification.TRADING
+        is_service = bool(
+            attrs.get("is_service", getattr(self.instance, "is_service", False))
+        )
+        is_service_item = item_classification == ProductClassification.SERVICE or is_service
+
+        attrs["item_classification"] = (
+            ProductClassification.SERVICE if is_service_item else item_classification
+        )
+        attrs["is_service"] = is_service_item
+
+        if attrs["is_service"]:
+            attrs["is_batch_managed"] = False
+            attrs["is_serialized"] = False
+            attrs["is_expiry_tracked"] = False
+            attrs["shelf_life_days"] = None
+            attrs["expiry_warning_days"] = 0
+
         if entity is not None:
             for idx, row in enumerate(self.initial_data.get("gst_rates", []) or [], start=1):
                 hsn_id = row.get("hsn")
@@ -723,11 +816,38 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                     hsn = HsnSac.objects.filter(pk=hsn_id).first()
                     self._validate_entity_scoped_fk(field_name="gst_rates", obj=hsn, entity=entity, label=f"GST row {idx} HSN/SAC")
 
+            base_uom = attrs.get("base_uom", getattr(self.instance, "base_uom", None))
+            allowed_barcode_uom_ids = set()
+            if base_uom is not None:
+                allowed_barcode_uom_ids.add(int(base_uom.id))
+            for row in self.initial_data.get("uom_conversions", []) or []:
+                from_uom_id = row.get("from_uom")
+                to_uom_id = row.get("to_uom")
+                if from_uom_id:
+                    allowed_barcode_uom_ids.add(int(from_uom_id))
+                if to_uom_id:
+                    allowed_barcode_uom_ids.add(int(to_uom_id))
+            if self.instance:
+                allowed_barcode_uom_ids.update(
+                    self.instance.uom_conversions.values_list("from_uom_id", flat=True)
+                )
+                allowed_barcode_uom_ids.update(
+                    self.instance.uom_conversions.values_list("to_uom_id", flat=True)
+                )
+
             for idx, row in enumerate(self.initial_data.get("barcodes", []) or [], start=1):
                 uom_id = row.get("uom")
                 if uom_id:
                     uom = UnitOfMeasure.objects.filter(pk=uom_id).first()
                     self._validate_entity_scoped_fk(field_name="barcodes", obj=uom, entity=entity, label=f"Barcode row {idx} UOM")
+                if attrs["is_service"]:
+                    raise serializers.ValidationError({
+                        "barcodes": f"Barcode row {idx} is not allowed for service items."
+                    })
+                if uom_id and allowed_barcode_uom_ids and int(uom_id) not in {int(x) for x in allowed_barcode_uom_ids if x is not None}:
+                    raise serializers.ValidationError({
+                        "barcodes": f"Barcode row {idx} must use the base UOM or a converted UOM."
+                    })
 
             for idx, row in enumerate(self.initial_data.get("uom_conversions", []) or [], start=1):
                 from_uom_id = row.get("from_uom")
@@ -738,6 +858,11 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                 if to_uom_id:
                     to_uom = UnitOfMeasure.objects.filter(pk=to_uom_id).first()
                     self._validate_entity_scoped_fk(field_name="uom_conversions", obj=to_uom, entity=entity, label=f"UOM conversion row {idx} to_uom")
+                if base_uom and from_uom_id and to_uom_id:
+                    if int(base_uom.id) not in (int(from_uom_id), int(to_uom_id)):
+                        raise serializers.ValidationError({
+                            "uom_conversions": f"UOM conversion row {idx} must include the base UOM."
+                        })
 
             for idx, row in enumerate(self.initial_data.get("opening_stocks", []) or [], start=1):
                 location_id = row.get("location")
@@ -761,6 +886,17 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                     attr = ProductAttribute.objects.filter(pk=attr_id).first()
                     self._validate_entity_scoped_fk(field_name="attributes", obj=attr, entity=entity, label=f"Attribute row {idx} attribute")
 
+        is_ecomm_9_5_service = bool(
+            attrs.get(
+                "is_ecomm_9_5_service",
+                getattr(self.instance, "is_ecomm_9_5_service", False),
+            )
+        )
+        if is_ecomm_9_5_service and not attrs["is_service"]:
+            raise serializers.ValidationError({
+                "is_ecomm_9_5_service": "E-Comm 9(5) applies only to service items."
+            })
+
         launch_date = attrs.get("launch_date", getattr(self.instance, "launch_date", None))
         discontinue_date = attrs.get("discontinue_date", getattr(self.instance, "discontinue_date", None))
         if launch_date and discontinue_date and discontinue_date < launch_date:
@@ -781,60 +917,9 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
 
         return attrs
 
-
-class ProductListSerializer(serializers.ModelSerializer):
-    productcategory_name = serializers.CharField(source="productcategory.pcategoryname", read_only=True)
-    brand_name = serializers.CharField(source="brand.name", read_only=True)
-    base_uom_code = serializers.CharField(source="base_uom.code", read_only=True)
-
-    class Meta:
-        model = Product
-        fields = (
-            "id",
-            "productname",
-            "sku",
-            "productdesc",
-            "productcategory",
-            "productcategory_name",
-            "brand",
-            "brand_name",
-            "base_uom",
-            "base_uom_code",
-            "is_service",
-            "item_classification",
-            "is_expiry_tracked",
-            "shelf_life_days",
-            "expiry_warning_days",
-            "product_status",
-            "isactive",
-            "createdon",
-            "modifiedon",
-        )
-
-
-class ProductAttributeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProductAttribute
-        fields = (
-            "id",
-            "entity",
-            "name",
-            "data_type",
-            "isactive",
-        )
-        read_only_fields = ("createdon", "modifiedon")
-
-    # -------------------- generic helper --------------------
-
     def _upsert_child_list(self, *, parent_instance, child_model,
                           child_data_list, fk_name, existing_qs,
                           strip_fields=None):
-        """
-        Generic helper for 1:M nested lists:
-        - update existing by id (id > 0)
-        - create new when id is missing or <= 0
-        - delete missing ones
-        """
         strip_fields = set(strip_fields or [])
         sent_ids = []
 
@@ -842,7 +927,6 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
             raw_id = item_data.get("id", None)
             item_id = raw_id if raw_id not in (None, 0, "0") else None
 
-            # do not allow client to override parent fk/entity
             item_data.pop("product", None)
             item_data.pop("entity", None)
 
@@ -877,8 +961,6 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
         else:
             existing_qs.delete()
 
-    # -------------------- create & update --------------------
-
     @transaction.atomic
     def create(self, validated_data):
         gst_rates_data = validated_data.pop("gst_rates", [])
@@ -890,7 +972,8 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
         attributes_data = validated_data.pop("attributes", [])
         images_data = validated_data.pop("images", [])
 
-        # strip ids on create
+        self._normalize_barcode_rows(barcodes_data)
+
         for lst in (
             gst_rates_data,
             barcodes_data,
@@ -906,7 +989,6 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
         product = Product.objects.create(**validated_data)
 
         for gr in gst_rates_data:
-            # gst_rate is computed by model, ignore any client-provided value
             gr.pop("gst_rate", None)
             ProductGstRate.objects.create(product=product, **gr)
 
@@ -938,6 +1020,7 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
         for img in images_data:
             ProductImage.objects.create(product=product, **img)
 
+        self._ensure_primary_barcode(product)
         return product
 
     @transaction.atomic
@@ -951,12 +1034,14 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
         attributes_data = validated_data.pop("attributes", None)
         images_data = validated_data.pop("images", None)
 
+        if barcodes_data is not None:
+            self._normalize_barcode_rows(barcodes_data)
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
         if gst_rates_data is not None:
-            # ignore gst_rate if sent
             for item in gst_rates_data:
                 item.pop("gst_rate", None)
             self._upsert_child_list(
@@ -1037,7 +1122,53 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
                 existing_qs=instance.images.all(),
             )
 
+        self._ensure_primary_barcode(instance)
         return instance
+
+
+class ProductListSerializer(serializers.ModelSerializer):
+    productcategory_name = serializers.CharField(source="productcategory.pcategoryname", read_only=True)
+    brand_name = serializers.CharField(source="brand.name", read_only=True)
+    base_uom_code = serializers.CharField(source="base_uom.code", read_only=True)
+
+    class Meta:
+        model = Product
+        fields = (
+            "id",
+            "productname",
+            "sku",
+            "productdesc",
+            "productcategory",
+            "productcategory_name",
+            "brand",
+            "brand_name",
+            "base_uom",
+            "base_uom_code",
+            "is_service",
+            "item_classification",
+            "is_batch_managed",
+            "is_serialized",
+            "is_expiry_tracked",
+            "shelf_life_days",
+            "expiry_warning_days",
+            "product_status",
+            "isactive",
+            "createdon",
+            "modifiedon",
+        )
+
+
+class ProductAttributeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductAttribute
+        fields = (
+            "id",
+            "entity",
+            "name",
+            "data_type",
+            "isactive",
+        )
+        read_only_fields = ("createdon", "modifiedon")
 
     # Product attribute rows are standalone masters.
     # Keep create/update flat so /product-attributes APIs do not route through

@@ -479,6 +479,7 @@ INDIAN_ACCOUNTING_FINAL_TEMPLATE = {
         {"code": "4200", "name": "Indirect Income", "normal_balance": Credit},
         {"code": "5100", "name": "Direct Expenses", "normal_balance": Debit},
         {"code": "5200", "name": "Indirect Expenses", "normal_balance": Debit},
+        {"code": "1009", "name": "Party", "normal_balance": Debit},
     ],
     "account_heads": _override_head_types(
         STANDARD_BUSINESS_FULL_TEMPLATE["account_heads"],

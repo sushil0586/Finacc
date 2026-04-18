@@ -144,7 +144,6 @@ class Entity(TrackingModel):
         choices=BusinessType.choices,
         default=BusinessType.MIXED,
     )
-    unitType =        models.ForeignKey(UnitType, on_delete=models.CASCADE,null= True)
     GstRegitrationType =        models.ForeignKey(GstRegistrationType, on_delete=models.CASCADE,null= True)
     gst_registration_status = models.CharField(
         max_length=20,
@@ -420,6 +419,11 @@ class EntityComplianceProfile(TrackingModel):
 
 
 class EntityOwnershipV2(TrackingModel):
+    class AccountPreference(models.TextChoices):
+        CAPITAL = "capital", "Capital"
+        CURRENT = "current", "Current"
+        AUTO = "auto", "Auto"
+
     class OwnershipType(models.TextChoices):
         PROPRIETOR = "proprietor", "Proprietor"
         PARTNER = "partner", "Partner"
@@ -436,6 +440,10 @@ class EntityOwnershipV2(TrackingModel):
     pan_number = models.CharField(max_length=10, blank=True, null=True, validators=[pan_validator])
     share_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     capital_contribution = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    account_preference = models.CharField(max_length=20, choices=AccountPreference.choices, default=AccountPreference.AUTO)
+    agreement_reference = models.CharField(max_length=255, null=True, blank=True)
     is_primary = models.BooleanField(default=False)
     designation = models.CharField(max_length=100, blank=True, null=True)
     remarks = models.TextField(blank=True, null=True)
@@ -449,11 +457,18 @@ class EntityOwnershipV2(TrackingModel):
         self.email = (self.email or "").strip().lower() or None
         self.mobile = (self.mobile or "").strip() or None
         self.pan_number = (self.pan_number or "").strip().upper() or None
+        self.agreement_reference = (self.agreement_reference or "").strip() or None
+        self.account_preference = (self.account_preference or "").strip().lower() or self.AccountPreference.AUTO
         self.designation = (self.designation or "").strip() or None
         super().save(*args, **kwargs)
 
 
 class EntityConstitutionV2(TrackingModel):
+    class AccountPreference(models.TextChoices):
+        CAPITAL = "capital", "Capital"
+        CURRENT = "current", "Current"
+        AUTO = "auto", "Auto"
+
     entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="constitutions_v2")
     constitution_code = models.CharField(max_length=20)
     constitution_name = models.CharField(max_length=255)
@@ -462,6 +477,8 @@ class EntityConstitutionV2(TrackingModel):
     share_percentage = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     effective_from = models.DateField(null=True, blank=True)
     effective_to = models.DateField(null=True, blank=True)
+    account_preference = models.CharField(max_length=20, choices=AccountPreference.choices, default=AccountPreference.CAPITAL)
+    agreement_reference = models.CharField(max_length=255, null=True, blank=True)
     createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
     class Meta:
@@ -472,6 +489,8 @@ class EntityConstitutionV2(TrackingModel):
         self.constitution_name = (self.constitution_name or "").strip()
         self.shareholder = (self.shareholder or "").strip() or None
         self.pan = (self.pan or "").strip().upper() or None
+        self.agreement_reference = (self.agreement_reference or "").strip() or None
+        self.account_preference = (self.account_preference or "").strip().lower() or self.AccountPreference.CAPITAL
         super().save(*args, **kwargs)
 
 

@@ -3,15 +3,18 @@ Tests for posting service layer.
 Covers: q2/q4 rounding, PostingService.post(), balance assertions, re-posting,
         ledger_balance_map aggregation.
 """
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
-from entity.models import Entity, Godown, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup
+from posting.adapters.year_opening import YearOpeningPostingAdapter
 from posting.static_account_service import StaticAccountMappingService
 from posting.services.balances import ledger_balance_map
 from posting.common.location_resolver import resolve_posting_location_id
@@ -74,6 +77,11 @@ class PostingServiceBaseTest(TestCase):
 
     @classmethod
     def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="posting-base-user",
+            email="posting-base-user@example.com",
+            password="pass@12345",
+        )
         cls.entity = Entity.objects.create(entityname="Test Co")
         cls.ah_dr = accountHead.objects.create(name="Test Dr Head", code=9001)
         cls.ah_cr = accountHead.objects.create(name="Test Cr Head", code=9002)
@@ -214,6 +222,301 @@ class RePostingTests(PostingServiceBaseTest):
             ).order_by("revision").values_list("revision", flat=True)
         )
         self.assertEqual(revisions, [1, 2])
+
+
+class FinancialYearLockTests(PostingServiceBaseTest):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.user = User.objects.create_user(
+            username="fy-lock-user",
+            email="fy-lock-user@example.com",
+            password="pass@12345",
+        )
+        fy_start = timezone.make_aware(datetime(2026, 4, 1))
+        fy_end = timezone.make_aware(datetime(2027, 3, 31, 23, 59, 59))
+        cls.open_fy = EntityFinancialYear.objects.create(
+            entity=cls.entity,
+            desc="FY 2026-27 Open",
+            year_code="FY2026-27",
+            finstartyear=fy_start,
+            finendyear=fy_end,
+            period_status=EntityFinancialYear.PeriodStatus.OPEN,
+            is_year_closed=False,
+            books_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+            ap_ar_locked_until=None,
+            createdby=cls.user,
+        )
+        cls.closed_fy = EntityFinancialYear.objects.create(
+            entity=cls.entity,
+            desc="FY 2025-26 Closed",
+            year_code="FY2025-26",
+            finstartyear=timezone.make_aware(datetime(2025, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2026, 3, 31, 23, 59, 59)),
+            period_status=EntityFinancialYear.PeriodStatus.CLOSED,
+            is_year_closed=True,
+            books_locked_until=date(2026, 3, 31),
+            gst_locked_until=date(2026, 3, 31),
+            inventory_locked_until=date(2026, 3, 31),
+            ap_ar_locked_until=date(2026, 3, 31),
+            createdby=cls.user,
+        )
+
+    def test_posting_into_closed_financial_year_is_blocked(self):
+        svc = PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.closed_fy.id,
+            subentity_id=None,
+        )
+        with self.assertRaisesRegex(ValueError, "closed"):
+            svc.post(
+                txn_type="JV",
+                txn_id=900,
+                voucher_no="JV-900",
+                voucher_date=date(2026, 3, 31),
+                posting_date=date(2026, 3, 31),
+                jl_inputs=self._balanced_jl(),
+                use_advisory_lock=False,
+            )
+
+    def test_posting_into_open_financial_year_is_allowed(self):
+        svc = PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.open_fy.id,
+            subentity_id=None,
+        )
+        entry = svc.post(
+            txn_type="JV",
+            txn_id=901,
+            voucher_no="JV-901",
+            voucher_date=date(2026, 4, 1),
+            posting_date=date(2026, 4, 1),
+            jl_inputs=self._balanced_jl(),
+            use_advisory_lock=False,
+        )
+        self.assertIsNotNone(entry.pk)
+
+    def test_backdated_posting_into_closed_year_is_blocked_even_if_scope_is_open(self):
+        svc = PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.open_fy.id,
+            subentity_id=None,
+        )
+        with self.assertRaisesRegex(ValueError, "belongs to"):
+            svc.post(
+                txn_type="JV",
+                txn_id=902,
+                voucher_no="JV-902",
+                voucher_date=date(2026, 3, 31),
+                posting_date=date(2026, 3, 31),
+                jl_inputs=self._balanced_jl(),
+                use_advisory_lock=False,
+            )
+
+
+class YearOpeningAdapterTests(PostingServiceBaseTest):
+    def test_partnership_constitution_creates_ratio_split_plan(self):
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner A",
+            share_percentage=Decimal("60.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner B",
+            share_percentage=Decimal("40.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CURRENT,
+            createdby=self.user,
+        )
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_constitution_context()
+        allocations = adapter.build_profit_allocation_plan(Decimal("1000.00"))
+
+        self.assertEqual(context["constitution_mode"], "partnership")
+        self.assertEqual(context["allocation_mode"], "ratio_split")
+        self.assertEqual(context["total_share_percentage"], "100.00")
+        self.assertEqual(len(context["ownership_rows"]), 2)
+        self.assertEqual(len(allocations), 2)
+        self.assertEqual(sum(Decimal(item["amount"]) for item in allocations), Decimal("1000.00"))
+
+    def test_single_owner_defaults_to_single_owner_mode(self):
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PROPRIETOR,
+            name="Owner",
+            share_percentage=Decimal("100.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_constitution_context()
+        allocations = adapter.build_profit_allocation_plan(Decimal("-500.00"))
+
+        self.assertEqual(context["constitution_mode"], "proprietorship")
+        self.assertEqual(context["allocation_mode"], "single_owner")
+        self.assertEqual(len(allocations), 1)
+        self.assertEqual(allocations[0]["drcr"], "debit")
+
+    def test_company_constitution_prefers_cin_profile(self):
+        EntityTaxProfile.objects.create(
+            entity=self.entity,
+            cin_no="U12345678901234567890",
+            createdby=self.user,
+        )
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.SHAREHOLDER,
+            name="Shareholder A",
+            share_percentage=Decimal("100.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_constitution_context()
+
+        self.assertEqual(context["constitution_mode"], "company")
+        self.assertEqual(context["allocation_mode"], "retained_earnings")
+        self.assertEqual(context["constitution_source"], "tax_profile.cin_no")
+        self.assertTrue(any("CIN detected" in note for note in context["constitution_notes"]))
+
+    def test_llp_constitution_prefers_llpin_profile(self):
+        EntityTaxProfile.objects.create(
+            entity=self.entity,
+            llpin_no="ABC-1234",
+            createdby=self.user,
+        )
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner A",
+            share_percentage=Decimal("50.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner B",
+            share_percentage=Decimal("50.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CURRENT,
+            createdby=self.user,
+        )
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_constitution_context()
+        allocations = adapter.build_profit_allocation_plan(Decimal("1000.00"))
+
+        self.assertEqual(context["constitution_mode"], "llp")
+        self.assertEqual(context["allocation_mode"], "ratio_split")
+        self.assertEqual(context["constitution_source"], "tax_profile.llpin_no")
+        self.assertEqual(len(allocations), 2)
+        self.assertTrue(any("LLPIN detected" in note for note in context["constitution_notes"]))
+
+    def test_partnership_validation_flags_incorrect_share_total(self):
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner A",
+            share_percentage=Decimal("60.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner B",
+            share_percentage=Decimal("30.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CURRENT,
+            createdby=self.user,
+        )
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_constitution_context()
+
+        self.assertEqual(context["constitution_mode"], "partnership")
+        self.assertFalse(context["is_valid"])
+        self.assertTrue(any(issue["code"] == "partner_share_total" for issue in context["validation_issues"]))
+
+    def test_duplicate_ownership_names_are_blocking(self):
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner A",
+            share_percentage=Decimal("50.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+        EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner A",
+            share_percentage=Decimal("50.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CURRENT,
+            createdby=self.user,
+        )
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_constitution_context()
+
+        self.assertFalse(context["is_valid"])
+        self.assertTrue(any(issue["code"] == "duplicate_ownership_names" for issue in context["validation_issues"]))
+
+    @patch("posting.adapters.year_opening.StaticAccountService.get_ledger_id")
+    def test_partnership_context_builds_partner_specific_targets(self, mock_get_ledger_id):
+        partner_a = EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner A",
+            share_percentage=Decimal("60.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CAPITAL,
+            is_primary=True,
+            createdby=self.user,
+        )
+        partner_b = EntityOwnershipV2.objects.create(
+            entity=self.entity,
+            ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+            name="Partner B",
+            share_percentage=Decimal("40.00"),
+            account_preference=EntityOwnershipV2.AccountPreference.CURRENT,
+            createdby=self.user,
+        )
+
+        lookup = {
+            "OPENING_INVENTORY_CARRY_FORWARD": 9000,
+            f"OPENING_PARTNER_CAPITAL__OWNERSHIP_{partner_a.id}": 7101,
+            f"OPENING_PARTNER_CURRENT__OWNERSHIP_{partner_b.id}": 7102,
+        }
+
+        def _lookup(entity_id, code, required=True):
+            return lookup.get(code)
+
+        mock_get_ledger_id.side_effect = _lookup
+
+        adapter = YearOpeningPostingAdapter(entity_id=self.entity.id, opening_policy={})
+        context = adapter.build_context(net_profit=Decimal("1000.00"))
+
+        self.assertEqual(context["constitution"]["constitution_mode"], "partnership")
+        self.assertEqual(context["equity_allocation_mode"], "ratio_split")
+        self.assertEqual(len(context["equity_targets"]), 2)
+        self.assertEqual(context["missing_equity_codes"], [])
+        self.assertEqual(context["equity_targets"][0]["ledger_id"], 7101)
+        self.assertEqual(context["equity_targets"][1]["ledger_id"], 7102)
+        self.assertEqual(sum(Decimal(item["amount"]) for item in context["equity_targets"]), Decimal("1000.00"))
 
 
 # ---------------------------------------------------------------------------

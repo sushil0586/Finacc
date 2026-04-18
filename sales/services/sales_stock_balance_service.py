@@ -184,6 +184,7 @@ class SalesStockBalanceService:
         expiry_required = bool(getattr(policy, "expiry_validation_required", False)) or mode == "STRICT"
         fefo_required = bool(getattr(policy, "fefo_required", False)) or mode == "STRICT"
         allow_manual_override = bool(getattr(policy, "allow_manual_batch_override", True))
+        shortage_checks_enabled = mode in {"CONTROLLED", "STRICT"}
 
         batch_number = str(batch_number or "").strip()
         expiry_date_value = expiry_date
@@ -205,6 +206,27 @@ class SalesStockBalanceService:
                 "batch_required": False,
                 "expiry_required": False,
                 "fefo_required": False,
+            }
+
+        if not shortage_checks_enabled and not batch_required and not expiry_required and not fefo_required:
+            return {
+                "status": "info",
+                "message": "",
+                "requested_qty": str(requested_qty),
+                "available_qty": None,
+                "shortage_qty": None,
+                "resolved_location_id": resolved_location_id,
+                "resolved_location_name": resolved_location_name,
+                "batch_required": batch_required,
+                "expiry_required": expiry_required,
+                "fefo_required": fefo_required,
+                "allow_negative_stock": allow_negative_stock,
+                "allow_manual_batch_override": allow_manual_override,
+                "batch_number": batch_number or None,
+                "expiry_date": expiry_date_value.isoformat() if hasattr(expiry_date_value, "isoformat") and expiry_date_value else None,
+                "best_batch_number": None,
+                "best_batch_expiry_date": None,
+                "best_batch_available_qty": None,
             }
 
         by_batch, by_batch_expiry, total_available = cls._build_balance_maps(
@@ -239,7 +261,7 @@ class SalesStockBalanceService:
             else:
                 message = "Batch required, but no available batch was found for this product."
             status = "warning"
-        elif batch_number:
+        elif batch_number and shortage_checks_enabled:
             if selected_batch_available <= ZERO4:
                 message = f"Batch '{batch_number}' has no available stock at the selected location."
                 status = "danger"
@@ -249,7 +271,7 @@ class SalesStockBalanceService:
             else:
                 message = f"{available_qty} available in batch '{batch_number}' at the selected location."
                 status = "info"
-        else:
+        elif shortage_checks_enabled:
             if available_qty <= ZERO4:
                 message = "No available stock found for this product at the selected location."
                 status = "danger"

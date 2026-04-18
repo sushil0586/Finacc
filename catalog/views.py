@@ -182,6 +182,38 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
         )
         if self.request.method.upper() == "GET":
             queryset = self.apply_isactive_filter(queryset)
+            search = (self.request.query_params.get("search") or "").strip()
+            if search:
+                queryset = queryset.filter(
+                    Q(productname__icontains=search)
+                    | Q(sku__icontains=search)
+                    | Q(productdesc__icontains=search)
+                    | Q(productcategory__pcategoryname__icontains=search)
+                    | Q(brand__name__icontains=search)
+                    | Q(base_uom__code__icontains=search)
+                    | Q(item_classification__icontains=search)
+                    | Q(product_status__icontains=search)
+                )
+
+            item_classification = (self.request.query_params.get("item_classification") or "").strip()
+            if item_classification:
+                queryset = queryset.filter(item_classification=item_classification)
+
+            product_status = (self.request.query_params.get("product_status") or "").strip()
+            if product_status:
+                queryset = queryset.filter(product_status=product_status)
+
+            is_service = self.request.query_params.get("is_service")
+            if is_service is not None:
+                normalized = str(is_service).strip().lower()
+                truthy = {"1", "true", "yes", "y", "on"}
+                falsy = {"0", "false", "no", "n", "off"}
+                if normalized in truthy:
+                    queryset = queryset.filter(is_service=True)
+                elif normalized in falsy:
+                    queryset = queryset.filter(is_service=False)
+                else:
+                    raise ValidationError({"is_service": "Invalid value. Use true/false."})
         if self.request.method.upper() == "GET":
             return queryset.order_by("productname", "id")
         return product_queryset_optimized().filter(entity=entity)
@@ -856,6 +888,8 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
         all_barcodes = []
         final_layout = None
         show_createdon = False
+        print_fields = {"product_name", "barcode", "uom", "pack_size"}
+        attribute_ids = []
 
         for idx, job in enumerate(data):
             try:
@@ -887,12 +921,27 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             if copies <= 0:
                 return Response({"detail": f"'copies' must be > 0 in item {idx}"}, status=400)
 
-            show_createdon = bool(job.get("show_createdon", False))
+            show_createdon = bool(job.get("show_createdon", job.get("show_created_date", False)))
+            if show_createdon:
+                print_fields.add("created_date")
+
+            raw_print_fields = job.get("print_fields")
+            if isinstance(raw_print_fields, list):
+                print_fields = {str(item).strip() for item in raw_print_fields if str(item).strip()}
+                show_createdon = "created_date" in print_fields or show_createdon
+
+            raw_attribute_ids = job.get("attribute_ids")
+            if isinstance(raw_attribute_ids, list):
+                try:
+                    attribute_ids = [int(item) for item in raw_attribute_ids if int(item) > 0]
+                except Exception:
+                    return Response({"detail": f"Invalid attribute_ids in item {idx}"}, status=400)
 
             barcodes = list(
                 ProductBarcode.objects
                 .filter(id__in=id_list, product__entity_id=entity_id)
                 .select_related("product", "uom")
+                .prefetch_related("product__attributes__attribute")
             )
             if not barcodes:
                 continue
@@ -917,7 +966,9 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
         pdf_file = self._build_pdf(
             all_barcodes,
             layout=final_layout or 16,
-            show_createdon=show_createdon
+            show_createdon=show_createdon,
+            print_fields=print_fields,
+            attribute_ids=attribute_ids,
         )
 
         return FileResponse(
@@ -927,10 +978,12 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             content_type="application/pdf",
         )
 
-    def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool):
+    def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool, print_fields=None, attribute_ids=None):
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
         page_w, page_h = A4
+        print_fields = set(print_fields or {"product_name", "barcode", "uom", "pack_size"})
+        attribute_ids = set(attribute_ids or [])
 
         cols, rows = self.GRID_MAP[layout]
         per_page = cols * rows
@@ -1013,13 +1066,43 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     if len(product_name) > 34:
                         product_name = product_name[:31] + "..."
 
-                    line1 = product_name
-                    line2 = f"SKU: {sku}   UOM: {uom_code}   Pack: {pack}"
-                    line3 = f"{barcode_val}"
+                    text_lines = []
+                    if "product_name" in print_fields and product_name:
+                        text_lines.append(("bold", product_name))
 
-                    extra = None
-                    if show_createdon and getattr(b, "createdon", None):
-                        extra = f"Created: {b.createdon.date().isoformat()}"
+                    detail_parts = []
+                    if "sku" in print_fields and sku:
+                        detail_parts.append(f"SKU: {sku}")
+                    if "uom" in print_fields and uom_code:
+                        detail_parts.append(f"UOM: {uom_code}")
+                    if "pack_size" in print_fields and pack:
+                        detail_parts.append(f"Pack: {pack}")
+                    if detail_parts:
+                        text_lines.append(("regular", "   ".join(detail_parts)))
+
+                    price_parts = []
+                    if "mrp" in print_fields and b.mrp is not None:
+                        price_parts.append(f"MRP: {b.mrp}")
+                    if "selling_price" in print_fields and b.selling_price is not None:
+                        price_parts.append(f"Sell: {b.selling_price}")
+                    if price_parts:
+                        text_lines.append(("regular", "   ".join(price_parts)))
+
+                    if "barcode" in print_fields and barcode_val:
+                        text_lines.append(("regular", barcode_val))
+
+                    if attribute_ids and b.product_id:
+                        product_attributes = getattr(getattr(b, "product", None), "attributes", None)
+                        for attr_row in product_attributes.all() if product_attributes is not None else []:
+                            if attr_row.attribute_id not in attribute_ids:
+                                continue
+                            attr_name = getattr(attr_row.attribute, "name", "")
+                            attr_value = self._format_product_attribute_value(attr_row)
+                            if attr_name and attr_value:
+                                text_lines.append(("regular", f"{attr_name}: {attr_value}"))
+
+                    if ("created_date" in print_fields or show_createdon) and getattr(b, "createdon", None):
+                        text_lines.append(("regular", f"Created: {b.createdon.date().isoformat()}"))
 
                     tx_width = (x + cell_w - pad) - (x + pad)
                     ty_top = y + text_area_h - pad
@@ -1027,31 +1110,33 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     line_gap = 2
                     current_y = ty_top
 
-                    if line1:
-                        s = _fit_font_size(c, line1, tx_width, start_size=base_font + 0.8, min_size=base_font - 1.0)
-                        c.setFont("Helvetica-Bold", s)
-                        c.drawCentredString(x + cell_w / 2, current_y - s, line1)
+                    for style, line in text_lines:
+                        if not line or current_y <= ty_bottom + 6:
+                            break
+                        start_size = base_font + 0.8 if style == "bold" else base_font
+                        min_size = base_font - 1.1 if style == "bold" else base_font - 1.3
+                        s = _fit_font_size(c, line, tx_width, start_size=start_size, min_size=min_size)
+                        c.setFont("Helvetica-Bold" if style == "bold" else "Helvetica", s)
+                        c.drawCentredString(x + cell_w / 2, current_y - s, line)
                         current_y -= (s + line_gap)
-
-                    s2 = _fit_font_size(c, line2, tx_width, start_size=base_font, min_size=base_font - 1.2)
-                    c.setFont("Helvetica", s2)
-                    c.drawCentredString(x + cell_w / 2, current_y - s2, line2)
-                    current_y -= (s2 + line_gap)
-
-                    s3 = _fit_font_size(c, line3, tx_width, start_size=base_font + 0.4, min_size=base_font - 0.8)
-                    c.setFont("Helvetica", s3)
-                    c.drawCentredString(x + cell_w / 2, current_y - s3, line3)
-                    current_y -= (s3 + line_gap)
-
-                    if extra and current_y > ty_bottom + 6:
-                        c.setFont("Helvetica", max(5.5, base_font - 1.2))
-                        c.drawCentredString(x + cell_w / 2, ty_bottom + 2, extra)
 
             c.showPage()
 
         c.save()
         buffer.seek(0)
         return buffer
+
+    @staticmethod
+    def _format_product_attribute_value(attr_row):
+        if attr_row.value_char not in (None, ""):
+            return str(attr_row.value_char)
+        if attr_row.value_number is not None:
+            return str(attr_row.value_number)
+        if attr_row.value_date is not None:
+            return attr_row.value_date.isoformat()
+        if attr_row.value_bool is not None:
+            return "Yes" if attr_row.value_bool else "No"
+        return ""
 
 
 class BarcodeLayoutOptionsAPIView(APIView):

@@ -12,6 +12,7 @@ from core.entitlements import ScopedEntitlementMixin
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from helpers.utils.document_actions import build_document_action_flags
 from receipts.models import ReceiptMode, ReceiptVoucherHeader
 from receipts.serializers.receipt_voucher import ReceiptVoucherHeaderSerializer
 from receipts.services.receipt_choice_service import ReceiptChoiceService
@@ -182,19 +183,14 @@ class ReceiptMetaBaseAPIView(ScopedEntitlementMixin, APIView):
         return qs
 
     def _action_flags(self, header: ReceiptVoucherHeader):
-        is_draft = int(header.status) == int(ReceiptVoucherHeader.Status.DRAFT)
-        is_confirmed = int(header.status) == int(ReceiptVoucherHeader.Status.CONFIRMED)
-        is_posted = int(header.status) == int(ReceiptVoucherHeader.Status.POSTED)
-        is_cancelled = int(header.status) == int(ReceiptVoucherHeader.Status.CANCELLED)
-        return {
-            "can_edit": not is_posted and not is_cancelled,
-            "can_confirm": is_draft,
-            "can_post": is_confirmed,
-            "can_cancel": is_draft or is_confirmed,
-            "can_unpost": is_posted,
-            "status": int(header.status),
-            "status_name": header.get_status_display(),
-        }
+        return build_document_action_flags(
+            status_value=int(header.status),
+            draft_status=int(ReceiptVoucherHeader.Status.DRAFT),
+            confirmed_status=int(ReceiptVoucherHeader.Status.CONFIRMED),
+            posted_status=int(ReceiptVoucherHeader.Status.POSTED),
+            cancelled_status=int(ReceiptVoucherHeader.Status.CANCELLED),
+            status_name=header.get_status_display(),
+        )
 
     def _account_block(self, obj, field_name: str):
         acct = getattr(obj, field_name, None)

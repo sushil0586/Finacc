@@ -28,6 +28,40 @@ FINANCIAL_REPORTING_POLICY_DEFAULTS: dict[str, Any] = {
             "cashbook",
         ],
     },
+    "opening": {
+        "opening_mode": "hybrid",
+        "batch_materialization": "single_batch",
+        "opening_posting_date_strategy": "first_day_of_new_year",
+        "require_closed_source_year": True,
+        "allow_partial_opening": False,
+        "opening_equity_static_account_code": "OPENING_EQUITY_TRANSFER",
+        "opening_inventory_static_account_code": "OPENING_INVENTORY_CARRY_FORWARD",
+        "carry_forward": {
+            "cash_bank": True,
+            "receivables": True,
+            "payables": True,
+            "loans": True,
+            "fixed_assets": True,
+            "accumulated_depreciation": True,
+            "inventory": True,
+            "advances": True,
+            "prepayments": True,
+            "accruals": True,
+            "statutory": True,
+            "retained_earnings": True,
+        },
+        "reset": {
+            "trading": True,
+            "profit_loss": True,
+            "temporary_accounts": True,
+        },
+        "grouped_sections": [
+            "assets",
+            "liabilities",
+            "stock",
+            "equity",
+        ],
+    },
     "profit_loss": {
         "accounting_only_notes_disclosure": "summary",   # off | summary
         "accounting_only_notes_split": "purchase_sales", # combined | purchase_sales
@@ -50,6 +84,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 def _sanitize(policy: dict[str, Any]) -> dict[str, Any]:
     hub = policy.setdefault("financial_hub", {})
+    opening = policy.setdefault("opening", {})
     pl = policy.setdefault("profit_loss", {})
     bs = policy.setdefault("balance_sheet", {})
 
@@ -76,6 +111,67 @@ def _sanitize(policy: dict[str, Any]) -> dict[str, Any]:
     bs["include_accounting_only_notes_disclosure"] = bool(
         bs.get("include_accounting_only_notes_disclosure", True)
     )
+
+    opening_mode = str(opening.get("opening_mode", "hybrid")).strip().lower()
+    if opening_mode not in {"single_batch", "grouped_batches", "hybrid"}:
+        opening_mode = "hybrid"
+    opening["opening_mode"] = opening_mode
+
+    batch_materialization = str(opening.get("batch_materialization", "single_batch")).strip().lower()
+    if batch_materialization not in {"single_batch", "grouped_batches", "hybrid"}:
+        batch_materialization = "single_batch"
+    opening["batch_materialization"] = batch_materialization
+
+    posting_strategy = str(opening.get("opening_posting_date_strategy", "first_day_of_new_year")).strip().lower()
+    if posting_strategy not in {"first_day_of_new_year", "manual"}:
+        posting_strategy = "first_day_of_new_year"
+    opening["opening_posting_date_strategy"] = posting_strategy
+
+    opening["require_closed_source_year"] = bool(opening.get("require_closed_source_year", True))
+    opening["allow_partial_opening"] = bool(opening.get("allow_partial_opening", False))
+    for key, default in (
+        ("opening_equity_static_account_code", "OPENING_EQUITY_TRANSFER"),
+        ("opening_inventory_static_account_code", "OPENING_INVENTORY_CARRY_FORWARD"),
+    ):
+        value = opening.get(key, default)
+        opening[key] = str(value).strip().upper() if value not in (None, "", "null", "None") else default
+
+    carry_forward = opening.get("carry_forward") or {}
+    if not isinstance(carry_forward, dict):
+        carry_forward = {}
+    opening["carry_forward"] = {
+        "cash_bank": bool(carry_forward.get("cash_bank", True)),
+        "receivables": bool(carry_forward.get("receivables", True)),
+        "payables": bool(carry_forward.get("payables", True)),
+        "loans": bool(carry_forward.get("loans", True)),
+        "fixed_assets": bool(carry_forward.get("fixed_assets", True)),
+        "accumulated_depreciation": bool(carry_forward.get("accumulated_depreciation", True)),
+        "inventory": bool(carry_forward.get("inventory", True)),
+        "advances": bool(carry_forward.get("advances", True)),
+        "prepayments": bool(carry_forward.get("prepayments", True)),
+        "accruals": bool(carry_forward.get("accruals", True)),
+        "statutory": bool(carry_forward.get("statutory", True)),
+        "retained_earnings": bool(carry_forward.get("retained_earnings", True)),
+    }
+
+    reset = opening.get("reset") or {}
+    if not isinstance(reset, dict):
+        reset = {}
+    opening["reset"] = {
+        "trading": bool(reset.get("trading", True)),
+        "profit_loss": bool(reset.get("profit_loss", True)),
+        "temporary_accounts": bool(reset.get("temporary_accounts", True)),
+    }
+
+    grouped_sections = opening.get("grouped_sections") or []
+    if not isinstance(grouped_sections, list):
+        grouped_sections = list(grouped_sections) if grouped_sections else []
+    allowed_groups = {"assets", "liabilities", "stock", "equity"}
+    opening["grouped_sections"] = [
+        str(section).strip().lower()
+        for section in grouped_sections
+        if str(section).strip().lower() in allowed_groups
+    ] or ["assets", "liabilities", "stock", "equity"]
 
     return policy
 

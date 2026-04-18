@@ -150,6 +150,7 @@ class FinancialSeedService:
             acc_type.accounttypename = row["name"]
             acc_type.accounttypecode = row["code"]
             acc_type.balanceType = cls._bool_balance(row["normal_balance"])
+            acc_type.isactive = True
             if actor and not acc_type.createdby_id:
                 acc_type.createdby = actor
             acc_type.save()
