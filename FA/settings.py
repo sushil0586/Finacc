@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     "inventory_ops",
     "commerce",
     "manufacturing",
+    "retail",
     "assets",
     "sales.apps.SalesConfig",
     "withholding",
