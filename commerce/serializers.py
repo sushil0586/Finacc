@@ -1,8 +1,29 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from rest_framework import serializers
 
 from .models import CommercePromotion, CommercePromotionScope, CommercePromotionSlab
+
+
+class FlexibleDateField(serializers.DateField):
+    """
+    Accept both ISO dates and operator-entered day-first dates.
+    Output remains a normal date object for downstream services.
+    """
+
+    def to_internal_value(self, value):
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+                try:
+                    return datetime.strptime(candidate, fmt).date()
+                except ValueError:
+                    continue
+        return super().to_internal_value(value)
 
 
 class CommercePromotionScopeWriteSerializer(serializers.Serializer):
@@ -24,8 +45,8 @@ class CommercePromotionWriteSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=50)
     name = serializers.CharField(max_length=150)
     promotion_type = serializers.ChoiceField(choices=CommercePromotion.PromotionType.choices, default=CommercePromotion.PromotionType.SAME_ITEM_SLAB)
-    valid_from = serializers.DateField(required=False, allow_null=True)
-    valid_to = serializers.DateField(required=False, allow_null=True)
+    valid_from = FlexibleDateField(required=False, allow_null=True)
+    valid_to = FlexibleDateField(required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False, default=True)
     scopes = CommercePromotionScopeWriteSerializer(many=True)
     slabs = CommercePromotionSlabWriteSerializer(many=True)
@@ -97,4 +118,4 @@ class CommerceLineNormalizeSerializer(serializers.Serializer):
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
     manual_discount_percent = serializers.DecimalField(max_digits=9, decimal_places=4, required=False, allow_null=True)
     manual_discount_amount = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
-    as_of_date = serializers.DateField(required=False, allow_null=True)
+    as_of_date = FlexibleDateField(required=False, allow_null=True)
