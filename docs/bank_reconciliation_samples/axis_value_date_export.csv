@@ -1,0 +1,7 @@
+Transaction Date,Value Date,Description,Cheque No,Debit,Credit,Closing Balance
+2026-04-01,2026-04-01,Customer Receipt,UTR123,,12500.00,125000.00
+2026-04-02,2026-04-02,Cheque Bounce,CHQ456,3200.00,,121800.00
+2026-04-03,2026-04-03,Bank Charge,CHG001,75.00,,121725.00
+2026-04-04,2026-04-04,Interest Received,INT900,,150.00,121875.00
+2026-04-05,2026-04-05,Customer Receipt,UTR124,,8600.00,130475.00
+

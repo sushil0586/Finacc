@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     "gst_tds",
     "rbac",
     "subscriptions",
+    "bank_reconciliation.apps.BankReconciliationConfig",
 ]
 
 INSTALLED_APPS += ['auditlogger']

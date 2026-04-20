@@ -7,12 +7,12 @@ from django.db import transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 
-from assets.models import AssetSettings, DepreciationRun, FixedAsset, default_asset_policy_controls
+from assets.models import AssetCategory, AssetSettings, DepreciationRun, FixedAsset, default_asset_policy_controls
 from assets.services.depreciation import attach_preview_lines, preview_run, q2 as dep_q2
 from assets.services.settings import AssetSettingsService
 from entity.models import SubEntity
 from financial.models import Ledger
-from posting.models import TxnType
+from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from posting.services.posting_service import JLInput, PostingService
 
 Q2 = Decimal("0.01")
@@ -129,7 +129,7 @@ class AssetService:
 
     @staticmethod
     def asset_queryset(*, entity_id: int, subentity_id: int | None = None, search: str | None = None):
-        qs = FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity").filter(entity_id=entity_id)
+        qs = FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity").filter(entity_id=entity_id, is_active=True)
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
         if search:
@@ -140,6 +140,35 @@ class AssetService:
                 | Q(serial_number__icontains=search)
             )
         return qs.order_by("-id")
+
+    @staticmethod
+    @transaction.atomic
+    def archive_category(*, category: AssetCategory, user_id: int | None = None) -> AssetCategory | None:
+        if FixedAsset.objects.filter(category=category).exists():
+            if category.is_active:
+                category.is_active = False
+                category.updated_by_id = user_id
+                category.save(update_fields=["is_active", "updated_by", "updated_at"])
+            return category
+
+        category.delete()
+        return None
+
+    @staticmethod
+    @transaction.atomic
+    def archive_asset(*, asset: FixedAsset, user_id: int | None = None) -> FixedAsset | None:
+        has_posting = bool(asset.capitalization_posting_batch_id or asset.impairment_posting_batch_id or asset.disposal_posting_batch_id)
+        has_dep_lines = asset.depreciation_lines.exists()
+
+        if has_posting or has_dep_lines:
+            if asset.is_active:
+                asset.is_active = False
+                asset.updated_by_id = user_id
+                asset.save(update_fields=["is_active", "updated_by", "updated_at"])
+            return asset
+
+        asset.delete()
+        return None
 
     @staticmethod
     def create_asset(*, data: dict, user_id: int | None = None) -> FixedAsset:
@@ -348,6 +377,75 @@ class AssetService:
         run.posted_by_id = user_id
         run.updated_by_id = user_id
         run.save(update_fields=["status", "posting_batch", "posted_at", "posted_by", "updated_by", "updated_at"])
+        return run
+
+    @staticmethod
+    @transaction.atomic
+    def cancel_run(*, run: DepreciationRun, user_id: int | None = None) -> DepreciationRun:
+        _, controls = _asset_settings_and_controls(entity_id=run.entity_id, subentity_id=run.subentity_id)
+        _ensure_locked_period(entityfinid=run.entityfinid, posting_date=run.posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
+
+        if run.status not in {DepreciationRun.RunStatus.CALCULATED, DepreciationRun.RunStatus.POSTED}:
+            raise ValueError("Depreciation run must be calculated or posted before it can be cancelled.")
+
+        if run.status == DepreciationRun.RunStatus.POSTED:
+            lines = list(run.lines.select_related("asset", "asset__category"))
+            if not lines:
+                raise ValueError("Posted depreciation run has no lines to reverse.")
+
+            for line in lines:
+                asset = line.asset
+                asset.accumulated_depreciation = q2(asset.accumulated_depreciation) - q2(line.depreciation_amount)
+                if asset.accumulated_depreciation < ZERO:
+                    raise ValueError(f"Cannot reverse depreciation for asset {asset.asset_code}; accumulated depreciation would become negative.")
+                asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount)
+                _ensure_non_negative_nbv(asset=asset, rule=controls.get("negative_nbv_rule", "block"))
+                asset.updated_by_id = user_id
+                asset.save(update_fields=["accumulated_depreciation", "net_book_value", "updated_by", "updated_at"])
+
+            if run.posting_batch_id:
+                run.posting_batch.is_active = False
+                run.posting_batch.save(update_fields=["is_active"])
+                JournalLine.objects.filter(posting_batch=run.posting_batch).delete()
+
+            entry = Entry.objects.filter(
+                entity_id=run.entity_id,
+                entityfin_id=run.entityfinid_id,
+                subentity_id=run.subentity_id,
+                txn_type=TxnType.FIXED_ASSET_DEPRECIATION,
+                txn_id=run.id,
+            ).first()
+            if entry:
+                entry.status = EntryStatus.REVERSED
+                entry.posting_batch = None
+                entry.posted_at = None
+                entry.posted_by = None
+                entry.save(update_fields=["status", "posting_batch", "posted_at", "posted_by"])
+            run.posting_batch_id = None
+        elif run.posting_batch_id:
+            run.posting_batch.is_active = False
+            run.posting_batch.save(update_fields=["is_active"])
+
+        run.status = DepreciationRun.RunStatus.CANCELLED
+        run.total_assets = 0
+        run.total_amount = ZERO
+        run.calculated_at = None
+        run.posted_at = None
+        run.posted_by_id = None
+        run.updated_by_id = user_id
+        run.save(
+            update_fields=[
+                "status",
+                "total_assets",
+                "total_amount",
+                "calculated_at",
+                "posted_at",
+                "posted_by",
+                "posting_batch",
+                "updated_by",
+                "updated_at",
+            ]
+        )
         return run
 
     @staticmethod

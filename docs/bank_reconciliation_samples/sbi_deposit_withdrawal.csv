@@ -1,0 +1,7 @@
+Date,Narration,Deposit,Withdrawal,Balance
+2026-04-01,Customer Receipt,12500.00,,125000.00
+2026-04-02,Bank Charge,,75.00,124925.00
+2026-04-03,Vendor Payment,,3200.00,121725.00
+2026-04-04,Interest Received,150.00,,121875.00
+2026-04-05,Customer Receipt,8600.00,,130475.00
+

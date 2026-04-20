@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AssetCategory, AssetSettings, DepreciationRun, DepreciationRunLine, FixedAsset
+from .models import AssetBulkJob, AssetCategory, AssetSettings, DepreciationRun, DepreciationRunLine, FixedAsset
 
 
 class AssetScopedAdminMixin:
@@ -135,6 +135,33 @@ class AssetCategoryAdmin(AssetScopedAdminMixin, admin.ModelAdmin):
         ),
         ("Audit", {"classes": ("collapse",), "fields": ("created_at", "updated_at", "created_by", "updated_by")}),
     )
+
+
+@admin.register(AssetBulkJob)
+class AssetBulkJobAdmin(AssetScopedAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "id",
+        "scope_type",
+        "job_type",
+        "status",
+        "file_format",
+        "entity",
+        "subentity",
+        "input_filename",
+        "is_active",
+    )
+    list_filter = (
+        ("entity", admin.RelatedOnlyFieldListFilter),
+        ("subentity", admin.RelatedOnlyFieldListFilter),
+        "scope_type",
+        "job_type",
+        "status",
+        "file_format",
+        "is_active",
+    )
+    search_fields = ("input_filename", "validation_token")
+    list_select_related = ("entity", "subentity", "created_by", "updated_by")
+    readonly_fields = AssetScopedAdminMixin.readonly_fields + ("summary", "errors", "payload", "validation_token", "input_filename")
 
 
 @admin.register(FixedAsset)

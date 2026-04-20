@@ -1,0 +1,7 @@
+Txn Date,Narration,Ref No,Debit,Credit,Balance,Currency
+2026-04-01,Customer Receipt,UTR123,,12500.00,125000.00,INR
+2026-04-02,Bank Charge,CHG001,75.00,,124925.00,INR
+2026-04-03,Vendor Payment,NEFT778,3200.00,,121725.00,INR
+2026-04-04,Interest Received,INT900,,150.00,121875.00,INR
+2026-04-05,Customer Receipt,UTR124,,8600.00,130475.00,INR
+

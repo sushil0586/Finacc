@@ -127,6 +127,64 @@ class AssetCategory(TrackingModel):
         return f"{self.code} - {self.name}"
 
 
+class AssetBulkJob(TrackingModel):
+    class ScopeType(models.TextChoices):
+        CATEGORY = "CATEGORY", "Category"
+        ASSET = "ASSET", "Fixed Asset"
+
+    class JobType(models.TextChoices):
+        VALIDATE = "validate", "Validate"
+        IMPORT = "import", "Import"
+        TEMPLATE = "template", "Template"
+        EXPORT = "export", "Export"
+
+    class JobStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    class FileFormat(models.TextChoices):
+        XLSX = "xlsx", "XLSX"
+        CSV = "csv", "CSV"
+
+    class UpsertMode(models.TextChoices):
+        CREATE_ONLY = "create_only", "Create only"
+        UPDATE_ONLY = "update_only", "Update only"
+        UPSERT = "upsert", "Upsert"
+
+    class DuplicateStrategy(models.TextChoices):
+        FAIL = "fail", "Fail"
+        SKIP = "skip", "Skip"
+        OVERWRITE = "overwrite", "Overwrite"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="asset_bulk_jobs")
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.CASCADE, null=True, blank=True, related_name="asset_bulk_jobs")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    scope_type = models.CharField(max_length=20, choices=ScopeType.choices, db_index=True)
+    job_type = models.CharField(max_length=20, choices=JobType.choices, default=JobType.VALIDATE, db_index=True)
+    status = models.CharField(max_length=20, choices=JobStatus.choices, default=JobStatus.PENDING, db_index=True)
+    file_format = models.CharField(max_length=10, choices=FileFormat.choices, default=FileFormat.XLSX)
+    upsert_mode = models.CharField(max_length=20, choices=UpsertMode.choices, default=UpsertMode.UPSERT)
+    duplicate_strategy = models.CharField(max_length=20, choices=DuplicateStrategy.choices, default=DuplicateStrategy.FAIL)
+
+    validation_token = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    input_filename = models.CharField(max_length=255, null=True, blank=True)
+
+    summary = models.JSONField(default=dict, blank=True)
+    errors = models.JSONField(default=list, blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "scope_type", "job_type", "status"], name="ix_asset_bulk_entity_scope_job"),
+            models.Index(fields=["entity", "validation_token"], name="ix_asset_bulk_entity_token"),
+        ]
+
+    def __str__(self) -> str:
+        return f"AssetBulkJob<{self.id}> {self.scope_type} {self.job_type} {self.status}"
+
+
 class FixedAsset(TrackingModel):
     class AssetStatus(models.TextChoices):
         DRAFT = "DRAFT", "Draft"

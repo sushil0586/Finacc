@@ -1,0 +1,6 @@
+TxnID	TxnDate	Narration	Party	Dr	Cr	RunningBalance	Ccy
+A001	2026-04-01	Customer Receipt	Customer A		12500.00	125000.00	INR
+A002	2026-04-02	Bank Charge	Bank	75.00		124925.00	INR
+A003	2026-04-03	Vendor Payment	Vendor X	3200.00		121725.00	INR
+A004	2026-04-04	Interest Received	Bank		150.00	121875.00	INR
+A005	2026-04-05	Customer Receipt	Customer B		8600.00	130475.00	INR
