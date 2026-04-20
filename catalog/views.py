@@ -31,6 +31,7 @@ from catalog.serializers import InvoiceProductListItemSerializer
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
+from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
 from entity.models import Entity, SubEntity
@@ -47,6 +48,7 @@ from .models import (
     CessType,
     ProductStatus,
     ProductBarcode,
+    BarcodeLabelTemplate,
     ProductGstRate,
     ProductPrice,
     ProductUomConversion,
@@ -78,6 +80,7 @@ from .serializers import (
     CessTypeChoiceSerializer,
     ProductStatusChoiceSerializer,
     ProductBarcodeManageSerializer,
+    BarcodeLabelTemplateSerializer,
 )
 from .transaction_products import TransactionProductCatalogService
 
@@ -108,9 +111,31 @@ class EntityFromQueryMixin:
             raise NotFound("Invalid entity")
 
     def get_serializer_context(self):
-        ctx = super().get_serializer_context()
+        parent_getter = getattr(super(), "get_serializer_context", None)
+        ctx = parent_getter() if callable(parent_getter) else {}
         ctx["entity"] = self.get_entity()
+        subentity = self.get_subentity(optional=True)
+        if subentity is not None:
+            ctx["subentity"] = subentity
         return ctx
+
+    def get_subentity(self, optional: bool = True):
+        raw = self.request.query_params.get("subentity", self.request.query_params.get("subentity_id"))
+        if raw in (None, ""):
+            return None
+
+        try:
+            subentity_id = int(raw)
+        except Exception:
+            raise ValidationError({"subentity": "Invalid subentity id."})
+
+        entity = self.get_entity()
+        subentity = SubEntity.objects.filter(id=subentity_id, entity_id=entity.id, isactive=True).first()
+        if subentity is None:
+            if optional:
+                raise NotFound("Invalid subentity")
+            raise ValidationError({"subentity": "Invalid subentity."})
+        return subentity
 
     def apply_isactive_filter(self, queryset):
         """
@@ -637,6 +662,60 @@ class ProductImportantListAPIView(APIView):
 
 
 # ----------------------------------------------------------------------
+# Barcode label templates
+# ----------------------------------------------------------------------
+
+class BarcodeLabelTemplateListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    serializer_class = BarcodeLabelTemplateSerializer
+
+    def get_queryset(self):
+        entity = self.get_entity()
+        subentity = self.get_subentity(optional=True)
+        queryset = BarcodeLabelTemplate.objects.filter(entity=entity)
+        if subentity is not None:
+            queryset = queryset.filter(Q(subentity__isnull=True) | Q(subentity=subentity))
+        else:
+            queryset = queryset.filter(subentity__isnull=True)
+        return queryset.order_by("-isdefault", "name")
+
+    def perform_create(self, serializer):
+        serializer.save(entity=self.get_entity())
+
+
+class BarcodeLabelTemplateRUDAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = BarcodeLabelTemplateSerializer
+
+    def get_queryset(self):
+        return BarcodeLabelTemplate.objects.filter(entity=self.get_entity())
+
+
+class BarcodeLabelTemplateDefaultAPIView(EntityFromQueryMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity = self.get_entity()
+        subentity = self.get_subentity(optional=True)
+        template = None
+        if subentity is not None:
+            template = (
+                BarcodeLabelTemplate.objects
+                .filter(entity=entity, subentity=subentity, isdefault=True, isactive=True)
+                .order_by("name")
+                .first()
+            )
+        if template is None:
+            template = (
+                BarcodeLabelTemplate.objects
+                .filter(entity=entity, subentity__isnull=True, isdefault=True, isactive=True)
+                .order_by("name")
+                .first()
+            )
+        if not template:
+            return Response(None, status=status.HTTP_200_OK)
+        return Response(BarcodeLabelTemplateSerializer(template, context=self.get_serializer_context()).data)
+
+
+# ----------------------------------------------------------------------
 # Barcode CRUD
 # ----------------------------------------------------------------------
 
@@ -872,6 +951,184 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
         20: (4, 5),
     }
 
+    def _resolve_job_template(self, *, entity_id: int, template_id):
+        if template_id in (None, "", 0):
+            return None
+
+        try:
+            template_pk = int(template_id)
+        except Exception:
+            raise ValidationError({"template_id": "Invalid barcode label template id."})
+
+        template = (
+            BarcodeLabelTemplate.objects
+            .filter(entity_id=entity_id, id=template_pk, isactive=True)
+            .first()
+        )
+        if template is None:
+            raise ValidationError({"template_id": "Barcode label template not found for the selected entity."})
+        if template.output_mode != BarcodeLabelTemplate.OUTPUT_MODE_PDF:
+            raise ValidationError({"template_id": "Selected template is for sticker printing. Choose a PDF template."})
+        return template
+
+    def _collect_label_lines(self, barcode_obj, *, print_fields, attribute_ids, show_createdon, special_text):
+        product_name = ((barcode_obj.product.productname or "").strip() if barcode_obj.product_id else "")
+        sku = ((barcode_obj.product.sku or "").strip() if barcode_obj.product_id else "")
+        uom_code = ((barcode_obj.uom.code or "").strip() if barcode_obj.uom_id else "")
+        pack = barcode_obj.pack_size or 1
+        barcode_val = barcode_obj.barcode or ""
+
+        if len(product_name) > 34:
+            product_name = product_name[:31] + "..."
+
+        top_lines = []
+        if "product_name" in print_fields and product_name:
+            top_lines.append(("bold", product_name))
+
+        detail_parts = []
+        if "sku" in print_fields and sku:
+            detail_parts.append(f"SKU: {sku}")
+        if "uom" in print_fields and uom_code:
+            detail_parts.append(f"UOM: {uom_code}")
+        if "pack_size" in print_fields and pack:
+            detail_parts.append(f"Pack: {pack}")
+        if detail_parts:
+            top_lines.append(("regular", "   ".join(detail_parts)))
+
+        footer_lines = []
+        price_parts = []
+        if "mrp" in print_fields and barcode_obj.mrp is not None:
+            price_parts.append(f"MRP: {barcode_obj.mrp}")
+        if "selling_price" in print_fields and barcode_obj.selling_price is not None:
+            price_parts.append(f"Sell: {barcode_obj.selling_price}")
+        if price_parts:
+            footer_lines.append(("regular", "   ".join(price_parts)))
+
+        if special_text:
+            footer_lines.append(("regular", special_text))
+
+        if "barcode" in print_fields and barcode_val:
+            footer_lines.append(("regular", barcode_val))
+
+        if attribute_ids and barcode_obj.product_id:
+            product_attributes = getattr(getattr(barcode_obj, "product", None), "attributes", None)
+            for attr_row in product_attributes.all() if product_attributes is not None else []:
+                if attr_row.attribute_id not in attribute_ids:
+                    continue
+                attr_name = getattr(attr_row.attribute, "name", "")
+                attr_value = self._format_product_attribute_value(attr_row)
+                if attr_name and attr_value:
+                    footer_lines.append(("regular", f"{attr_name}: {attr_value}"))
+
+        if (show_createdon and getattr(barcode_obj, "createdon", None)):
+            footer_lines.append(("regular", f"Created: {barcode_obj.createdon.date().isoformat()}"))
+
+        return top_lines, footer_lines
+
+    def _draw_centered_lines(self, canvas_obj, *, lines, center_x, top_y, bottom_y, base_font, max_width, line_gap=1.8):
+        current_y = top_y
+        for style, line in lines:
+            if not line or current_y <= bottom_y + 4:
+                break
+            start_size = base_font + 0.8 if style == "bold" else base_font
+            min_size = base_font - 1.1 if style == "bold" else base_font - 1.3
+            s = _fit_font_size(canvas_obj, line, max_width, start_size=start_size, min_size=min_size)
+            canvas_obj.setFont("Helvetica-Bold" if style == "bold" else "Helvetica", s)
+            canvas_obj.drawCentredString(center_x, current_y - s, line)
+            current_y -= (s + line_gap)
+
+    def _build_template_pdf(self, barcode_objects, template, show_createdon: bool, print_fields=None, attribute_ids=None, special_text=""):
+        buffer = BytesIO()
+        page_w = float(template.label_width_mm) * mm
+        page_h = float(template.label_height_mm) * mm
+        c = canvas.Canvas(buffer, pagesize=(page_w, page_h))
+
+        print_fields = set(print_fields or {"product_name", "barcode", "uom", "pack_size"})
+        attribute_ids = set(attribute_ids or [])
+        special_text = (special_text or template.special_text or "").strip()
+        pad = max(0.5, float(template.padding_mm)) * mm
+        inner_w = max(1.0, page_w - 2 * pad)
+        inner_h = max(1.0, page_h - 2 * pad)
+        show_border = bool(template.show_border)
+        title_area_h = max(4.0 * mm, inner_h * 0.22)
+        footer_area_h = max(5.0 * mm, inner_h * 0.26)
+        image_area_h = max(8.0 * mm, inner_h - title_area_h - footer_area_h)
+        base_font = max(4.5, min(8.0, page_h / mm * 0.16))
+
+        for barcode_obj in barcode_objects:
+            if show_border:
+                c.setLineWidth(0.45)
+                c.roundRect(pad, pad, inner_w, inner_h, 1.2 * mm, stroke=1, fill=0)
+
+            if getattr(barcode_obj, "isprimary", False):
+                badge_text = "PRIMARY"
+                badge_font = max(4.3, base_font - 0.9)
+                badge_w = max(10.0 * mm, c.stringWidth(badge_text, "Helvetica-Bold", badge_font) + 2.6 * mm)
+                badge_h = 4.8 * mm
+                bx = page_w - pad - badge_w
+                by = page_h - pad - badge_h
+                c.setLineWidth(0.45)
+                c.roundRect(bx, by, badge_w, badge_h, 1.4 * mm, stroke=1, fill=0)
+                c.setFont("Helvetica-Bold", badge_font)
+                c.drawCentredString(bx + badge_w / 2, by + 1.35 * mm, badge_text)
+
+            top_lines, footer_lines = self._collect_label_lines(
+                barcode_obj,
+                print_fields=print_fields,
+                attribute_ids=attribute_ids,
+                show_createdon=show_createdon,
+                special_text=special_text,
+            )
+
+            top_y = page_h - pad - 1.2 * mm
+            bottom_y = pad + 1.0 * mm
+            top_text_bottom = page_h - pad - title_area_h + 1.2 * mm
+            footer_top = pad + footer_area_h - 1.0 * mm
+
+            self._draw_centered_lines(
+                c,
+                lines=top_lines,
+                center_x=page_w / 2,
+                top_y=top_y,
+                bottom_y=top_text_bottom,
+                base_font=base_font,
+                max_width=inner_w,
+                line_gap=1.0,
+            )
+
+            if barcode_obj.barcode_image:
+                img = ImageReader(barcode_obj.barcode_image.path)
+                img_x = pad
+                img_y = pad + footer_area_h + 0.3 * mm
+                img_w = inner_w
+                img_h = max(1.0, image_area_h - 0.6 * mm)
+                c.drawImage(
+                    img,
+                    img_x,
+                    img_y,
+                    width=img_w,
+                    height=img_h,
+                    preserveAspectRatio=True,
+                    anchor="c",
+                )
+
+            self._draw_centered_lines(
+                c,
+                lines=footer_lines,
+                center_x=page_w / 2,
+                top_y=footer_top,
+                bottom_y=bottom_y,
+                base_font=max(3.8, base_font - 1.0),
+                max_width=inner_w,
+                line_gap=0.9,
+            )
+
+            c.showPage()
+
+        c.save()
+        buffer.seek(0)
+        return buffer
+
     def post(self, request):
         data = request.data
         entity_param = request.query_params.get("entity")
@@ -887,9 +1144,11 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
 
         all_barcodes = []
         final_layout = None
+        active_template = None
         show_createdon = False
         print_fields = {"product_name", "barcode", "uom", "pack_size"}
         attribute_ids = []
+        special_text = ""
 
         for idx, job in enumerate(data):
             try:
@@ -921,7 +1180,29 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             if copies <= 0:
                 return Response({"detail": f"'copies' must be > 0 in item {idx}"}, status=400)
 
-            show_createdon = bool(job.get("show_createdon", job.get("show_created_date", False)))
+            template = self._resolve_job_template(entity_id=entity_id, template_id=job.get("template_id"))
+            if template is not None:
+                if active_template is None:
+                    active_template = template
+                elif active_template.id != template.id:
+                    return Response({"detail": "All barcode jobs in the batch must use the same PDF template."}, status=400)
+                layout = int(template.pdf_layout or layout or 16)
+                final_layout = layout
+                if not job.get("copies"):
+                    copies = int(template.copies or copies or 1)
+                if not job.get("print_fields"):
+                    print_fields = {str(item).strip() for item in (template.print_fields or []) if str(item).strip()}
+                if not job.get("attribute_ids"):
+                    try:
+                        attribute_ids = [int(item) for item in (template.attribute_ids or []) if int(item) > 0]
+                    except Exception:
+                        return Response({"detail": f"Invalid attribute_ids in item {idx}"}, status=400)
+                if template.special_text:
+                    special_text = str(template.special_text).strip()
+                if "created_date" in print_fields:
+                    show_createdon = True
+
+            show_createdon = bool(job.get("show_createdon", job.get("show_created_date", False))) or show_createdon
             if show_createdon:
                 print_fields.add("created_date")
 
@@ -936,6 +1217,10 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     attribute_ids = [int(item) for item in raw_attribute_ids if int(item) > 0]
                 except Exception:
                     return Response({"detail": f"Invalid attribute_ids in item {idx}"}, status=400)
+
+            raw_special_text = job.get("special_text")
+            if isinstance(raw_special_text, str) and raw_special_text.strip():
+                special_text = raw_special_text.strip()
 
             barcodes = list(
                 ProductBarcode.objects
@@ -969,6 +1254,8 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             show_createdon=show_createdon,
             print_fields=print_fields,
             attribute_ids=attribute_ids,
+            special_text=special_text,
+            template=active_template,
         )
 
         return FileResponse(
@@ -978,12 +1265,23 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             content_type="application/pdf",
         )
 
-    def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool, print_fields=None, attribute_ids=None):
+    def _build_pdf(self, barcode_objects, layout: int, show_createdon: bool, print_fields=None, attribute_ids=None, special_text="", template=None):
+        if template is not None:
+            return self._build_template_pdf(
+                barcode_objects,
+                template,
+                show_createdon,
+                print_fields=print_fields,
+                attribute_ids=attribute_ids,
+                special_text=special_text,
+            )
+
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
         page_w, page_h = A4
         print_fields = set(print_fields or {"product_name", "barcode", "uom", "pack_size"})
         attribute_ids = set(attribute_ids or [])
+        special_text = (special_text or "").strip()
 
         cols, rows = self.GRID_MAP[layout]
         per_page = cols * rows
@@ -1057,52 +1355,14 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                             preserveAspectRatio=True, anchor="c",
                         )
 
-                    product_name = ((b.product.productname or "").strip() if b.product_id else "")
-                    sku = ((b.product.sku or "").strip() if b.product_id else "")
-                    uom_code = ((b.uom.code or "").strip() if b.uom_id else "")
-                    pack = b.pack_size or 1
                     barcode_val = b.barcode or ""
-
-                    if len(product_name) > 34:
-                        product_name = product_name[:31] + "..."
-
-                    text_lines = []
-                    if "product_name" in print_fields and product_name:
-                        text_lines.append(("bold", product_name))
-
-                    detail_parts = []
-                    if "sku" in print_fields and sku:
-                        detail_parts.append(f"SKU: {sku}")
-                    if "uom" in print_fields and uom_code:
-                        detail_parts.append(f"UOM: {uom_code}")
-                    if "pack_size" in print_fields and pack:
-                        detail_parts.append(f"Pack: {pack}")
-                    if detail_parts:
-                        text_lines.append(("regular", "   ".join(detail_parts)))
-
-                    price_parts = []
-                    if "mrp" in print_fields and b.mrp is not None:
-                        price_parts.append(f"MRP: {b.mrp}")
-                    if "selling_price" in print_fields and b.selling_price is not None:
-                        price_parts.append(f"Sell: {b.selling_price}")
-                    if price_parts:
-                        text_lines.append(("regular", "   ".join(price_parts)))
-
-                    if "barcode" in print_fields and barcode_val:
-                        text_lines.append(("regular", barcode_val))
-
-                    if attribute_ids and b.product_id:
-                        product_attributes = getattr(getattr(b, "product", None), "attributes", None)
-                        for attr_row in product_attributes.all() if product_attributes is not None else []:
-                            if attr_row.attribute_id not in attribute_ids:
-                                continue
-                            attr_name = getattr(attr_row.attribute, "name", "")
-                            attr_value = self._format_product_attribute_value(attr_row)
-                            if attr_name and attr_value:
-                                text_lines.append(("regular", f"{attr_name}: {attr_value}"))
-
-                    if ("created_date" in print_fields or show_createdon) and getattr(b, "createdon", None):
-                        text_lines.append(("regular", f"Created: {b.createdon.date().isoformat()}"))
+                    top_lines, footer_lines = self._collect_label_lines(
+                        b,
+                        print_fields=print_fields,
+                        attribute_ids=attribute_ids,
+                        show_createdon=show_createdon,
+                        special_text=special_text,
+                    )
 
                     tx_width = (x + cell_w - pad) - (x + pad)
                     ty_top = y + text_area_h - pad
@@ -1110,7 +1370,7 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
                     line_gap = 2
                     current_y = ty_top
 
-                    for style, line in text_lines:
+                    for style, line in top_lines + footer_lines:
                         if not line or current_y <= ty_bottom + 6:
                             break
                         start_size = base_font + 0.8 if style == "bold" else base_font

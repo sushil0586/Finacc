@@ -23,6 +23,7 @@ from .models import (
     HsnSac,
     ProductGstRate,
     ProductBarcode,
+    BarcodeLabelTemplate,
     ProductUomConversion,
     ProductAttribute,
     ProductAttributeValue,
@@ -313,6 +314,7 @@ class ProductGstRateSerializer(EntityScopedValidationMixin, serializers.ModelSer
 
 class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -320,7 +322,7 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
         fields = (
             "id",
             "product",            # parent sets
-            "barcode",            # auto-generated, read-only
+            "barcode",            # auto-generated if blank; may also be user supplied
             "uom",
             "isprimary",
             "pack_size",
@@ -332,7 +334,6 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
         )
         read_only_fields = (
             "product",
-            "barcode",
             "barcode_image_url",
             "createdon",
             "modifiedon",
@@ -390,12 +391,12 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
                 })
 
             if barcode:
-                duplicate_barcode = ProductBarcode.objects.filter(product=product, barcode=barcode)
+                duplicate_barcode = ProductBarcode.objects.filter(product__entity_id=product.entity_id, barcode=barcode)
                 if self.instance:
                     duplicate_barcode = duplicate_barcode.exclude(pk=self.instance.pk)
                 if duplicate_barcode.exists():
                     raise serializers.ValidationError({
-                        "barcode": "This barcode already exists for this product."
+                        "barcode": "This barcode already exists in this entity."
                     })
         return attrs
 
@@ -835,6 +836,7 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                     self.instance.uom_conversions.values_list("to_uom_id", flat=True)
                 )
 
+            seen_barcodes = set()
             for idx, row in enumerate(self.initial_data.get("barcodes", []) or [], start=1):
                 uom_id = row.get("uom")
                 if uom_id:
@@ -848,6 +850,13 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                     raise serializers.ValidationError({
                         "barcodes": f"Barcode row {idx} must use the base UOM or a converted UOM."
                     })
+                barcode_value = (row.get("barcode") or "").strip()
+                if barcode_value:
+                    if barcode_value in seen_barcodes:
+                        raise serializers.ValidationError({
+                            "barcodes": "Duplicate barcode values are not allowed in the same request."
+                        })
+                    seen_barcodes.add(barcode_value)
 
             for idx, row in enumerate(self.initial_data.get("uom_conversions", []) or [], start=1):
                 from_uom_id = row.get("from_uom")
@@ -993,7 +1002,6 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             ProductGstRate.objects.create(product=product, **gr)
 
         for bd in barcodes_data:
-            bd.pop("barcode", None)
             bd.pop("barcode_image", None)
             ProductBarcode.objects.create(product=product, **bd)
 
@@ -1059,7 +1067,7 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                 child_data_list=barcodes_data,
                 fk_name="product",
                 existing_qs=instance.barcode_details.all(),
-                strip_fields=["barcode", "barcode_image", "barcode_image_url"],
+                strip_fields=["barcode_image", "barcode_image_url"],
             )
 
         if uom_conversions_data is not None:
@@ -1210,6 +1218,7 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
     product_id = serializers.IntegerField(source="product.id", read_only=True)
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
+    barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
@@ -1241,7 +1250,6 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
             "modifiedon",
         ]
         read_only_fields = [
-            "barcode",
             "barcode_image",
             "barcode_image_url",
             "product_id",
@@ -1287,12 +1295,12 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
                 })
 
             if barcode:
-                duplicate_barcode = ProductBarcode.objects.filter(product=product, barcode=barcode)
+                duplicate_barcode = ProductBarcode.objects.filter(product__entity_id=product.entity_id, barcode=barcode)
                 if self.instance:
                     duplicate_barcode = duplicate_barcode.exclude(pk=self.instance.pk)
                 if duplicate_barcode.exists():
                     raise serializers.ValidationError({
-                        "barcode": "This barcode already exists for this product."
+                        "barcode": "This barcode already exists in this entity."
                     })
 
         return attrs
@@ -1318,6 +1326,99 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
             ProductBarcode.objects.filter(product=obj.product).exclude(pk=obj.pk).update(isprimary=False)
 
         return obj
+
+
+class BarcodeLabelTemplateSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    subentity = serializers.PrimaryKeyRelatedField(queryset=SubEntity.objects.all(), required=False, allow_null=True)
+
+    class Meta:
+        model = BarcodeLabelTemplate
+        fields = (
+            "id",
+            "name",
+            "subentity",
+            "output_mode",
+            "pdf_layout",
+            "label_width_mm",
+            "label_height_mm",
+            "padding_mm",
+            "show_border",
+            "special_text",
+            "print_fields",
+            "attribute_ids",
+            "copies",
+            "isdefault",
+            "isactive",
+            "createdon",
+            "modifiedon",
+        )
+        read_only_fields = ("createdon", "modifiedon")
+
+    def validate(self, attrs):
+        entity = self._target_entity(attrs)
+        name = (attrs.get("name", getattr(self.instance, "name", "")) or "").strip()
+        subentity = attrs.get("subentity", getattr(self.instance, "subentity", None))
+        output_mode = attrs.get("output_mode", getattr(self.instance, "output_mode", BarcodeLabelTemplate.OUTPUT_MODE_BROWSER))
+        pdf_layout = attrs.get("pdf_layout", getattr(self.instance, "pdf_layout", None))
+        label_width_mm = attrs.get("label_width_mm", getattr(self.instance, "label_width_mm", None))
+        label_height_mm = attrs.get("label_height_mm", getattr(self.instance, "label_height_mm", None))
+        padding_mm = attrs.get("padding_mm", getattr(self.instance, "padding_mm", None))
+        copies = attrs.get("copies", getattr(self.instance, "copies", 1))
+
+        if not name:
+            raise serializers.ValidationError({"name": "Template name is required."})
+        attrs["name"] = name
+
+        if subentity is not None and entity is not None and subentity.entity_id != entity.id:
+            raise serializers.ValidationError({"subentity": "Subentity must belong to the same entity."})
+        attrs["subentity"] = subentity
+
+        if output_mode not in (BarcodeLabelTemplate.OUTPUT_MODE_BROWSER, BarcodeLabelTemplate.OUTPUT_MODE_PDF):
+            raise serializers.ValidationError({"output_mode": "Invalid output mode."})
+
+        if output_mode == BarcodeLabelTemplate.OUTPUT_MODE_PDF and not pdf_layout:
+            raise serializers.ValidationError({"pdf_layout": "PDF layout is required for PDF templates."})
+
+        if label_width_mm is None or float(label_width_mm) <= 0:
+            raise serializers.ValidationError({"label_width_mm": "Label width must be greater than zero."})
+        if label_height_mm is None or float(label_height_mm) <= 0:
+            raise serializers.ValidationError({"label_height_mm": "Label height must be greater than zero."})
+        if padding_mm is None or float(padding_mm) < 0:
+            raise serializers.ValidationError({"padding_mm": "Padding cannot be negative."})
+        if int(copies or 0) <= 0:
+            raise serializers.ValidationError({"copies": "Copies must be greater than zero."})
+
+        print_fields = attrs.get("print_fields", getattr(self.instance, "print_fields", [])) or []
+        if not isinstance(print_fields, list):
+            raise serializers.ValidationError({"print_fields": "print_fields must be a list."})
+        attrs["print_fields"] = [str(item).strip() for item in print_fields if str(item).strip()]
+
+        attribute_ids = attrs.get("attribute_ids", getattr(self.instance, "attribute_ids", [])) or []
+        if not isinstance(attribute_ids, list):
+            raise serializers.ValidationError({"attribute_ids": "attribute_ids must be a list."})
+        normalized_attribute_ids = []
+        for item in attribute_ids:
+            try:
+                value = int(item)
+            except Exception:
+                raise serializers.ValidationError({"attribute_ids": "attribute_ids must contain integers only."})
+            if value > 0:
+                normalized_attribute_ids.append(value)
+        attrs["attribute_ids"] = normalized_attribute_ids
+
+        if entity is not None:
+            duplicate_qs = BarcodeLabelTemplate.objects.filter(entity=entity, name__iexact=name)
+            if subentity is None:
+                duplicate_qs = duplicate_qs.filter(subentity__isnull=True)
+            else:
+                duplicate_qs = duplicate_qs.filter(subentity=subentity)
+            if self.instance:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError({"name": "A barcode label template with this name already exists."})
+
+        return attrs
     
 
 

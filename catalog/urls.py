@@ -33,6 +33,9 @@ from .views import (
     TransactionProductDetailAPIView,
 
     # Barcode APIs
+    BarcodeLabelTemplateListCreateAPIView,
+    BarcodeLabelTemplateRUDAPIView,
+    BarcodeLabelTemplateDefaultAPIView,
     ProductBarcodeListCreateAPIView,
     ProductBarcodeRUDAPIView,
     ProductBarcodeDownloadPDFAPIView,
@@ -137,6 +140,9 @@ urlpatterns = [
     path("barcodes/<int:pk>/", ProductBarcodeRUDAPIView.as_view(), name="barcode-detail"),
     path("barcodes/download/", ProductBarcodeDownloadPDFAPIView.as_view(), name="barcode-download-pdf"),
     path("barcodes/layout-options/", BarcodeLayoutOptionsAPIView.as_view(), name="barcode-layout-options"),
+    path("barcodes/label-templates/", BarcodeLabelTemplateListCreateAPIView.as_view(), name="barcode-label-template-list-create"),
+    path("barcodes/label-templates/default/", BarcodeLabelTemplateDefaultAPIView.as_view(), name="barcode-label-template-default"),
+    path("barcodes/label-templates/<int:pk>/", BarcodeLabelTemplateRUDAPIView.as_view(), name="barcode-label-template-detail"),
     path("products/<int:product_id>/gst-rates/", ProductGstRateListCreateAPIView.as_view(), name="product-gst-rate-list-create"),
     path("gst-rates/<int:pk>/", ProductGstRateRUDAPIView.as_view(), name="product-gst-rate-detail"),
     path("products/<int:product_id>/uom-conversions/", ProductUomConversionListCreateAPIView.as_view(), name="product-uom-conversion-list-create"),

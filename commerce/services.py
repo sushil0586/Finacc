@@ -53,14 +53,18 @@ class ResolvedBarcodeResult:
 class BarcodeResolutionService:
     @staticmethod
     def resolve(*, entity_id: int, code: str, as_of_date=None) -> ResolvedBarcodeResult:
-        barcode = (
+        barcode_qs = (
             ProductBarcode.objects
             .select_related("product", "uom")
             .filter(product__entity_id=entity_id, barcode=(code or "").strip())
-            .first()
         )
-        if barcode is None:
+        barcode_count = barcode_qs.count()
+        if barcode_count == 0:
             raise ValidationError({"barcode": "Barcode not found for the selected entity."})
+        if barcode_count > 1:
+            raise ValidationError({"barcode": "Duplicate barcode found in this entity. Please fix the master data."})
+
+        barcode = barcode_qs.first()
 
         product_payload = TransactionProductCatalogService.get_product(
             entity_id=entity_id,
@@ -262,4 +266,3 @@ class CommerceLineNormalizationService:
             "mrp": float(_q2(resolved.mrp or 0)) if resolved.mrp is not None else None,
             "gst": resolved.default_gst,
         }
-

@@ -536,13 +536,21 @@ class ProductGstRate(TimeStampedModel):
 # ----------------------------------------------------------------------
 
 class ProductBarcode(TimeStampedModel):
+    entity = models.ForeignKey(
+        Entity,
+        on_delete=models.PROTECT,
+        related_name='catalog_product_barcodes',
+        null=True,
+        blank=True,
+        editable=False,
+    )
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
         related_name='barcode_details'
     )
 
-    # Auto-generated; do NOT send from frontend
+    # Barcode may be auto-generated or manually supplied for manufacturer codes.
     barcode = models.CharField(max_length=50, blank=True)
 
     uom = models.ForeignKey(
@@ -574,6 +582,11 @@ class ProductBarcode(TimeStampedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
+                fields=['entity', 'barcode'],
+                condition=Q(entity__isnull=False) & Q(barcode__isnull=False) & ~Q(barcode=""),
+                name='uq_productbarcode_entity_barcode'
+            ),
+            models.UniqueConstraint(
                 fields=['product', 'barcode'],
                 name='uq_product_barcode'
             ),
@@ -598,6 +611,29 @@ class ProductBarcode(TimeStampedModel):
 
         if self.mrp is not None and self.selling_price is not None and self.selling_price > self.mrp:
             raise ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
+
+        barcode = (self.barcode or "").strip()
+        if not barcode:
+            return
+
+        product = getattr(self, "product", None)
+        if product and getattr(product, "entity_id", None):
+            if self.entity_id and int(self.entity_id) != int(product.entity_id):
+                raise ValidationError({"entity": "Barcode entity must match the product entity."})
+            self.entity = product.entity
+
+        entity_id = getattr(self, "entity_id", None) or getattr(product, "entity_id", None)
+        if not entity_id:
+            return
+
+        duplicate_qs = ProductBarcode.objects.filter(
+            entity_id=entity_id,
+            barcode=barcode,
+        )
+        if self.pk:
+            duplicate_qs = duplicate_qs.exclude(pk=self.pk)
+        if duplicate_qs.exists():
+            raise ValidationError({"barcode": "This barcode already exists in this entity."})
 
     def _generate_barcode_value(self):
         product_id = self.product_id or 0
@@ -665,9 +701,26 @@ class ProductBarcode(TimeStampedModel):
         filename = f"barcode_{self.pk}.png"
         self.barcode_image.save(filename, ContentFile(final_buffer.getvalue()), save=False)
 
+    def _needs_barcode_image_refresh(self, previous_barcode):
+        if not self.barcode:
+            return False
+        if not self.barcode_image:
+            return True
+        return previous_barcode != self.barcode
+
     def save(self, *args, **kwargs):
         # normalize / validate
+        if self.product_id:
+            self.entity = self.product.entity
         self.full_clean()
+
+        previous_barcode = None
+        if self.pk:
+            previous_barcode = (
+                ProductBarcode.objects.filter(pk=self.pk)
+                .values_list("barcode", flat=True)
+                .first()
+            )
 
         # ✅ Enforce one primary BEFORE saving (avoids constraint failure)
         if self.isprimary and self.product_id:
@@ -680,17 +733,155 @@ class ProductBarcode(TimeStampedModel):
         super().save(*args, **kwargs)
 
         updated_fields = []
+        barcode_changed = False
 
         if not self.barcode:
             self.barcode = self._generate_barcode_value()
             updated_fields.append('barcode')
+            barcode_changed = True
 
-        if not self.barcode_image and self.barcode:
+        if self._needs_barcode_image_refresh(previous_barcode) or barcode_changed:
             self._generate_barcode_image()
             updated_fields.append('barcode_image')
 
         if updated_fields:
             super().save(update_fields=updated_fields)
+
+
+class BarcodeLabelTemplate(EntityScopedModel):
+    OUTPUT_MODE_PDF = "pdf"
+    OUTPUT_MODE_BROWSER = "browser"
+    OUTPUT_MODE_CHOICES = (
+        (OUTPUT_MODE_PDF, "PDF"),
+        (OUTPUT_MODE_BROWSER, "Browser"),
+    )
+
+    name = models.CharField(max_length=100)
+    subentity = models.ForeignKey(
+        SubEntity,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="barcode_label_templates",
+    )
+    output_mode = models.CharField(max_length=20, choices=OUTPUT_MODE_CHOICES, default=OUTPUT_MODE_BROWSER)
+    pdf_layout = models.PositiveSmallIntegerField(null=True, blank=True)
+    label_width_mm = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("25.00"))
+    label_height_mm = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("15.00"))
+    padding_mm = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("1.20"))
+    show_border = models.BooleanField(default=True)
+    special_text = models.TextField(blank=True)
+    print_fields = models.JSONField(default=list, blank=True)
+    attribute_ids = models.JSONField(default=list, blank=True)
+    copies = models.PositiveIntegerField(default=1)
+    isdefault = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "name"],
+                condition=Q(subentity__isnull=True),
+                name="uq_barcode_label_template_entity_name_global",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "subentity", "name"],
+                condition=Q(subentity__isnull=False),
+                name="uq_barcode_label_template_subentity_name",
+            ),
+            models.UniqueConstraint(
+                fields=["entity"],
+                condition=Q(isdefault=True) & Q(subentity__isnull=True),
+                name="uq_barcode_label_template_one_default",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "subentity"],
+                condition=Q(isdefault=True) & Q(subentity__isnull=False),
+                name="uq_barcode_label_template_one_default_subentity",
+            ),
+        ]
+        ordering = ["-isdefault", "name"]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        name = (self.name or "").strip()
+        if not name:
+            raise ValidationError({"name": "Template name is required."})
+        self.name = name
+
+        if self.subentity_id and self.entity_id and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the same entity."})
+
+        if self.output_mode not in {self.OUTPUT_MODE_PDF, self.OUTPUT_MODE_BROWSER}:
+            raise ValidationError({"output_mode": "Invalid output mode."})
+
+        if self.output_mode == self.OUTPUT_MODE_PDF and not self.pdf_layout:
+            raise ValidationError({"pdf_layout": "PDF layout is required for PDF templates."})
+
+        if self.label_width_mm <= 0:
+            raise ValidationError({"label_width_mm": "Label width must be greater than zero."})
+        if self.label_height_mm <= 0:
+            raise ValidationError({"label_height_mm": "Label height must be greater than zero."})
+        if self.padding_mm < 0:
+            raise ValidationError({"padding_mm": "Padding cannot be negative."})
+        if self.copies <= 0:
+            raise ValidationError({"copies": "Copies must be greater than zero."})
+
+        if self.print_fields is None:
+            self.print_fields = []
+        if self.attribute_ids is None:
+            self.attribute_ids = []
+
+        allowed_fields = {
+            "product_name",
+            "sku",
+            "barcode",
+            "uom",
+            "pack_size",
+            "mrp",
+            "selling_price",
+            "created_date",
+        }
+        if isinstance(self.print_fields, list):
+            self.print_fields = [str(item).strip() for item in self.print_fields if str(item).strip()]
+            invalid_fields = [item for item in self.print_fields if item not in allowed_fields]
+            if invalid_fields:
+                raise ValidationError({"print_fields": f"Invalid field(s): {', '.join(invalid_fields)}."})
+        else:
+            raise ValidationError({"print_fields": "print_fields must be a list."})
+
+        if isinstance(self.attribute_ids, list):
+            normalized_ids = []
+            for item in self.attribute_ids:
+                try:
+                    value = int(item)
+                except Exception:
+                    raise ValidationError({"attribute_ids": "attribute_ids must be a list of integers."})
+                if value > 0:
+                    normalized_ids.append(value)
+            self.attribute_ids = normalized_ids
+        else:
+            raise ValidationError({"attribute_ids": "attribute_ids must be a list."})
+
+    def save(self, *args, **kwargs):
+        if self.subentity_id and not self.entity_id:
+            self.entity = self.subentity.entity
+
+        if self.isdefault and self.entity_id:
+            with transaction.atomic():
+                default_qs = BarcodeLabelTemplate.objects.filter(
+                    entity_id=self.entity_id,
+                    isdefault=True,
+                )
+                if self.subentity_id:
+                    default_qs = default_qs.filter(subentity_id=self.subentity_id)
+                else:
+                    default_qs = default_qs.filter(subentity__isnull=True)
+                default_qs.exclude(pk=self.pk).update(isdefault=False)
+
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 @receiver(post_save, sender=Product)
