@@ -365,6 +365,8 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
         if mrp is not None and sp is not None and sp > mrp:
             raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
 
+        attrs["barcode"] = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
+
         if product and uom:
             allowed_uom_ids = {product.base_uom_id} if getattr(product, "base_uom_id", None) else set()
             allowed_uom_ids.update(
@@ -379,7 +381,7 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
                     "uom": "Select the base UOM or a UOM already linked through product conversions."
                 })
 
-            barcode = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
+            barcode = attrs["barcode"]
             pack_size = attrs.get("pack_size", getattr(self.instance, "pack_size", 1)) or 1
 
             duplicate_key = ProductBarcode.objects.filter(product=product, uom=uom, pack_size=pack_size)
@@ -1282,8 +1284,10 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
         if mrp is not None and sp is not None and sp > mrp:
             raise serializers.ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
 
+        attrs["barcode"] = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
+
         if product and uom:
-            barcode = (attrs.get("barcode", getattr(self.instance, "barcode", None)) or "").strip()
+            barcode = attrs["barcode"]
             pack_size = attrs.get("pack_size", getattr(self.instance, "pack_size", 1)) or 1
 
             duplicate_key = ProductBarcode.objects.filter(product=product, uom=uom, pack_size=pack_size)

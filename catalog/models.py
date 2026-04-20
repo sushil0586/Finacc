@@ -613,6 +613,7 @@ class ProductBarcode(TimeStampedModel):
             raise ValidationError({"selling_price": "Selling price cannot be greater than MRP."})
 
         barcode = (self.barcode or "").strip()
+        self.barcode = barcode
         if not barcode:
             return
 
@@ -712,6 +713,7 @@ class ProductBarcode(TimeStampedModel):
         # normalize / validate
         if self.product_id:
             self.entity = self.product.entity
+        self.barcode = (self.barcode or "").strip()
         self.full_clean()
 
         previous_barcode = None

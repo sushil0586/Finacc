@@ -452,6 +452,39 @@ class CatalogPhase1Tests(TestCase):
         self.assertEqual(barcode.entity_id, product.entity_id)
         self.assertTrue(barcode.barcode_image)
 
+    def test_barcode_manage_serializer_generates_barcode_when_missing(self):
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="Generated Barcode Product",
+            sku="GBP-001",
+            productdesc="Generated barcode",
+            productcategory=self.category,
+            base_uom=self.uom,
+            item_classification=ProductClassification.TRADING,
+            is_service=False,
+            product_status="active",
+            isactive=True,
+        )
+
+        serializer = ProductBarcodeManageSerializer(
+            data={
+                "uom": self.uom.id,
+                "pack_size": 1,
+                "isprimary": True,
+                "mrp": "250.00",
+                "selling_price": "200.00",
+            },
+            context={"product": product},
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        barcode = serializer.save()
+
+        self.assertIsNotNone(barcode.barcode)
+        self.assertNotEqual(barcode.barcode, "")
+        self.assertEqual(barcode.entity_id, product.entity_id)
+        self.assertTrue(barcode.barcode_image)
+
     def test_barcode_manage_serializer_rejects_duplicate_barcode_within_entity(self):
         first_product = Product.objects.create(
             entity=self.entity,
