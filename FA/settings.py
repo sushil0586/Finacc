@@ -126,6 +126,7 @@ MIDDLEWARE.insert(0, 'auditlogger.middleware.AuditMiddleware')
 CORS_ORIGIN_ALLOW_ALL = config('CORS_ORIGIN_ALLOW_ALL', default=False, cast=bool)
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
 CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
 
 # ---------------------------------------------------------------------------
 # URLs / Templates / WSGI
@@ -217,6 +218,16 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ---------------------------------------------------------------------------
+# Reverse proxy / HTTPS deployment
+# ---------------------------------------------------------------------------
+USE_X_FORWARDED_HOST = config('USE_X_FORWARDED_HOST', default=True, cast=_cast_boolish_env)
+USE_X_FORWARDED_PORT = config('USE_X_FORWARDED_PORT', default=True, cast=_cast_boolish_env)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=_cast_boolish_env)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=_cast_boolish_env)
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=_cast_boolish_env)
+
+# ---------------------------------------------------------------------------
 # GST / e-Invoice / e-Way Bill
 # ---------------------------------------------------------------------------
 EINVOICE_PROVIDER = config('EINVOICE_PROVIDER', default='whitebooks')
@@ -250,7 +261,7 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
 EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
-AUTH_REQUIRE_EMAIL_VERIFIED = True
+AUTH_REQUIRE_EMAIL_VERIFIED = False
 
 # ---------------------------------------------------------------------------
 # Auth cookies (httpOnly token storage)

@@ -1,0 +1,15 @@
+[Unit]
+Description=Finacc Django Gunicorn Service
+After=network.target
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/finacc/Finacc
+EnvironmentFile=/home/ubuntu/finacc/Finacc/.env
+ExecStart=/home/ubuntu/finacc/venv/bin/gunicorn FA.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 120
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
