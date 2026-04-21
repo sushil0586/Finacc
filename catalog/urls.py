@@ -38,6 +38,7 @@ from .views import (
     BarcodeLabelTemplateDefaultAPIView,
     ProductBarcodeListCreateAPIView,
     ProductBarcodeRUDAPIView,
+    BarcodeLookupAPIView,
     ProductBarcodeDownloadPDFAPIView,
     BarcodeLayoutOptionsAPIView,PurchaseInvoiceProductListAPIView,
     ProductGstRateListCreateAPIView,
@@ -136,6 +137,7 @@ urlpatterns = [
     # ------------------------------------------------------------------
     # BARCODES
     # ------------------------------------------------------------------
+    path("barcodes/lookup/", BarcodeLookupAPIView.as_view(), name="barcode-lookup"),
     path("products/<int:product_id>/barcodes/", ProductBarcodeListCreateAPIView.as_view(), name="product-barcode-list-create"),
     path("barcodes/<int:pk>/", ProductBarcodeRUDAPIView.as_view(), name="barcode-detail"),
     path("barcodes/download/", ProductBarcodeDownloadPDFAPIView.as_view(), name="barcode-download-pdf"),

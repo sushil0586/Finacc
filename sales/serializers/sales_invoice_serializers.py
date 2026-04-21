@@ -176,6 +176,41 @@ class SalesTaxSummarySerializer(serializers.ModelSerializer):
         ]
 
 
+class SalesInvoiceListSerializer(serializers.ModelSerializer):
+    customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
+    customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
+    accountname = serializers.CharField(source="customer.accountname", read_only=True)
+    invoice_date = serializers.DateField(source="bill_date", read_only=True)
+    subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
+    branch_name = serializers.CharField(source="subentity.subentityname", read_only=True)
+    total_value = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesInvoiceHeader
+        fields = [
+            "id",
+            "doc_code",
+            "doc_type_name",
+            "invoice_number",
+            "status_name",
+            "customer_name",
+            "customer_display_name",
+            "customer_accountcode",
+            "accountname",
+            "bill_date",
+            "invoice_date",
+            "grand_total",
+            "total_value",
+            "outstanding_amount",
+            "subentity_name",
+            "branch_name",
+            "location",
+        ]
+
+    def get_total_value(self, obj) -> Decimal:
+        return getattr(obj, "grand_total", None) or Decimal("0.00")
+
+
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
     # nested

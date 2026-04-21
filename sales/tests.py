@@ -710,6 +710,28 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(response.data, {"lines": [{"gst_rate": ["This field is required."]}]})
         mocked_require_permission.assert_called_once()
 
+    @patch("sales.views.sales_invoice_views.SalesInvoiceListSerializer")
+    @patch.object(SalesInvoiceListCreateAPIView, "filter_queryset")
+    @patch.object(SalesInvoiceListCreateAPIView, "get_queryset")
+    def test_list_view_uses_lightweight_serializer(
+        self,
+        mocked_get_queryset,
+        mocked_filter_queryset,
+        mocked_list_serializer,
+    ):
+        mocked_get_queryset.return_value = [self.header]
+        mocked_filter_queryset.return_value = [self.header]
+        mocked_list_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+        request = self.factory.get("/api/sales/invoices/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_list_serializer.assert_called_once()
+        self.assertEqual(response.data, [{"id": 10, "invoice_number": "INV-10"}])
+
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
     @patch("rest_framework.generics.RetrieveUpdateAPIView.update")
     @patch.object(SalesInvoiceRetrieveUpdateAPIView, "get_object")

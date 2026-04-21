@@ -315,6 +315,7 @@ class ProductGstRateSerializer(EntityScopedValidationMixin, serializers.ModelSer
 class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    barcode_source = serializers.CharField(read_only=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -323,6 +324,7 @@ class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSer
             "id",
             "product",            # parent sets
             "barcode",            # auto-generated if blank; may also be user supplied
+            "barcode_source",
             "uom",
             "isprimary",
             "pack_size",
@@ -1221,6 +1223,7 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
     barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    barcode_source = serializers.CharField(read_only=True)
 
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
@@ -1236,6 +1239,7 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
             "product_name",
             "sku",
             "barcode",
+            "barcode_source",
 
             "uom",
             "uom_code",

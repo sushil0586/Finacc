@@ -28,6 +28,7 @@ from rest_framework.views import APIView
 from django.http import FileResponse
 
 from catalog.serializers import InvoiceProductListItemSerializer
+from commerce.services import BarcodeResolutionService
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
@@ -763,6 +764,52 @@ class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
         except (TypeError, ValueError):
             raise ValidationError({"entity": "Invalid entity id"})
         return ProductBarcode.objects.select_related("product", "uom").filter(product__entity_id=entity_id)
+
+
+class BarcodeLookupAPIView(EntityFromQueryMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity = self.get_entity()
+        code = (request.query_params.get("code") or "").strip()
+        if not code:
+            raise ValidationError({"code": "Query param ?code=<barcode> is required."})
+
+        resolved = BarcodeResolutionService.resolve(
+            entity_id=entity.id,
+            code=code,
+            as_of_date=request.query_params.get("as_of_date"),
+        )
+        barcode = (
+            ProductBarcode.objects
+            .select_related("product", "uom")
+            .filter(product__entity_id=entity.id, id=resolved.barcode_id)
+            .first()
+        )
+        if barcode is None:
+            raise ValidationError({"barcode": "Barcode not found for the selected entity."})
+
+        product_payload = TransactionProductCatalogService.get_product(
+            entity_id=entity.id,
+            product_id=resolved.product_id,
+            as_of_date=request.query_params.get("as_of_date"),
+        )
+
+        return Response(
+            {
+                "barcode": {
+                    "id": resolved.barcode_id,
+                    "value": resolved.barcode,
+                    "source": getattr(barcode, "barcode_source", None),
+                    "uom_id": resolved.uom_id,
+                    "uom_code": resolved.uom_code,
+                    "pack_size": resolved.pack_size,
+                    "selling_price": float(resolved.selling_price) if resolved.selling_price is not None else None,
+                    "mrp": float(resolved.mrp) if resolved.mrp is not None else None,
+                },
+                "product": product_payload,
+            }
+        )
 
 
 class ProductScopedChildMixin:

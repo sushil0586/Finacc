@@ -23,6 +23,8 @@ class CatalogPhase1Tests(TestCase):
             email="catalog-phase1@example.com",
             password="testpass123",
         )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Catalog Phase1 Entity",
@@ -449,6 +451,7 @@ class CatalogPhase1Tests(TestCase):
         barcode = serializer.save()
 
         self.assertEqual(barcode.barcode, "9988776655443")
+        self.assertEqual(barcode.barcode_source, ProductBarcode.BarcodeSource.MANUAL)
         self.assertEqual(barcode.entity_id, product.entity_id)
         self.assertTrue(barcode.barcode_image)
 
@@ -482,8 +485,43 @@ class CatalogPhase1Tests(TestCase):
 
         self.assertIsNotNone(barcode.barcode)
         self.assertNotEqual(barcode.barcode, "")
+        self.assertEqual(barcode.barcode_source, ProductBarcode.BarcodeSource.GENERATED)
         self.assertEqual(barcode.entity_id, product.entity_id)
         self.assertTrue(barcode.barcode_image)
+
+    def test_barcode_lookup_returns_transaction_context(self):
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="Lookup Barcode Product",
+            sku="LBP-001",
+            productdesc="Lookup barcode",
+            productcategory=self.category,
+            base_uom=self.uom,
+            item_classification=ProductClassification.TRADING,
+            is_service=False,
+            product_status="active",
+            isactive=True,
+        )
+        barcode = ProductBarcode.objects.create(
+            product=product,
+            uom=self.uom,
+            pack_size=1,
+            isprimary=True,
+            barcode="8901234500001",
+            barcode_source=ProductBarcode.BarcodeSource.MANUAL,
+        )
+
+        response = self.client.get(
+            reverse("barcode-lookup"),
+            {"entity": self.entity.id, "code": barcode.barcode},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["barcode"]["value"], "8901234500001")
+        self.assertEqual(payload["barcode"]["source"], ProductBarcode.BarcodeSource.MANUAL)
+        self.assertEqual(payload["product"]["id"], product.id)
+        self.assertEqual(payload["product"]["default_barcode"]["barcode_source"], ProductBarcode.BarcodeSource.MANUAL)
 
     def test_barcode_manage_serializer_rejects_duplicate_barcode_within_entity(self):
         first_product = Product.objects.create(

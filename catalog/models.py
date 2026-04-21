@@ -536,6 +536,11 @@ class ProductGstRate(TimeStampedModel):
 # ----------------------------------------------------------------------
 
 class ProductBarcode(TimeStampedModel):
+    class BarcodeSource(models.TextChoices):
+        MANUAL = "manual", "Manual"
+        GENERATED = "generated", "Generated"
+        IMPORTED = "imported", "Imported"
+
     entity = models.ForeignKey(
         Entity,
         on_delete=models.PROTECT,
@@ -552,6 +557,12 @@ class ProductBarcode(TimeStampedModel):
 
     # Barcode may be auto-generated or manually supplied for manufacturer codes.
     barcode = models.CharField(max_length=50, blank=True)
+    barcode_source = models.CharField(
+        max_length=20,
+        choices=BarcodeSource.choices,
+        blank=True,
+        default="",
+    )
 
     uom = models.ForeignKey(
         UnitOfMeasure,
@@ -615,7 +626,15 @@ class ProductBarcode(TimeStampedModel):
         barcode = (self.barcode or "").strip()
         self.barcode = barcode
         if not barcode:
+            if not self.barcode_source:
+                self.barcode_source = self.BarcodeSource.GENERATED
             return
+
+        valid_sources = {choice[0] for choice in self.BarcodeSource.choices}
+        if self.barcode_source and self.barcode_source not in valid_sources:
+            raise ValidationError({"barcode_source": "Invalid barcode source."})
+        if not self.barcode_source:
+            self.barcode_source = self.BarcodeSource.MANUAL
 
         product = getattr(self, "product", None)
         if product and getattr(product, "entity_id", None):
@@ -714,6 +733,10 @@ class ProductBarcode(TimeStampedModel):
         if self.product_id:
             self.entity = self.product.entity
         self.barcode = (self.barcode or "").strip()
+        if not self.barcode and not self.barcode_source:
+            self.barcode_source = self.BarcodeSource.GENERATED
+        elif self.barcode and not self.barcode_source:
+            self.barcode_source = self.BarcodeSource.MANUAL
         self.full_clean()
 
         previous_barcode = None

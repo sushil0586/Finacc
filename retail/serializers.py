@@ -11,12 +11,29 @@ from .models import RetailCloseBatch, RetailCloseBatchTicket, RetailConfig, Reta
 from .services import RetailPolicySnapshotService, RetailTicketSessionAssignmentService, RetailTicketTotalsService
 
 
+def resolve_product_hsn(product: Product) -> str:
+    default_row = (
+        product.gst_rates.select_related("hsn")
+        .filter(isdefault=True)
+        .order_by("-valid_from", "-id")
+        .first()
+    )
+    if default_row and default_row.hsn_id:
+        return str(default_row.hsn.code or "").strip()
+    any_row = product.gst_rates.select_related("hsn").order_by("-valid_from", "-id").first()
+    if any_row and any_row.hsn_id:
+        return str(any_row.hsn.code or "").strip()
+    return ""
+
+
 class RetailTicketLineWriteSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False)
     line_source = serializers.ChoiceField(choices=RetailTicketLine.LineSource.choices, required=False, default=RetailTicketLine.LineSource.SCAN)
     product = serializers.IntegerField()
     barcode = serializers.IntegerField(required=False, allow_null=True)
     scanned_barcode = serializers.CharField(required=False, allow_blank=True, max_length=50)
+    product_desc_snapshot = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    product_hsn_snapshot = serializers.CharField(required=False, allow_blank=True, max_length=30)
     uom = serializers.IntegerField(required=False, allow_null=True)
     uom_code_snapshot = serializers.CharField(required=False, allow_blank=True, max_length=20)
     pack_size_snapshot = serializers.DecimalField(required=False, max_digits=18, decimal_places=4)
@@ -49,6 +66,8 @@ class RetailTicketLineReadSerializer(serializers.ModelSerializer):
             "sku",
             "barcode",
             "scanned_barcode",
+            "product_desc_snapshot",
+            "product_hsn_snapshot",
             "uom",
             "uom_code_snapshot",
             "pack_size_snapshot",
@@ -249,6 +268,8 @@ class RetailTicketWriteSerializer(serializers.Serializer):
                     product=product,
                     barcode_id=barcode_id,
                     scanned_barcode=row.get("scanned_barcode", ""),
+                    product_desc_snapshot=row.get("product_desc_snapshot", product.productdesc or ""),
+                    product_hsn_snapshot=row.get("product_hsn_snapshot", resolve_product_hsn(product)),
                     uom_id=uom_id,
                     uom_code_snapshot=row.get("uom_code_snapshot", ""),
                     pack_size_snapshot=row.get("pack_size_snapshot", 0),

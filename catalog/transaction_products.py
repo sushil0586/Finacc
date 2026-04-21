@@ -190,6 +190,7 @@ class TransactionProductCatalogService:
             barcode_row = {
                 "id": barcode.id,
                 "barcode": barcode.barcode,
+                "barcode_source": getattr(barcode, "barcode_source", None),
                 "uom_id": barcode.uom_id,
                 "uom_code": getattr(barcode.uom, "code", None),
                 "pack_size": barcode.pack_size,

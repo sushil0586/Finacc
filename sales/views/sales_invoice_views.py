@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from rbac.services import EffectivePermissionService
-from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
+from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceListSerializer
 from sales.services.sales_invoice_service import SalesInvoiceService
 
 
@@ -125,17 +125,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             .select_related(
                 "customer",
                 "customer__ledger",
-                "shipping_detail",              # ✅ new
-                "shipping_detail__state",       # ✅ optional
-                "shipping_detail__city",        # ✅ optional
-                "shipto_snapshot",              # ✅ new (OneToOne)
-            )
-            .prefetch_related(
-                Prefetch(
-                    "lines",
-                    queryset=SalesInvoiceLine.objects.select_related("product", "uom", "sales_account").order_by("line_no"),
-                ),
-                Prefetch("tax_summaries", queryset=SalesTaxSummary.objects.all()),
+                "subentity",
             )
             .order_by("-doc_no")
         )
@@ -178,6 +168,15 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             qs = qs.filter(lines__is_service=False).distinct()
 
         return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = SalesInvoiceListSerializer(
+            queryset,
+            many=True,
+            context=self.get_serializer_context(),
+        )
+        return Response(serializer.data)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()

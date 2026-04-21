@@ -239,6 +239,8 @@ class RetailTicketLine(models.Model):
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="+")
     barcode = models.ForeignKey(ProductBarcode, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     scanned_barcode = models.CharField(max_length=50, blank=True, default="")
+    product_desc_snapshot = models.CharField(max_length=255, blank=True, default="")
+    product_hsn_snapshot = models.CharField(max_length=30, blank=True, default="")
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     uom_code_snapshot = models.CharField(max_length=20, blank=True, default="")
     pack_size_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))

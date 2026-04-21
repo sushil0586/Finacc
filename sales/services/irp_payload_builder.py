@@ -466,7 +466,7 @@ class IRPPayloadBuilder:
             hsn = clean_hsn(str(hsn_raw))
 
             desc = (
-                (line.productDesc or "").strip()
+                (getattr(line, "productDesc", None) or "").strip()
                 or getattr(product, "productname", None)
                 or getattr(product, "name", None)
                 or "Item"
