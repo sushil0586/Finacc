@@ -43,12 +43,11 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="Mumbai", citycode="MUM", pincode="400001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Purchase Contract Entity",
             legalname="Purchase Contract Entity Pvt Ltd",
-            unitType=self.unit_type,
+            business_type=Entity.BusinessType.MIXED,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )

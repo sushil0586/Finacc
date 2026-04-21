@@ -57,6 +57,32 @@ def _require_ar_manage_permission(*, user, entity_id: int):
     )
 
 
+def _filtered_querydict(request, *, exclude=None):
+    params = request.GET.copy()
+    for key in exclude or []:
+        params.pop(key, None)
+    return params.urlencode()
+
+
+def _attach_customer_statement_actions(payload, request, *, export_base_path):
+    query = _filtered_querydict(request)
+    payload["actions"] = {
+        "can_view": True,
+        "can_export_excel": True,
+        "can_export_pdf": True,
+        "can_export_csv": True,
+        "can_print": True,
+        "export_urls": {
+            "excel": f"{export_base_path}excel/?{query}",
+            "pdf": f"{export_base_path}pdf/?{query}",
+            "csv": f"{export_base_path}csv/?{query}",
+            "print": f"{export_base_path}print/?{query}",
+        },
+    }
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    return payload
+
+
 class CustomerBillOpenItemListAPIView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = CustomerBillOpenItemSerializer
@@ -218,8 +244,7 @@ class CustomerStatementAPIView(APIView):
 
         customer_obj = (
             account.objects.filter(id=customer_id)
-            .select_related("ledger")
-            .select_related("ledger", "compliance_profile", "commercial_profile").only("id", "accountname", "ledger_id", "ledger__ledger_code", "ledger__name")
+            .select_related("ledger", "compliance_profile", "commercial_profile")
             .first()
         )
         customer_block = None
@@ -235,10 +260,11 @@ class CustomerStatementAPIView(APIView):
                 "pan": account_pan(customer_obj),
             }
 
-        return Response({
+        payload = {
             "customer": customer_block,
             "totals": data["totals"],
             "open_items": CustomerBillOpenItemSerializer(data["open_items"], many=True).data,
             "advances": CustomerAdvanceBalanceSerializer(data["advances"], many=True).data,
             "settlements": CustomerSettlementSerializer(data["settlements"], many=True).data,
-        })
+        }
+        return Response(_attach_customer_statement_actions(payload, request, export_base_path="/api/sales/ar/customer-statement/"))

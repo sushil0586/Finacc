@@ -7,6 +7,7 @@ from decimal import Decimal
 from django.db.models import Count, Q, Sum
 
 from financial.models import Ledger
+from entity.models import EntityFinancialYear
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from sales.models.sales_core import SalesInvoiceHeader
 from reports.services.balance_sheet import _inventory_value_asof
@@ -139,6 +140,19 @@ def _resolve_balance_sheet_window(entityfin_id=None, from_date=None, to_date=Non
         return explicit_from or fy_start, explicit_to or fy_end
 
     return explicit_from, explicit_to
+
+
+def _previous_financial_year(entity_id, current_financial_year_id=None, current_start=None):
+    qs = EntityFinancialYear.objects.filter(entity_id=entity_id)
+    if current_financial_year_id:
+        current = qs.filter(id=current_financial_year_id).only("id", "finstartyear").first()
+        current_start = getattr(current, "finstartyear", None) or current_start
+        if current_start:
+            qs = qs.filter(finendyear__lt=current_start)
+    elif current_start:
+        qs = qs.filter(finendyear__lt=current_start)
+
+    return qs.order_by("-finendyear", "-id").only("id", "desc", "finstartyear", "finendyear").first()
 
 
 def _ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id):
@@ -1532,7 +1546,67 @@ def build_balance_sheet(
         },
     }
 
-    if period_by and from_date and to_date and from_date <= to_date:
+    if period_by == "year":
+        previous_fy = _previous_financial_year(entity_id, entityfin_id, from_date)
+        if previous_fy and previous_fy.finstartyear and previous_fy.finendyear:
+            previous_start = previous_fy.finstartyear.date() if hasattr(previous_fy.finstartyear, "date") else previous_fy.finstartyear
+            previous_end = previous_fy.finendyear.date() if hasattr(previous_fy.finendyear, "date") else previous_fy.finendyear
+            previous_snapshot = _build_snapshot(
+                entity_id=entity_id,
+                entityfin_id=previous_fy.id,
+                subentity_id=subentity_id,
+                from_date=previous_start,
+                to_date=previous_end,
+                group_by=group_by,
+                include_zero_balances=include_zero_balances,
+                search=search,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                page=1,
+                page_size=page_size,
+                stock_valuation_mode=stock_valuation_mode,
+                stock_valuation_method=stock_valuation_method,
+                posted_only=posted_only,
+                ledger_ids=ledger_ids,
+                include_pagination=False,
+                reporting_policy=reporting_policy,
+            )
+            previous_snapshot["period_key"] = str(previous_fy.year_code or previous_fy.desc or "previous_fy")
+            previous_snapshot["period_label"] = str(previous_fy.desc or previous_fy.year_code or "Previous FY")
+            period_meta = [
+                {
+                    "period_key": previous_snapshot["period_key"],
+                    "period_label": previous_snapshot["period_label"],
+                }
+            ]
+            asset_period_maps = [
+                _build_profit_loss_period_map(
+                    previous_snapshot["assets"],
+                    group_by,
+                    previous_snapshot["period_key"],
+                    previous_snapshot["period_label"],
+                )
+            ]
+            liability_period_maps = [
+                _build_profit_loss_period_map(
+                    previous_snapshot["liabilities_and_equity"],
+                    group_by,
+                    previous_snapshot["period_key"],
+                    previous_snapshot["period_label"],
+                )
+            ]
+            _attach_profit_loss_period_rows(snapshot["assets"], asset_period_maps, period_meta, group_by)
+            _attach_profit_loss_period_rows(snapshot["liabilities_and_equity"], liability_period_maps, period_meta, group_by)
+            response["periods"] = [previous_snapshot]
+        else:
+            response["periods"] = [
+                {
+                    "period_key": "previous_financial_year",
+                    "period_label": "N/A",
+                    "unavailable": True,
+                }
+            ]
+    elif period_by and from_date and to_date and from_date <= to_date:
         periods = []
         period_meta = []
         asset_period_maps = []

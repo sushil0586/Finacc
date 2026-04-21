@@ -61,6 +61,12 @@ from sales.views.sales_ar import (
     CustomerSettlementCancelAPIView,
     CustomerStatementAPIView,
 )
+from sales.views.sales_ar_exports import (
+    CustomerStatementCSVAPIView,
+    CustomerStatementExcelAPIView,
+    CustomerStatementPDFAPIView,
+    CustomerStatementPrintAPIView,
+)
 
 urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
@@ -103,6 +109,10 @@ urlpatterns = [
     path("ar/settlements/<int:pk>/post/", CustomerSettlementPostAPIView.as_view(), name="sales-ar-settlement-post"),
     path("ar/settlements/<int:pk>/cancel/", CustomerSettlementCancelAPIView.as_view(), name="sales-ar-settlement-cancel"),
     path("ar/customer-statement/", CustomerStatementAPIView.as_view(), name="sales-ar-customer-statement"),
+    path("ar/customer-statement/excel/", CustomerStatementExcelAPIView.as_view(), name="sales-ar-customer-statement-excel"),
+    path("ar/customer-statement/csv/", CustomerStatementCSVAPIView.as_view(), name="sales-ar-customer-statement-csv"),
+    path("ar/customer-statement/pdf/", CustomerStatementPDFAPIView.as_view(), name="sales-ar-customer-statement-pdf"),
+    path("ar/customer-statement/print/", CustomerStatementPrintAPIView.as_view(), name="sales-ar-customer-statement-print"),
     path("sales-invoices/<int:pk>/compliance/ensure/", SalesInvoiceEnsureComplianceAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/status/", SalesInvoiceComplianceStatusAPIView.as_view()),
     path("sales-invoices/<int:pk>/compliance/generate-irn/", SalesInvoiceGenerateIRNAPIView.as_view()),

@@ -174,10 +174,20 @@ def _write_excel(title, subtitle, headers, rows, *, numeric_columns=None, orient
         cell.alignment = center
         cell.border = border
 
+    summary_labels = {"totals", "summary", "balance difference", "debit total", "credit total"}
+    summary_fill = PatternFill("solid", fgColor="E8F1FB")
+    zebra_fill = PatternFill("solid", fgColor="F7FAFE")
     for row_index, row in enumerate(rows, start=header_row + 1):
+        row_key = str(row[0] if row else "").strip().lower()
+        is_summary_row = row_key in summary_labels or row_key.endswith(" total")
         for col_index, value in enumerate(row, start=1):
             cell = ws.cell(row=row_index, column=col_index, value=value)
             cell.border = border
+            if is_summary_row:
+                cell.fill = summary_fill
+                cell.font = Font(bold=True)
+            elif row_index % 2 == 1:
+                cell.fill = zebra_fill
             cell.alignment = right if col_index in numeric_columns else left
 
     for col_index, header in enumerate(headers, start=1):
@@ -329,11 +339,28 @@ def _truncate_text(value, width_points, *, min_chars=8):
 
 
 def _format_balance_amount(value, *, decimals=2):
-    amount = Decimal(str(value or 0))
+    amount = _parse_decimal(value)
     if amount == 0:
         return f"{amount:.{decimals}f}"
     display = f"{abs(amount):.{decimals}f}"
     return f"{display} {'Dr' if amount >= 0 else 'Cr'}"
+
+
+def _parse_decimal(value):
+    if value is None:
+        return Decimal("0")
+    text = str(value).strip()
+    if not text:
+        return Decimal("0")
+    text = text.replace(",", "")
+    for suffix in (" Dr", " Cr", " DR", " CR", "dr", "cr"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+            break
+    try:
+        return Decimal(text)
+    except Exception:
+        return Decimal("0")
 
 
 def _trial_balance_subtitle(scope_names, scope):
@@ -547,31 +574,111 @@ def _trading_account_subtitle(scope_names, scope, report):
     )
 
 
-def _trading_account_flatten_rows(rows, side, out, depth=0):
+def _trading_account_row_label(row):
+    return row.get("label") or row.get("name") or row.get("title") or "-"
+
+
+def _trading_account_row_identity(side, path):
+    return f"{side}|{' / '.join(path)}"
+
+
+def _trading_account_flatten_rows(rows, side, out, depth=0, path=None):
+    path = list(path or [])
     for row in rows or []:
-        out.append([
-            side,
-            "  " * depth + str(row.get("label") or "-"),
-            row.get("qty", ""),
-            row.get("amount", "0.00"),
-        ])
+        label = _trading_account_row_label(row)
+        current_path = [*path, label]
+        out.append(
+            {
+                "identity": _trading_account_row_identity(side, current_path),
+                "side": side,
+                "particulars": "  " * depth + str(label),
+                "qty": row.get("qty", ""),
+                "amount": row.get("amount", "0.00"),
+            }
+        )
         if row.get("children"):
-            _trading_account_flatten_rows(row["children"], side, out, depth + 1)
+            _trading_account_flatten_rows(row["children"], side, out, depth + 1, current_path)
 
 
-def _trading_account_export_table(report):
-    headers = ["Side", "Particulars", "Qty", "Amount"]
+def _trading_account_row_lookup(rows, side, lookup=None, path=None):
+    lookup = lookup or {}
+    path = list(path or [])
+    for row in rows or []:
+        label = _trading_account_row_label(row)
+        current_path = [*path, label]
+        lookup[_trading_account_row_identity(side, current_path)] = row.get("amount", "0.00")
+        if row.get("children"):
+            _trading_account_row_lookup(row["children"], side, lookup, current_path)
+    return lookup
+
+
+def _trading_account_export_table(report, *, include_periods=True):
+    periods = report.get("periods") or []
+    headers = ["Side", "Particulars", "Qty"]
+    if include_periods:
+        for period in periods:
+            label = period.get("period_label") or period.get("label") or period.get("name") or period.get("title") or period.get("key")
+            headers.append(str(label or "Period"))
+    headers.append("Amount")
+
     rows = []
-    _trading_account_flatten_rows(report.get("debit_rows") or [], "Debit", rows)
-    rows.append(["", "", "", ""])
-    rows.append(["Debit Total", "", "", report.get("debit_total", "0.00")])
-    rows.append(["", "", "", ""])
-    _trading_account_flatten_rows(report.get("credit_rows") or [], "Credit", rows)
-    rows.append(["", "", "", ""])
-    rows.append(["Credit Total", "", "", report.get("credit_total", "0.00")])
-    rows.append(["", "", "", ""])
-    rows.append(["Gross Profit", "", "", report.get("gross_profit", "0.00") or "0.00"])
-    rows.append(["Gross Loss", "", "", report.get("gross_loss", "0.00") or "0.00"])
+    debit_rows = []
+    credit_rows = []
+    _trading_account_flatten_rows(report.get("debit_rows") or [], "Debit", debit_rows)
+    _trading_account_flatten_rows(report.get("credit_rows") or [], "Credit", credit_rows)
+
+    period_lookups = []
+    if include_periods:
+        for period in periods:
+            period_lookups.append(
+                {
+                    "debit": _trading_account_row_lookup(period.get("debit_rows") or [], "Debit"),
+                    "credit": _trading_account_row_lookup(period.get("credit_rows") or [], "Credit"),
+                    "debit_total": period.get("debit_total", "0.00"),
+                    "credit_total": period.get("credit_total", "0.00"),
+                    "gross_profit": period.get("gross_profit", "0.00") or "0.00",
+                    "gross_loss": period.get("gross_loss", "0.00") or "0.00",
+                }
+            )
+
+    def append_row(row, amount=None):
+        value_row = [row["side"], row["particulars"], row["qty"]]
+        if include_periods:
+            for period in period_lookups:
+                side_lookup = period["debit"] if row["side"] == "Debit" else period["credit"]
+                value_row.append(side_lookup.get(row["identity"], ""))
+        value_row.append(amount if amount is not None else row["amount"])
+        rows.append(value_row)
+
+    for row in debit_rows:
+        append_row(row)
+    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
+    debit_total_row = ["Debit Total", "", ""]
+    if include_periods:
+        debit_total_row.extend([period["debit_total"] for period in period_lookups])
+    debit_total_row.append(report.get("debit_total", "0.00"))
+    rows.append(debit_total_row)
+    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
+
+    for row in credit_rows:
+        append_row(row)
+    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
+    credit_total_row = ["Credit Total", "", ""]
+    if include_periods:
+        credit_total_row.extend([period["credit_total"] for period in period_lookups])
+    credit_total_row.append(report.get("credit_total", "0.00"))
+    rows.append(credit_total_row)
+    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
+    gross_profit_row = ["Gross Profit", "", ""]
+    if include_periods:
+        gross_profit_row.extend([period["gross_profit"] for period in period_lookups])
+    gross_profit_row.append(report.get("gross_profit", "0.00") or "0.00")
+    rows.append(gross_profit_row)
+    gross_loss_row = ["Gross Loss", "", ""]
+    if include_periods:
+        gross_loss_row.extend([period["gross_loss"] for period in period_lookups])
+    gross_loss_row.append(report.get("gross_loss", "0.00") or "0.00")
+    rows.append(gross_loss_row)
     return headers, rows
 
 
@@ -588,7 +695,11 @@ def _balance_sheet_row_label(row, depth=0):
     return f"{'  ' * depth}{label}"
 
 
-def _balance_sheet_row_period_value(row, period_key):
+def _balance_sheet_row_period_value(row, period):
+    if period.get("unavailable"):
+        return "N/A"
+
+    period_key = str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or period.get("name") or "")
     period_values = row.get("period_values") or {}
     if period_key in period_values:
         return period_values.get(period_key)
@@ -605,7 +716,7 @@ def _balance_sheet_row_period_value(row, period_key):
     return None
 
 
-def _balance_sheet_flatten_rows(rows, *, section_label, period_keys, depth=0):
+def _balance_sheet_flatten_rows(rows, *, section_label, periods, depth=0):
     flattened = []
     for row in rows or []:
         flattened.append(
@@ -614,7 +725,7 @@ def _balance_sheet_flatten_rows(rows, *, section_label, period_keys, depth=0):
                 "particulars": _balance_sheet_row_label(row, depth=depth),
                 "account_head": row.get("accounthead_name") or "-",
                 "account_type": row.get("accounttype_name") or "-",
-                "period_values": [_balance_sheet_row_period_value(row, period_key) for period_key in period_keys],
+                "period_values": [_balance_sheet_row_period_value(row, period) for period in periods],
                 "amount": row.get("amount"),
             }
         )
@@ -624,18 +735,101 @@ def _balance_sheet_flatten_rows(rows, *, section_label, period_keys, depth=0):
                 _balance_sheet_flatten_rows(
                     children,
                     section_label=section_label,
-                    period_keys=period_keys,
+                    periods=periods,
                     depth=depth + 1,
                 )
             )
     return flattened
 
 
-def _balance_sheet_export_table(report):
+def _balance_sheet_export_table(report, *, landscape_mode=False):
     periods = report.get("periods") or []
-    period_keys = [str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or f"period_{index}") for index, period in enumerate(periods, start=1)]
-    period_labels = [str(period.get("period_label") or period.get("label") or period.get("name") or period.get("code") or period.get("period_key") or f"Period {index}") for index, period in enumerate(periods, start=1)]
+    if landscape_mode:
+        period_labels = [
+            str(
+                period.get("period_label")
+                or period.get("label")
+                or period.get("name")
+                or period.get("code")
+                or period.get("period_key")
+                or f"Period {index}"
+            )
+            for index, period in enumerate(periods, start=1)
+        ]
+        asset_rows = _balance_sheet_flatten_rows(report.get("assets") or [], section_label="Assets", periods=periods)
+        liability_rows = _balance_sheet_flatten_rows(report.get("liabilities_and_equity") or [], section_label="Liabilities & Equity", periods=periods)
+        headers = [
+            "Assets Particulars",
+            "Assets Account Head",
+            "Assets Account Type",
+            *[f"Assets {label}" for label in period_labels],
+            "Assets Amount",
+            "Liabilities Particulars",
+            "Liabilities Account Head",
+            "Liabilities Account Type",
+            *[f"Liabilities {label}" for label in period_labels],
+            "Liabilities Amount",
+        ]
+        rows = []
+        max_rows = max(len(asset_rows), len(liability_rows))
+        for index in range(max_rows):
+            asset = asset_rows[index] if index < len(asset_rows) else None
+            liability = liability_rows[index] if index < len(liability_rows) else None
+            rows.append([
+                asset["particulars"] if asset else "",
+                asset["account_head"] if asset else "",
+                asset["account_type"] if asset else "",
+                *(asset["period_values"] if asset else [""] * len(periods)),
+                asset["amount"] if asset else "",
+                liability["particulars"] if liability else "",
+                liability["account_head"] if liability else "",
+                liability["account_type"] if liability else "",
+                *(liability["period_values"] if liability else [""] * len(periods)),
+                liability["amount"] if liability else "",
+            ])
+        asset_period_totals = [
+            "N/A" if period.get("unavailable") else (period.get("totals", {}) or {}).get("assets") or "0.00"
+            for period in periods
+        ]
+        liability_period_totals = [
+            "N/A" if period.get("unavailable") else (period.get("totals", {}) or {}).get("liabilities_and_equity") or "0.00"
+            for period in periods
+        ]
+        rows.append([
+            "Assets Total",
+            "",
+            "",
+            *asset_period_totals,
+            report.get("totals", {}).get("assets") or "0.00",
+            "Liabilities & Equity Total",
+            "",
+            "",
+            *liability_period_totals,
+            report.get("totals", {}).get("liabilities_and_equity") or "0.00",
+        ])
+        assets_total = _parse_decimal(report.get("totals", {}).get("assets"))
+        liabilities_total = _parse_decimal(report.get("totals", {}).get("liabilities_and_equity"))
+        rows.append([
+            "Balance Difference",
+            "",
+            "",
+            *[
+                "N/A" if period.get("unavailable") else f"{(_parse_decimal((period.get('totals', {}) or {}).get('assets')) - _parse_decimal((period.get('totals', {}) or {}).get('liabilities_and_equity'))):.2f}"
+                for period in periods
+            ],
+            f"{(assets_total - liabilities_total):.2f}",
+            "",
+            "",
+            "",
+            *["" for _ in periods],
+            "",
+        ])
+        return headers, rows
 
+    period_keys = [
+        str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or f"period_{index}")
+        for index, period in enumerate(periods, start=1)
+    ]
     headers = ["Section", "Particulars", "Account Head", "Account Type", *period_labels, "Amount"]
     rows = []
 
@@ -643,7 +837,7 @@ def _balance_sheet_export_table(report):
         ("Assets", report.get("assets") or []),
         ("Liabilities & Equity", report.get("liabilities_and_equity") or []),
     ):
-        for item in _balance_sheet_flatten_rows(section_rows, section_label=section_label, period_keys=period_keys):
+        for item in _balance_sheet_flatten_rows(section_rows, section_label=section_label, periods=periods):
             rows.append(
                 [
                     item["section"],
@@ -665,8 +859,8 @@ def _balance_sheet_export_table(report):
             ]
         )
 
-    assets_total = Decimal(str(report.get("totals", {}).get("assets") or "0"))
-    liabilities_total = Decimal(str(report.get("totals", {}).get("liabilities_and_equity") or "0"))
+    assets_total = _parse_decimal(report.get("totals", {}).get("assets"))
+    liabilities_total = _parse_decimal(report.get("totals", {}).get("liabilities_and_equity"))
     balance_diff = assets_total - liabilities_total
     rows.append(["", "Balance Difference", "", "", *["" for _ in period_keys], f"{balance_diff:.2f}"])
 
@@ -1139,10 +1333,10 @@ class ProfitAndLossPDFAPIView(_BaseProfitAndLossExportAPIView):
         scope, data, subtitle = self.report_data(request)
         orientation = self.build_orientation(request)
         portrait_mode = orientation == "portrait"
-        headers, rows = _profit_loss_export_table(data, include_periods=not portrait_mode)
+        headers, rows = _profit_loss_export_table(data, include_periods=True)
         periods = data.get("periods") or []
         if portrait_mode:
-            col_widths = [54, 180, 92, 86, 78]
+            col_widths = [54, 160, 82, 82] + [42] * len(periods) + [60]
             pagesize = A4
         else:
             col_widths = [58, 130, 88, 78]
@@ -1256,7 +1450,7 @@ def _balance_sheet_subtitle(scope_names, scope, report):
     group_by = scope.get("account_group") or scope.get("group_by") or "accounthead"
     stock_mode = report.get("reporting", {}).get("stock_valuation_mode") or scope.get("stock_valuation_mode") or "auto"
     stock_method = report.get("reporting", {}).get("stock_valuation_method") or scope.get("stock_valuation_method") or "fifo"
-    balance_diff = Decimal(str(report.get("totals", {}).get("assets") or "0")) - Decimal(str(report.get("totals", {}).get("liabilities_and_equity") or "0"))
+    balance_diff = _parse_decimal(report.get("totals", {}).get("assets")) - _parse_decimal(report.get("totals", {}).get("liabilities_and_equity"))
     subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
     return (
         f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
@@ -1321,14 +1515,20 @@ class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
 class BalanceSheetExcelAPIView(_BaseBalanceSheetExportAPIView):
     def get(self, request):
         _scope, data, subtitle = self.report_data(request)
-        headers, rows = _balance_sheet_export_table(data)
+        orientation = self.build_orientation(request)
+        landscape_mode = orientation == "landscape"
+        headers, rows = _balance_sheet_export_table(data, landscape_mode=landscape_mode)
+        period_count = len(data.get("periods") or [])
+        numeric_columns = {4 + period_count, 8 + 2 * period_count}
+        numeric_columns.update(range(4, 4 + period_count))
+        numeric_columns.update(range(8 + period_count, 8 + 2 * period_count))
         content = _write_excel(
             "Balance Sheet",
             subtitle,
             headers,
             rows,
-            numeric_columns=set(range(5, len(headers) + 1)),
-            orientation=self.build_orientation(request),
+            numeric_columns=numeric_columns if landscape_mode else set(range(5, len(headers) + 1)),
+            orientation=orientation,
         )
         return self.export_response(
             filename=f"BalanceSheet_{_safe_filename(subtitle)}.xlsx",
@@ -1354,9 +1554,10 @@ class BalanceSheetPDFAPIView(_BaseBalanceSheetExportAPIView):
         scope, data, subtitle = self.report_data(request)
         orientation = self.build_orientation(request)
         pagesize = landscape(A4) if orientation == "landscape" else A4
-        headers, rows = _balance_sheet_export_table(data)
+        landscape_mode = orientation == "landscape"
+        headers, rows = _balance_sheet_export_table(data, landscape_mode=landscape_mode)
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
-        balance_diff = Decimal(str(data.get("totals", {}).get("assets") or "0")) - Decimal(str(data.get("totals", {}).get("liabilities_and_equity") or "0"))
+        balance_diff = _parse_decimal(data.get("totals", {}).get("assets")) - _parse_decimal(data.get("totals", {}).get("liabilities_and_equity"))
         periods = data.get("periods") or []
         meta_items = [
             ("Entity", scope_names["entity_name"] or "Selected entity"),
@@ -1369,7 +1570,9 @@ class BalanceSheetPDFAPIView(_BaseBalanceSheetExportAPIView):
             ("Balance Status", "Balanced" if balance_diff == 0 else "Mismatch"),
             ("Difference", f"{balance_diff:.2f}"),
         ]
-        if orientation == "portrait":
+        if landscape_mode:
+            col_widths = [60, 120, 90] + [52] * len(periods) + [72, 60, 120, 90] + [52] * len(periods) + [72]
+        elif orientation == "portrait":
             col_widths = [54, 160, 82, 82] + [42] * len(periods) + [60]
         else:
             col_widths = [60, 175, 90, 90] + [52] * len(periods) + [72]
@@ -1380,7 +1583,11 @@ class BalanceSheetPDFAPIView(_BaseBalanceSheetExportAPIView):
             rows,
             col_widths=col_widths,
             meta_items=meta_items,
-            numeric_columns=set(range(5, len(headers) + 1)),
+            numeric_columns=(
+                ({4 + len(periods), 8 + 2 * len(periods)} | set(range(4, 4 + len(periods))) | set(range(8 + len(periods), 8 + 2 * len(periods))))
+                if landscape_mode
+                else set(range(5, len(headers) + 1))
+            ),
             pagesize=pagesize,
         )
         return self.export_response(
@@ -1566,13 +1773,14 @@ class _BaseTradingAccountExportAPIView(ScopedEntitlementMixin, APIView):
 class TradingAccountExcelAPIView(_BaseTradingAccountExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        headers, rows = _trading_account_export_table(data)
+        headers, rows = _trading_account_export_table(data, include_periods=True)
+        period_count = len(data.get("periods") or [])
         content = _write_excel(
             "Trading Account",
             subtitle,
             headers,
             rows,
-            numeric_columns={2, 3},
+            numeric_columns={3, *range(4, 4 + period_count), 4 + period_count},
             orientation=self.build_orientation(request),
         )
         return self.export_response(
@@ -1585,7 +1793,7 @@ class TradingAccountExcelAPIView(_BaseTradingAccountExportAPIView):
 class TradingAccountCSVAPIView(_BaseTradingAccountExportAPIView):
     def get(self, request):
         _scope, data, subtitle = self.report_data(request)
-        headers, rows = _trading_account_export_table(data)
+        headers, rows = _trading_account_export_table(data, include_periods=True)
         content = _write_csv(headers, rows)
         return self.export_response(
             filename=f"TradingAccount_{_safe_filename(subtitle)}.csv",
@@ -1599,7 +1807,9 @@ class TradingAccountPDFAPIView(_BaseTradingAccountExportAPIView):
         scope, data, subtitle = self.report_data(request)
         orientation = self.build_orientation(request)
         pagesize = landscape(A4) if orientation == "landscape" else A4
-        headers, rows = _trading_account_export_table(data)
+        landscape_mode = orientation == "landscape"
+        headers, rows = _trading_account_export_table(data, include_periods=True)
+        period_count = len(data.get("periods") or [])
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         meta_items = [
             ("Entity", scope_names["entity_name"] or "Selected entity"),
@@ -1611,14 +1821,18 @@ class TradingAccountPDFAPIView(_BaseTradingAccountExportAPIView):
             ("Gross Profit", data.get("gross_profit", "0.00") or "0.00"),
             ("Gross Loss", data.get("gross_loss", "0.00") or "0.00"),
         ]
+        if landscape_mode:
+            col_widths = [46, 220, 58] + [58] * period_count + [82]
+        else:
+            col_widths = [52, 190, 56] + [42] * period_count + [78]
         content = _write_pdf(
             "Trading Account",
             subtitle,
             headers,
             rows,
-            col_widths=[46, 230, 70, 80] if orientation == "portrait" else [50, 250, 70, 90],
+            col_widths=col_widths,
             meta_items=meta_items,
-            numeric_columns={2, 3},
+            numeric_columns={3, *range(4, 4 + period_count), 4 + period_count},
             pagesize=pagesize,
         )
         return self.export_response(

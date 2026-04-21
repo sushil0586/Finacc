@@ -610,7 +610,8 @@ class SalesArService:
             settlement_type=CustomerSettlement.SettlementType.ADVANCE_ADJUSTMENT
         )
         totals["advance_consumed_total"] = q2(sum((q2(x.total_amount) for x in advance_consumed_total), ZERO2))
-        totals["net_ap_position"] = q2(totals["outstanding_total"] - totals["advance_outstanding_total"])
+        totals["net_ar_position"] = q2(totals["outstanding_total"] - totals["advance_outstanding_total"])
+        totals["net_ap_position"] = totals["net_ar_position"]
         return {
             "open_items": open_items_qs,
             "advances": advances_qs,

@@ -24,6 +24,7 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceReverseAPIView,
     SalesInvoiceRetrieveUpdateAPIView,
 )
+from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
@@ -987,3 +988,83 @@ class MasterGSTErrorExtractUnitTests(SimpleTestCase):
         code, msg, reason, resolution = _extract_error(raw)
         self.assertEqual(code, "2150")
         self.assertEqual(msg, "Duplicate IRN")
+
+
+class CustomerStatementExportViewTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(id=11, is_authenticated=True)
+
+    @patch("sales.views.sales_ar_exports._require_ar_view_permission")
+    @patch("sales.views.sales_ar_exports.SalesArService.customer_statement")
+    @patch("sales.views.sales_ar_exports.account.objects.filter")
+    @patch("sales.views.sales_ar_exports.resolve_scope_names")
+    def test_customer_statement_excel_export_returns_attachment(
+        self,
+        mocked_resolve_scope_names,
+        mocked_account_filter,
+        mocked_customer_statement,
+        mocked_require_permission,
+    ):
+        mocked_require_permission.return_value = None
+        mocked_resolve_scope_names.return_value = {
+            "entity_name": "Arnika G",
+            "entityfin_name": "FY 2026-27",
+            "subentity_name": "Main Branch",
+        }
+
+        class _Query:
+            def select_related(self, *args, **kwargs):
+                return self
+
+            def only(self, *args, **kwargs):
+                return self
+
+            def first(self):
+                return SimpleNamespace(
+                    id=501,
+                    accountname="Customer A",
+                    effective_accounting_name="Customer A",
+                    effective_accounting_code=9004,
+                    ledger_id=268,
+                )
+
+        mocked_account_filter.return_value = _Query()
+        mocked_customer_statement.return_value = {
+            "totals": {
+                "outstanding_total": "100.00",
+                "advance_outstanding_total": "25.00",
+                "advance_consumed_total": "5.00",
+                "net_ar_position": "75.00",
+            },
+            "open_items": [
+                {
+                    "bill_date": "2026-04-01",
+                    "due_date": "2026-04-30",
+                    "invoice_number": "INV-1",
+                    "customer_reference_number": "REF-1",
+                    "original_amount": "100.00",
+                    "settled_amount": "0.00",
+                    "outstanding_amount": "100.00",
+                    "is_open": True,
+                }
+            ],
+            "advances": [],
+            "settlements": [],
+        }
+
+        request = self.factory.get(
+            "/api/sales/ar/customer-statement/excel/",
+            {"entity": "10", "entityfinid": "8", "customer": "501"},
+        )
+        force_authenticate(request, user=self.user)
+
+        response = CustomerStatementExcelAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("attachment;", response["Content-Disposition"])
+        self.assertIn("CustomerLedger_", response["Content-Disposition"])
