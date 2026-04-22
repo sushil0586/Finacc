@@ -4,6 +4,8 @@ Use these helpers for day-to-day staging updates on `accerio.in`.
 **Files Added**
 - `deploy/ec2/deploy_frontend_staging.ps1`
 - `deploy/ec2/deploy_backend_staging.ps1`
+- `deploy/ec2/deploy_frontend_staging.sh`
+- `deploy/ec2/deploy_backend_staging.sh`
 - `deploy/ec2/staging_refresh_backend.sh`
 
 **1. Frontend Deploy From Your Windows Machine**
@@ -22,6 +24,20 @@ powershell -ExecutionPolicy Bypass -File .\deploy\ec2\deploy_frontend_staging.ps
 If your key path, host, or Angular path changes, update the variables at the top of:
 
 `deploy/ec2/deploy_frontend_staging.ps1`
+
+**Git Bash version**
+Run from Git Bash:
+
+```bash
+cd /c/educure/finacc_new/Finacc
+bash ./deploy/ec2/deploy_frontend_staging.sh
+```
+
+Recommended SSH key location for Git Bash scripts:
+
+```bash
+~/.ssh/bansalrenu.pem
+```
 
 **2. Backend Refresh On EC2**
 Copy the script once to EC2 if needed:
@@ -66,6 +82,14 @@ If your server branch, key path, host, or backend path changes, update the varia
 
 `deploy/ec2/deploy_backend_staging.ps1`
 
+**Git Bash version**
+Run from Git Bash:
+
+```bash
+cd /c/educure/finacc_new/Finacc
+bash ./deploy/ec2/deploy_backend_staging.sh
+```
+
 **4. Recommended Daily Flow**
 If only Angular changed:
 
@@ -73,10 +97,22 @@ If only Angular changed:
 powershell -ExecutionPolicy Bypass -File .\deploy\ec2\deploy_frontend_staging.ps1
 ```
 
+or in Git Bash:
+
+```bash
+bash ./deploy/ec2/deploy_frontend_staging.sh
+```
+
 If only Django changed:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\ec2\deploy_backend_staging.ps1
+```
+
+or in Git Bash:
+
+```bash
+bash ./deploy/ec2/deploy_backend_staging.sh
 ```
 
 If both changed:
