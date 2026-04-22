@@ -17,7 +17,9 @@ from financial.profile_access import (
 
 from financial.models import AccountAddress, account
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
+from receipts.models import ReceiptVoucherHeader
 from sales.models.sales_core import SalesInvoiceHeader
+from sales.services.sales_ar_service import SalesArService
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window
 
 
@@ -227,6 +229,329 @@ def _period_invoice_credit_totals(*, entity_id, entityfin_id, subentity_id, from
     return invoice_map, credit_map, last_invoice_date
 
 
+def _settlement_history_rows(*, entity_id, entityfin_id, subentity_id, customer_id=None, from_date=None, to_date=None, settlement_type=None, status=None, search=None):
+    qs = CustomerSettlement.objects.select_related(
+        "customer",
+        "customer__ledger",
+        "customer__commercial_profile",
+        "customer__compliance_profile",
+        "subentity",
+        "advance_balance",
+        "advance_balance__receipt_voucher",
+        "posted_by",
+    ).prefetch_related(
+        "lines",
+        "lines__open_item",
+        "lines__open_item__header",
+    )
+    qs = qs.filter(entity_id=entity_id)
+    if entityfin_id:
+        qs = qs.filter(entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        qs = qs.filter(subentity_id=subentity_id)
+    if customer_id:
+        qs = qs.filter(customer_id=customer_id)
+    if from_date:
+        qs = qs.filter(settlement_date__gte=from_date)
+    if to_date:
+        qs = qs.filter(settlement_date__lte=to_date)
+    if settlement_type:
+        qs = qs.filter(settlement_type=settlement_type)
+    if status not in (None, "", "null"):
+        try:
+            qs = qs.filter(status=int(status))
+        except (TypeError, ValueError):
+            qs = qs.filter(status__iexact=str(status))
+    if search:
+        token = str(search).strip()
+        if token:
+            qs = qs.filter(
+                Q(customer__accountname__icontains=token)
+                | Q(customer__legalname__icontains=token)
+                | Q(customer__ledger__ledger_code__icontains=token)
+                | Q(reference_no__icontains=token)
+                | Q(external_voucher_no__icontains=token)
+                | Q(remarks__icontains=token)
+            )
+    return qs.order_by("-settlement_date", "-id")
+
+
+def _receipt_history_rows(*, entity_id, entityfin_id, subentity_id, customer_id=None, from_date=None, to_date=None, settlement_type=None, status=None, search=None):
+    qs = ReceiptVoucherHeader.objects.select_related(
+        "received_from",
+        "received_from__ledger",
+        "received_from__commercial_profile",
+        "received_from__compliance_profile",
+        "subentity",
+        "received_in",
+        "approved_by",
+    ).prefetch_related(
+        "allocations",
+        "allocations__open_item",
+        "allocations__open_item__header",
+        "adjustments",
+        "advance_adjustments",
+        "advance_adjustments__advance_balance",
+        "advance_adjustments__open_item",
+    )
+    qs = qs.filter(entity_id=entity_id)
+    if entityfin_id:
+        qs = qs.filter(entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        qs = qs.filter(subentity_id=subentity_id)
+    if customer_id:
+        qs = qs.filter(received_from_id=customer_id)
+    if from_date:
+        qs = qs.filter(voucher_date__gte=from_date)
+    if to_date:
+        qs = qs.filter(voucher_date__lte=to_date)
+    if settlement_type:
+        receipt_type = {
+            "receipt": ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE,
+            "advance_adjustment": ReceiptVoucherHeader.ReceiptType.ADVANCE,
+            "manual": ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT,
+        }.get(str(settlement_type).strip().lower(), str(settlement_type).strip())
+        qs = qs.filter(receipt_type=receipt_type)
+    if status not in (None, "", "null"):
+        try:
+            qs = qs.filter(status=int(status))
+        except (TypeError, ValueError):
+            qs = qs.filter(status__iexact=str(status))
+    if search:
+        token = str(search).strip()
+        if token:
+            qs = qs.filter(
+                Q(received_from__accountname__icontains=token)
+                | Q(received_from__legalname__icontains=token)
+                | Q(received_from__ledger__ledger_code__icontains=token)
+                | Q(reference_number__icontains=token)
+                | Q(voucher_code__icontains=token)
+                | Q(narration__icontains=token)
+            )
+    return qs.order_by("-voucher_date", "-id")
+
+
+def _map_receipt_voucher_type(receipt_type: str) -> str:
+    normalized = str(receipt_type or "").strip().upper()
+    if normalized == ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE:
+        return CustomerSettlement.SettlementType.RECEIPT
+    if normalized == ReceiptVoucherHeader.ReceiptType.ADVANCE:
+        return CustomerSettlement.SettlementType.ADVANCE_ADJUSTMENT
+    if normalized == ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT:
+        return CustomerSettlement.SettlementType.MANUAL
+    return str(receipt_type or "").strip().lower() or CustomerSettlement.SettlementType.MANUAL
+
+
+def build_collections_history_report(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    customer_id=None,
+    from_date=None,
+    to_date=None,
+    settlement_type=None,
+    status=None,
+    search=None,
+    sort_by=None,
+    sort_order="desc",
+    page=1,
+    page_size=100,
+):
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+    rows_qs = _settlement_history_rows(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        customer_id=customer_id,
+        from_date=from_date,
+        to_date=to_date,
+        settlement_type=settlement_type,
+        status=status,
+        search=search,
+    )
+    source_kind = "settlement"
+    if not rows_qs.exists():
+        receipt_qs = _receipt_history_rows(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            customer_id=customer_id,
+            from_date=from_date,
+            to_date=to_date,
+            settlement_type=settlement_type,
+            status=status,
+            search=search,
+        )
+        if receipt_qs.exists():
+            rows_qs = receipt_qs
+            source_kind = "receipt"
+
+    rows = []
+    totals = defaultdict(lambda: ZERO)
+    customer_ids_seen = set()
+
+    for settlement in rows_qs:
+        if source_kind == "receipt":
+            customer = settlement.received_from
+            customer_ids_seen.add(customer.id)
+            line_items = []
+            for alloc in settlement.allocations.all():
+                open_item = getattr(alloc, "open_item", None)
+                line_items.append({
+                    "open_item_id": alloc.open_item_id,
+                    "open_item_label": getattr(open_item, "invoice_number", None)
+                    or getattr(open_item, "customer_reference_number", None)
+                    or f"Open Item {alloc.open_item_id}",
+                    "invoice_number": getattr(open_item, "invoice_number", None),
+                    "customer_reference_number": getattr(open_item, "customer_reference_number", None),
+                    "amount": f"{q2(alloc.settled_amount):.2f}",
+                    "applied_amount_signed": f"{q2(alloc.settled_amount):.2f}",
+                    "note": None,
+                })
+            for adj in settlement.adjustments.all():
+                line_items.append({
+                    "open_item_id": None,
+                    "open_item_label": adj.get_adj_type_display(),
+                    "invoice_number": None,
+                    "customer_reference_number": adj.remarks,
+                    "amount": f"{q2(adj.amount):.2f}",
+                    "applied_amount_signed": f"{q2(adj.amount if adj.settlement_effect == adj.Effect.PLUS else -adj.amount):.2f}",
+                    "note": adj.remarks,
+                })
+            for adv in settlement.advance_adjustments.all():
+                line_items.append({
+                    "open_item_id": None,
+                    "open_item_label": getattr(adv.advance_balance, "reference_no", None) or f"Advance {adv.advance_balance_id}",
+                    "invoice_number": getattr(adv.advance_balance, "reference_no", None),
+                    "customer_reference_number": None,
+                    "amount": f"{q2(adv.adjusted_amount):.2f}",
+                    "applied_amount_signed": f"{q2(adv.adjusted_amount):.2f}",
+                    "note": adv.remarks,
+                })
+            row = _row_with_meta(
+                {
+                    "settlement_id": settlement.id,
+                    "customer_id": customer.id,
+                    "customer_name": customer.effective_accounting_name,
+                    "customer_code": customer.effective_accounting_code,
+                    "settlement_date": settlement.voucher_date,
+                    "settlement_type": _map_receipt_voucher_type(settlement.receipt_type),
+                    "settlement_type_name": settlement.get_receipt_type_display(),
+                    "reference_no": settlement.reference_number,
+                    "external_voucher_no": settlement.voucher_code,
+                    "total_amount": q2(settlement.settlement_effective_amount),
+                    "status": settlement.status,
+                    "status_name": settlement.get_status_display(),
+                    "advance_reference_no": getattr(getattr(settlement, "advance_adjustments", None), "first", lambda: None)() and getattr(getattr(settlement.advance_adjustments.first(), "advance_balance", None), "reference_no", None),
+                    "source_receipt_voucher_code": settlement.voucher_code,
+                    "source_receipt_voucher_id": settlement.id,
+                    "line_count": len(line_items),
+                    "currency": getattr(settlement, "currency_code", None) or "INR",
+                    "gstin": account_gstno(customer),
+                    "settlement_lines": line_items,
+                },
+                drilldown={
+                    "customer_statement": {
+                        "target": "sales_ar_customer_statement",
+                        "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": customer.id},
+                    },
+                    "open_items": {
+                        "target": "sales_ar_open_items",
+                        "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": customer.id},
+                    },
+                },
+            )
+        else:
+            customer_ids_seen.add(settlement.customer_id)
+            line_items = []
+            for line in settlement.lines.all():
+                open_item = getattr(line, "open_item", None)
+                line_items.append({
+                    "open_item_id": line.open_item_id,
+                    "open_item_label": getattr(open_item, "invoice_number", None)
+                    or getattr(open_item, "customer_reference_number", None)
+                    or f"Open Item {line.open_item_id}",
+                    "invoice_number": getattr(open_item, "invoice_number", None),
+                    "customer_reference_number": getattr(open_item, "customer_reference_number", None),
+                    "amount": f"{q2(line.amount):.2f}",
+                    "applied_amount_signed": f"{q2(line.applied_amount_signed):.2f}",
+                    "note": line.note,
+                })
+            row = _row_with_meta(
+                {
+                    "settlement_id": settlement.id,
+                    "customer_id": settlement.customer_id,
+                    "customer_name": settlement.customer.effective_accounting_name,
+                    "customer_code": settlement.customer.effective_accounting_code,
+                    "settlement_date": settlement.settlement_date,
+                    "settlement_type": settlement.settlement_type,
+                    "settlement_type_name": settlement.get_settlement_type_display(),
+                    "reference_no": settlement.reference_no,
+                    "external_voucher_no": settlement.external_voucher_no,
+                    "total_amount": q2(settlement.total_amount),
+                    "status": settlement.status,
+                    "status_name": settlement.get_status_display(),
+                    "advance_reference_no": settlement.advance_balance.reference_no if getattr(settlement, "advance_balance", None) else None,
+                    "source_receipt_voucher_code": getattr(getattr(settlement.advance_balance, "receipt_voucher", None), "voucher_code", None),
+                    "source_receipt_voucher_id": getattr(settlement.advance_balance, "receipt_voucher_id", None),
+                    "line_count": len(line_items),
+                    "currency": account_currency(settlement.customer) or "INR",
+                    "gstin": account_gstno(settlement.customer),
+                    "settlement_lines": line_items,
+                },
+                drilldown={
+                    "customer_statement": {
+                        "target": "sales_ar_customer_statement",
+                        "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": settlement.customer_id},
+                    },
+                },
+            )
+        rows.append(row)
+        totals["total_amount"] += row["total_amount"]
+        totals["line_count"] += row["line_count"]
+
+    def sort_key(row):
+        field = (sort_by or "settlement_date").strip().lower()
+        if field in {"settlement_date"}:
+            return row.get("settlement_date") or date.min
+        if field in {"total_amount", "line_count", "customer_code"}:
+            return q2(row.get(field) or ZERO)
+        return str(row.get(field) or row.get("customer_name") or row.get("reference_no") or "").lower()
+
+    rows.sort(key=sort_key, reverse=(sort_order or "asc").lower() == "desc")
+    paged_rows, total_rows = _paginate(rows, page, page_size)
+    for row in paged_rows:
+        row["total_amount"] = f"{q2(row['total_amount']):.2f}"
+        row["line_count"] = int(row["line_count"] or 0)
+
+    receipt_count = sum(1 for row in rows if row.get("settlement_type") == CustomerSettlement.SettlementType.RECEIPT)
+    adjustment_count = sum(1 for row in rows if row.get("settlement_type") != CustomerSettlement.SettlementType.RECEIPT)
+
+    return {
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "from_date": from_date,
+        "to_date": to_date,
+        "rows": paged_rows,
+        "totals": {
+            "total_amount": f"{q2(totals['total_amount']):.2f}",
+            "line_count": int(totals["line_count"] or 0),
+            "receipt_count": receipt_count,
+            "adjustment_count": adjustment_count,
+        },
+        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+        "summary": {
+            "settlement_count": total_rows,
+            "customer_count": len(customer_ids_seen),
+            "receipt_count": receipt_count,
+            "adjustment_count": adjustment_count,
+        },
+        **_report_meta_payload(),
+    }
+
+
 def _received_amount_asof(item, settled_asof):
     if q2(item.original_amount) <= ZERO:
         return ZERO
@@ -291,6 +616,7 @@ def _row_with_meta(row, *, drilldown):
     row = dict(row)
     row["can_drilldown"] = bool(drilldown)
     row["drilldown_targets"] = list(drilldown.keys())
+    row["drilldown"] = drilldown
     row["_meta"] = {"drilldown": drilldown}
     return row
 
@@ -341,6 +667,7 @@ def build_customer_outstanding_report(
     overdue_only=False,
     outstanding_gt=None,
     credit_limit_exceeded=False,
+    exception_only=False,
     search=None,
     sort_by=None,
     sort_order="desc",
@@ -440,6 +767,17 @@ def build_customer_outstanding_report(
         if outstanding_gt is not None and net_outstanding <= q2(outstanding_gt):
             continue
         customer_credit_limit = account_creditlimit(cust)
+        exception_reasons = []
+        if overdue_amount > ZERO:
+            exception_reasons.append("Overdue")
+        if customer_credit_limit is not None and net_outstanding > q2(customer_credit_limit):
+            exception_reasons.append("Credit Limit")
+        if unapplied_map[cust.id] > ZERO:
+            exception_reasons.append("Unapplied Receipt")
+        if net_outstanding < ZERO:
+            exception_reasons.append("Credit Balance")
+        if exception_only and not exception_reasons:
+            continue
         if credit_limit_exceeded and customer_credit_limit is not None and net_outstanding <= q2(customer_credit_limit):
             continue
 
@@ -490,6 +828,7 @@ def build_customer_outstanding_report(
             "unapplied_receipt": q2(unapplied_map[cust.id]),
             "last_invoice_date": last_invoice_dates.get(cust.id),
             "last_payment_date": all_last_payment.get(cust.id),
+            "exception_reasons": exception_reasons,
         }, drilldown=drilldown)
         rows.append(row)
         totals["opening_balance"] += row["opening_balance"]
@@ -757,5 +1096,123 @@ def build_receivable_aging_report(
         "totals": {k: f"{q2(v):.2f}" for k, v in summary_totals.items()},
         "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
         "summary": {"customer_count": total_rows},
+        **_report_meta_payload(),
+    }
+
+
+def build_open_items_report(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    customer_id=None,
+    search=None,
+    sort_by=None,
+    sort_order="asc",
+    page=1,
+    page_size=100,
+):
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+    if not entityfin_id:
+        raise ValueError("entityfin_id is required.")
+
+    qs = SalesArService.list_open_items(
+        entity_id=entity_id,
+        entityfinid_id=entityfin_id,
+        subentity_id=subentity_id,
+        customer_id=customer_id,
+        is_open=True,
+    ).select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "header")
+
+    if search:
+        token = str(search).strip()
+        if token:
+            qs = qs.filter(
+                Q(customer__accountname__icontains=token)
+                | Q(customer__legalname__icontains=token)
+                | Q(customer__ledger__ledger_code__icontains=token)
+                | Q(invoice_number__icontains=token)
+                | Q(customer_reference_number__icontains=token)
+            )
+
+    rows = []
+    totals = defaultdict(lambda: ZERO)
+
+    for item in qs:
+        outstanding = q2(item.outstanding_amount or (item.original_amount - item.settled_amount))
+        if outstanding <= ZERO:
+            continue
+
+        row = _row_with_meta(
+            {
+                "item_id": item.id,
+                "header_id": item.header_id,
+                "customer_id": item.customer_id,
+                "customer_name": item.customer.effective_accounting_name,
+                "customer_code": item.customer.effective_accounting_code,
+                "bill_date": item.bill_date,
+                "due_date": item.due_date,
+                "invoice_number": item.invoice_number or f"INV-{item.id}",
+                "customer_reference_number": item.customer_reference_number,
+                "doc_type_name": item.header.get_doc_type_display() if getattr(item, "header", None) else None,
+                "original_amount": q2(item.original_amount),
+                "settled_amount": q2(item.settled_amount),
+                "outstanding_amount": outstanding,
+                "currency": account_currency(item.customer) or "INR",
+                "gstin": account_gstno(item.customer),
+                "credit_days": account_creditdays(item.customer),
+                "status": "Open" if item.is_open else "Closed",
+                "last_settled_at": item.last_settled_at,
+            },
+            drilldown={
+                "invoice": {
+                    "target": "sales_invoice",
+                    "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                },
+                "customer_statement": {
+                    "target": "sales_ar_customer_statement",
+                    "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id},
+                },
+                "payment_allocation": {
+                    "target": "sales_ar_payment_allocation",
+                    "params": {
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "customer": item.customer_id,
+                        "invoice_header": item.header_id,
+                        "open_item": item.id,
+                    },
+                },
+            },
+        )
+        rows.append(row)
+        totals["original_amount"] += row["original_amount"]
+        totals["settled_amount"] += row["settled_amount"]
+        totals["outstanding_amount"] += row["outstanding_amount"]
+
+    def sort_key(row):
+        field = (sort_by or "due_date").strip().lower()
+        if field in {"due_date", "bill_date", "last_settled_at"}:
+            return row.get(field) or date.min
+        if field in {"outstanding_amount", "original_amount", "settled_amount", "customer_code"}:
+            return q2(row.get(field) or ZERO)
+        return str(row.get(field) or row.get("customer_name") or row.get("invoice_number") or "").lower()
+
+    rows.sort(key=sort_key, reverse=(sort_order or "asc").lower() == "desc")
+    paged_rows, total_rows = _paginate(rows, page, page_size)
+
+    for row in paged_rows:
+        for key in ("original_amount", "settled_amount", "outstanding_amount"):
+            row[key] = f"{q2(row[key]):.2f}"
+
+    return {
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "rows": paged_rows,
+        "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
+        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+        "summary": {"open_item_count": total_rows},
         **_report_meta_payload(),
     }

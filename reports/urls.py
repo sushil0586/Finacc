@@ -110,11 +110,21 @@ from reports.gstr1.views import (
 from reports.gstr3b.views import Gstr3bExportAPIView, Gstr3bMetaAPIView, Gstr3bSummaryAPIView, Gstr3bValidationAPIView
 from reports.api.statutory import Gstr1ReportAPIView
 from reports.api.receivables_views import (
+    CollectionsHistoryCSVAPIView,
+    CollectionsHistoryExcelAPIView,
+    CollectionsHistoryPDFAPIView,
+    CollectionsHistoryPrintAPIView,
+    CollectionsHistoryReportAPIView,
     CustomerOutstandingReportAPIView,
     CustomerOutstandingCSVAPIView,
     CustomerOutstandingExcelAPIView,
     CustomerOutstandingPDFAPIView,
     CustomerOutstandingPrintAPIView,
+    OpenItemsReportAPIView,
+    OpenItemsCSVAPIView,
+    OpenItemsExcelAPIView,
+    OpenItemsPDFAPIView,
+    OpenItemsPrintAPIView,
     ReceivableAgingReportAPIView,
     ReceivableAgingCSVAPIView,
     ReceivableAgingExcelAPIView,
@@ -401,6 +411,16 @@ urlpatterns = [
     path("receivables/customer-outstanding/pdf/", CustomerOutstandingPDFAPIView.as_view(), name="customer-outstanding-report-pdf"),
     path("receivables/customer-outstanding/csv/", CustomerOutstandingCSVAPIView.as_view(), name="customer-outstanding-report-csv"),
     path("receivables/customer-outstanding/print/", CustomerOutstandingPrintAPIView.as_view(), name="customer-outstanding-report-print"),
+    path("receivables/open-items/", OpenItemsReportAPIView.as_view(), name="open-items-report"),
+    path("receivables/open-items/excel/", OpenItemsExcelAPIView.as_view(), name="open-items-report-excel"),
+    path("receivables/open-items/pdf/", OpenItemsPDFAPIView.as_view(), name="open-items-report-pdf"),
+    path("receivables/open-items/csv/", OpenItemsCSVAPIView.as_view(), name="open-items-report-csv"),
+    path("receivables/open-items/print/", OpenItemsPrintAPIView.as_view(), name="open-items-report-print"),
+    path("receivables/collections-history/", CollectionsHistoryReportAPIView.as_view(), name="collections-history-report"),
+    path("receivables/collections-history/excel/", CollectionsHistoryExcelAPIView.as_view(), name="collections-history-report-excel"),
+    path("receivables/collections-history/pdf/", CollectionsHistoryPDFAPIView.as_view(), name="collections-history-report-pdf"),
+    path("receivables/collections-history/csv/", CollectionsHistoryCSVAPIView.as_view(), name="collections-history-report-csv"),
+    path("receivables/collections-history/print/", CollectionsHistoryPrintAPIView.as_view(), name="collections-history-report-print"),
     path("receivables/aging/", ReceivableAgingReportAPIView.as_view(), name="receivable-aging-report"),
     path("receivables/aging/excel/", ReceivableAgingExcelAPIView.as_view(), name="receivable-aging-report-excel"),
     path("receivables/aging/pdf/", ReceivableAgingPDFAPIView.as_view(), name="receivable-aging-report-pdf"),
@@ -462,4 +482,3 @@ urlpatterns = [
     path("accounts-payable-aging/print/", ApAgingPrintAPIView.as_view(), name="accounts-payable-aging-report-print"),
     path("preferences/", ReportPreferenceAPIView.as_view(), name="report-preferences"),
 ]
-

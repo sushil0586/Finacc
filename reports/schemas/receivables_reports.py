@@ -18,6 +18,7 @@ class ReceivableReportScopeSerializer(serializers.Serializer):
 
     overdue_only = serializers.BooleanField(required=False)
     credit_limit_exceeded = serializers.BooleanField(required=False)
+    exception_only = serializers.BooleanField(required=False)
     outstanding_gt = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
     search = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     sort_by = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -28,3 +29,8 @@ class ReceivableReportScopeSerializer(serializers.Serializer):
 
 class ReceivableAgingScopeSerializer(ReceivableReportScopeSerializer):
     view = serializers.ChoiceField(choices=("summary", "invoice"), required=False, allow_null=True)
+
+
+class CollectionsHistoryScopeSerializer(ReceivableReportScopeSerializer):
+    settlement_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    status = serializers.CharField(required=False, allow_blank=True, allow_null=True)

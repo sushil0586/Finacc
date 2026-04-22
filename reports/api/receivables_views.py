@@ -18,10 +18,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from financial.models import account
+from sales.models.sales_ar import CustomerSettlement
 from reports.schemas.common import build_report_envelope
 from reports.selectors.financial import resolve_scope_names
-from reports.schemas.receivables_reports import ReceivableAgingScopeSerializer, ReceivableReportScopeSerializer
-from reports.services.receivables import build_customer_outstanding_report, build_receivable_aging_report
+from reports.schemas.receivables_reports import CollectionsHistoryScopeSerializer, ReceivableAgingScopeSerializer, ReceivableReportScopeSerializer
+from reports.services.receivables import build_collections_history_report, build_customer_outstanding_report, build_open_items_report, build_receivable_aging_report
 
 
 RECEIVABLE_DEFAULTS = {
@@ -49,6 +51,9 @@ def _receivable_scope_filters(scope):
         "currency": scope.get("currency"),
         "overdue_only": scope.get("overdue_only", False),
         "credit_limit_exceeded": scope.get("credit_limit_exceeded", False),
+        "exception_only": scope.get("exception_only", False),
+        "settlement_type": scope.get("settlement_type"),
+        "status": scope.get("status"),
         "outstanding_gt": scope.get("outstanding_gt"),
         "search": scope.get("search"),
         "sort_by": scope.get("sort_by"),
@@ -89,6 +94,25 @@ def _format_scope_date(value):
     if hasattr(value, "strftime"):
         return value.strftime("%d %b %Y")
     return str(value)
+
+
+def _format_display_date(value):
+    if not value:
+        return "-"
+    if hasattr(value, "strftime"):
+        return value.strftime("%d-%m-%Y")
+    text = str(value).strip()
+    if not text:
+        return "-"
+    try:
+        return value.date().strftime("%d-%m-%Y")  # type: ignore[union-attr]
+    except Exception:
+        pass
+    try:
+        from datetime import date as date_cls
+        return date_cls.fromisoformat(text[:10]).strftime("%d-%m-%Y")
+    except Exception:
+        return text
 
 
 def _safe_filename(value):
@@ -328,6 +352,7 @@ class CustomerOutstandingReportAPIView(_BaseReceivableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        exception_only = scope.get("exception_only", False)
         data = build_customer_outstanding_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -342,6 +367,7 @@ class CustomerOutstandingReportAPIView(_BaseReceivableAPIView):
             overdue_only=scope.get("overdue_only", False),
             outstanding_gt=scope.get("outstanding_gt"),
             credit_limit_exceeded=scope.get("credit_limit_exceeded", False),
+            exception_only=exception_only,
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
             sort_order=scope.get("sort_order", "desc"),
@@ -350,8 +376,8 @@ class CustomerOutstandingReportAPIView(_BaseReceivableAPIView):
         )
         return Response(
             self.build_envelope(
-                report_code="customer_outstanding",
-                report_name="Customer Outstanding Report",
+                report_code="receivables_exceptions" if exception_only else "customer_outstanding",
+                report_name="Receivables Exceptions Report" if exception_only else "Customer Outstanding Report",
                 payload=data,
                 scope=scope,
                 request=request,
@@ -411,6 +437,7 @@ class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        exception_only = scope.get("exception_only", False)
         data = build_customer_outstanding_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -425,6 +452,7 @@ class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
             overdue_only=scope.get("overdue_only", False),
             outstanding_gt=scope.get("outstanding_gt"),
             credit_limit_exceeded=scope.get("credit_limit_exceeded", False),
+            exception_only=exception_only,
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
             sort_order=scope.get("sort_order", "desc"),
@@ -432,19 +460,20 @@ class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
             page_size=100000,
         )
         headers = [
-            "Customer Name",
-            "Customer Code",
-            "Opening Balance",
-            "Invoice Amount",
-            "Receipt Amount",
+            "Customer",
+            "Code",
+            "Opening Bal",
+            "Invoice Amt",
+            "Receipt Amt",
             "Credit Note",
             "Net Outstanding",
-            "Overdue Amount",
-            "Unapplied Receipt",
+            "Overdue",
+            "Unapplied",
             "Credit Limit",
             "Credit Days",
-            "Last Invoice Date",
-            "Last Payment Date",
+            "Last Inv",
+            "Last Pay",
+            "Exceptions",
             "Currency",
             "GSTIN",
         ]
@@ -463,6 +492,7 @@ class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
                 row["credit_days"],
                 row["last_invoice_date"],
                 row["last_payment_date"],
+                ", ".join(row.get("exception_reasons") or []) or "N/A",
                 row["currency"],
                 row["gstin"],
             ]
@@ -475,15 +505,16 @@ class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
             f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
             f"As of: {_format_scope_date(scope.get('as_of_date') or scope.get('to_date')) or 'Selected date'}"
         )
-        return scope, data, headers, rows, subtitle
+        return scope, data, headers, rows, subtitle, exception_only
 
 
 class CustomerOutstandingExcelAPIView(_CustomerOutstandingExportMixin):
     def get(self, request):
-        scope, _data, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Customer Outstanding", subtitle, headers, rows, numeric_columns=set(range(3, 12)))
+        scope, _data, headers, rows, subtitle, exception_only = self.report_data(request)
+        title = "Receivables Exceptions" if exception_only else "Customer Outstanding"
+        content = _write_excel(title, subtitle, headers, rows, numeric_columns=set(range(3, 12)))
         return self.export_response(
-            filename=f"CustomerOutstanding_{_safe_filename(subtitle)}.xlsx",
+            filename=f"{_safe_filename(title)}_{_safe_filename(subtitle)}.xlsx",
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -491,10 +522,11 @@ class CustomerOutstandingExcelAPIView(_CustomerOutstandingExportMixin):
 
 class CustomerOutstandingCSVAPIView(_CustomerOutstandingExportMixin):
     def get(self, request):
-        scope, _data, headers, rows, _subtitle = self.report_data(request)
+        scope, _data, headers, rows, _subtitle, exception_only = self.report_data(request)
+        title = "Receivables Exceptions" if exception_only else "Customer Outstanding"
         content = _write_csv(headers, rows)
         return self.export_response(
-            filename=f"CustomerOutstanding_{_safe_filename(_subtitle)}.csv",
+            filename=f"{_safe_filename(title)}_{_safe_filename(_subtitle)}.csv",
             content=content,
             content_type="text/csv",
         )
@@ -502,16 +534,305 @@ class CustomerOutstandingCSVAPIView(_CustomerOutstandingExportMixin):
 
 class CustomerOutstandingPDFAPIView(_CustomerOutstandingExportMixin):
     def get(self, request):
-        scope, _data, headers, rows, subtitle = self.report_data(request)
-        content = _write_pdf("Customer Outstanding Report", subtitle, headers, rows)
+        scope, _data, headers, rows, subtitle, exception_only = self.report_data(request)
+        title = "Receivables Exceptions Report" if exception_only else "Customer Outstanding Report"
+        content = _write_pdf(title, subtitle, headers, rows)
         return self.export_response(
-            filename=f"CustomerOutstanding_{_safe_filename(subtitle)}.pdf",
+            filename=f"{_safe_filename(title)}_{_safe_filename(subtitle)}.pdf",
             content=content,
             content_type="application/pdf",
         )
 
 
 class CustomerOutstandingPrintAPIView(CustomerOutstandingPDFAPIView):
+    export_mode = "inline"
+
+
+class OpenItemsReportAPIView(_BaseReceivableAPIView):
+    serializer_class = ReceivableReportScopeSerializer
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        data = build_open_items_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            customer_id=scope.get("customer"),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "desc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", RECEIVABLE_DEFAULTS["default_page_size"]),
+        )
+        return Response(
+            self.build_envelope(
+                report_code="open_items",
+                report_name="Open Items Report",
+                payload=data,
+                scope=scope,
+                request=request,
+                export_base_path="/api/reports/receivables/open-items/",
+            )
+        )
+
+
+class _OpenItemsExportMixin(_BaseReceivableExportAPIView):
+    serializer_class = ReceivableReportScopeSerializer
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        data = build_open_items_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            customer_id=scope.get("customer"),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "desc"),
+            page=1,
+            page_size=100000,
+        )
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        customer_label = "All customers"
+        if scope.get("customer"):
+            customer_obj = account.objects.filter(id=scope.get("customer")).only("id", "accountname", "legalname").first()
+            customer_label = (customer_obj.accountname or customer_obj.legalname or f"Customer {scope.get('customer')}") if customer_obj else f"Customer {scope.get('customer')}"
+        headers = [
+            "Customer",
+            "Customer Code",
+            "Bill Date",
+            "Due Date",
+            "Invoice No",
+            "Ref No",
+            "Doc Type",
+            "Original",
+            "Settled",
+            "Outstanding",
+            "Status",
+            "Last Settled",
+            "Currency",
+            "GSTIN",
+        ]
+        rows = [
+            [
+                row["customer_name"],
+                row["customer_code"],
+                _format_display_date(row.get("bill_date")),
+                _format_display_date(row.get("due_date")),
+                row["invoice_number"],
+                row.get("customer_reference_number") or "-",
+                row.get("doc_type_name") or "-",
+                row["original_amount"],
+                row["settled_amount"],
+                row["outstanding_amount"],
+                row["status"],
+                _format_display_date(row.get("last_settled_at")),
+                row["currency"],
+                row["gstin"],
+            ]
+            for row in data["rows"]
+        ]
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"{customer_label}"
+        )
+        return scope, data, headers, rows, subtitle
+
+
+class OpenItemsExcelAPIView(_OpenItemsExportMixin):
+    def get(self, request):
+        scope, _data, headers, rows, subtitle = self.report_data(request)
+        content = _write_excel("Open Items Report", subtitle, headers, rows, numeric_columns={8, 9, 10})
+        return self.export_response(
+            filename=f"OpenItems_{_safe_filename(subtitle)}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class OpenItemsCSVAPIView(_OpenItemsExportMixin):
+    def get(self, request):
+        scope, _data, headers, rows, subtitle = self.report_data(request)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"OpenItems_{_safe_filename(subtitle)}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class OpenItemsPDFAPIView(_OpenItemsExportMixin):
+    def get(self, request):
+        scope, _data, headers, rows, subtitle = self.report_data(request)
+        content = _write_pdf("Open Items Report", subtitle, headers, rows)
+        return self.export_response(
+            filename=f"OpenItems_{_safe_filename(subtitle)}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class OpenItemsPrintAPIView(OpenItemsPDFAPIView):
+    export_mode = "inline"
+
+
+def _settlement_type_label(value):
+    if not value:
+        return "All types"
+    try:
+        return CustomerSettlement.SettlementType(value).label
+    except Exception:
+        return str(value).replace("_", " ").title()
+
+
+def _settlement_status_label(value):
+    if value in (None, "", "null"):
+        return "All statuses"
+    try:
+        return CustomerSettlement.Status(int(value)).label
+    except Exception:
+        return str(value).replace("_", " ").title()
+
+
+class CollectionsHistoryReportAPIView(_BaseReceivableAPIView):
+    serializer_class = CollectionsHistoryScopeSerializer
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        data = build_collections_history_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            customer_id=scope.get("customer"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            settlement_type=scope.get("settlement_type"),
+            status=scope.get("status"),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "desc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", RECEIVABLE_DEFAULTS["default_page_size"]),
+        )
+        return Response(
+            self.build_envelope(
+                report_code="collections_history",
+                report_name="Collections History Report",
+                payload=data,
+                scope=scope,
+                request=request,
+                export_base_path="/api/reports/receivables/collections-history/",
+            )
+        )
+
+
+class _CollectionsHistoryExportMixin(_BaseReceivableExportAPIView):
+    serializer_class = CollectionsHistoryScopeSerializer
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        data = build_collections_history_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            customer_id=scope.get("customer"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            settlement_type=scope.get("settlement_type"),
+            status=scope.get("status"),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "desc"),
+            page=1,
+            page_size=100000,
+        )
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        customer_label = "All customers"
+        if scope.get("customer"):
+            customer_obj = account.objects.filter(id=scope.get("customer")).only("id", "accountname", "legalname").first()
+            customer_label = (customer_obj.accountname or customer_obj.legalname or f"Customer {scope.get('customer')}") if customer_obj else f"Customer {scope.get('customer')}"
+        headers = [
+            "Customer",
+            "Code",
+            "Settle Dt",
+            "Type",
+            "Ref No",
+            "Ext Voucher",
+            "Amount",
+            "Status",
+            "Lines",
+            "Advance Ref",
+            "Source Vch",
+            "Currency",
+            "GSTIN",
+            "Remarks",
+        ]
+        rows = [
+            [
+                row["customer_name"],
+                row["customer_code"],
+                _format_display_date(row.get("settlement_date")),
+                row.get("settlement_type_name") or row.get("settlement_type") or "-",
+                row.get("reference_no") or "-",
+                row.get("external_voucher_no") or "-",
+                row["total_amount"],
+                row.get("status_name") or row.get("status") or "-",
+                row.get("line_count") or 0,
+                row.get("advance_reference_no") or "-",
+                row.get("source_receipt_voucher_code") or row.get("source_receipt_voucher_id") or "-",
+                row.get("currency") or "-",
+                row.get("gstin") or "-",
+                row.get("remarks") or "-",
+            ]
+            for row in data["rows"]
+        ]
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"{customer_label} | "
+            f"Type: {_settlement_type_label(scope.get('settlement_type'))} | "
+            f"Status: {_settlement_status_label(scope.get('status'))}"
+        )
+        return scope, data, headers, rows, subtitle
+
+
+class CollectionsHistoryExcelAPIView(_CollectionsHistoryExportMixin):
+    def get(self, request):
+        scope, _data, headers, rows, subtitle = self.report_data(request)
+        content = _write_excel("Collections History Report", subtitle, headers, rows, numeric_columns={7, 9})
+        return self.export_response(
+            filename=f"CollectionsHistory_{_safe_filename(subtitle)}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class CollectionsHistoryCSVAPIView(_CollectionsHistoryExportMixin):
+    def get(self, request):
+        scope, _data, headers, rows, subtitle = self.report_data(request)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"CollectionsHistory_{_safe_filename(subtitle)}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class CollectionsHistoryPDFAPIView(_CollectionsHistoryExportMixin):
+    def get(self, request):
+        scope, _data, headers, rows, subtitle = self.report_data(request)
+        content = _write_pdf("Collections History Report", subtitle, headers, rows)
+        return self.export_response(
+            filename=f"CollectionsHistory_{_safe_filename(subtitle)}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class CollectionsHistoryPrintAPIView(CollectionsHistoryPDFAPIView):
     export_mode = "inline"
 
 
@@ -541,13 +862,13 @@ class _ReceivableAgingExportMixin(_BaseReceivableExportAPIView):
         if (scope.get("view") or "summary") == "invoice":
             headers = [
                 "Customer",
-                "Customer Code",
-                "Invoice Number",
-                "Invoice Date",
+                "Code",
+                "Invoice No",
+                "Inv Date",
                 "Due Date",
-                "Credit Days",
-                "Invoice Amount",
-                "Received Amount",
+                "Cr Days",
+                "Invoice Amt",
+                "Received",
                 "Balance",
                 "Current",
                 "1-30",
@@ -581,18 +902,18 @@ class _ReceivableAgingExportMixin(_BaseReceivableExportAPIView):
         else:
             headers = [
                 "Customer",
-                "Customer Code",
+                "Code",
                 "Outstanding",
-                "Overdue Amount",
+                "Overdue",
                 "Current",
                 "1-30",
                 "31-60",
                 "61-90",
                 "90+",
-                "Unapplied Receipt",
+                "Unapplied",
                 "Credit Limit",
-                "Credit Days",
-                "Last Payment Date",
+                "Cr Days",
+                "Last Pay",
                 "Currency",
             ]
             rows = [

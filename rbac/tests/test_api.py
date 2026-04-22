@@ -259,6 +259,188 @@ class RBACAPITests(TestCase):
         self.assertIsNotNone(found)
         self.assertEqual(found["route_path"], "/reports/receivables/receivable-aging")
 
+    def test_receivable_aging_detail_menu_is_visible_to_receivables_roles(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_rad")
+        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging_detail")
+        parent_permission = Permission.objects.get(code="reports.financial_hub.view")
+        hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
+        menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging_detail.view")
+        aging_permission = Permission.objects.get(code="reports.accounts_receivable_aging.view")
+        RolePermission.objects.create(role=role, permission=parent_permission)
+        RolePermission.objects.create(role=role, permission=hub_permission)
+        RolePermission.objects.create(role=role, permission=menu_permission)
+        RolePermission.objects.create(role=role, permission=aging_permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/reports/receivables/receivable-aging-detail")
+
+    def test_overdue_customers_menu_is_visible_to_receivables_roles(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_oc")
+        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.overdue_customers")
+        parent_permission = Permission.objects.get(code="reports.financial_hub.view")
+        hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
+        menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.overdue_customers.view")
+        outstanding_permission = Permission.objects.get(code="reports.outstanding.view")
+        RolePermission.objects.create(role=role, permission=parent_permission)
+        RolePermission.objects.create(role=role, permission=hub_permission)
+        RolePermission.objects.create(role=role, permission=menu_permission)
+        RolePermission.objects.create(role=role, permission=outstanding_permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/reports/receivables/overdue-customers")
+
+    def test_credit_exposure_menu_is_visible_to_receivables_roles(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_ce")
+        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.credit_exposure")
+        parent_permission = Permission.objects.get(code="reports.financial_hub.view")
+        hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
+        menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.credit_exposure.view")
+        outstanding_permission = Permission.objects.get(code="reports.outstanding.view")
+        RolePermission.objects.create(role=role, permission=parent_permission)
+        RolePermission.objects.create(role=role, permission=hub_permission)
+        RolePermission.objects.create(role=role, permission=menu_permission)
+        RolePermission.objects.create(role=role, permission=outstanding_permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/reports/receivables/credit-exposure")
+
+    def test_open_items_menu_is_visible_to_receivables_roles(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_oi")
+        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.open_items")
+        parent_permission = Permission.objects.get(code="reports.financial_hub.view")
+        hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
+        menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.open_items.view")
+        export_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.open_items.export")
+        outstanding_permission = Permission.objects.get(code="reports.outstanding.view")
+        RolePermission.objects.create(role=role, permission=parent_permission)
+        RolePermission.objects.create(role=role, permission=hub_permission)
+        RolePermission.objects.create(role=role, permission=menu_permission)
+        RolePermission.objects.create(role=role, permission=export_permission)
+        RolePermission.objects.create(role=role, permission=outstanding_permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/reports/receivables/open-items")
+
+    def test_collections_history_menu_is_visible_to_receivables_roles(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_ch")
+        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.collections_history")
+        parent_permission = Permission.objects.get(code="reports.financial_hub.view")
+        hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
+        menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.collections_history.view")
+        permission = Permission.objects.get(code="reports.outstanding.view")
+        RolePermission.objects.create(role=role, permission=parent_permission)
+        RolePermission.objects.create(role=role, permission=hub_permission)
+        RolePermission.objects.create(role=role, permission=menu_permission)
+        RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/reports/receivables/collections-history")
+
+    def test_receivables_exceptions_menu_is_visible_to_receivables_roles(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_re")
+        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.receivables_exception_report")
+        parent_permission = Permission.objects.get(code="reports.financial_hub.view")
+        hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
+        menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.receivables_exception_report.view")
+        outstanding_permission = Permission.objects.get(code="reports.outstanding.view")
+        RolePermission.objects.create(role=role, permission=parent_permission)
+        RolePermission.objects.create(role=role, permission=hub_permission)
+        RolePermission.objects.create(role=role, permission=menu_permission)
+        RolePermission.objects.create(role=role, permission=outstanding_permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/reports/receivables/exceptions")
+
     def test_effective_access_preview_denies_when_requester_has_only_future_assignment(self):
         role = Role.objects.create(entity=self.entity_a, name="Reports User", code="REPORTS_USER")
         permission = Permission.objects.create(
