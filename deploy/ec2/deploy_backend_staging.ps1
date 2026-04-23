@@ -1,10 +1,24 @@
 $ErrorActionPreference = "Stop"
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Command,
+        [Parameter(Mandatory = $true)]
+        [string]$FailureMessage
+    )
+
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage Exit code: $LASTEXITCODE"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Staging backend deploy helper
 # Update these values only if your staging server/path changes.
 # ---------------------------------------------------------------------------
-$PemPath = "C:\pem\bansalrenu.pem"
+$PemPath = Join-Path $HOME ".ssh\bansalrenu.pem"
 $RemoteUser = "ubuntu"
 $RemoteHost = "16.16.166.34"
 $RemoteProjectDir = "/home/ubuntu/Finacc"
@@ -12,6 +26,10 @@ $RemoteBranch = "master"
 $RemoteService = "finacc-gunicorn"
 
 Write-Host "Deploying backend to staging..." -ForegroundColor Cyan
+
+if (-not (Test-Path $PemPath)) {
+    throw "SSH key not found at $PemPath"
+}
 
 $remoteCommand = @"
 set -e
@@ -46,6 +64,14 @@ python manage.py collectstatic --noinput
 echo 'Running Django system checks...'
 python manage.py check
 
+echo 'Ensuring media directories are writable...'
+sudo mkdir -p /home/ubuntu/Finacc/media/barcodes
+sudo mkdir -p /home/ubuntu/Finacc/media/products
+sudo mkdir -p /home/ubuntu/Finacc/media/purchase
+sudo chown -R ubuntu:www-data /home/ubuntu/Finacc/media
+sudo find /home/ubuntu/Finacc/media -type d -exec chmod 775 {} \;
+sudo find /home/ubuntu/Finacc/media -type f -exec chmod 664 {} \;
+
 echo 'Restarting Gunicorn...'
 sudo systemctl restart '$RemoteService'
 sudo systemctl status '$RemoteService' --no-pager
@@ -57,7 +83,9 @@ sudo systemctl reload nginx
 echo 'Backend deploy complete.'
 "@
 
-& ssh -i $PemPath "${RemoteUser}@${RemoteHost}" $remoteCommand
+Invoke-NativeCommand -FailureMessage "Backend deploy failed." -Command {
+    ssh -i $PemPath "${RemoteUser}@${RemoteHost}" $remoteCommand
+}
 
 Write-Host ""
 Write-Host "Staging backend deploy completed successfully." -ForegroundColor Green

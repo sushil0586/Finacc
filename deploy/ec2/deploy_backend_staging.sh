@@ -47,6 +47,14 @@ python manage.py collectstatic --noinput
 echo 'Running Django system checks...'
 python manage.py check
 
+echo 'Ensuring media directories are writable...'
+sudo mkdir -p /home/ubuntu/Finacc/media/barcodes
+sudo mkdir -p /home/ubuntu/Finacc/media/products
+sudo mkdir -p /home/ubuntu/Finacc/media/purchase
+sudo chown -R ubuntu:www-data /home/ubuntu/Finacc/media
+sudo find /home/ubuntu/Finacc/media -type d -exec chmod 775 {} \;
+sudo find /home/ubuntu/Finacc/media -type f -exec chmod 664 {} \;
+
 echo 'Restarting Gunicorn...'
 sudo systemctl restart '$REMOTE_SERVICE'
 sudo systemctl status '$REMOTE_SERVICE' --no-pager

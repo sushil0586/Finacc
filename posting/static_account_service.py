@@ -75,6 +75,7 @@ class StaticAccountMappingService:
         cls,
         *,
         entity_id: int,
+        sub_entity_id: Optional[int],
         effective_on: Optional[date],
     ) -> Dict[Tuple[Optional[int], int], EntityStaticAccountMap]:
         qs = (
@@ -83,8 +84,21 @@ class StaticAccountMappingService:
                 is_active=True,
                 static_account__is_active=True,
             )
-            .select_related("static_account", "account", "ledger", "sub_entity")
+            .only(
+                "id",
+                "sub_entity_id",
+                "static_account_id",
+                "account_id",
+                "ledger_id",
+                "effective_from",
+            )
         )
+        # Scope-aware filtering drastically reduces scanned rows when an entity
+        # has many historical sub-entity mappings.
+        if sub_entity_id is None:
+            qs = qs.filter(sub_entity__isnull=True)
+        else:
+            qs = qs.filter(Q(sub_entity_id=sub_entity_id) | Q(sub_entity__isnull=True))
         if effective_on:
             qs = qs.filter(Q(effective_from__lte=effective_on) | Q(effective_from__isnull=True))
 
@@ -108,7 +122,11 @@ class StaticAccountMappingService:
             .order_by("sort_order", "code")
             .only("id", "code", "name", "group", "is_required", "description")
         )
-        map_lookup = cls._collect_maps(entity_id=entity_id, effective_on=effective_on)
+        map_lookup = cls._collect_maps(
+            entity_id=entity_id,
+            sub_entity_id=sub_entity_id,
+            effective_on=effective_on,
+        )
 
         summary = {
             "configured": 0,

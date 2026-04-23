@@ -9,7 +9,6 @@ from rest_framework.exceptions import ValidationError
 
 from posting.serializers import (
     StaticAccountRowSerializer,
-    StaticAccountSettingsResponseSerializer,
     StaticAccountUpsertSerializer,
     StaticAccountBulkUpsertSerializer,
     StaticAccountValidationResponseSerializer,
@@ -54,9 +53,7 @@ class StaticAccountSettingsView(APIView):
             "summary": resolved["summary"],
             "groups": groups,
         }
-        serializer = StaticAccountSettingsResponseSerializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        return Response(serializer.data)
+        return Response(data)
 
 
 class StaticAccountSettingDetailView(APIView):
