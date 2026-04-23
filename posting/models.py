@@ -116,6 +116,14 @@ class EntityStaticAccountMap(models.Model):
             Index(fields=["entity", "account"], name="ix_esam_entity_account"),
             Index(fields=["entity", "ledger"], name="ix_esam_entity_ledger"),
             Index(fields=["static_account"], name="ix_esam_static"),
+            Index(
+                fields=["entity", "is_active", "sub_entity", "effective_from"],
+                name="ix_esam_scope_eff",
+            ),
+            Index(
+                fields=["entity", "is_active", "sub_entity", "static_account"],
+                name="ix_esam_scope_static",
+            ),
         ]
 
     def __str__(self) -> str:

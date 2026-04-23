@@ -69,6 +69,7 @@ This script:
 - runs migrations
 - runs `collectstatic`
 - runs checks
+- ensures media subfolders are writable (`barcodes`, `products`, `purchase`)
 - restarts Gunicorn
 - reloads Nginx
 

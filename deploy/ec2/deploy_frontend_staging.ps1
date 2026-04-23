@@ -1,11 +1,25 @@
 $ErrorActionPreference = "Stop"
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Command,
+        [Parameter(Mandatory = $true)]
+        [string]$FailureMessage
+    )
+
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage Exit code: $LASTEXITCODE"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Staging frontend deploy helper
 # Update these values only if your staging server/path changes.
 # ---------------------------------------------------------------------------
 $AngularProjectPath = "C:\educure\Finacc\accountproject"
-$PemPath = "C:\pem\bansalrenu.pem"
+$PemPath = Join-Path $HOME ".ssh\bansalrenu.pem"
 $RemoteUser = "ubuntu"
 $RemoteHost = "16.16.166.34"
 $RemoteWebRoot = "/var/www/accerio"
@@ -30,8 +44,14 @@ if (-not (Test-Path $BuildOutputPath)) {
     throw "Build output not found: $BuildOutputPath"
 }
 
+if (-not (Test-Path $PemPath)) {
+    throw "SSH key not found at $PemPath"
+}
+
 Write-Host "Uploading build files to staging..." -ForegroundColor Cyan
-& scp -i $PemPath -r "$BuildOutputPath\*" "${RemoteUser}@${RemoteHost}:${RemoteWebRoot}/"
+Invoke-NativeCommand -FailureMessage "Frontend upload failed." -Command {
+    scp -i $PemPath -r "$BuildOutputPath\*" "${RemoteUser}@${RemoteHost}:${RemoteWebRoot}/"
+}
 
 Write-Host "Running remote post-deploy steps..." -ForegroundColor Cyan
 $remoteCommand = @"
@@ -46,7 +66,9 @@ sudo systemctl reload nginx
 echo 'Frontend deploy complete.'
 "@
 
-& ssh -i $PemPath "${RemoteUser}@${RemoteHost}" $remoteCommand
+Invoke-NativeCommand -FailureMessage "Remote frontend post-deploy steps failed." -Command {
+    ssh -i $PemPath "${RemoteUser}@${RemoteHost}" $remoteCommand
+}
 
 Write-Host ""
 Write-Host "Staging frontend deploy completed successfully." -ForegroundColor Green

@@ -233,6 +233,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     location = serializers.PrimaryKeyRelatedField(queryset=Godown.objects.all(), required=False, allow_null=True)
+    place_of_supply_state_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2)
+    place_of_supply_pincode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=8)
 
     # display fields
     doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
@@ -443,6 +445,12 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
+        # Normalize nullable char inputs sent by frontend as null so model-level
+        # CharField(blank=True, default="") can persist safely.
+        for field in ("place_of_supply_state_code", "place_of_supply_pincode"):
+            if field in attrs and attrs[field] is None:
+                attrs[field] = ""
+
         # hard-block backend-controlled fields if UI tries to push them
         blocked = {
             "status",
