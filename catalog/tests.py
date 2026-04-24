@@ -2,12 +2,13 @@ from tempfile import TemporaryDirectory
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 
-from catalog.models import BarcodeLabelTemplate, HsnSac, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductPrice, UnitOfMeasure
+from catalog.models import BarcodeLabelTemplate, HsnSac, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPrice, UnitOfMeasure
 from catalog.serializers import ProductBarcodeManageSerializer, ProductSerializer
 from catalog.transaction_products import TransactionProductCatalogService
 from catalog.views import ProductBarcodeDownloadPDFAPIView
@@ -675,6 +676,28 @@ class CatalogPhase1Tests(TestCase):
 
             self.assertNotEqual(before_bytes, after_bytes)
             self.assertEqual(barcode.barcode, "2222222222222")
+
+    def test_barcode_image_stores_under_entity_prefix(self):
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            barcode = ProductBarcode.objects.create(
+                product=self._create_product(productname="Entity Prefix Product", sku="EPP-001"),
+                uom=self.uom,
+                pack_size=1,
+                isprimary=True,
+                barcode="3333333333333",
+            )
+
+            self.assertTrue(barcode.barcode_image)
+            self.assertIn(f"entities/{self.entity.id}/barcodes/", barcode.barcode_image.name)
+
+    def test_product_image_stores_under_entity_prefix(self):
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            product = self._create_product(productname="Entity Image Product", sku="EIP-001")
+            image_file = SimpleUploadedFile("product.png", b"\x89PNG\r\n\x1a\n", content_type="image/png")
+            product_image = ProductImage.objects.create(product=product, image=image_file, is_primary=True)
+
+            self.assertTrue(product_image.image)
+            self.assertIn(f"entities/{self.entity.id}/products/", product_image.image.name)
 
     def test_barcode_resolution_rejects_duplicate_codes(self):
         first_product = Product.objects.create(

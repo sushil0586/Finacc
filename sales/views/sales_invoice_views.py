@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from django.db.models import Prefetch
+from django.db.models import Exists, OuterRef, Prefetch
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics, status
@@ -88,12 +88,7 @@ class _SalesScopeMixin:
 
     def _scoped_queryset(self):
         qs = SalesInvoiceHeader.objects.filter(**self._scope_filters(self.request))
-        line_mode = self._get_line_mode()
-        if line_mode == "service":
-            qs = qs.filter(lines__is_service=True).distinct()
-        elif line_mode == "goods":
-            qs = qs.filter(lines__is_service=False).distinct()
-        return qs
+        return self._apply_line_mode_filter(qs)
 
     def _get_scoped_header(self, pk: int) -> SalesInvoiceHeader:
         return get_object_or_404(self._scoped_queryset(), pk=pk)
@@ -105,6 +100,17 @@ class _SalesScopeMixin:
         if raw in ("service", "goods"):
             return raw
         return None
+
+    def _apply_line_mode_filter(self, qs):
+        line_mode = self._get_line_mode()
+        if line_mode not in ("service", "goods"):
+            return qs
+        desired_is_service = line_mode == "service"
+        matching_lines = SalesInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=desired_is_service,
+        )
+        return qs.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
 
 
 class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView):
@@ -122,11 +128,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             )
         qs = (
             self._scoped_queryset()
-            .select_related(
-                "customer",
-                "customer__ledger",
-                "subentity",
-            )
+            .select_related("customer", "customer__ledger", "subentity")
             .order_by("-doc_no")
         )
 
@@ -161,13 +163,29 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         if search:
             qs = qs.filter(invoice_number__icontains=search)
 
-        line_mode = self._get_line_mode()
-        if line_mode == "service":
-            qs = qs.filter(lines__is_service=True).distinct()
-        elif line_mode == "goods":
-            qs = qs.filter(lines__is_service=False).distinct()
-
-        return qs
+        return qs.select_related(None).select_related(
+            "customer",
+            "customer__ledger",
+            "subentity",
+        ).only(
+            "id",
+            "doc_code",
+            "doc_type",
+            "invoice_number",
+            "status",
+            "customer_id",
+            "customer_name",
+            "bill_date",
+            "grand_total",
+            "outstanding_amount",
+            "subentity_id",
+            "location_id",
+            "customer__accountname",
+            "customer__ledger_id",
+            "customer__ledger__ledger_code",
+            "customer__ledger__name",
+            "subentity__subentityname",
+        )
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())

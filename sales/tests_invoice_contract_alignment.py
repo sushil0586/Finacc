@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -17,7 +19,6 @@ from entity.models import (
     EntityGstRegistration,
     GstRegistrationType,
     SubEntity,
-    UnitType,
 )
 from financial.models import (
     AccountCommercialProfile,
@@ -30,8 +31,11 @@ from financial.models import (
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
+from sales.models.sales_settings import SalesChoiceOverride
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.services.sales_choices_service import SalesChoicesService
+from sales.services.sales_settings_service import SalesSettingsService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -40,18 +44,17 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(username="sales-ui", email="sales-ui@example.com", password="pass123")
         self.client.force_authenticate(user=self.user)
+        cache.clear()
 
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
         self.other_state = State.objects.create(statename="Karnataka", statecode="29", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="Mumbai", citycode="MUM", pincode="400001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Sales Contract Entity",
             legalname="Sales Contract Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -152,6 +155,89 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(contract["header_fields"]["due_date"]["ui_state"], "read_only")
         self.assertEqual(contract["header_fields"]["tax_regime"]["ui_state"], "read_only")
         self.assertEqual(contract["line_fields"]["cess_amount"]["ui_state"], "provisional")
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_sales_form_meta_uses_cache_on_repeated_requests(self):
+        with patch(
+            "sales.views.sales_meta.SalesChoicesService.get_choices",
+            wraps=SalesChoicesService.get_choices,
+        ) as mocked_get_choices:
+            for _ in range(2):
+                response = self.client.get(
+                    reverse("sales-invoice-form-meta"),
+                    {"entity": self.entity.id, "subentity": self.subentity.id},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_get_choices.call_count, 1)
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_SETTINGS_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_sales_settings_meta_uses_cache_on_repeated_requests(self):
+        with patch(
+            "sales.views.sales_meta.SalesSettingsService.get_current_doc_no",
+            wraps=SalesSettingsService.get_current_doc_no,
+        ) as mocked_doc_no:
+            for _ in range(2):
+                response = self.client.get(
+                    reverse("sales-settings-meta"),
+                    {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+            # invoice + credit note + debit note only once when cache is effective
+            self.assertEqual(mocked_doc_no.call_count, 3)
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_sales_form_meta_cache_invalidates_on_choice_override_change(self):
+        with patch(
+            "sales.views.sales_meta.SalesChoicesService.get_choices",
+            wraps=SalesChoicesService.get_choices,
+        ) as mocked_get_choices:
+            response = self.client.get(
+                reverse("sales-invoice-form-meta"),
+                {"entity": self.entity.id, "subentity": self.subentity.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_get_choices.call_count, 1)
+
+            SalesChoiceOverride.objects.create(
+                entity=self.entity,
+                subentity=self.subentity,
+                choice_group="DocType",
+                choice_key="TAX_INVOICE",
+                is_enabled=True,
+            )
+
+            response = self.client.get(
+                reverse("sales-invoice-form-meta"),
+                {"entity": self.entity.id, "subentity": self.subentity.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_get_choices.call_count, 2)
+
+    @override_settings(
+        META_CACHE_ENABLED=True,
+        META_CACHE_FORM_TTL_SECONDS=600,
+        META_CACHE_VERSION="test",
+        META_CACHE_OBSERVABILITY_ENABLED=True,
+        META_CACHE_LOG_LEVEL="INFO",
+    )
+    def test_sales_form_meta_emits_cache_observability_events(self):
+        with self.assertLogs("helpers.utils.meta_cache", level="INFO") as captured:
+            for _ in range(2):
+                response = self.client.get(
+                    reverse("sales-invoice-form-meta"),
+                    {"entity": self.entity.id, "subentity": self.subentity.id},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+
+        output = "\n".join(captured.output)
+        self.assertIn("meta_cache.miss", output)
+        self.assertIn("meta_cache.store", output)
+        self.assertIn("meta_cache.hit", output)
 
     def test_sales_header_serializer_ignores_selected_backend_derived_fields(self):
         serializer = SalesInvoiceHeaderSerializer(

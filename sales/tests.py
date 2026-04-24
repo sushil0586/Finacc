@@ -15,6 +15,8 @@ from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.compliance_error_catalog_service import ComplianceErrorCatalogService
 from sales.services.eway_payload_builder import EWayInput, build_generate_eway_payload
 from sales.services.sales_compliance_service import SalesComplianceService
+from sales.services.sales_nav_service import SalesInvoiceNavService
+from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.providers.mastergst import _extract_error
 from sales.views.sales_invoice_views import (
     SalesInvoiceCancelAPIView,
@@ -560,6 +562,67 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(serializer_request.method, "POST")
         self.assertEqual(serializer_request.query_params.get("line_mode"), expected_line_mode)
         self.assertEqual(serializer_kwargs["context"]["line_mode"], expected_line_mode)
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    def test_list_queryset_uses_exists_for_line_mode_filter(self, mocked_require_permission):
+        request = self.factory.get("/api/sales/invoices/?entity=1&line_mode=goods")
+        force_authenticate(request, user=self.user)
+
+        view = SalesInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view.get_queryset()
+        sql = str(queryset.query).upper()
+
+        self.assertIn("EXISTS(", sql)
+        self.assertNotIn(" DISTINCT ", sql)
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    def test_list_queryset_selects_customer_related_ledger(self, mocked_require_permission):
+        request = self.factory.get("/api/sales/invoices/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        view = SalesInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view.get_queryset()
+        select_related = queryset.query.select_related
+
+        self.assertIn("customer", select_related)
+        self.assertIn("ledger", select_related["customer"])
+        self.assertIn("subentity", select_related)
+
+    def test_nav_scope_queryset_uses_exists_for_line_mode_filter(self):
+        queryset = SalesInvoiceNavService._scope_qs(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="SI",
+            allowed_statuses=SalesInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            line_mode="goods",
+        )
+        sql = str(queryset.query).upper()
+        self.assertIn("EXISTS(", sql)
+        self.assertNotIn(" DISTINCT ", sql)
+
+    def test_last_saved_doc_scope_queryset_uses_subentity_isnull(self):
+        with patch("sales.services.sales_settings_service.SalesInvoiceHeader.objects.filter") as mocked_filter:
+            mocked_filter.return_value.only.return_value.order_by.return_value.first.return_value = None
+
+            SalesSettingsService._last_saved_doc_in_scope(
+                entity_id=10,
+                entityfinid_id=8,
+                subentity_id=None,
+                doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            )
+
+        mocked_filter.assert_called_once_with(
+            entity_id=10,
+            entityfinid_id=8,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            subentity_id__isnull=True,
+        )
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
     @patch("sales.views.sales_invoice_views.SalesInvoiceService.confirm")

@@ -165,7 +165,7 @@ STANDARD_TRADING_TEMPLATE = {
         {"code": 2000, "name": "Bank", "head_code": 2000, "party_type": "Bank"},
         {"code": 3000, "name": "Sale", "head_code": 3000, "party_type": "Other"},
         {"code": 4000, "name": "Cash", "head_code": 4000, "party_type": "Other"},
-        {"code": 6000, "name": "Advance Payable", "head_code": 6000, "credit_head_code": 6100, "party_type": "Other"},
+        {"code": 6000, "name": "Advance Payable", "head_code": 6000, "credit_head_code": 6000, "party_type": "Other"},
         {"code": 6100, "name": "Advance Recoverable", "head_code": 6100, "party_type": "Other"},
         {"code": 6501, "name": "Input CGST", "head_code": 6500, "party_type": "Government"},
         {"code": 6502, "name": "Input SGST", "head_code": 6500, "party_type": "Government"},

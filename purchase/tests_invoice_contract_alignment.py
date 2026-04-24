@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -29,7 +31,10 @@ from financial.models import (
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from purchase.serializers.purchase_invoice import PurchaseInvoiceLineSerializer
+from purchase.models.purchase_config import PurchaseChoiceOverride
 from purchase.services.purchase_invoice_service import DerivedRegime, PurchaseInvoiceService
+from purchase.services.purchase_choice_service import PurchaseChoiceService
+from purchase.services.purchase_settings_service import PurchaseSettingsService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -38,6 +43,7 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(username="purchase-ui", email="purchase-ui@example.com", password="pass123")
         self.client.force_authenticate(user=self.user)
+        cache.clear()
 
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
@@ -140,6 +146,101 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(contract["header_fields"]["total_taxable"]["ui_state"], "read_only")
         self.assertEqual(contract["line_fields"]["cgst_amount"]["ui_state"], "read_only")
         self.assertEqual(contract["line_fields"]["cess_amount"]["save_behavior"], "recomputed_on_save")
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_purchase_form_meta_uses_cache_on_repeated_requests(self):
+        with patch(
+            "purchase.views.purchase_meta.PurchaseChoiceService.compile_choices",
+            wraps=PurchaseChoiceService.compile_choices,
+        ) as mocked_compile_choices:
+            for _ in range(2):
+                response = self.client.get(
+                    reverse("purchase-invoice-form-meta"),
+                    {"entity": self.entity.id, "subentity": self.subentity.id, "entityfinid": self.entityfin.id},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_compile_choices.call_count, 1)
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_SETTINGS_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_purchase_settings_meta_uses_cache_on_repeated_requests(self):
+        with patch(
+            "purchase.views.purchase_meta.PurchaseSettingsService.get_settings",
+            wraps=PurchaseSettingsService.get_settings,
+        ) as mocked_get_settings:
+            # Warmup call can create default settings and trigger one-time invalidation.
+            response = self.client.get(
+                reverse("purchase-settings-meta"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+            response = self.client.get(
+                reverse("purchase-settings-meta"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            calls_after_second = mocked_get_settings.call_count
+
+            # Third call should be a pure cache hit (no additional get_settings call).
+            response = self.client.get(
+                reverse("purchase-settings-meta"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_get_settings.call_count, calls_after_second)
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_purchase_form_meta_cache_invalidates_on_choice_override_change(self):
+        with patch(
+            "purchase.views.purchase_meta.PurchaseChoiceService.compile_choices",
+            wraps=PurchaseChoiceService.compile_choices,
+        ) as mocked_compile_choices:
+            response = self.client.get(
+                reverse("purchase-invoice-form-meta"),
+                {"entity": self.entity.id, "subentity": self.subentity.id, "entityfinid": self.entityfin.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_compile_choices.call_count, 1)
+
+            PurchaseChoiceOverride.objects.create(
+                entity=self.entity,
+                subentity=self.subentity,
+                choice_group="Taxability",
+                choice_key="TAXABLE",
+                is_enabled=True,
+            )
+
+            response = self.client.get(
+                reverse("purchase-invoice-form-meta"),
+                {"entity": self.entity.id, "subentity": self.subentity.id, "entityfinid": self.entityfin.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mocked_compile_choices.call_count, 2)
+
+    @override_settings(
+        META_CACHE_ENABLED=False,
+        META_CACHE_FORM_TTL_SECONDS=600,
+        META_CACHE_VERSION="test",
+        META_CACHE_OBSERVABILITY_ENABLED=True,
+        META_CACHE_LOG_LEVEL="INFO",
+    )
+    def test_purchase_form_meta_emits_disabled_cache_observability_event(self):
+        with self.assertLogs("helpers.utils.meta_cache", level="INFO") as captured:
+            response = self.client.get(
+                reverse("purchase-invoice-form-meta"),
+                {"entity": self.entity.id, "subentity": self.subentity.id, "entityfinid": self.entityfin.id},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        output = "\n".join(captured.output)
+        self.assertIn("meta_cache.disabled", output)
 
     def test_purchase_apply_dates_derives_due_date_and_posting_date(self):
         attrs = {"bill_date": date(2025, 4, 10), "credit_days": 7}

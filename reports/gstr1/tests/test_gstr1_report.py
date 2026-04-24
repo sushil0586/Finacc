@@ -370,6 +370,52 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(data.get("count"), 1)
         self.assertEqual(data["results"][0]["invoice_number"], "BIG-001")
 
+    def test_section_smart_filters_min_gst_rate(self):
+        self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="GST18-001",
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            hsn_code="1001",
+        )
+        header = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="GST05-001",
+            taxable="100.00",
+            cgst="2.50",
+            sgst="2.50",
+            hsn_code="1002",
+        )
+        header.tax_summaries.all().delete()
+        SalesTaxSummary.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=header,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            hsn_sac_code="1002",
+            is_service=False,
+            gst_rate=Decimal("5.00"),
+            taxable_value=Decimal("100.00"),
+            cgst_amount=Decimal("2.50"),
+            sgst_amount=Decimal("2.50"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+        )
+
+        response = self.client.get(
+            self.section_url("B2B"),
+            {
+                **self.base_params,
+                "min_gst_rate": "12.00",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get("count"), 1)
+        self.assertEqual(data["results"][0]["invoice_number"], "GST18-001")
+
     def test_validation_warnings(self):
         self._create_sales_document(
             customer=self.customer_alpha,

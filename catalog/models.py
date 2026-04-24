@@ -3,6 +3,7 @@
 # - No existing field/column names removed/renamed.
 # - Only ADDITIONS + validations/constraints to make GST handling robust.
 
+import os
 from decimal import Decimal
 from io import BytesIO
 from django.db import transaction
@@ -29,6 +30,25 @@ try:
 except ImportError:
     Code128 = None
     ImageWriter = None
+
+
+def _normalize_upload_filename(filename: str, fallback: str) -> str:
+    name = os.path.basename(str(filename or "")).strip()
+    if not name:
+        return fallback
+    return name.replace(" ", "_")
+
+
+def product_barcode_upload_to(instance, filename: str) -> str:
+    entity_id = getattr(instance, "entity_id", None) or getattr(getattr(instance, "product", None), "entity_id", None)
+    safe_filename = _normalize_upload_filename(filename, "barcode.png")
+    return f"entities/{entity_id or 'unknown'}/barcodes/{safe_filename}"
+
+
+def product_image_upload_to(instance, filename: str) -> str:
+    entity_id = getattr(getattr(instance, "product", None), "entity_id", None)
+    safe_filename = _normalize_upload_filename(filename, "product-image")
+    return f"entities/{entity_id or 'unknown'}/products/{safe_filename}"
 
 
 # ----------------------------------------------------------------------
@@ -584,7 +604,7 @@ class ProductBarcode(TimeStampedModel):
     )
 
     barcode_image = models.ImageField(
-        upload_to='barcodes/',
+        upload_to=product_barcode_upload_to,
         blank=True,
         null=True,
         help_text="Auto-generated barcode image",
@@ -1020,7 +1040,7 @@ class ProductImage(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name='images'
     )
-    image = models.ImageField(upload_to='products/', blank=True, null=True)
+    image = models.ImageField(upload_to=product_image_upload_to, blank=True, null=True)
     is_primary = models.BooleanField(default=False)
     caption = models.CharField(max_length=255, blank=True)
 

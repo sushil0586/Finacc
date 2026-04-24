@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from django.db.models import DecimalField, Max, Q, QuerySet, Value
+from django.db.models import DecimalField, Exists, OuterRef, Q, QuerySet, Value
 from django.db.models.functions import Coalesce
 
-from sales.models import SalesInvoiceHeader
+from sales.models import SalesInvoiceHeader, SalesTaxSummary
 
 from reports.gstr1.selectors.scope import Gstr1FilterParams
 from reports.gstr1.selectors.smart_filters import Gstr1SmartFilters
@@ -38,8 +38,6 @@ def apply_scope_filters(queryset: QuerySet, scope: Gstr1FilterParams) -> QuerySe
 def apply_smart_filters(queryset: QuerySet, filters: Gstr1SmartFilters) -> QuerySet:
     if not filters or not filters.has_filters:
         return queryset
-
-    needs_distinct = False
 
     if filters.search:
         query = filters.search
@@ -79,15 +77,12 @@ def apply_smart_filters(queryset: QuerySet, filters: Gstr1SmartFilters) -> Query
         queryset = queryset.filter(status=filters.status)
 
     if filters.min_gst_rate is not None:
+        matching_tax_summary = SalesTaxSummary.objects.filter(
+            header_id=OuterRef("pk"),
+            gst_rate__gte=filters.min_gst_rate,
+        )
         queryset = queryset.annotate(
-            max_gst_rate=Coalesce(
-                Max("tax_summaries__gst_rate"),
-                Value(0, output_field=DecimalField(max_digits=9, decimal_places=2)),
-            )
-        ).filter(max_gst_rate__gte=filters.min_gst_rate)
-        needs_distinct = True
-
-    if needs_distinct:
-        queryset = queryset.distinct()
+            has_matching_tax_rate=Exists(matching_tax_summary)
+        ).filter(has_matching_tax_rate=True)
 
     return queryset

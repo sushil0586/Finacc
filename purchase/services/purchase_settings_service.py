@@ -306,6 +306,31 @@ class PurchaseSettingsService:
         return int(DocType.TAX_INVOICE)
 
     @staticmethod
+    def _last_saved_doc_in_scope(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_type: int,
+    ):
+        inv_filters = {
+            "entity_id": entity_id,
+            "entityfinid_id": entityfinid_id,
+            "doc_type": doc_type,
+        }
+        if subentity_id is None:
+            inv_filters["subentity_id__isnull"] = True
+        else:
+            inv_filters["subentity_id"] = subentity_id
+
+        return (
+            PurchaseInvoiceHeader.objects.filter(**inv_filters)
+            .only("id", "purchase_number", "doc_no", "status", "bill_date")
+            .order_by("-id")
+            .first()
+        )
+
+    @staticmethod
     def get_current_doc_no(
         *,
         entity_id: int,
@@ -371,21 +396,11 @@ class PurchaseSettingsService:
         purchase_doc_type = PurchaseSettingsService._purchase_doc_type_from_doc_key(doc_key)
 
         # 4) Previous = last saved row by id (scope: entity, FY, subentity, doc_type ONLY)
-        inv_filters = dict(
+        prev_doc = PurchaseSettingsService._last_saved_doc_in_scope(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
             doc_type=purchase_doc_type,
-        )
-        if subentity_id is None:
-            inv_filters["subentity__isnull"] = True
-        else:
-            inv_filters["subentity_id"] = subentity_id
-
-        prev_doc = (
-            PurchaseInvoiceHeader.objects.filter(**inv_filters)
-            .only("id", "purchase_number", "doc_no", "status", "bill_date")
-            .order_by("-id")
-            .first()
         )
 
         return {

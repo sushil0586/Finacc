@@ -265,10 +265,13 @@ class FinancialSeedTemplateTests(TestCase):
 
         advance_payable_head = accountHead.objects.get(entity=self.entity, code=6000)
         advance_receivable_head = accountHead.objects.get(entity=self.entity, code=6100)
+        advance_payable_ledger = Ledger.objects.get(entity=self.entity, ledger_code=6000)
         party_type = accounttype.objects.get(entity=self.entity, accounttypename="Party")
 
         self.assertEqual(advance_payable_head.accounttype.accounttypename, "Current Liabilities")
         self.assertEqual(advance_receivable_head.accounttype.accounttypename, "Current Assets")
+        self.assertEqual(advance_payable_ledger.accounthead_id, advance_payable_head.id)
+        self.assertEqual(advance_payable_ledger.creditaccounthead_id, advance_payable_head.id)
         self.assertTrue(party_type.isactive)
 
     def test_indian_accounting_final_seed_creates_static_ready_ledgers(self):
@@ -301,6 +304,15 @@ class FinancialSeedTemplateTests(TestCase):
         acc.refresh_from_db()
         self.assertEqual(acc.ledger.accounthead.code, 8000)
         self.assertEqual(acc.ledger.accounttype.accounttypename, "Current Assets")
+
+    def test_seed_marks_both_party_type_control_accounts_as_party_ledgers(self):
+        FinancialSeedService.seed_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")
+
+        creditors_control = Ledger.objects.get(entity=self.entity, ledger_code=7000)
+        debtors_control = Ledger.objects.get(entity=self.entity, ledger_code=8000)
+
+        self.assertTrue(creditors_control.is_party)
+        self.assertTrue(debtors_control.is_party)
 
     def test_account_write_serializer_persists_primary_contact_and_bank_details(self):
         head = accountHead.objects.create(

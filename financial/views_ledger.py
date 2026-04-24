@@ -1,6 +1,7 @@
-from django.db.models import Prefetch, Q
+from django.db.models import OuterRef, Prefetch, Q, Subquery
 from django.db import IntegrityError
 from rest_framework import permissions, serializers, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -80,6 +81,12 @@ def _attach_deprecation_headers(request, response):
         response["X-API-Deprecated"] = "true"
         response["X-API-Replacement"] = replacement
     return response
+
+
+class AccountProfileV2Pagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
 
 class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
@@ -638,6 +645,7 @@ class AccountListPostV2APIView(APIView):
 
 class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = AccountProfileV2Pagination
 
     def get_queryset(self):
         primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True)
@@ -679,10 +687,43 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
             if q.isdigit():
                 filters |= Q(ledger__ledger_code=int(q))
             qs = qs.filter(filters).distinct()
-        return qs.order_by("accountname")
+
+        primary_city_subquery = AccountAddress.objects.filter(
+            account_id=OuterRef("pk"),
+            isprimary=True,
+            isactive=True,
+        ).values("city__cityname")[:1]
+        qs = qs.annotate(primary_city_name=Subquery(primary_city_subquery))
+
+        ordering_raw = (self.request.query_params.get("ordering") or "").strip()
+        ordering_token = ordering_raw.split(",")[0].strip() if ordering_raw else "accountname"
+        desc = ordering_token.startswith("-")
+        ordering_key = ordering_token[1:] if desc else ordering_token
+        ordering_map = {
+            "accountname": "accountname",
+            "legalname": "legalname",
+            "partytype": "commercial_profile__partytype",
+            "gstno": "compliance_profile__gstno",
+            "pan": "compliance_profile__pan",
+            "city": "primary_city_name",
+            "status": "isactive",
+        }
+        ordering_field = ordering_map.get(ordering_key, "accountname")
+        direction = "-" if desc else ""
+        return qs.order_by(f"{direction}{ordering_field}", "id")
 
     def get_serializer_class(self):
         return AccountProfileV2ReadSerializer if self.request.method.upper() == "GET" else AccountProfileV2WriteSerializer
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        if request.query_params.get("page") or request.query_params.get("page_size"):
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
         write_serializer = self.get_serializer(data=request.data)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.db.models import Prefetch, Q
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
@@ -31,6 +32,13 @@ from sales.services.sales_compliance_service import SalesComplianceService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
+from helpers.utils.meta_cache import (
+    CACHE_EVENT_DISABLED,
+    build_meta_cache_key,
+    emit_meta_cache_event,
+    get_meta_namespace_version,
+    get_or_set_meta_cache,
+)
 
 
 def _enum_choices_to_payload(enum_cls):
@@ -49,6 +57,45 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_SALES
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def _get_cached_meta(
+        self,
+        *,
+        namespace: str,
+        entity_id: int,
+        entityfinid_id: int | None,
+        subentity_id: int | None,
+        extra: dict | None,
+        timeout: int | None,
+        loader,
+    ):
+        if not getattr(settings, "META_CACHE_ENABLED", True):
+            emit_meta_cache_event(
+                CACHE_EVENT_DISABLED,
+                namespace=namespace,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+            )
+            return loader()
+
+        namespace_version = get_meta_namespace_version(
+            namespace,
+            base_version=str(getattr(settings, "META_CACHE_VERSION", "1")),
+        )
+        versioned_namespace = f"{namespace}:v{namespace_version}"
+        cache_key = build_meta_cache_key(
+            versioned_namespace,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra=extra or {},
+        )
+        return get_or_set_meta_cache(
+            cache_key,
+            loader,
+            timeout=int(timeout or getattr(settings, "META_CACHE_TTL_SECONDS", 300)),
+        )
 
     def _parse_int(self, raw_value, field_name: str, required: bool = False):
         if raw_value in (None, "", "null", "None"):
@@ -340,7 +387,16 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
 class SalesInvoiceFormMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, _, subentity_id = self._parse_scope(request, require_entityfinid=False)
-        return Response(self._invoice_form_meta(entity_id, subentity_id))
+        payload = self._get_cached_meta(
+            namespace="sales.invoice_form_meta",
+            entity_id=entity_id,
+            entityfinid_id=None,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_FORM_TTL_SECONDS", 600),
+            loader=lambda: self._invoice_form_meta(entity_id, subentity_id),
+        )
+        return Response(payload)
 
 
 class SalesInvoiceDetailFormMetaAPIView(SalesMetaBaseAPIView):
@@ -695,6 +751,18 @@ class SalesArSettlementFormMetaAPIView(SalesMetaBaseAPIView):
 class SalesSettingsMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        payload = self._get_cached_meta(
+            namespace="sales.settings_meta",
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_SETTINGS_TTL_SECONDS", 300),
+            loader=lambda: self._build_settings_meta_payload(entity_id, entityfinid_id, subentity_id),
+        )
+        return Response(payload)
+
+    def _build_settings_meta_payload(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
         seller = SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id)
         settings_obj = SalesInvoiceService.get_settings(entity_id, subentity_id)
         current_doc_numbers = {
@@ -720,18 +788,16 @@ class SalesSettingsMetaAPIView(SalesMetaBaseAPIView):
                 doc_code=settings_obj.default_doc_code_dn,
             ),
         }
-        return Response(
-            {
-                "entity_id": entity_id,
-                "entityfinid_id": entityfinid_id,
-                "subentity_id": subentity_id,
-                "financial_years": self._financial_years(entity_id),
-                "subentities": self._subentities(entity_id),
-                "seller": seller,
-                "settings": self._sales_settings_payload(entity_id, entityfinid_id, subentity_id),
-                "current_doc_numbers": current_doc_numbers,
-            }
-        )
+        return {
+            "entity_id": entity_id,
+            "entityfinid_id": entityfinid_id,
+            "subentity_id": subentity_id,
+            "financial_years": self._financial_years(entity_id),
+            "subentities": self._subentities(entity_id),
+            "seller": seller,
+            "settings": self._sales_settings_payload(entity_id, entityfinid_id, subentity_id),
+            "current_doc_numbers": current_doc_numbers,
+        }
 
 
 class SalesComplianceMetaAPIView(SalesMetaBaseAPIView):

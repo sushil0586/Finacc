@@ -17,6 +17,7 @@ from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
+from sales.models import SalesEInvoice, SalesEWayBill
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -537,3 +538,29 @@ class SalesRegisterAPITests(APITestCase):
         self.assertEqual(response.data["results"][0]["sales_invoice_number"], header.invoice_number)
         self.assertEqual(self._money(response.data["results"][0]["discount_total"]), Decimal("25.00"))
         self.assertEqual(self._money(response.data["totals"]["discount_total"]), Decimal("25.00"))
+
+    def test_joined_einvoice_and_eway_artifacts_are_exposed(self):
+        header = self._create_sales_document(invoice_number="EINV-001")
+        SalesEInvoice.objects.create(
+            invoice=header,
+            status=1,
+            irn="IRN-123",
+            ack_no="ACK-123",
+            ack_date=timezone.now(),
+            created_by=self.user,
+        )
+        SalesEWayBill.objects.create(
+            invoice=header,
+            status=1,
+            ewb_no="EWB-123",
+            ewb_date=timezone.now(),
+            created_by=self.user,
+        )
+
+        response = self._get(search="EINV-001")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        row = response.data["results"][0]
+        self.assertEqual(row["sales_invoice_number"], "EINV-001")
+        self.assertEqual(row["e_invoice_no"], "IRN-123")
+        self.assertEqual(row["e_way_bill_no"], "EWB-123")

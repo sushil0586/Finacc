@@ -22,7 +22,7 @@ from rest_framework.exceptions import ValidationError
 from financial.models import account
 from geography.models import State
 from reports.filters.sales_register_filter import SalesRegisterFilter
-from sales.models import SalesEInvoice, SalesEWayBill, SalesInvoiceHeader, SalesInvoiceLine
+from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 
 ZERO = Decimal("0.00")
 
@@ -102,11 +102,6 @@ class SalesRegisterService:
             .annotate(total=Coalesce(Sum("discount_amount"), ZERO))
             .values("total")[:1]
         )
-        einvoice_irn = SalesEInvoice.objects.filter(invoice_id=OuterRef("pk")).values("irn")[:1]
-        einvoice_ack_date = SalesEInvoice.objects.filter(invoice_id=OuterRef("pk")).values("ack_date")[:1]
-        eway_no = SalesEWayBill.objects.filter(invoice_id=OuterRef("pk")).values("ewb_no")[:1]
-        eway_date = SalesEWayBill.objects.filter(invoice_id=OuterRef("pk")).values("ewb_date")[:1]
-
         sign_multiplier = Case(
             When(status=SalesInvoiceHeader.Status.CANCELLED, then=Value(Decimal("0"))),
             When(doc_type__in=self._negative_doc_type_values(), then=Value(Decimal("-1"))),
@@ -176,10 +171,10 @@ class SalesRegisterService:
                 Value(""),
                 output_field=CharField(),
             ),
-            e_invoice_no=Coalesce(Subquery(einvoice_irn, output_field=CharField()), Value(""), output_field=CharField()),
-            e_invoice_date=Subquery(einvoice_ack_date),
-            e_way_bill_no=Coalesce(Subquery(eway_no, output_field=CharField()), Value(""), output_field=CharField()),
-            e_way_bill_date=Subquery(eway_date),
+            e_invoice_no=Coalesce(F("einvoice_artifact__irn"), Value(""), output_field=CharField()),
+            e_invoice_date=F("einvoice_artifact__ack_date"),
+            e_way_bill_no=Coalesce(F("eway_artifact__ewb_no"), Value(""), output_field=CharField()),
+            e_way_bill_date=F("eway_artifact__ewb_date"),
             affects_totals=affects_totals,
             taxable_amount=F("total_taxable_value") * sign_multiplier,
             cgst_amount=F("total_cgst") * sign_multiplier,

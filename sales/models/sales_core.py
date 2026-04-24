@@ -398,6 +398,7 @@ class SalesInvoiceLine(EntityScopedModel):
         ]
         indexes = [
             models.Index(fields=["header"], name="ix_sales_line_hdr"),
+            models.Index(fields=["header", "is_service"], name="ix_sales_line_hdr_srv"),
             models.Index(fields=["entity", "entityfinid", "subentity", "product"], name="ix_sales_line_product"),
             models.Index(fields=["entity", "entityfinid", "subentity", "hsn_sac_code"], name="ix_sales_line_hsn"),
             models.Index(fields=["product", "batch_number"], name="ix_sales_line_product_batch"),
@@ -482,4 +483,3 @@ class SalesInvoiceShipToSnapshot(models.Model):
         indexes = [
             models.Index(fields=["entity_id", "entityfinid_id", "subentity_id"], name="ix_sales_shipto_scope"),
         ]
-

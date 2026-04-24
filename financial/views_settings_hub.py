@@ -28,6 +28,11 @@ from vouchers.models.voucher_config import VoucherSettings
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from reports.services.financial.reporting_policy import resolve_financial_reporting_policy
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from helpers.utils.meta_cache import (
+    PURCHASE_META_NAMESPACES,
+    SALES_META_NAMESPACES,
+    bump_meta_namespaces,
+)
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -601,6 +606,7 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
 
         sales_choice_catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
         purchase_choice_catalog = PurchaseChoiceService.compile_choices(entity_id=entity_id, subentity_id=subentity_id)
+        namespaces_to_invalidate: set[str] = set()
 
         for module_key, payload in modules.items():
             if not isinstance(payload, dict):
@@ -675,6 +681,7 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
                     self._replace_lock_periods(SalesLockPeriod, payload.get("lock_periods") or [], entity_id=entity_id, subentity_id=subentity_id)
                 if "choice_overrides" in payload:
                     self._replace_choice_overrides(SalesChoiceOverride, payload.get("choice_overrides") or [], entity_id=entity_id, subentity_id=subentity_id, choice_catalog=sales_choice_catalog)
+                namespaces_to_invalidate.update(SALES_META_NAMESPACES)
                 continue
 
             if module_key == "purchase":
@@ -705,6 +712,7 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
                     self._replace_lock_periods(PurchaseLockPeriod, payload.get("lock_periods") or [], entity_id=entity_id, subentity_id=subentity_id)
                 if "choice_overrides" in payload:
                     self._replace_choice_overrides(PurchaseChoiceOverride, payload.get("choice_overrides") or [], entity_id=entity_id, subentity_id=subentity_id, choice_catalog=purchase_choice_catalog)
+                namespaces_to_invalidate.update(PURCHASE_META_NAMESPACES)
                 continue
 
             if module_key == "payments":
@@ -722,6 +730,8 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
             if module_key == "assets":
                 AssetSettingsService.upsert_settings(entity_id=entity_id, subentity_id=subentity_id, updates=settings_updates, user_id=request.user.id)
 
+        if namespaces_to_invalidate:
+            transaction.on_commit(lambda: bump_meta_namespaces(sorted(namespaces_to_invalidate)))
         return Response(self._response_payload(request), status=status.HTTP_200_OK)
 
 
@@ -756,6 +766,10 @@ class SettingsHubLockPeriodsAPIView(SettingsHubAPIView):
         if not isinstance(rows, list):
             raise ValidationError({"lock_periods": "Provide a list of lock periods."})
         self._replace_lock_periods(model, rows, entity_id=entity_id, subentity_id=subentity_id)
+        if module == "sales":
+            transaction.on_commit(lambda: bump_meta_namespaces(SALES_META_NAMESPACES))
+        elif module == "purchase":
+            transaction.on_commit(lambda: bump_meta_namespaces(PURCHASE_META_NAMESPACES))
         return self.get(request, module)
 
 
@@ -794,4 +808,8 @@ class SettingsHubChoiceOverridesAPIView(SettingsHubAPIView):
             raise ValidationError({"choice_overrides": "Provide a list of choice overrides."})
         catalog = catalog_fn(self, entity_id, subentity_id)
         self._replace_choice_overrides(model, rows, entity_id=entity_id, subentity_id=subentity_id, choice_catalog=catalog)
+        if module == "sales":
+            transaction.on_commit(lambda: bump_meta_namespaces(SALES_META_NAMESPACES))
+        elif module == "purchase":
+            transaction.on_commit(lambda: bump_meta_namespaces(PURCHASE_META_NAMESPACES))
         return self.get(request, module)

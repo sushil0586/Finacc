@@ -171,16 +171,20 @@ class SalesSettingsApiTests(SalesApiTestBase):
         mocked_get_seller_profile.return_value = {"entity_id": 10}
         mocked_get_choices.return_value = {"DocType": [{"key": "TAX_INVOICE", "label": "Tax Invoice", "enabled": True}]}
 
-        resp = self.client.patch(
-            "/api/sales/settings/?entity_id=10&subentity_id=30",
-            {"settings": {"enable_einvoice": False, "default_doc_code_invoice": "NSI"}},
-            format="json",
-        )
+        with patch("sales.views.sales_settings_views.bump_meta_namespaces") as mocked_bump_cache:
+            with self.captureOnCommitCallbacks(execute=True) as callbacks:
+                resp = self.client.patch(
+                    "/api/sales/settings/?entity_id=10&subentity_id=30",
+                    {"settings": {"enable_einvoice": False, "default_doc_code_invoice": "NSI"}},
+                    format="json",
+                )
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(settings_obj.enable_einvoice, False)
         self.assertEqual(settings_obj.default_doc_code_invoice, "NSI")
         settings_obj.save.assert_called_once()
+        self.assertGreaterEqual(len(callbacks), 1)
+        mocked_bump_cache.assert_called_once()
         self.assertEqual(resp.data["settings"]["enable_einvoice"], False)
         self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "NSI")
 

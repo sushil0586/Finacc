@@ -20,6 +20,8 @@ django-import-export==4.3.7
 django-pandas==0.6.7
 django-pivot==1.10.0
 django-simple-history==3.8.0
+boto3==1.38.27
+django-storages==1.14.6
 djangorestframework==3.16.0
 docopt==0.6.2
 drf-excel==2.5.3
@@ -57,6 +59,7 @@ pytz==2025.2
 PyYAML==6.0.2
 qrcode==8.2
 reportlab==4.4.1
+redis==5.0.8
 requests==2.32.3
 six==1.17.0
 sqlparse==0.5.3

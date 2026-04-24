@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence
+from django.db.models import Exists, OuterRef
 
 from sales.models.sales_core import SalesInvoiceHeader
+from sales.models import SalesInvoiceLine
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,16 @@ class SalesInvoiceNavService:
     )
 
     @staticmethod
+    def _apply_line_mode_filter(qs, line_mode: Optional[str]):
+        if line_mode not in ("service", "goods"):
+            return qs
+        matching_lines = SalesInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=(line_mode == "service"),
+        )
+        return qs.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
+
+    @staticmethod
     def _scope_qs(
         *,
         entity_id: int,
@@ -72,11 +84,7 @@ class SalesInvoiceNavService:
             .filter(**filters)
             .only("id", "doc_no", "invoice_number", "status", "bill_date")
         )
-        if line_mode == "service":
-            qs = qs.filter(lines__is_service=True).distinct()
-        elif line_mode == "goods":
-            qs = qs.filter(lines__is_service=False).distinct()
-        return qs
+        return SalesInvoiceNavService._apply_line_mode_filter(qs, line_mode)
 
     @staticmethod
     def _empty_item() -> Dict[str, Any]:

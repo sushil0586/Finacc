@@ -7,12 +7,15 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
 from rest_framework import status
 from rest_framework.response import Response
-from rest_framework.test import APITestCase, APIClient
+from rest_framework.test import APITestCase, APIClient, APIRequestFactory, force_authenticate
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
+from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
+from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.services.purchase_statutory_service import PurchaseStatutoryService
+from purchase.views.purchase_invoice import PurchaseInvoiceListCreateAPIView
 from posting.adapters.purchase_invoice import (
     PurchaseInvoicePostingAdapter,
     PurchaseInvoicePostingConfig,
@@ -143,6 +146,93 @@ class PurchaseTdsApplyTests(SimpleTestCase):
         self.assertEqual(header.tds_base_amount, Decimal("1000.00"))
         self.assertEqual(header.tds_amount, Decimal("10.00"))
         self.assertEqual(header.tds_reason, "resolved from config")
+
+
+class PurchaseInvoiceViewUnitTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_list_queryset_uses_exists_for_line_mode_filter(self, mocked_require_permission):
+        request = self.factory.get("/api/purchase/purchase-invoices/?entity=1&entityfinid=1&line_mode=goods")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view.get_queryset()
+        sql = str(queryset.query).upper()
+
+        self.assertIn("EXISTS(", sql)
+        self.assertNotIn(" DISTINCT ", sql)
+        mocked_require_permission.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_list_queryset_selects_vendor_related_profiles(self, mocked_require_permission):
+        request = self.factory.get("/api/purchase/purchase-invoices/?entity=1&entityfinid=1")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view.get_queryset()
+        select_related = queryset.query.select_related
+
+        self.assertIn("vendor", select_related)
+        self.assertIn("ledger", select_related["vendor"])
+        self.assertIn("commercial_profile", select_related["vendor"])
+        mocked_require_permission.assert_called_once()
+
+    def test_nav_scope_queryset_uses_exists_for_line_mode_filter(self):
+        queryset = PurchaseInvoiceNavService._scope_qs(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="PINV",
+            allowed_statuses=PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            line_mode="goods",
+        )
+        sql = str(queryset.query).upper()
+        self.assertIn("EXISTS(", sql)
+        self.assertNotIn(" DISTINCT ", sql)
+
+    def test_last_saved_doc_scope_queryset_uses_subentity_isnull(self):
+        with patch("purchase.services.purchase_settings_service.PurchaseInvoiceHeader.objects.filter") as mocked_filter:
+            mocked_filter.return_value.only.return_value.order_by.return_value.first.return_value = None
+
+            PurchaseSettingsService._last_saved_doc_in_scope(
+                entity_id=10,
+                entityfinid_id=8,
+                subentity_id=None,
+                doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            )
+
+        mocked_filter.assert_called_once_with(
+            entity_id=10,
+            entityfinid_id=8,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            subentity_id__isnull=True,
+        )
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_search_queryset_selects_vendor_related_profiles(self, mocked_require_permission):
+        from purchase.views.purchase_invoice import PurchaseInvoiceSearchAPIView
+
+        request = self.factory.get("/api/purchase/purchase-invoices/search/?entity=1&entityfinid=1")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceSearchAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view.get_queryset()
+        select_related = queryset.query.select_related
+
+        self.assertIn("vendor", select_related)
+        self.assertIn("ledger", select_related["vendor"])
+        self.assertIn("commercial_profile", select_related["vendor"])
+        mocked_require_permission.assert_called_once()
 
     @patch("purchase.services.purchase_invoice_service.PurchaseWithholdingService.compute_tds")
     def test_auto_mode_fails_when_no_section_resolved(self, mock_compute):
@@ -403,6 +493,34 @@ class PurchaseApiSmokeTests(APITestCase):
         self.assertIn("settings", resp.data)
         self.assertIn("current_doc_numbers", resp.data)
         self.assertEqual(mock_get_current_doc_no.call_count, 3)
+
+    @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
+    @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
+    def test_settings_patch_triggers_meta_cache_invalidation(
+        self,
+        mock_upsert_settings,
+        mock_payload,
+    ):
+        mock_upsert_settings.return_value = SimpleNamespace(
+            default_doc_code_invoice="PINV",
+            default_doc_code_cn="PCN",
+            default_doc_code_dn="PDN",
+        )
+
+        with patch("purchase.views.purchase_settings.bump_meta_namespaces") as mocked_bump_cache:
+            with self.captureOnCommitCallbacks(execute=True) as callbacks:
+                resp = self.client.patch(
+                    "/api/purchase/settings/?entity=32&subentity=1",
+                    {"settings": {"enable_round_off": False}},
+                    format="json",
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, {"ok": True})
+        self.assertGreaterEqual(len(callbacks), 1)
+        mocked_bump_cache.assert_called_once()
+        mock_upsert_settings.assert_called_once()
+        mock_payload.assert_called_once()
 
     def test_charge_type_detail_missing_id_returns_404(self):
         resp = self.client.get("/api/purchase/charge-types/999999/?entity=1")

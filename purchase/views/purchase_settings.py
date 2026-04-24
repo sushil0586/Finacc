@@ -14,6 +14,7 @@ from numbering.services import ensure_document_type, ensure_series
 from purchase.models.purchase_config import PurchaseChoiceOverride, PurchaseLockPeriod, PurchaseSettings
 from purchase.services.purchase_choice_service import PurchaseChoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from helpers.utils.meta_cache import PURCHASE_META_NAMESPACES, bump_meta_namespaces
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -479,6 +480,7 @@ class PurchaseSettingsAPIView(APIView):
             self._replace_choice_overrides(rows, entity_id=entity_id, subentity_id=subentity_id)
 
         entityfinid_for_response = entityfinid_id or self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=False)
+        transaction.on_commit(lambda: bump_meta_namespaces(PURCHASE_META_NAMESPACES))
         return Response(self._payload(entity_id=entity_id, subentity_id=subentity_id, entityfinid_id=entityfinid_for_response), status=status.HTTP_200_OK)
 
     def put(self, request):

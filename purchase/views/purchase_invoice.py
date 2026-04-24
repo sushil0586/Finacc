@@ -10,6 +10,7 @@ from purchase.models.purchase_core import PurchaseInvoiceLine
 from purchase.serializers.purchase_invoice import PurchaseInvoiceSearchSerializer
 from purchase.filters import PurchaseInvoiceSearchFilter
 from rest_framework.filters import OrderingFilter, SearchFilter
+from django.db.models import Exists, OuterRef
 
 
 
@@ -68,6 +69,16 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             return raw
         return None
 
+    def _apply_line_mode_filter(self, queryset):
+        line_mode = self._get_line_mode()
+        if line_mode not in ("service", "goods"):
+            return queryset
+        matching_lines = PurchaseInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=(line_mode == "service"),
+        )
+        return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
+
     def get_serializer_class(self):
         if self.request.method.upper() == "GET":
             return PurchaseInvoiceListSerializer
@@ -83,10 +94,9 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             action="view",
         )
         base_qs = PurchaseInvoiceHeader.objects.all().select_related(
-            "vendor", "vendor_ledger", "vendor_state",
+            "vendor", "vendor__ledger", "vendor__commercial_profile", "vendor_ledger", "vendor_state",
             "supplier_state", "place_of_supply_state",
             "entity", "entityfinid", "subentity",
-            "ref_document",
         )
         if entity_id is not None and entityfinid_id is not None:
             base_qs = base_qs.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
@@ -94,12 +104,57 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
                 base_qs = base_qs.filter(subentity_id=subentity_id)
 
         if self.request.method.upper() == "GET":
-            line_mode = self._get_line_mode()
-            if line_mode == "service":
-                base_qs = base_qs.filter(lines__is_service=True).distinct()
-            elif line_mode == "goods":
-                base_qs = base_qs.filter(lines__is_service=False).distinct()
-            return base_qs
+            return self._apply_line_mode_filter(
+                base_qs.select_related(None).select_related(
+                    "vendor",
+                    "vendor__ledger",
+                    "vendor__commercial_profile",
+                    "subentity",
+                ).only(
+                    "id",
+                    "doc_type",
+                    "status",
+                    "bill_date",
+                    "posting_date",
+                    "due_date",
+                    "doc_code",
+                    "doc_no",
+                    "purchase_number",
+                    "supplier_invoice_number",
+                    "po_reference_no",
+                    "grn_reference_no",
+                    "vendor_id",
+                    "vendor_name",
+                    "vendor_gstin",
+                    "vendor_ledger_id",
+                    "supply_category",
+                    "default_taxability",
+                    "tax_regime",
+                    "is_reverse_charge",
+                    "total_taxable",
+                    "total_gst",
+                    "round_off",
+                    "grand_total",
+                    "withholding_enabled",
+                    "tds_amount",
+                    "gst_tds_enabled",
+                    "gst_tds_amount",
+                    "match_status",
+                    "note_reason",
+                    "affects_inventory",
+                    "entity_id",
+                    "entityfinid_id",
+                    "subentity_id",
+                    "created_at",
+                    "updated_at",
+                    "vendor__accountname",
+                    "vendor__ledger_id",
+                    "vendor__ledger__ledger_code",
+                    "vendor__ledger__name",
+                    "vendor__commercial_profile__partytype",
+                    "subentity__subentityname",
+                )
+            )
 
         return base_qs.prefetch_related(
             Prefetch(
@@ -171,6 +226,16 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             return raw
         return None
 
+    def _apply_line_mode_filter(self, queryset):
+        line_mode = self._get_line_mode()
+        if line_mode not in ("service", "goods"):
+            return queryset
+        matching_lines = PurchaseInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=(line_mode == "service"),
+        )
+        return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
+
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
         qs = (
@@ -194,12 +259,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
 
-        line_mode = self._get_line_mode()
-        if line_mode == "service":
-            qs = qs.filter(lines__is_service=True).distinct()
-        elif line_mode == "goods":
-            qs = qs.filter(lines__is_service=False).distinct()
-        return qs
+        return self._apply_line_mode_filter(qs)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -335,6 +395,8 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "entityfinid",
                 "subentity",
                 "vendor",
+                "vendor__ledger",
+                "vendor__commercial_profile",
                 "vendor_ledger",
                 "vendor_state",
                
@@ -347,6 +409,8 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "bill_date", "posting_date", "credit_days", "due_date",
                 "supplier_invoice_number", "supplier_invoice_date", "po_reference_no", "grn_reference_no",
                 "vendor_id", "vendor_name", "vendor_gstin", "vendor_state_id",
+                # Needed by serializer source vendor.effective_accounting_* (walks vendor.ledger)
+                "vendor__accountname", "vendor__ledger_id", "vendor__ledger__ledger_code", "vendor__ledger__name",
                 "vendor__commercial_profile__partytype", "vendor_ledger_id", "vendor_ledger__ledger_code", "vendor_ledger__name",
                 "supply_category", "default_taxability", "tax_regime",
                 "is_igst", "is_reverse_charge", "is_itc_eligible",

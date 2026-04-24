@@ -16,6 +16,7 @@ from sales.models.sales_settings import SalesSettings
 from sales.services.sales_choices_service import SalesChoicesService
 from sales.services.sales_settings_service import SalesSettingsService
 from sales.views.rbac import require_sales_scope_permission
+from helpers.utils.meta_cache import SALES_META_NAMESPACES, bump_meta_namespaces
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -449,4 +450,5 @@ class SalesSettingsAPIView(APIView):
             self._replace_choice_overrides(rows, entity_id=entity_id, subentity_id=subentity_id)
 
         entityfinid_for_response = entityfinid_id or self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=False)
+        transaction.on_commit(lambda: bump_meta_namespaces(SALES_META_NAMESPACES))
         return Response(self._payload(entity_id=entity_id, subentity_id=subentity_id, entityfinid_id=entityfinid_for_response), status=status.HTTP_200_OK)

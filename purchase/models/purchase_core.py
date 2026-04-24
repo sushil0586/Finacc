@@ -297,6 +297,10 @@ class PurchaseInvoiceHeader(models.Model):
             models.Index(fields=["entity", "entityfinid", "doc_code", "doc_no"], name="ix_pur_docno_lookup"),
             models.Index(fields=["entity", "entityfinid", "vendor", "due_date"], name="ix_pur_ap_due"),
             models.Index(fields=["entity", "entityfinid", "vendor_ledger", "due_date"], name="ix_pur_ap_vldue"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "bill_date"], name="ix_pur_hdr_billdt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_pur_hdr_status"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "doc_type"], name="ix_pur_hdr_doctyp"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"], name="ix_pur_hdr_nav"),
         ]
 
     def __str__(self):
@@ -397,6 +401,7 @@ class PurchaseInvoiceLine(models.Model):
         indexes = [
             models.Index(fields=["header", "product"], name="ix_pur_line_header_product"),
             models.Index(fields=["header", "hsn_sac"], name="ix_pur_line_header_hsn"),
+            models.Index(fields=["header", "is_service"], name="ix_pur_line_hdr_srv"),
             models.Index(fields=["product", "batch_number"], name="ix_pur_line_product_batch"),
             models.Index(fields=["product", "expiry_date"], name="ix_pur_line_product_expiry"),
         ]

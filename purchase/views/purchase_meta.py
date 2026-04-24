@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.conf import settings
 from django.db.models import Prefetch, Q
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
@@ -29,6 +30,13 @@ from helpers.utils.document_actions import build_document_action_flags
 from core.invoice_ui_contracts import purchase_invoice_ui_contract
 from gst_tds.models import GstTdsContractLedger
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from helpers.utils.meta_cache import (
+    CACHE_EVENT_DISABLED,
+    build_meta_cache_key,
+    emit_meta_cache_event,
+    get_meta_namespace_version,
+    get_or_set_meta_cache,
+)
 from withholding.models import (
     EntityWithholdingConfig,
     WithholdingBaseRule,
@@ -41,6 +49,45 @@ class PurchaseMetaBaseAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_PURCHASE
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def _get_cached_meta(
+        self,
+        *,
+        namespace: str,
+        entity_id: int,
+        entityfinid_id: int | None,
+        subentity_id: int | None,
+        extra: dict | None,
+        timeout: int | None,
+        loader,
+    ):
+        if not getattr(settings, "META_CACHE_ENABLED", True):
+            emit_meta_cache_event(
+                CACHE_EVENT_DISABLED,
+                namespace=namespace,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+            )
+            return loader()
+
+        namespace_version = get_meta_namespace_version(
+            namespace,
+            base_version=str(getattr(settings, "META_CACHE_VERSION", "1")),
+        )
+        versioned_namespace = f"{namespace}:v{namespace_version}"
+        cache_key = build_meta_cache_key(
+            versioned_namespace,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra=extra or {},
+        )
+        return get_or_set_meta_cache(
+            cache_key,
+            loader,
+            timeout=int(timeout or getattr(settings, "META_CACHE_TTL_SECONDS", 300)),
+        )
 
     def _parse_int(self, raw_value, field_name: str, required: bool = False):
         if raw_value in (None, "", "null", "None"):
@@ -364,7 +411,16 @@ class PurchaseInvoiceFormMetaAPIView(PurchaseMetaBaseAPIView):
 
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=False)
-        return Response(self._invoice_form_meta(entity_id, subentity_id, entityfinid_id=entityfinid_id))
+        payload = self._get_cached_meta(
+            namespace="purchase.invoice_form_meta",
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_FORM_TTL_SECONDS", 600),
+            loader=lambda: self._invoice_form_meta(entity_id, subentity_id, entityfinid_id=entityfinid_id),
+        )
+        return Response(payload)
 
 
 class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
@@ -616,38 +672,49 @@ class PurchaseSettingsMetaAPIView(PurchaseMetaBaseAPIView):
 
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
-        settings = PurchaseSettingsService.get_settings(entity_id, subentity_id)
+        payload = self._get_cached_meta(
+            namespace="purchase.settings_meta",
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_SETTINGS_TTL_SECONDS", 300),
+            loader=lambda: self._build_settings_meta_payload(entity_id, entityfinid_id, subentity_id),
+        )
+        return Response(payload)
+
+    def _build_settings_meta_payload(self, entity_id: int, entityfinid_id: int, subentity_id: int | None):
+        settings_obj = PurchaseSettingsService.get_settings(entity_id, subentity_id)
         policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
-        payload = {
+        return {
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
             "subentity_id": subentity_id,
             "financial_years": self._financial_years(entity_id),
             "subentities": self._subentities(entity_id),
             "settings": {
-                "entity": settings.entity_id,
-                "subentity": settings.subentity_id,
-                "default_doc_code_invoice": settings.default_doc_code_invoice,
-                "default_doc_code_cn": settings.default_doc_code_cn,
-                "default_doc_code_dn": settings.default_doc_code_dn,
-                "default_workflow_action": settings.default_workflow_action,
-                "auto_derive_tax_regime": settings.auto_derive_tax_regime,
-                "enforce_2b_before_itc_claim": settings.enforce_2b_before_itc_claim,
-                "allow_mixed_taxability_in_one_bill": settings.allow_mixed_taxability_in_one_bill,
-                "round_grand_total_to": settings.round_grand_total_to,
-                "enable_round_off": settings.enable_round_off,
-                "post_gst_tds_on_invoice": getattr(settings, "post_gst_tds_on_invoice", False),
+                "entity": settings_obj.entity_id,
+                "subentity": settings_obj.subentity_id,
+                "default_doc_code_invoice": settings_obj.default_doc_code_invoice,
+                "default_doc_code_cn": settings_obj.default_doc_code_cn,
+                "default_doc_code_dn": settings_obj.default_doc_code_dn,
+                "default_workflow_action": settings_obj.default_workflow_action,
+                "auto_derive_tax_regime": settings_obj.auto_derive_tax_regime,
+                "enforce_2b_before_itc_claim": settings_obj.enforce_2b_before_itc_claim,
+                "allow_mixed_taxability_in_one_bill": settings_obj.allow_mixed_taxability_in_one_bill,
+                "round_grand_total_to": settings_obj.round_grand_total_to,
+                "enable_round_off": settings_obj.enable_round_off,
+                "post_gst_tds_on_invoice": getattr(settings_obj, "post_gst_tds_on_invoice", False),
                 "policy_controls": policy.controls,
             },
             "defaults": {
                 "policy_controls": dict(DEFAULT_POLICY_CONTROLS),
                 "default_workflow_actions": [
                     {"value": value, "label": label}
-                    for value, label in settings.DefaultWorkflowAction.choices
+                    for value, label in settings_obj.DefaultWorkflowAction.choices
                 ],
             },
         }
-        return Response(payload)
 
 
 class PurchaseWithholdingMetaAPIView(PurchaseMetaBaseAPIView):
@@ -721,5 +788,3 @@ class PurchaseStatutoryMetaAPIView(PurchaseMetaBaseAPIView):
             "policy_controls": PurchaseSettingsService.get_policy(entity_id, subentity_id).controls,
         }
         return Response(payload)
-
-

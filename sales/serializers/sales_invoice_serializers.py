@@ -177,6 +177,8 @@ class SalesTaxSummarySerializer(serializers.ModelSerializer):
 
 
 class SalesInvoiceListSerializer(serializers.ModelSerializer):
+    doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
+    status_name = serializers.CharField(source="get_status_display", read_only=True)
     customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
     accountname = serializers.CharField(source="customer.accountname", read_only=True)

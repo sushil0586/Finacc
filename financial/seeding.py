@@ -23,6 +23,7 @@ class FinancialSeedService:
     """
 
     DEFAULT_TEMPLATE = "indian_accounting_final"
+    PARTY_LEDGER_TYPES = {"Customer", "Vendor", "Both", "Bank", "Employee", "Government"}
 
     @classmethod
     @transaction.atomic
@@ -75,7 +76,7 @@ class FinancialSeedService:
                 target_credit_head = head_map.get(row.get("credit_head_code")) or target_head
                 target_name = row["name"]
                 target_is_system = True
-                target_is_party = row.get("party_type") in {"Customer", "Vendor", "Both", "Bank", "Employee", "Government"}
+                target_is_party = row.get("party_type") in cls.PARTY_LEDGER_TYPES
             elif getattr(ledger, "account_profile", None):
                 partytype = getattr(getattr(ledger.account_profile, "commercial_profile", None), "partytype", None)
                 target_head = cls._infer_party_head(head_map=head_map, partytype=partytype, current_head_id=ledger.accounthead_id)
@@ -216,7 +217,7 @@ class FinancialSeedService:
                         "openingbcr": Decimal("0.00"),
                         "openingbdr": Decimal("0.00"),
                         "is_system": True,
-                        "is_party": row.get("party_type") in {"Customer", "Vendor", "Bank", "Government"},
+                        "is_party": row.get("party_type") in cls.PARTY_LEDGER_TYPES,
                     },
                 )
             acc.accountname = row["name"]
@@ -246,7 +247,7 @@ class FinancialSeedService:
                     "openingbcr": Decimal("0.00"),
                     "openingbdr": Decimal("0.00"),
                     "is_system": True,
-                    "is_party": row.get("party_type") in {"Customer", "Vendor", "Bank", "Government"},
+                    "is_party": row.get("party_type") in cls.PARTY_LEDGER_TYPES,
                 },
             )
             created_or_updated.append(acc.id)

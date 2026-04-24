@@ -27,6 +27,20 @@ def _cast_boolish_env(value):
         return False
     raise ValueError(f'Invalid truth value: {value}')
 
+
+def _normalize_storage_backend(value):
+    backend = str(value or 'local').strip().lower()
+    if backend not in {'local', 's3'}:
+        raise ValueError(f'Invalid FILE_STORAGE_BACKEND: {value}')
+    return backend
+
+
+def _require_config(name):
+    value = str(config(name, default='')).strip()
+    if not value:
+        raise ValueError(f'Missing required setting: {name}')
+    return value
+
 # ---------------------------------------------------------------------------
 # Security
 # ---------------------------------------------------------------------------
@@ -42,6 +56,23 @@ RBAC_DEV_ALLOW_ALL_ACCESS = config(
     default=False,
     cast=_cast_boolish_env,
 )
+
+FILE_STORAGE_BACKEND = config(
+    'FILE_STORAGE_BACKEND',
+    default='local',
+    cast=_normalize_storage_backend,
+)
+
+CACHE_BACKEND = config('CACHE_BACKEND', default='locmem')
+CACHE_LOCATION = config('CACHE_LOCATION', default='finacc-cache')
+CACHE_TIMEOUT_SECONDS = config('CACHE_TIMEOUT_SECONDS', default=300, cast=int)
+META_CACHE_ENABLED = config('META_CACHE_ENABLED', default=True, cast=_cast_boolish_env)
+META_CACHE_TTL_SECONDS = config('META_CACHE_TTL_SECONDS', default=300, cast=int)
+META_CACHE_FORM_TTL_SECONDS = config('META_CACHE_FORM_TTL_SECONDS', default=600, cast=int)
+META_CACHE_SETTINGS_TTL_SECONDS = config('META_CACHE_SETTINGS_TTL_SECONDS', default=300, cast=int)
+META_CACHE_VERSION = config('META_CACHE_VERSION', default='1')
+META_CACHE_OBSERVABILITY_ENABLED = config('META_CACHE_OBSERVABILITY_ENABLED', default=False, cast=_cast_boolish_env)
+META_CACHE_LOG_LEVEL = config('META_CACHE_LOG_LEVEL', default='INFO')
 
 # ---------------------------------------------------------------------------
 # Test / conditional app flags
@@ -98,6 +129,9 @@ INSTALLED_APPS = [
 ]
 
 INSTALLED_APPS += ['auditlogger']
+
+if FILE_STORAGE_BACKEND == 's3':
+    INSTALLED_APPS += ['storages']
 
 if RUNNING_TESTS and not ENABLE_PAYROLL_IN_TESTS:
     INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'payroll']
@@ -214,6 +248,69 @@ USE_TZ = True
 # ---------------------------------------------------------------------------
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+if CACHE_BACKEND == 'redis':
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': _require_config('CACHE_LOCATION'),
+            'TIMEOUT': CACHE_TIMEOUT_SECONDS,
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': CACHE_LOCATION,
+            'TIMEOUT': CACHE_TIMEOUT_SECONDS,
+        }
+    }
+
+if FILE_STORAGE_BACKEND == 's3':
+    AWS_STORAGE_BUCKET_NAME = _require_config('AWS_STORAGE_BUCKET_NAME')
+    AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ap-south-1')
+    AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
+    AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+    AWS_S3_CUSTOM_DOMAIN = config('AWS_S3_CUSTOM_DOMAIN', default='')
+    AWS_MEDIA_LOCATION = config('AWS_MEDIA_LOCATION', default='')
+    AWS_QUERYSTRING_AUTH = config('AWS_QUERYSTRING_AUTH', default=True, cast=_cast_boolish_env)
+    AWS_DEFAULT_ACL = None
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+
+    if bool(AWS_ACCESS_KEY_ID) != bool(AWS_SECRET_ACCESS_KEY):
+        raise ValueError('Set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY together, or leave both empty to use IAM role.')
+
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3.S3Storage',
+            'OPTIONS': {
+                'bucket_name': AWS_STORAGE_BUCKET_NAME,
+                'region_name': AWS_S3_REGION_NAME,
+                'default_acl': AWS_DEFAULT_ACL,
+                'querystring_auth': AWS_QUERYSTRING_AUTH,
+                'file_overwrite': AWS_S3_FILE_OVERWRITE,
+                'location': AWS_MEDIA_LOCATION,
+            },
+        },
+        'staticfiles': {
+            'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        },
+    }
+
+    if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        STORAGES['default']['OPTIONS']['access_key'] = AWS_ACCESS_KEY_ID
+        STORAGES['default']['OPTIONS']['secret_key'] = AWS_SECRET_ACCESS_KEY
+
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+    elif AWS_S3_REGION_NAME:
+        MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/'
+    else:
+        MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/'
+
+    if AWS_MEDIA_LOCATION:
+        MEDIA_URL = MEDIA_URL.rstrip('/') + f'/{AWS_MEDIA_LOCATION.strip("/")}/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
