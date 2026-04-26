@@ -538,6 +538,27 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(payload["coverage"]["status"], "implemented")
         self.assertEqual(payload["count"], 1)
 
+    def test_table_4_gst_rate_excludes_cess(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            taxable="363000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="65340.00",
+            cess="2280.00",
+            grand_total="430620.00",
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            place_of_supply="29",
+        )
+        response = self.client.get(self.table_url("TABLE_4"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        row = next(r for r in payload["rows"] if r["invoice_id"] == invoice.id)
+        self.assertEqual(str(row["gst_rate"]), "18.00")
+        self.assertEqual(str(row["reported_cess_amount"]), "2280.00")
+
     def test_table_endpoints_5_7_10(self):
         b2cl = self._create_sales_document(
             customer=self.customer_beta,

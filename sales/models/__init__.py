@@ -34,6 +34,9 @@ from .sales_compliance import (
     SalesComplianceExceptionQueue,
     SalesComplianceErrorCode,
 )
+from .sales_transport import (
+    SalesInvoiceTransportSnapshot,
+)
 
 from .mastergst_models import (
     SalesMasterGSTCredential,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
+import re
 from entity.models import Entity, SubEntity  # adjust import paths
 
 from datetime import date
@@ -53,6 +55,184 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "compliance_allow_regenerate_irn_after_cancel": "off",
     "compliance_allow_regenerate_eway_after_cancel": "on",
     "compliance_allow_cancel_irn_when_eway_active": "off",
+}
+
+DEFAULT_INVOICE_PRINTING_CONFIG: Dict[str, Any] = {
+    "default_profile": "gst_standard",
+    "default_copies": ["original"],
+    "profiles": [
+        {
+            "key": "gst_standard",
+            "label": "GST Standard A4",
+            "hint": "Rule-friendly layout with full statutory sections.",
+            "options": {
+                "show_bank_details": True,
+                "show_terms": True,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "comfortable",
+                "font_scale": 1.0,
+                "template_key": "gst_a4",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 10,
+                "pdf_render_scale": 0.55,
+                "pdf_image_quality": 0.62,
+            },
+        },
+        {
+            "key": "plain",
+            "label": "Plain Paper",
+            "hint": "Minimal visual layout while retaining invoice essentials.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "comfortable",
+                "font_scale": 1.0,
+                "template_key": "plain_a4",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 10,
+                "pdf_render_scale": 0.5,
+                "pdf_image_quality": 0.58,
+            },
+        },
+        {
+            "key": "large_invoice",
+            "label": "Large Invoice (50+ Lines)",
+            "hint": "Compact spacing optimized for long multi-page invoices.",
+            "options": {
+                "show_bank_details": True,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.92,
+                "template_key": "gst_a4_compact",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 8,
+                "pdf_render_scale": 0.5,
+                "pdf_image_quality": 0.58,
+            },
+        },
+        {
+            "key": "thermal_80mm",
+            "label": "Thermal 80mm",
+            "hint": "Narrow, fast print profile for grocery and POS printers.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": False,
+                "show_compliance_qr": False,
+                "show_gst_validation_panel": False,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.84,
+                "template_key": "thermal_80mm",
+                "page_size": "80MM",
+                "orientation": "portrait",
+                "margin_mm": 2,
+                "pdf_render_scale": 0.42,
+                "pdf_image_quality": 0.5,
+            },
+        },
+        {
+            "key": "thermal_58mm",
+            "label": "Thermal 58mm",
+            "hint": "Ultra-compact receipt profile for narrow thermal printers.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": False,
+                "show_compliance_qr": False,
+                "show_gst_validation_panel": False,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.8,
+                "template_key": "thermal_58mm",
+                "page_size": "58MM",
+                "orientation": "portrait",
+                "margin_mm": 1,
+                "pdf_render_scale": 0.4,
+                "pdf_image_quality": 0.48,
+            },
+        },
+        {
+            "key": "transport_copy",
+            "label": "Transport Copy",
+            "hint": "Highlights transport, E-Way and QR details for goods movement.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.9,
+                "template_key": "transport_copy",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 8,
+                "pdf_render_scale": 0.5,
+                "pdf_image_quality": 0.56,
+            },
+        },
+    ],
+    "copy_labels": {
+        "original": "ORIGINAL FOR RECIPIENT",
+        "duplicate": "DUPLICATE FOR TRANSPORTER",
+        "triplicate": "TRIPLICATE FOR SUPPLIER",
+    },
+    "texts": {
+        "form_label": "Form GST INV-1",
+        "receiver_title": "Details of Receiver (Billed to)",
+        "consignee_title": "Details of Consignee (Shipped to)",
+        "terms_title": "Terms & Conditions :",
+        "terms_lines": [
+            "Our responsibility ceases after the goods are removed from our premises",
+            "Goods once sold are not returnable or exchangeable",
+            "if the bill is not paid within a week interest @24% will be charged from date of bill",
+        ],
+        "terms_ack_lines": [
+            "Received the above goods in good condition",
+            "Rate & Weight of this bill found correct.",
+        ],
+        "signature_labels": ["", "Checked By", "Prepared By", "Customer's Sign"],
+        "line_columns": [
+            {"key": "line_no", "label": "Sr", "colspan": 2, "className": "ams-border-left", "format": "index"},
+            {"key": "productname", "label": "Description of Goods", "colspan": 2, "className": "ams-border-left", "format": "text"},
+            {"key": "hsn", "label": "HSN", "colspan": 2, "className": "ams-border-left", "format": "text"},
+            {"key": "pieces", "label": "Pcs", "colspan": 1, "className": "ams-border-left text-end", "format": "integer"},
+            {"key": "orderqty", "label": "Qty", "colspan": 1, "className": "ams-border-left text-end", "format": "integer"},
+            {"key": "units", "label": "Unit", "colspan": 1, "className": "ams-border-left text-start", "format": "text"},
+            {"key": "ratebefdiscount", "label": "Rate", "colspan": 1, "className": "ams-border-left text-end", "format": "number"},
+            {"key": "orderDiscount", "label": "Discount %", "colspan": 1, "className": "ams-border-left text-end", "format": "text"},
+            {"key": "rate", "label": "Actual Rate", "colspan": 2, "className": "ams-border-left text-end", "format": "number"},
+            {"key": "amount", "label": "Amount", "colspan": 2, "className": "text-end ams-border-left ams-border-right", "format": "number"},
+        ],
+    },
 }
 
 
@@ -149,6 +329,21 @@ class SalesPolicy:
 
 
 class SalesSettingsService:
+    _TRAILING_NUMBER_PATTERN = re.compile(r"(\d+)\s*$")
+
+    @staticmethod
+    def _extract_sequence_no(doc_no: Any, invoice_number: Any) -> int:
+        doc_number = int(doc_no or 0)
+        if doc_number > 0:
+            return doc_number
+        invoice_text = str(invoice_number or "").strip()
+        if not invoice_text:
+            return 0
+        match = SalesSettingsService._TRAILING_NUMBER_PATTERN.search(invoice_text)
+        if not match:
+            return 0
+        return int(match.group(1) or 0)
+
 
     @staticmethod
     def normalize_policy_controls(raw: Any) -> Dict[str, Any]:
@@ -217,6 +412,220 @@ class SalesSettingsService:
                 raise ValueError(f"policy_controls.{key} must be one of: off, warn, hard.")
             normalized[key] = v
         return normalized
+
+    @staticmethod
+    def normalize_invoice_printing(raw: Any) -> Dict[str, Any]:
+        if raw in (None, ""):
+            return deepcopy(DEFAULT_INVOICE_PRINTING_CONFIG)
+        if not isinstance(raw, dict):
+            raise ValueError("invoice_printing must be a JSON object.")
+
+        defaults = DEFAULT_INVOICE_PRINTING_CONFIG
+        gst_validation_scenario_codes = {
+            "SCN_B2B",
+            "SCN_B2C",
+            "SCN_EXPORT",
+            "SCN_RCM",
+            "SCN_EINV",
+            "SCN_EWAY",
+            "SCN_TRANSPORT",
+            "SCN_TAX_SPLIT",
+        }
+        normalized: Dict[str, Any] = {
+            "default_profile": str(raw.get("default_profile") or defaults["default_profile"]),
+            "default_copies": list(defaults.get("default_copies") or ["original"]),
+            "profiles": [],
+            "copy_labels": dict(defaults["copy_labels"]),
+            "texts": deepcopy(defaults["texts"]),
+        }
+
+        raw_copy_labels = raw.get("copy_labels")
+        if isinstance(raw_copy_labels, dict):
+            for key in ("original", "duplicate", "triplicate"):
+                value = raw_copy_labels.get(key)
+                if value is not None:
+                    normalized["copy_labels"][key] = str(value).strip() or defaults["copy_labels"][key]
+
+        allowed_copy_keys = {"original", "duplicate", "triplicate"}
+        raw_default_copies = raw.get("default_copies")
+        if isinstance(raw_default_copies, list):
+            normalized_copies = []
+            for item in raw_default_copies:
+                key = str(item or "").strip().lower()
+                if key in allowed_copy_keys:
+                    normalized_copies.append(key)
+            if normalized_copies:
+                normalized["default_copies"] = list(dict.fromkeys(normalized_copies))
+            else:
+                normalized["default_copies"] = list(defaults.get("default_copies") or ["original"])
+
+        profiles = raw.get("profiles")
+        if not isinstance(profiles, list) or not profiles:
+            profiles = defaults["profiles"]
+
+        seen_keys = set()
+        for item in profiles:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            options = item.get("options") if isinstance(item.get("options"), dict) else {}
+            line_density = str(options.get("line_density", "comfortable")).strip().lower()
+            if line_density not in {"comfortable", "compact"}:
+                line_density = "comfortable"
+            try:
+                font_scale = float(options.get("font_scale", 1.0))
+            except (TypeError, ValueError):
+                font_scale = 1.0
+            if font_scale < 0.80:
+                font_scale = 0.80
+            if font_scale > 1.20:
+                font_scale = 1.20
+            orientation = str(options.get("orientation", "portrait")).strip().lower()
+            if orientation not in {"portrait", "landscape"}:
+                orientation = "portrait"
+            page_size = str(options.get("page_size", "A4")).strip().upper()
+            if page_size not in {"A4", "A5", "LETTER", "80MM", "58MM"}:
+                page_size = "A4"
+            template_key = str(options.get("template_key", "")).strip().lower() or "gst_a4"
+            try:
+                margin_mm = float(options.get("margin_mm", 10))
+            except (TypeError, ValueError):
+                margin_mm = 10.0
+            if margin_mm < 0:
+                margin_mm = 0.0
+            if margin_mm > 25:
+                margin_mm = 25.0
+            try:
+                pdf_render_scale = float(options.get("pdf_render_scale", 0.55))
+            except (TypeError, ValueError):
+                pdf_render_scale = 0.55
+            if pdf_render_scale < 0.4:
+                pdf_render_scale = 0.4
+            if pdf_render_scale > 2.5:
+                pdf_render_scale = 2.5
+            try:
+                pdf_image_quality = float(options.get("pdf_image_quality", 0.62))
+            except (TypeError, ValueError):
+                pdf_image_quality = 0.62
+            if pdf_image_quality < 0.4:
+                pdf_image_quality = 0.4
+            if pdf_image_quality > 0.95:
+                pdf_image_quality = 0.95
+            raw_validation_checks = options.get("gst_validation_checks")
+            if isinstance(raw_validation_checks, list):
+                normalized_validation_checks = []
+                for check_item in raw_validation_checks:
+                    code = str(check_item or "").strip().upper()
+                    if code in gst_validation_scenario_codes:
+                        normalized_validation_checks.append(code)
+                if normalized_validation_checks:
+                    gst_validation_checks = list(dict.fromkeys(normalized_validation_checks))
+                else:
+                    gst_validation_checks = list(DEFAULT_INVOICE_PRINTING_CONFIG["profiles"][0]["options"]["gst_validation_checks"])
+            else:
+                gst_validation_checks = list(DEFAULT_INVOICE_PRINTING_CONFIG["profiles"][0]["options"]["gst_validation_checks"])
+            normalized["profiles"].append(
+                {
+                    "key": key,
+                    "label": str(item.get("label") or key).strip(),
+                    "hint": str(item.get("hint") or "").strip(),
+                    "options": {
+                        "show_bank_details": bool(options.get("show_bank_details", True)),
+                        "show_terms": bool(options.get("show_terms", True)),
+                        "show_einvoice_section": bool(options.get("show_einvoice_section", True)),
+                        "show_eway_details": bool(options.get("show_eway_details", True)),
+                        "show_transport_details": bool(options.get("show_transport_details", True)),
+                        "show_compliance_qr": bool(options.get("show_compliance_qr", True)),
+                        "show_gst_validation_panel": bool(options.get("show_gst_validation_panel", True)),
+                        "gst_validation_checks": gst_validation_checks,
+                        "line_density": line_density,
+                        "font_scale": font_scale,
+                        "template_key": template_key,
+                        "page_size": page_size,
+                        "orientation": orientation,
+                        "margin_mm": margin_mm,
+                        "pdf_render_scale": pdf_render_scale,
+                        "pdf_image_quality": pdf_image_quality,
+                    },
+                }
+            )
+
+        if not normalized["profiles"]:
+            normalized["profiles"] = list(defaults["profiles"])
+
+        allowed_keys = {item["key"] for item in normalized["profiles"]}
+        if normalized["default_profile"] not in allowed_keys:
+            normalized["default_profile"] = normalized["profiles"][0]["key"]
+
+        raw_texts = raw.get("texts")
+        if isinstance(raw_texts, dict):
+            for key in ("form_label", "receiver_title", "consignee_title", "terms_title"):
+                value = raw_texts.get(key)
+                if value is None:
+                    continue
+                normalized["texts"][key] = str(value).strip() or defaults["texts"][key]
+
+            for key in ("terms_lines", "terms_ack_lines"):
+                items = raw_texts.get(key)
+                if isinstance(items, list):
+                    cleaned = [str(item).strip() for item in items if str(item).strip()]
+                    normalized["texts"][key] = cleaned or list(defaults["texts"][key])
+
+            signature_labels = raw_texts.get("signature_labels")
+            if isinstance(signature_labels, list):
+                normalized_labels = [str(item).strip() for item in signature_labels[:4]]
+                while len(normalized_labels) < 4:
+                    normalized_labels.append(defaults["texts"]["signature_labels"][len(normalized_labels)])
+                normalized["texts"]["signature_labels"] = normalized_labels
+
+            line_columns = raw_texts.get("line_columns")
+            if isinstance(line_columns, list):
+                cleaned_columns = []
+                total_colspan = 0
+                for item in line_columns:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("key") or "").strip()
+                    label = str(item.get("label") or key).strip()
+                    class_name = str(item.get("className") or "").strip()
+                    if not key or not label or not class_name:
+                        continue
+                    try:
+                        colspan = int(float(item.get("colspan", 1)))
+                    except (TypeError, ValueError):
+                        colspan = 1
+                    if colspan < 1:
+                        colspan = 1
+                    if colspan > 15:
+                        colspan = 15
+                    fmt = str(item.get("format") or "text").strip().lower()
+                    if fmt not in {"text", "number", "integer", "index"}:
+                        fmt = "text"
+                    cleaned_columns.append(
+                        {
+                            "key": key,
+                            "label": label,
+                            "colspan": colspan,
+                            "className": class_name,
+                            "format": fmt,
+                        }
+                    )
+                    total_colspan += colspan
+                if cleaned_columns and total_colspan == 15:
+                    normalized["texts"]["line_columns"] = cleaned_columns
+
+        return normalized
+
+    @staticmethod
+    def effective_invoice_printing_config(settings_obj: Any) -> Dict[str, Any]:
+        raw = getattr(settings_obj, "invoice_printing", None) or {}
+        try:
+            return SalesSettingsService.normalize_invoice_printing(raw)
+        except ValueError:
+            return deepcopy(DEFAULT_INVOICE_PRINTING_CONFIG)
 
     @staticmethod
     def effective_policy_controls(settings_obj: Any) -> Dict[str, Any]:
@@ -389,23 +798,48 @@ class SalesSettingsService:
         entityfinid_id: int,
         subentity_id: Optional[int],
         doc_type: int,
+        current_number: Optional[int] = None,
     ):
         inv_filters = {
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
             "doc_type": doc_type,
+            "status__in": [
+                int(SalesInvoiceHeader.Status.CONFIRMED),
+                int(SalesInvoiceHeader.Status.POSTED),
+                int(SalesInvoiceHeader.Status.CANCELLED),
+            ],
         }
         if subentity_id is None:
             inv_filters["subentity_id__isnull"] = True
         else:
             inv_filters["subentity_id"] = subentity_id
 
-        return (
+        rows = list(
             SalesInvoiceHeader.objects.filter(**inv_filters)
-            .only("id", "invoice_number", "doc_no", "status", "bill_date")
-            .order_by("-id")
-            .first()
+            .only("id", "invoice_number", "doc_no", "doc_code", "status", "bill_date")
         )
+        if not rows:
+            return None
+
+        threshold = int(current_number or 0)
+        candidates = []
+        for row in rows:
+            seq_no = SalesSettingsService._extract_sequence_no(
+                getattr(row, "doc_no", None),
+                getattr(row, "invoice_number", None),
+            )
+            if seq_no <= 0:
+                continue
+            if threshold > 0 and seq_no >= threshold:
+                continue
+            candidates.append((seq_no, int(getattr(row, "id", 0) or 0), row))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
 
     @staticmethod
     def get_current_doc_no(
@@ -418,8 +852,8 @@ class SalesSettingsService:
     ) -> Dict[str, Any]:
         """
         - current_number: preview (next-to-issue) from numbering series (uses doc_code)
-        - previous_*: last saved invoice by ID for given entity + FY + subentity + doc_type
-                     (ignores doc_code and status)
+          with fallback to the latest saved doc_code in scope when configured code drifts.
+        - previous_*: nearest previous numbered invoice in scope (status-filtered).
         """
 
         # 1) Find DocumentType row (for numbering preview)
@@ -446,20 +880,64 @@ class SalesSettingsService:
                 "previous_bill_date": None,
             }
 
-        # 2) Peek current (next-to-issue) number (still uses doc_code)
+        # 3) Get SalesInvoiceHeader doc_type enum value from doc_key
+        sales_doc_type = SalesSettingsService._sales_doc_type_from_doc_key(doc_key)
+
+        configured_doc_code = str(doc_code or "").strip()
+        current_no: Optional[int] = None
+        preview_error: Optional[str] = None
+
+        # 2) Peek using configured code first.
         try:
             res = DocumentNumberService.peek_preview(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
                 subentity_id=subentity_id,
                 doc_type_id=doc_type_row.id,
-                doc_code=doc_code,
+                doc_code=configured_doc_code,
             )
             current_no = int(res.doc_no)
         except Exception as e:
+            preview_error = str(e)
+
+        # 3) Get latest saved numbered row in scope (used for fallback + previous lookup).
+        latest_doc = SalesSettingsService._last_saved_doc_in_scope(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_type=sales_doc_type,
+            current_number=None,
+        )
+
+        # If configured code preview is stale/low, try latest doc's code.
+        latest_doc_code = str(getattr(latest_doc, "doc_code", "") or "").strip()
+        if (current_no is None or current_no <= 1) and latest_doc_code and latest_doc_code != configured_doc_code:
+            try:
+                res = DocumentNumberService.peek_preview(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_type_id=doc_type_row.id,
+                    doc_code=latest_doc_code,
+                )
+                current_no = int(res.doc_no)
+            except Exception:
+                pass
+
+        # Final fallback when preview cannot be resolved from numbering series:
+        # keep navigation stable from latest numbered document.
+        if (current_no is None or current_no <= 0) and latest_doc:
+            latest_seq = SalesSettingsService._extract_sequence_no(
+                getattr(latest_doc, "doc_no", None),
+                getattr(latest_doc, "invoice_number", None),
+            )
+            if latest_seq > 0:
+                current_no = latest_seq + 1
+
+        if current_no is None or current_no <= 0:
             return {
                 "enabled": False,
-                "reason": str(e),
+                "reason": preview_error or "Unable to resolve current document number.",
                 "doc_type_id": doc_type_row.id,
                 "current_number": None,
                 "previous_number": None,
@@ -469,24 +947,28 @@ class SalesSettingsService:
                 "previous_bill_date": None,
             }
 
-        # 3) Get SalesInvoiceHeader doc_type enum value from doc_key
-        sales_doc_type = SalesSettingsService._sales_doc_type_from_doc_key(doc_key)
-
-        # 4) Previous = last saved row by id (scope: entity, FY, subentity, doc_type ONLY)
+        # 4) Previous = nearest numbered row < current number in scope.
         prev_doc = SalesSettingsService._last_saved_doc_in_scope(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             doc_type=sales_doc_type,
+            current_number=current_no,
         )
+        previous_number = None
+        if prev_doc:
+            previous_number = SalesSettingsService._extract_sequence_no(
+                getattr(prev_doc, "doc_no", None),
+                getattr(prev_doc, "invoice_number", None),
+            ) or None
 
         return {
             "enabled": True,
             "doc_type_id": doc_type_row.id,
             "current_number": current_no,
 
-            # ✅ previous from last saved record (any status)
-            "previous_number": int(prev_doc.doc_no) if (prev_doc and prev_doc.doc_no is not None) else None,
+            # ✅ previous from nearest previous numbered record in scope
+            "previous_number": previous_number,
             "previous_invoice_id": prev_doc.id if prev_doc else None,
             "previous_invoice_number": prev_doc.invoice_number if prev_doc else None,
             "previous_status": int(prev_doc.status) if prev_doc else None,

@@ -31,6 +31,7 @@ from django.db.models import (
 from django.db.models.functions import Abs, Coalesce
 
 from financial.models import AccountAddress, account
+from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import EntryStatus, JournalLine
 from purchase.models.purchase_ap import (
     VendorAdvanceBalance,
@@ -152,6 +153,10 @@ def scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
     return qs
 
 
+def _exclude_cancelled_open_items(qs):
+    return qs.exclude(header__status=PurchaseInvoiceHeader.Status.CANCELLED)
+
+
 def settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
     """Return applied settlement totals per open item as of the reporting date."""
     qs = VendorSettlementLine.objects.filter(
@@ -203,7 +208,8 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-    ).filter(bill_date__lte=upto_date)
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=upto_date)
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
     return qs.only(
@@ -258,6 +264,7 @@ def _advance_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_dat
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
     ).filter(credit_date__lte=upto_date)
+    qs = qs.exclude(payment_voucher__status=PaymentVoucherHeader.Status.CANCELLED)
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
     return qs.only(
@@ -418,7 +425,8 @@ def period_bill_credit_totals(*, entity_id, entityfin_id, subentity_id, from_dat
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-    ).filter(bill_date__gte=from_date, bill_date__lte=to_date)
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(bill_date__gte=from_date, bill_date__lte=to_date)
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
     rows = qs.values("vendor_id").annotate(
@@ -496,7 +504,9 @@ def vendor_control_balance_map(*, entity_id, entityfin_id, subentity_id, upto_da
 
 def settlement_integrity_issues(*, entity_id, entityfin_id=None, subentity_id=None, upto_date=None):
     """Return reusable settlement integrity diagnostics for AP controls and close checks."""
-    settlement_qs = VendorSettlement.objects.filter(entity_id=entity_id)
+    settlement_qs = VendorSettlement.objects.filter(entity_id=entity_id).exclude(
+        status=VendorSettlement.Status.CANCELLED
+    )
     if entityfin_id:
         settlement_qs = settlement_qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
@@ -548,7 +558,9 @@ def settlement_integrity_issues(*, entity_id, entityfin_id=None, subentity_id=No
         "open_item",
         "open_item__header",
         "open_item__vendor",
-    ).filter(settlement__entity_id=entity_id)
+    ).filter(settlement__entity_id=entity_id).exclude(
+        settlement__status=VendorSettlement.Status.CANCELLED
+    )
     if entityfin_id:
         line_qs = line_qs.filter(settlement__entityfinid_id=entityfin_id)
     if subentity_id is not None:
@@ -693,7 +705,7 @@ def settlement_history_queryset(*, entity_id, entityfin_id=None, subentity_id=No
         ),
         "lines__open_item",
         "lines__open_item__header",
-    ).filter(entity_id=entity_id)
+    ).filter(entity_id=entity_id).exclude(status=VendorSettlement.Status.CANCELLED)
     if entityfin_id:
         qs = qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
@@ -745,4 +757,6 @@ def note_register_queryset(*, entity_id, entityfin_id=None, subentity_id=None, v
         qs = qs.filter(doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE)
     if status is not None:
         qs = qs.filter(status=status)
+    else:
+        qs = qs.exclude(status=PurchaseInvoiceHeader.Status.CANCELLED)
     return qs.order_by("bill_date", "doc_code", "doc_no", "id")

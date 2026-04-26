@@ -12,8 +12,10 @@ from financial.models import account
 from financial.profile_access import account_partytype
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, StaticAccount, TxnType
+from purchase.models.purchase_core import PurchaseInvoiceHeader
 from receipts.models.receipt_core import ReceiptVoucherHeader
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window, resolve_scope_names
+from sales.models.sales_core import SalesInvoiceHeader
 from vouchers.models.voucher_core import VoucherHeader
 
 ZERO = Decimal("0.00")
@@ -131,6 +133,30 @@ def _validate_entity_accounts(entity_id: int, ids: list[int], *, field_name: str
     return rows
 
 
+def _cancelled_source_filter_q(*, prefix: str, entity_id: int, entityfin_id=None, subentity_id=None):
+    def scoped_ids(model):
+        qs = model.objects.filter(entity_id=entity_id)
+        if entityfin_id:
+            qs = qs.filter(entityfinid_id=entityfin_id)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        return qs.values("id")
+
+    return (
+        Q(**{f"{prefix}txn_type": TxnType.SALES, f"{prefix}txn_id__in": scoped_ids(SalesInvoiceHeader).filter(status=SalesInvoiceHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.SALES_CREDIT_NOTE, f"{prefix}txn_id__in": scoped_ids(SalesInvoiceHeader).filter(status=SalesInvoiceHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.SALES_DEBIT_NOTE, f"{prefix}txn_id__in": scoped_ids(SalesInvoiceHeader).filter(status=SalesInvoiceHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.PURCHASE, f"{prefix}txn_id__in": scoped_ids(PurchaseInvoiceHeader).filter(status=PurchaseInvoiceHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.PURCHASE_CREDIT_NOTE, f"{prefix}txn_id__in": scoped_ids(PurchaseInvoiceHeader).filter(status=PurchaseInvoiceHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.PURCHASE_DEBIT_NOTE, f"{prefix}txn_id__in": scoped_ids(PurchaseInvoiceHeader).filter(status=PurchaseInvoiceHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.RECEIPT, f"{prefix}txn_id__in": scoped_ids(ReceiptVoucherHeader).filter(status=ReceiptVoucherHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.PAYMENT, f"{prefix}txn_id__in": scoped_ids(PaymentVoucherHeader).filter(status=PaymentVoucherHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.JOURNAL, f"{prefix}txn_id__in": scoped_ids(VoucherHeader).filter(status=VoucherHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.JOURNAL_CASH, f"{prefix}txn_id__in": scoped_ids(VoucherHeader).filter(status=VoucherHeader.Status.CANCELLED)})
+        | Q(**{f"{prefix}txn_type": TxnType.JOURNAL_BANK, f"{prefix}txn_id__in": scoped_ids(VoucherHeader).filter(status=VoucherHeader.Status.CANCELLED)})
+    )
+
+
 def _entry_base_queryset(entity_id, entityfin_id=None, subentity_id=None, from_date=None, to_date=None):
     """
     Base Daybook queryset.
@@ -175,6 +201,14 @@ def _entry_base_queryset(entity_id, entityfin_id=None, subentity_id=None, from_d
         qs = qs.filter(posting_date__gte=from_date)
     if to_date:
         qs = qs.filter(posting_date__lte=to_date)
+    qs = qs.exclude(
+        _cancelled_source_filter_q(
+            prefix="",
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+        )
+    )
     return qs, entity_id, entityfin_id, subentity_id, from_date, to_date
 
 
@@ -499,6 +533,14 @@ def _cashbook_line_queryset(entity_id, entityfin_id=None, subentity_id=None, *, 
         qs = qs.filter(subentity_id=subentity_id)
     if to_date:
         qs = qs.filter(posting_date__lte=to_date)
+    qs = qs.exclude(
+        _cancelled_source_filter_q(
+            prefix="entry__",
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+        )
+    )
     return qs
 
 

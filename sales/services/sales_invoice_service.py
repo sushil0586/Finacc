@@ -141,6 +141,15 @@ class SalesInvoiceService:
         free_qty = q4(getattr(line, "free_qty", None) or ZERO4)
         return q4(qty + free_qty)
 
+    @staticmethod
+    def _normalize_batch_number(value: object) -> str:
+        batch = str(value or "").strip()
+        if not batch:
+            return ""
+        if batch.isdigit():
+            return str(int(batch))
+        return batch
+
     @classmethod
     def _build_stock_balance_maps(
         cls,
@@ -178,7 +187,7 @@ class SalesInvoiceService:
         by_product_batch_expiry: dict[tuple[int, str, int | None, object], Decimal] = defaultdict(lambda: ZERO4)
         for row in rows:
             product_id = int(row["product_id"])
-            batch_number = str(row.get("batch_number") or "").strip()
+            batch_number = cls._normalize_batch_number(row.get("batch_number"))
             expiry_date = row.get("expiry_date")
             row_location_id = row.get("location_id")
             base_qty = q4(row.get("base_qty") or ZERO4)
@@ -285,7 +294,7 @@ class SalesInvoiceService:
             if issue_qty <= ZERO4:
                 continue
 
-            batch_number = str(getattr(line, "batch_number", "") or "").strip()
+            batch_number = cls._normalize_batch_number(getattr(line, "batch_number", ""))
             expiry_date = getattr(line, "expiry_date", None)
             line_no = int(getattr(line, "line_no", 0) or 0) or 0
 
@@ -305,10 +314,26 @@ class SalesInvoiceService:
                 if hasattr(line, "updated_by"):
                     pass
                 line.save(update_fields=["batch_number", "expiry_date", "updated_at"])
-                batch_number = candidate_batch
+                batch_number = cls._normalize_batch_number(candidate_batch)
                 expiry_date = getattr(line, "expiry_date", None)
 
             available_qty = q4(available_by_key.get((product_id, batch_number, location_id), ZERO4))
+            if available_qty <= ZERO4:
+                can_infer_location = not bool(getattr(header, "location_id", None)) and not bool(getattr(header, "godown_id", None))
+                if can_infer_location:
+                    batch_locations = [
+                        (loc_id, q4(balance))
+                        for (pid, batch, loc_id), balance in available_by_key.items()
+                        if pid == product_id and batch == batch_number and q4(balance) > ZERO4 and loc_id is not None
+                    ]
+                    unique_locations = sorted({loc_id for loc_id, _ in batch_locations})
+                    if len(unique_locations) == 1:
+                        inferred_location_id = unique_locations[0]
+                        header.location_id = inferred_location_id
+                        header.save(update_fields=["location_id", "updated_at"])
+                        location_id = inferred_location_id
+                        available_qty = q4(available_by_key.get((product_id, batch_number, location_id), ZERO4))
+
             if available_qty <= ZERO4:
                 raise ValidationError({
                     "lines": [
@@ -405,7 +430,7 @@ class SalesInvoiceService:
             if issue_qty <= ZERO4:
                 continue
 
-            batch_number = str(getattr(line, "batch_number", "") or "").strip()
+            batch_number = cls._normalize_batch_number(getattr(line, "batch_number", ""))
             expiry_date = getattr(line, "expiry_date", None)
             line_no = int(getattr(line, "line_no", 0) or 0) or 0
             key = (product_id, batch_number, location_id)
@@ -2605,5 +2630,3 @@ class SalesInvoiceService:
         header.save(update_fields=["status", "cancelled_at", "cancelled_by", "remarks", "updated_by", "updated_at"])
         SalesArService.close_open_item_for_header(header)
         return header
-
-

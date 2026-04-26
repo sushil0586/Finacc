@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from copy import deepcopy
 
 from django.db import models
 from django.db.models import Q
@@ -34,9 +35,190 @@ DEFAULT_POLICY_CONTROLS = {
     "compliance_allow_cancel_irn_when_eway_active": "off",
 }
 
+DEFAULT_INVOICE_PRINTING = {
+    "default_profile": "gst_standard",
+    "default_copies": ["original"],
+    "profiles": [
+        {
+            "key": "gst_standard",
+            "label": "GST Standard A4",
+            "hint": "Rule-friendly layout with full statutory sections.",
+            "options": {
+                "show_bank_details": True,
+                "show_terms": True,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "comfortable",
+                "font_scale": 1.0,
+                "template_key": "gst_a4",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 10,
+                "pdf_render_scale": 0.55,
+                "pdf_image_quality": 0.62,
+            },
+        },
+        {
+            "key": "plain",
+            "label": "Plain Paper",
+            "hint": "Minimal visual layout while retaining invoice essentials.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "comfortable",
+                "font_scale": 1.0,
+                "template_key": "plain_a4",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 10,
+                "pdf_render_scale": 0.5,
+                "pdf_image_quality": 0.58,
+            },
+        },
+        {
+            "key": "large_invoice",
+            "label": "Large Invoice (50+ Lines)",
+            "hint": "Compact spacing optimized for long multi-page invoices.",
+            "options": {
+                "show_bank_details": True,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.92,
+                "template_key": "gst_a4_compact",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 8,
+                "pdf_render_scale": 0.5,
+                "pdf_image_quality": 0.58,
+            },
+        },
+        {
+            "key": "thermal_80mm",
+            "label": "Thermal 80mm",
+            "hint": "Narrow, fast print profile for grocery and POS printers.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": False,
+                "show_compliance_qr": False,
+                "show_gst_validation_panel": False,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.84,
+                "template_key": "thermal_80mm",
+                "page_size": "80MM",
+                "orientation": "portrait",
+                "margin_mm": 2,
+                "pdf_render_scale": 0.42,
+                "pdf_image_quality": 0.5,
+            },
+        },
+        {
+            "key": "thermal_58mm",
+            "label": "Thermal 58mm",
+            "hint": "Ultra-compact receipt profile for narrow thermal printers.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": False,
+                "show_compliance_qr": False,
+                "show_gst_validation_panel": False,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.8,
+                "template_key": "thermal_58mm",
+                "page_size": "58MM",
+                "orientation": "portrait",
+                "margin_mm": 1,
+                "pdf_render_scale": 0.4,
+                "pdf_image_quality": 0.48,
+            },
+        },
+        {
+            "key": "transport_copy",
+            "label": "Transport Copy",
+            "hint": "Highlights transport, E-Way and QR details for goods movement.",
+            "options": {
+                "show_bank_details": False,
+                "show_terms": False,
+                "show_einvoice_section": True,
+                "show_eway_details": True,
+                "show_transport_details": True,
+                "show_compliance_qr": True,
+                "show_gst_validation_panel": True,
+                "gst_validation_checks": ["SCN_B2B", "SCN_B2C", "SCN_EXPORT", "SCN_RCM", "SCN_EINV", "SCN_EWAY", "SCN_TRANSPORT", "SCN_TAX_SPLIT"],
+                "line_density": "compact",
+                "font_scale": 0.9,
+                "template_key": "transport_copy",
+                "page_size": "A4",
+                "orientation": "portrait",
+                "margin_mm": 8,
+                "pdf_render_scale": 0.5,
+                "pdf_image_quality": 0.56,
+            },
+        },
+    ],
+    "copy_labels": {
+        "original": "ORIGINAL FOR RECIPIENT",
+        "duplicate": "DUPLICATE FOR TRANSPORTER",
+        "triplicate": "TRIPLICATE FOR SUPPLIER",
+    },
+    "texts": {
+        "form_label": "Form GST INV-1",
+        "receiver_title": "Details of Receiver (Billed to)",
+        "consignee_title": "Details of Consignee (Shipped to)",
+        "terms_title": "Terms & Conditions :",
+        "terms_lines": [
+            "Our responsibility ceases after the goods are removed from our premises",
+            "Goods once sold are not returnable or exchangeable",
+            "if the bill is not paid within a week interest @24% will be charged from date of bill",
+        ],
+        "terms_ack_lines": [
+            "Received the above goods in good condition",
+            "Rate & Weight of this bill found correct.",
+        ],
+        "signature_labels": ["", "Checked By", "Prepared By", "Customer's Sign"],
+        "line_columns": [
+            {"key": "line_no", "label": "Sr", "colspan": 2, "className": "ams-border-left", "format": "index"},
+            {"key": "productname", "label": "Description of Goods", "colspan": 2, "className": "ams-border-left", "format": "text"},
+            {"key": "hsn", "label": "HSN", "colspan": 2, "className": "ams-border-left", "format": "text"},
+            {"key": "pieces", "label": "Pcs", "colspan": 1, "className": "ams-border-left text-end", "format": "integer"},
+            {"key": "orderqty", "label": "Qty", "colspan": 1, "className": "ams-border-left text-end", "format": "integer"},
+            {"key": "units", "label": "Unit", "colspan": 1, "className": "ams-border-left text-start", "format": "text"},
+            {"key": "ratebefdiscount", "label": "Rate", "colspan": 1, "className": "ams-border-left text-end", "format": "number"},
+            {"key": "orderDiscount", "label": "Discount %", "colspan": 1, "className": "ams-border-left text-end", "format": "text"},
+            {"key": "rate", "label": "Actual Rate", "colspan": 2, "className": "ams-border-left text-end", "format": "number"},
+            {"key": "amount", "label": "Amount", "colspan": 2, "className": "text-end ams-border-left ams-border-right", "format": "number"},
+        ],
+    },
+}
+
 
 def default_policy_controls():
-    return dict(DEFAULT_POLICY_CONTROLS)
+    return deepcopy(DEFAULT_POLICY_CONTROLS)
+
+def default_invoice_printing():
+    return deepcopy(DEFAULT_INVOICE_PRINTING)
 
 
 class SalesSettings(EntityScopedModel):
@@ -130,6 +312,7 @@ class SalesSettings(EntityScopedModel):
     round_grand_total_to = models.PositiveSmallIntegerField(default=2)  # decimals
     enable_round_off = models.BooleanField(default=True)
     policy_controls = models.JSONField(default=default_policy_controls, blank=True)
+    invoice_printing = models.JSONField(default=default_invoice_printing, blank=True)
 
     class Meta:
         constraints = [

@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import create_account_with_synced_ledger
 from posting.models import Entry, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, TxnType
@@ -32,12 +32,10 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.meta_url = reverse("reports_api:gstr3b-meta")
         self.validation_url = reverse("reports_api:gstr3b-validations")
 
-        unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Finacc Entity",
             legalname="Finacc Entity Pvt Ltd",
-            unitType=unit_type,
             GstRegitrationType=gst_type,
             createdby=self.user,
         )
@@ -284,6 +282,15 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertEqual(self._d(data["section_3_1"]["outward_zero_rated_supplies"]["igst"]), Decimal("90.00"))
         self.assertEqual(self._d(data["section_3_1"]["outward_nil_exempt_non_gst"]["taxable_value"]), Decimal("300.00"))
         self.assertEqual(self._d(data["section_3_1"]["inward_supplies_reverse_charge"]["igst"]), Decimal("72.00"))
+        section_31_rows = data["section_3_1"]["rows"]
+        self.assertEqual(len(section_31_rows), 5)
+        self.assertEqual(section_31_rows[0]["label"], "Outward taxable supplies")
+        self.assertEqual(self._d(section_31_rows[0]["total_tax"]), Decimal("144.00"))
+        self.assertEqual(section_31_rows[3]["label"], "Outward nil/exempt/non-GST")
+        self.assertEqual(self._d(section_31_rows[3]["taxable_value"]), Decimal("300.00"))
+        self.assertEqual(self._d(section_31_rows[3]["total_tax"]), Decimal("0.00"))
+        self.assertEqual(section_31_rows[4]["label"], "Non-GST outward supplies")
+        self.assertEqual(self._d(section_31_rows[4]["taxable_value"]), Decimal("0.00"))
         self.assertEqual(
             self._d(data["section_3_2"]["interstate_supplies_to_unregistered"]["taxable_value"]),
             Decimal("0.00"),
@@ -292,15 +299,33 @@ class Gstr3bSummaryAPITests(APITestCase):
             self._d(data["section_3_2"]["interstate_supplies_to_composition"]["taxable_value"]),
             Decimal("0.00"),
         )
+        section_32_rows = data["section_3_2"]["rows"]
+        self.assertEqual(len(section_32_rows), 3)
+        self.assertEqual(section_32_rows[0]["label"], "Inter-state to unregistered")
+        self.assertEqual(self._d(section_32_rows[0]["taxable_value"]), Decimal("0.00"))
 
         self.assertEqual(self._d(data["section_4"]["itc_available"]["cgst"]), Decimal("45.00"))
         self.assertEqual(self._d(data["section_4"]["itc_reversed"]["cgst"]), Decimal("9.00"))
         self.assertEqual(self._d(data["section_4"]["net_itc"]["cgst"]), Decimal("36.00"))
+        section_4_rows = data["section_4"]["rows"]
+        self.assertEqual(len(section_4_rows), 3)
+        self.assertEqual(section_4_rows[2]["label"], "Net ITC")
+        self.assertEqual(self._d(section_4_rows[2]["cgst"]), Decimal("36.00"))
         self.assertEqual(self._d(data["section_5_1"]["inward_exempt_nil_non_gst"]["taxable_value"]), Decimal("250.00"))
+        section_51_rows = data["section_5_1"]["rows"]
+        self.assertEqual(len(section_51_rows), 1)
+        self.assertEqual(section_51_rows[0]["label"], "Inward exempt / nil / non-GST")
+        self.assertEqual(self._d(section_51_rows[0]["taxable_value"]), Decimal("250.00"))
         self.assertEqual(self._d(data["section_6_1"]["tax_payable"]["igst"]), Decimal("162.00"))
         self.assertEqual(self._d(data["section_6_1"]["tax_paid_cash"]["igst"]), Decimal("0.00"))
         self.assertEqual(self._d(data["section_6_1"]["tax_paid_itc"]["igst"]), Decimal("72.00"))
         self.assertEqual(self._d(data["section_6_1"]["balance_payable"]["igst"]), Decimal("90.00"))
+        section_61_rows = data["section_6_1"]["rows"]
+        self.assertEqual(len(section_61_rows), 4)
+        self.assertEqual(section_61_rows[1]["label"], "Paid through ITC")
+        self.assertEqual(self._d(section_61_rows[1]["igst"]), Decimal("72.00"))
+        self.assertEqual(section_61_rows[3]["label"], "Balance payable")
+        self.assertEqual(self._d(section_61_rows[3]["igst"]), Decimal("90.00"))
 
         self.assertEqual(self._d(data["totals"]["tax_payable"]["cgst"]), Decimal("72.00"))
         self.assertEqual(self._d(data["totals"]["tax_payable"]["igst"]), Decimal("162.00"))

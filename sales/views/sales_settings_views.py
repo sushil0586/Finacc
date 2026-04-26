@@ -69,6 +69,7 @@ SALES_SETTINGS_SCHEMA = _with_help(
         {"name": "enforce_statutory_cancel_before_business_cancel", "label": "Require Statutory Cancel Before Business Cancel", "type": "boolean", "group": "automation"},
         {"name": "enable_round_off", "label": "Enable Round Off", "type": "boolean", "group": "rounding"},
         {"name": "round_grand_total_to", "label": "Round Grand Total To", "type": "integer", "group": "rounding"},
+        {"name": "invoice_printing", "label": "Invoice Printing", "type": "json", "group": "printing"},
         {"name": "policy_controls", "label": "Policy Controls", "type": "json", "group": "policy"},
     ],
     {
@@ -92,6 +93,7 @@ SALES_SETTINGS_SCHEMA = _with_help(
         "enforce_statutory_cancel_before_business_cancel": "Prevents business cancellation before statutory cancellation completes.",
         "enable_round_off": "Enables round-off handling for invoice totals.",
         "round_grand_total_to": "Number of decimal places to retain after round-off.",
+        "invoice_printing": "Profile-driven invoice print settings (layout profiles, copy labels, section toggles).",
         "policy_controls": "Advanced enterprise policy controls for delete/confirm/match/settlement behavior.",
         "stock_policy": "Sales stock discipline for batch, expiry, FEFO, and negative stock handling.",
     },
@@ -138,6 +140,7 @@ EDITABLE_FIELDS = {
     "tcs_credit_note_policy",
     "enable_round_off",
     "round_grand_total_to",
+    "invoice_printing",
     "policy_controls",
 }
 
@@ -355,6 +358,7 @@ class SalesSettingsAPIView(APIView):
                 "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
                 "enable_round_off": settings_obj.enable_round_off,
                 "round_grand_total_to": settings_obj.round_grand_total_to,
+                "invoice_printing": SalesSettingsService.effective_invoice_printing_config(settings_obj),
                 "policy_controls": policy_controls,
             },
             "stock_policy": stock_policy,
@@ -415,6 +419,8 @@ class SalesSettingsAPIView(APIView):
                 if key in EDITABLE_FIELDS:
                     if key == "policy_controls":
                         value = SalesSettingsService.normalize_policy_controls(value)
+                    if key == "invoice_printing":
+                        value = SalesSettingsService.normalize_invoice_printing(value)
                     setattr(settings_obj, key, value)
         except ValueError as exc:
             raise ValidationError({"detail": str(exc)})

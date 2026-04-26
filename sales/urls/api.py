@@ -16,6 +16,9 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceRetrieveUpdateAPIView,
     SalesServiceInvoiceListCreateAPIView,
     SalesServiceInvoiceRetrieveUpdateAPIView,
+    SalesInvoiceTransportAPIView,
+    SalesInvoicePrintAPIView,
+    SalesServiceInvoicePrintAPIView,
     SalesInvoiceConfirmAPIView,
     SalesInvoicePostAPIView,
     SalesInvoiceCancelAPIView,
@@ -35,6 +38,11 @@ from sales.views.sales_invoice_compliance_api import (
 )
 from sales.views.sales_choices_views import SalesChoicesAPIView
 from sales.views.sales_settings_views import SalesSettingsAPIView
+from sales.views.sales_bulk_print_views import (
+    SalesBulkPrintJobListCreateAPIView,
+    SalesBulkPrintJobDetailAPIView,
+    SalesBulkPrintJobDownloadAPIView,
+)
 from sales.views.sales_meta import (
     LegacyCombinedSalesMetaAPIView,
     SalesInvoiceFormMetaAPIView,
@@ -72,9 +80,13 @@ urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
     path("invoices/search/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-search"),
     path("invoices/<int:pk>/", SalesInvoiceRetrieveUpdateAPIView.as_view(), name="sales-invoice-detail"),
+    path("invoices/<int:pk>/transport/", SalesInvoiceTransportAPIView.as_view(), name="sales-invoice-transport"),
+    path("invoices/<int:pk>/print/", SalesInvoicePrintAPIView.as_view(), name="sales-invoice-print"),
     path("service-invoices/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-list-create"),
     path("service-invoices/search/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-search"),
     path("service-invoices/<int:pk>/", SalesServiceInvoiceRetrieveUpdateAPIView.as_view(), name="sales-service-invoice-detail"),
+    path("service-invoices/<int:pk>/transport/", SalesInvoiceTransportAPIView.as_view(), name="sales-service-invoice-transport"),
+    path("service-invoices/<int:pk>/print/", SalesServiceInvoicePrintAPIView.as_view(), name="sales-service-invoice-print"),
 
     path("invoices/<int:pk>/confirm/", SalesInvoiceConfirmAPIView.as_view(), name="sales-invoice-confirm"),
     path("invoices/<int:pk>/post/", SalesInvoicePostAPIView.as_view(), name="sales-invoice-post"),
@@ -89,6 +101,9 @@ urlpatterns = [
 
     path("choices/", SalesChoicesAPIView.as_view(), name="sales-choices"),
     path("settings/", SalesSettingsAPIView.as_view(), name="sales-settings"),
+    path("bulk-print/jobs/", SalesBulkPrintJobListCreateAPIView.as_view(), name="sales-bulk-print-job-list-create"),
+    path("bulk-print/jobs/<int:job_id>/", SalesBulkPrintJobDetailAPIView.as_view(), name="sales-bulk-print-job-detail"),
+    path("bulk-print/jobs/<int:job_id>/download/", SalesBulkPrintJobDownloadAPIView.as_view(), name="sales-bulk-print-job-download"),
     path("meta/invoice-form/", SalesInvoiceFormMetaAPIView.as_view(), name="sales-invoice-form-meta"),
     path("meta/invoice-detail-form/", SalesInvoiceDetailFormMetaAPIView.as_view(), name="sales-invoice-detail-form-meta"),
     path("meta/invoice-search/", SalesInvoiceSearchMetaAPIView.as_view(), name="sales-invoice-search-meta"),

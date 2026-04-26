@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, Optional, Sequence
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q
 
 from sales.models.sales_core import SalesInvoiceHeader
 from sales.models import SalesInvoiceLine
@@ -28,7 +29,7 @@ class NavItem:
 
 class SalesInvoiceNavService:
     """
-    ✅ Prev/Next strictly by id, but only within SAME:
+    ✅ Prev/Next by numbered voucher sequence (doc_no), within SAME:
       - entity
       - financial year (entityfinid)
       - subentity (including NULL vs non-NULL)
@@ -37,8 +38,9 @@ class SalesInvoiceNavService:
       - allowed statuses
     """
 
+    _TRAILING_NUMBER_PATTERN = re.compile(r"(\d+)\s*$")
+
     DEFAULT_ALLOWED_STATUSES = (
-        int(SalesInvoiceHeader.Status.DRAFT),
         int(SalesInvoiceHeader.Status.CONFIRMED),
         int(SalesInvoiceHeader.Status.POSTED),
         int(SalesInvoiceHeader.Status.CANCELLED),
@@ -61,7 +63,7 @@ class SalesInvoiceNavService:
         entityfinid_id: int,
         subentity_id: Optional[int],
         doc_type: int,
-        doc_code: str,
+        doc_code: Optional[str],
         allowed_statuses: Sequence[int],
         line_mode: Optional[str] = None,
     ):
@@ -69,9 +71,10 @@ class SalesInvoiceNavService:
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
             "doc_type": doc_type,
-            "doc_code": doc_code,
             "status__in": list(allowed_statuses),
         }
+        if doc_code:
+            filters["doc_code"] = doc_code
 
         # ✅ important: NULL subentity must match NULL only
         if subentity_id is None:
@@ -84,6 +87,12 @@ class SalesInvoiceNavService:
             .filter(**filters)
             .only("id", "doc_no", "invoice_number", "status", "bill_date")
         )
+        if int(SalesInvoiceHeader.Status.CANCELLED) in set(int(value) for value in allowed_statuses):
+            qs = qs.exclude(
+                Q(status=int(SalesInvoiceHeader.Status.CANCELLED))
+                & (Q(doc_no__isnull=True) | Q(doc_no__lte=0))
+                & (Q(invoice_number__isnull=True) | Q(invoice_number__exact=""))
+            )
         return SalesInvoiceNavService._apply_line_mode_filter(qs, line_mode)
 
     @staticmethod
@@ -104,6 +113,19 @@ class SalesInvoiceNavService:
         ).to_dict()
 
     @staticmethod
+    def _sequence_no(obj: Any) -> int:
+        doc_no = int(getattr(obj, "doc_no", 0) or 0)
+        if doc_no > 0:
+            return doc_no
+        invoice_number = str(getattr(obj, "invoice_number", "") or "").strip()
+        if not invoice_number:
+            return 0
+        match = SalesInvoiceNavService._TRAILING_NUMBER_PATTERN.search(invoice_number)
+        if not match:
+            return 0
+        return int(match.group(1) or 0)
+
+    @staticmethod
     def get_prev_next_for_instance(
         instance: SalesInvoiceHeader,
         *,
@@ -119,29 +141,60 @@ class SalesInvoiceNavService:
             doc_type=int(instance.doc_type),
             doc_code=str(instance.doc_code),
             allowed_statuses=allowed_statuses,
-            line_mode=line_mode,
+            line_mode=None,
+        )
+        all_code_qs = SalesInvoiceNavService._scope_qs(
+            entity_id=instance.entity_id,
+            entityfinid_id=instance.entityfinid_id,
+            subentity_id=instance.subentity_id,
+            doc_type=int(instance.doc_type),
+            doc_code=None,
+            allowed_statuses=allowed_statuses,
+            line_mode=None,
         )
 
-        # ✅ strictly by id, within scope
-        prev_obj = qs.filter(id__lt=instance.id).order_by("-id").first()
-        next_obj = qs.filter(id__gt=instance.id).order_by("id").first()
-
-        # If mode-scoped neighbors are not available, fall back to same scope without line-mode filter.
-        # Frontend can then auto-redirect to the correct page when crossing goods/service boundary.
-        if line_mode in ("service", "goods") and (not prev_obj or not next_obj):
-            all_mode_qs = SalesInvoiceNavService._scope_qs(
-                entity_id=instance.entity_id,
-                entityfinid_id=instance.entityfinid_id,
-                subentity_id=instance.subentity_id,
-                doc_type=int(instance.doc_type),
-                doc_code=str(instance.doc_code),
-                allowed_statuses=allowed_statuses,
-                line_mode=None,
+        current_seq = SalesInvoiceNavService._sequence_no(instance)
+        if current_seq > 0:
+            rows = list(all_code_qs)
+            prev_candidates = [
+                row for row in rows
+                if (
+                    (SalesInvoiceNavService._sequence_no(row) < current_seq)
+                    or (
+                        SalesInvoiceNavService._sequence_no(row) == current_seq
+                        and int(getattr(row, "id", 0) or 0) < int(getattr(instance, "id", 0) or 0)
+                    )
+                )
+            ]
+            next_candidates = [
+                row for row in rows
+                if (
+                    (SalesInvoiceNavService._sequence_no(row) > current_seq)
+                    or (
+                        SalesInvoiceNavService._sequence_no(row) == current_seq
+                        and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
+                    )
+                )
+            ]
+            prev_obj = max(
+                prev_candidates,
+                key=lambda row: (
+                    SalesInvoiceNavService._sequence_no(row),
+                    int(getattr(row, "id", 0) or 0),
+                ),
+                default=None,
             )
-            if not prev_obj:
-                prev_obj = all_mode_qs.filter(id__lt=instance.id).order_by("-id").first()
-            if not next_obj:
-                next_obj = all_mode_qs.filter(id__gt=instance.id).order_by("id").first()
+            next_obj = min(
+                next_candidates,
+                key=lambda row: (
+                    SalesInvoiceNavService._sequence_no(row),
+                    int(getattr(row, "id", 0) or 0),
+                ),
+                default=None,
+            )
+        else:
+            prev_obj = all_code_qs.filter(id__lt=instance.id).order_by("-id").first()
+            next_obj = all_code_qs.filter(id__gt=instance.id).order_by("id").first()
 
         return {
             "previous": SalesInvoiceNavService._to_item(prev_obj),

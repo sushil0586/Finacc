@@ -1,9 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
+import re
 from typing import Optional, Dict, Tuple, Any
 
-from purchase.models.purchase_core import PurchaseInvoiceHeader, DocType
+from purchase.models.purchase_core import PurchaseInvoiceHeader, DocType, Status
 
 from django.db.models import Q
 from numbering.models import DocumentType
@@ -149,6 +150,21 @@ class PurchasePolicy:
 
 
 class PurchaseSettingsService:
+    _TRAILING_NUMBER_PATTERN = re.compile(r"(\d+)\s*$")
+
+    @staticmethod
+    def _extract_sequence_no(doc_no: Any, purchase_number: Any) -> int:
+        doc_number = int(doc_no or 0)
+        if doc_number > 0:
+            return doc_number
+        purchase_text = str(purchase_number or "").strip()
+        if not purchase_text:
+            return 0
+        match = PurchaseSettingsService._TRAILING_NUMBER_PATTERN.search(purchase_text)
+        if not match:
+            return 0
+        return int(match.group(1) or 0)
+
     @staticmethod
     def normalize_policy_controls(raw: Any) -> Dict[str, Any]:
         if raw in (None, ""):
@@ -312,23 +328,49 @@ class PurchaseSettingsService:
         entityfinid_id: int,
         subentity_id: Optional[int],
         doc_type: int,
+        current_number: Optional[int] = None,
     ):
         inv_filters = {
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
             "doc_type": doc_type,
+            "status__in": [
+                int(Status.CONFIRMED),
+                int(Status.POSTED),
+                int(Status.CANCELLED),
+            ],
         }
         if subentity_id is None:
             inv_filters["subentity_id__isnull"] = True
         else:
             inv_filters["subentity_id"] = subentity_id
 
-        return (
+        rows = list(
             PurchaseInvoiceHeader.objects.filter(**inv_filters)
             .only("id", "purchase_number", "doc_no", "status", "bill_date")
-            .order_by("-id")
-            .first()
         )
+
+        if not rows:
+            return None
+
+        threshold = int(current_number or 0)
+        candidates = []
+        for row in rows:
+            seq_no = PurchaseSettingsService._extract_sequence_no(
+                getattr(row, "doc_no", None),
+                getattr(row, "purchase_number", None),
+            )
+            if seq_no <= 0:
+                continue
+            if threshold > 0 and seq_no >= threshold:
+                continue
+            candidates.append((seq_no, int(getattr(row, "id", 0) or 0), row))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
 
     @staticmethod
     def get_current_doc_no(
@@ -401,15 +443,22 @@ class PurchaseSettingsService:
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             doc_type=purchase_doc_type,
+            current_number=current_no,
         )
+        previous_number = None
+        if prev_doc:
+            previous_number = PurchaseSettingsService._extract_sequence_no(
+                getattr(prev_doc, "doc_no", None),
+                getattr(prev_doc, "purchase_number", None),
+            ) or None
 
         return {
             "enabled": True,
             "doc_type_id": doc_type_row.id,
             "current_number": current_no,
 
-            # ✅ previous from last saved record (any status)
-            "previous_number": int(prev_doc.doc_no) if (prev_doc and prev_doc.doc_no is not None) else None,
+            # ✅ previous from nearest previous numbered record in scope
+            "previous_number": previous_number,
             "previous_invoice_id": prev_doc.id if prev_doc else None,
             "previous_purchase_number": prev_doc.purchase_number if prev_doc else None,
             "previous_status": int(prev_doc.status) if prev_doc else None,

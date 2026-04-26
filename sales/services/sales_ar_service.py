@@ -10,6 +10,7 @@ from django.db.models import QuerySet
 from django.utils import timezone
 
 from financial.models import account
+from receipts.models.receipt_core import ReceiptVoucherHeader
 from sales.models.sales_ar import (
     CustomerBillOpenItem,
     CustomerAdvanceBalance,
@@ -137,6 +138,7 @@ class SalesArService:
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
         )
+        qs = qs.exclude(receipt_voucher__status=ReceiptVoucherHeader.Status.CANCELLED)
         if subentity_id is None:
             qs = qs.filter(subentity__isnull=True)
         else:
@@ -295,6 +297,7 @@ class SalesArService:
             qs = qs.filter(subentity_id=subentity_id)
         if customer_id is not None:
             qs = qs.filter(customer_id=customer_id)
+        qs = qs.exclude(header__status=SalesInvoiceHeader.Status.CANCELLED)
         if is_open is not None:
             qs = qs.filter(is_open=is_open)
         return qs.order_by("due_date", "bill_date", "id")
@@ -584,6 +587,7 @@ class SalesArService:
             entityfinid_id=entityfinid_id,
             customer_id=customer_id,
         )
+        settlements_qs = settlements_qs.exclude(status=CustomerSettlement.Status.CANCELLED)
         if subentity_id is None:
             settlements_qs = settlements_qs.filter(subentity__isnull=True)
         else:

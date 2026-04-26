@@ -63,6 +63,14 @@ class Gstr1TableViewService:
     def table_definitions():
         return ALL_GSTR1_TABLES
 
+    @staticmethod
+    def _effective_gst_rate(*, taxable: Decimal, cgst: Decimal, sgst: Decimal, igst: Decimal) -> Decimal:
+        taxable_value = Decimal(taxable or 0)
+        if taxable_value <= 0:
+            return Decimal("0.00")
+        gst_total = Decimal(cgst or 0) + Decimal(sgst or 0) + Decimal(igst or 0)
+        return ((gst_total * Decimal("100")) / taxable_value).quantize(Decimal("0.01"))
+
     def build(self, table_code: str):
         code = (table_code or "").upper()
         if code == TABLE_1_3.code:
@@ -155,6 +163,12 @@ class Gstr1TableViewService:
                 "customer_name": row.customer_name,
                 "place_of_supply_state_code": row.place_of_supply_state_code,
                 "taxable_amount": row.total_taxable_value,
+                "gst_rate": self._effective_gst_rate(
+                    taxable=row.total_taxable_value,
+                    cgst=row.total_cgst,
+                    sgst=row.total_sgst,
+                    igst=row.total_igst,
+                ),
                 "igst_amount": row.total_igst,
                 "cess_amount": row.total_cess,
                 "grand_total": row.grand_total,
@@ -176,6 +190,12 @@ class Gstr1TableViewService:
                 "customer_gstin": row.customer_gstin,
                 "place_of_supply_state_code": row.place_of_supply_state_code,
                 "taxable_amount": row.total_taxable_value,
+                "gst_rate": self._effective_gst_rate(
+                    taxable=row.total_taxable_value,
+                    cgst=row.total_cgst,
+                    sgst=row.total_sgst,
+                    igst=row.total_igst,
+                ),
                 "cgst_amount": row.total_cgst,
                 "sgst_amount": row.total_sgst,
                 "igst_amount": row.total_igst,
@@ -207,6 +227,12 @@ class Gstr1TableViewService:
                 "customer_gstin": row.customer_gstin,
                 "place_of_supply_state_code": row.place_of_supply_state_code,
                 "taxable_amount": row.total_taxable_value,
+                "gst_rate": self._effective_gst_rate(
+                    taxable=row.total_taxable_value,
+                    cgst=row.total_cgst,
+                    sgst=row.total_sgst,
+                    igst=row.total_igst,
+                ),
                 "igst_amount": row.total_igst,
                 "cess_amount": row.total_cess,
                 "grand_total": row.grand_total,
@@ -312,6 +338,12 @@ class Gstr1TableViewService:
                 "original_invoice_number": original.invoice_number if original else "",
                 "amendment_target_section": target_section,
                 "taxable_amount": note.total_taxable_value,
+                "gst_rate": self._effective_gst_rate(
+                    taxable=note.total_taxable_value,
+                    cgst=note.total_cgst,
+                    sgst=note.total_sgst,
+                    igst=note.total_igst,
+                ),
                 "cgst_amount": note.total_cgst,
                 "sgst_amount": note.total_sgst,
                 "igst_amount": note.total_igst,
@@ -334,6 +366,12 @@ class Gstr1TableViewService:
                 "note_type": note.get_doc_type_display(),
                 "place_of_supply_state_code": note.place_of_supply_state_code,
                 "taxable_amount": note.total_taxable_value,
+                "gst_rate": self._effective_gst_rate(
+                    taxable=note.total_taxable_value,
+                    cgst=note.total_cgst,
+                    sgst=note.total_sgst,
+                    igst=note.total_igst,
+                ),
                 "igst_amount": note.total_igst,
                 "cess_amount": note.total_cess,
                 "grand_total": note.grand_total,

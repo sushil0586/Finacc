@@ -166,6 +166,26 @@ def _max_zero_tax_bucket(row: dict) -> dict:
     }
 
 
+def _named_bucket(label: str, row: dict | None) -> dict:
+    source = row or {}
+    return {
+        "label": label,
+        "taxable_value": source.get("taxable_value", ZERO) or ZERO,
+        "cgst": source.get("cgst", ZERO) or ZERO,
+        "sgst": source.get("sgst", ZERO) or ZERO,
+        "igst": source.get("igst", ZERO) or ZERO,
+        "cess": source.get("cess", ZERO) or ZERO,
+        "total_tax": source.get("total_tax", ZERO) or ZERO,
+    }
+
+
+def _named_taxable(label: str, taxable_value: Decimal | None) -> dict:
+    return {
+        "label": label,
+        "taxable_value": taxable_value or ZERO,
+    }
+
+
 class Gstr3bSummaryService:
     ZERO_RATED_SUPPLY_CATEGORIES = (
         SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
@@ -359,8 +379,6 @@ class Gstr3bSummaryService:
                 "cess": interstate_uin_row["total_cess"],
             }
         )
-        zero_tax_bucket = _bucket({"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO})
-
         return {
             "section_3_1": {
                 "outward_taxable_supplies": outward_taxable,
@@ -372,27 +390,62 @@ class Gstr3bSummaryService:
                 "non_gst_outward_supplies": {
                     "taxable_value": non_gst_outward_row["total_taxable_value"] or ZERO,
                 },
+                "rows": [
+                    _named_bucket("Outward taxable supplies", outward_taxable),
+                    _named_bucket("Outward zero-rated supplies", outward_zero_rated),
+                    _named_bucket("Inward supplies liable to reverse charge", inward_reverse_charge),
+                    _named_bucket(
+                        "Outward nil/exempt/non-GST",
+                        _bucket({"taxable": outward_nil_row["total_taxable_value"] or ZERO}),
+                    ),
+                    _named_bucket(
+                        "Non-GST outward supplies",
+                        _bucket({"taxable": non_gst_outward_row["total_taxable_value"] or ZERO}),
+                    ),
+                ],
             },
             "section_3_2": {
                 "interstate_supplies_to_unregistered": section_32_unregistered,
                 "interstate_supplies_to_composition": section_32_composition,
                 "interstate_supplies_to_uin_holders": section_32_uin,
+                "rows": [
+                    _named_bucket("Inter-state to unregistered", section_32_unregistered),
+                    _named_bucket("Inter-state to composition", section_32_composition),
+                    _named_bucket("Inter-state to UIN holders", section_32_uin),
+                ],
             },
             "section_4": {
                 "itc_available": itc_available,
                 "itc_reversed": itc_reversed,
                 "net_itc": net_itc,
+                "rows": [
+                    _named_bucket("ITC available", itc_available),
+                    _named_bucket("ITC reversed", itc_reversed),
+                    _named_bucket("Net ITC", net_itc),
+                ],
             },
             "section_5_1": {
                 "inward_exempt_nil_non_gst": {
                     "taxable_value": inward_exempt_row["total_taxable"] or ZERO,
                 },
+                "rows": [
+                    _named_taxable(
+                        "Inward exempt / nil / non-GST",
+                        inward_exempt_row["total_taxable"] or ZERO,
+                    ),
+                ],
             },
             "section_6_1": {
                 "tax_payable": tax_payable,
                 "tax_paid_cash": cash_tax_paid,
                 "tax_paid_itc": net_itc,
                 "balance_payable": net_cash_tax_payable,
+                "rows": [
+                    _named_bucket("Tax payable", tax_payable),
+                    _named_bucket("Paid through ITC", net_itc),
+                    _named_bucket("Paid in cash", cash_tax_paid),
+                    _named_bucket("Balance payable", net_cash_tax_payable),
+                ],
             },
             "totals": {
                 "tax_payable": tax_payable,

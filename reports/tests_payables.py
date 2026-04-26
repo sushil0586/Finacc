@@ -272,6 +272,7 @@ class PayableReportAPITests(APITestCase):
         supplier_invoice_number,
         amount,
         ref_document=None,
+        status=PurchaseInvoiceHeader.Status.POSTED,
     ):
         return PurchaseInvoiceHeader.objects.create(
             entity=self.entity,
@@ -289,7 +290,7 @@ class PayableReportAPITests(APITestCase):
             vendor_ledger=vendor_ledger,
             vendor_name=vendor.accountname,
             vendor_gstin=account_gstno(vendor) or "",
-            status=PurchaseInvoiceHeader.Status.POSTED,
+            status=status,
             grand_total=amount,
             created_by=self.user,
         )
@@ -1396,6 +1397,105 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(rows[0]["note_type"], "credit")
         self.assertEqual(rows[0]["_trace"]["source_model"], "purchase.PurchaseInvoiceHeader")
 
+    def test_cancelled_purchase_documents_are_excluded_from_outstanding_default(self):
+        cancelled_invoice = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 22),
+            due_date=date(2025, 4, 28),
+            doc_code="PINV",
+            doc_no=1999,
+            purchase_number="PI-PINV-1999",
+            supplier_invoice_number="SUP-CANC-001",
+            amount=Decimal("500.00"),
+            status=PurchaseInvoiceHeader.Status.CANCELLED,
+        )
+        self._create_open_item(
+            header=cancelled_invoice,
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 22),
+            due_date=date(2025, 4, 28),
+            purchase_number="PI-PINV-1999",
+            supplier_invoice_number="SUP-CANC-001",
+            amount=Decimal("500.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", vendor=self.vendor.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertEqual(Decimal(row["outstanding"]), Decimal("650.00"))
+        self.assertEqual(Decimal(row["bill_amount"]), Decimal("1000.00"))
+
+    def test_cancelled_settlements_are_excluded_from_settlement_history(self):
+        cancelled_settlement = VendorSettlement.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            settlement_type=VendorSettlement.SettlementType.PAYMENT,
+            settlement_date=date(2025, 4, 23),
+            reference_no="PAY-CANCELLED-001",
+            total_amount=Decimal("10.00"),
+            status=VendorSettlement.Status.CANCELLED,
+            posted_by=self.user,
+        )
+        VendorSettlementLine.objects.create(
+            settlement=cancelled_settlement,
+            open_item=self.invoice_item,
+            amount=Decimal("10.00"),
+            applied_amount_signed=Decimal("10.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-settlement-history"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", vendor=self.vendor.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        settlement_ids = {row["settlement_id"] for row in response.json()["rows"]}
+        self.assertNotIn(cancelled_settlement.id, settlement_ids)
+
+    def test_cancelled_notes_are_excluded_from_note_register_default(self):
+        cancelled_note = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+            bill_date=date(2025, 4, 24),
+            due_date=date(2025, 4, 24),
+            doc_code="PDN",
+            doc_no=1888,
+            purchase_number="PI-PDN-1888",
+            supplier_invoice_number="SUP-CANC-DN-001",
+            amount=Decimal("75.00"),
+            ref_document=self.invoice,
+            status=PurchaseInvoiceHeader.Status.CANCELLED,
+        )
+        self._create_open_item(
+            header=cancelled_note,
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+            bill_date=date(2025, 4, 24),
+            due_date=date(2025, 4, 24),
+            purchase_number="PI-PDN-1888",
+            supplier_invoice_number="SUP-CANC-DN-001",
+            amount=Decimal("75.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-note-register"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", vendor=self.vendor.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        note_numbers = {row["note_number"] for row in response.json()["rows"]}
+        self.assertNotIn("PI-PDN-1888", note_numbers)
+
     def test_trace_metadata_is_present_on_supported_payables_rows(self):
         outstanding = self.client.get(
             reverse("reports_api:vendor-outstanding-report"),
@@ -1515,5 +1615,4 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("Vendor Settlement History", doc)
         self.assertIn("Vendor Debit/Credit Note Register", doc)
         self.assertIn("/api/reports/payables/meta/", doc)
-
 

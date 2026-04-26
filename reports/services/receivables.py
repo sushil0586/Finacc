@@ -104,6 +104,10 @@ def _scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
     return qs
 
 
+def _exclude_cancelled_open_items(qs):
+    return qs.exclude(header__status=SalesInvoiceHeader.Status.CANCELLED)
+
+
 def _settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
     qs = CustomerSettlementLine.objects.filter(
         settlement__status=CustomerSettlement.Status.POSTED,
@@ -145,7 +149,8 @@ def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-    ).filter(bill_date__lte=upto_date)
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=upto_date)
     rows = []
     for item in qs:
         settled = line_map.get(item.id, ZERO)
@@ -167,6 +172,7 @@ def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date):
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
     ).filter(credit_date__lte=upto_date)
+    qs = qs.exclude(receipt_voucher__status=ReceiptVoucherHeader.Status.CANCELLED)
     rows = []
     for adv in qs:
         adjusted = adjusted_map.get(adv.id, ZERO)
@@ -214,7 +220,8 @@ def _period_invoice_credit_totals(*, entity_id, entityfin_id, subentity_id, from
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-    ).filter(bill_date__gte=from_date, bill_date__lte=to_date)
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(bill_date__gte=from_date, bill_date__lte=to_date)
     invoice_map = defaultdict(lambda: ZERO)
     credit_map = defaultdict(lambda: ZERO)
     last_invoice_date = {}
@@ -262,6 +269,8 @@ def _settlement_history_rows(*, entity_id, entityfin_id, subentity_id, customer_
             qs = qs.filter(status=int(status))
         except (TypeError, ValueError):
             qs = qs.filter(status__iexact=str(status))
+    else:
+        qs = qs.exclude(status=CustomerSettlement.Status.CANCELLED)
     if search:
         token = str(search).strip()
         if token:
@@ -317,6 +326,8 @@ def _receipt_history_rows(*, entity_id, entityfin_id, subentity_id, customer_id=
             qs = qs.filter(status=int(status))
         except (TypeError, ValueError):
             qs = qs.filter(status__iexact=str(status))
+    else:
+        qs = qs.exclude(status=ReceiptVoucherHeader.Status.CANCELLED)
     if search:
         token = str(search).strip()
         if token:
@@ -1123,6 +1134,7 @@ def build_open_items_report(
         customer_id=customer_id,
         is_open=True,
     ).select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "header")
+    qs = _exclude_cancelled_open_items(qs)
 
     if search:
         token = str(search).strip()

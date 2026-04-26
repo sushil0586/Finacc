@@ -379,6 +379,7 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             "tcs_credit_note_policy": settings_obj.tcs_credit_note_policy,
             "enable_round_off": settings_obj.enable_round_off,
             "round_grand_total_to": settings_obj.round_grand_total_to,
+            "invoice_printing": SalesSettingsService.effective_invoice_printing_config(settings_obj),
             "policy_controls": policy_controls,
             "stock_policy": self._stock_policy_payload(entity_id, entityfinid_id, subentity_id),
         }

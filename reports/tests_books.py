@@ -355,10 +355,10 @@ class BookReportAPITests(APITestCase):
         data = response.json()
         self.assertTrue(data["balance_integrity"])
         self.assertEqual(data["mode"], "voucher_list")
-        self.assertEqual(data["totals"]["transaction_count"], 5)
-        self.assertEqual(data["totals"]["debit_total"], "140.00")
-        self.assertEqual(data["totals"]["credit_total"], "140.00")
-        self.assertEqual(data["count"], 5)
+        self.assertEqual(data["totals"]["transaction_count"], 4)
+        self.assertEqual(data["totals"]["debit_total"], "125.00")
+        self.assertEqual(data["totals"]["credit_total"], "125.00")
+        self.assertEqual(data["count"], 4)
         self.assertIsNone(data["next"])
         self.assertIsNone(data["previous"])
         self.assertEqual(data["results"][0]["voucher_number"], "RV-001")
@@ -420,7 +420,7 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "account": str(self.cash_account.id)})
         self.assertEqual(response.status_code, 200)
         vouchers = {row["voucher_number"] for row in response.json()["results"]}
-        self.assertEqual(vouchers, {"CV-001", "PV-001"})
+        self.assertEqual(vouchers, {"CV-001"})
         self.assertNotIn("CV-999", vouchers)
 
     def test_daybook_pagination_keeps_totals_for_full_filtered_set(self):
@@ -428,8 +428,8 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(len(data["results"]), 2)
-        self.assertEqual(data["count"], 5)
-        self.assertEqual(data["totals"]["debit_total"], "140.00")
+        self.assertEqual(data["count"], 4)
+        self.assertEqual(data["totals"]["debit_total"], "125.00")
         self.assertIsNotNone(data["next"])
         self.assertIsNone(data["previous"])
 
@@ -457,9 +457,9 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(omitted.status_code, 200)
         self.assertEqual(only_posted.status_code, 200)
         self.assertEqual(non_posted.status_code, 200)
-        self.assertEqual(omitted.json()["count"], 5)
+        self.assertEqual(omitted.json()["count"], 4)
         self.assertEqual(only_posted.json()["count"], 3)
-        self.assertEqual(non_posted.json()["count"], 2)
+        self.assertEqual(non_posted.json()["count"], 1)
 
     def test_daybook_response_contract_and_nullability(self):
         data = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id}).json()
@@ -513,12 +513,11 @@ class BookReportAPITests(APITestCase):
         self.assertTrue(data["balance_integrity"])
         self.assertEqual(data["mode"], "single_account_detail")
         self.assertEqual(data["opening_balance"], "100.00")
-        self.assertEqual(data["closing_balance"], "135.00")
+        self.assertEqual(data["closing_balance"], "150.00")
         self.assertEqual(data["totals"]["receipt_total"], "50.00")
-        self.assertEqual(data["totals"]["payment_total"], "15.00")
-        self.assertEqual([row["voucher_number"] for row in data["results"]], ["CV-001", "PV-001"])
+        self.assertEqual(data["totals"]["payment_total"], "0.00")
+        self.assertEqual([row["voucher_number"] for row in data["results"]], ["CV-001"])
         self.assertEqual(data["results"][0]["running_balance"], "150.00")
-        self.assertEqual(data["results"][1]["running_balance"], "135.00")
 
     def test_cashbook_bank_mode_uses_backdated_entry_for_opening(self):
         response = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "bank_account": str(self.bank_account.id), "from_date": "2025-04-05", "to_date": "2025-04-30"})
@@ -537,7 +536,7 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["mode"], "multi_account_summary")
         self.assertIsNone(data["running_balance_scope"])
         self.assertEqual(data["opening_balance"], "300.00")
-        self.assertEqual(data["closing_balance"], "350.00")
+        self.assertEqual(data["closing_balance"], "365.00")
         self.assertEqual(len(data["account_summaries"]), 2)
         impacted = {row["account_impacted"]["name"] for row in data["results"]}
         self.assertEqual(impacted, {"Cash In Hand", "Main Bank"})
@@ -549,16 +548,14 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         rows = data["results"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["voucher_number"], "PV-001")
-        self.assertIsNone(rows[0]["running_balance"])
+        self.assertEqual(len(rows), 0)
         self.assertTrue(data["balance_integrity"])
         self.assertEqual(data["opening_balance"], "100.00")
-        self.assertEqual(data["closing_balance"], "135.00")
+        self.assertEqual(data["closing_balance"], "150.00")
         self.assertEqual(data["totals"]["receipt_total"], "0.00")
-        self.assertEqual(data["totals"]["payment_total"], "15.00")
+        self.assertEqual(data["totals"]["payment_total"], "0.00")
         self.assertEqual(data["totals"]["period_receipt_total"], "50.00")
-        self.assertEqual(data["totals"]["period_payment_total"], "15.00")
+        self.assertEqual(data["totals"]["period_payment_total"], "0.00")
         self.assertIn("suppress it", data["balance_note"])
 
     def test_cashbook_empty_results_and_pagination(self):
@@ -568,8 +565,8 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["totals"]["transaction_count"], 0)
         self.assertEqual(data["results"], [])
         self.assertEqual(data["count"], 0)
-        self.assertEqual(data["opening_balance"], "135.00")
-        self.assertEqual(data["closing_balance"], "135.00")
+        self.assertEqual(data["opening_balance"], "150.00")
+        self.assertEqual(data["closing_balance"], "150.00")
 
     def test_cashbook_invalid_account_scope_and_date_validation(self):
         invalid_account = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "cash_account": str(self.other_cash_account.id)})

@@ -198,21 +198,85 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         self.assertIn("EXISTS(", sql)
         self.assertNotIn(" DISTINCT ", sql)
 
+    @patch("purchase.services.purchase_invoice_nav_service.PurchaseInvoiceNavService._scope_qs")
+    def test_prev_next_uses_combined_goods_service_scope(self, mocked_scope_qs):
+        mocked_scope_qs.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        instance = SimpleNamespace(
+            id=1006,
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="PINV",
+        )
+
+        PurchaseInvoiceNavService.get_prev_next_for_instance(instance, line_mode="service")
+
+        self.assertEqual(mocked_scope_qs.call_count, 2)
+        first_call = mocked_scope_qs.call_args_list[0].kwargs
+        second_call = mocked_scope_qs.call_args_list[1].kwargs
+        self.assertEqual(first_call, {
+            "entity_id": 10,
+            "entityfinid_id": 2026,
+            "subentity_id": None,
+            "doc_type": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            "doc_code": "PINV",
+            "allowed_statuses": PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            "line_mode": None,
+        })
+        self.assertEqual(second_call, {
+            "entity_id": 10,
+            "entityfinid_id": 2026,
+            "subentity_id": None,
+            "doc_type": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            "doc_code": None,
+            "allowed_statuses": PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            "line_mode": None,
+        })
+
+    @patch("purchase.services.purchase_invoice_nav_service.PurchaseInvoiceNavService._scope_qs")
+    def test_prev_next_orders_by_doc_no_with_id_tiebreaker(self, mocked_scope_qs):
+        scoped_qs = MagicMock()
+        all_code_rows = [
+            SimpleNamespace(id=77, doc_no=1006, purchase_number="PINV-1006", status=3, bill_date=None),
+            SimpleNamespace(id=88, doc_no=None, purchase_number="PINV-1007", status=3, bill_date=None),
+            SimpleNamespace(id=95, doc_no=1009, purchase_number="PINV-1009", status=3, bill_date=None),
+        ]
+        mocked_scope_qs.side_effect = [scoped_qs, all_code_rows]
+
+        instance = SimpleNamespace(
+            id=90,
+            doc_no=1008,
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="PINV",
+        )
+
+        result = PurchaseInvoiceNavService.get_prev_next_for_instance(instance, line_mode="service")
+
+        self.assertEqual(result["previous"]["id"], 88)
+        self.assertEqual(result["previous"]["purchase_number"], "PINV-1007")
+        self.assertEqual(result["next"]["id"], 95)
+
     def test_last_saved_doc_scope_queryset_uses_subentity_isnull(self):
         with patch("purchase.services.purchase_settings_service.PurchaseInvoiceHeader.objects.filter") as mocked_filter:
-            mocked_filter.return_value.only.return_value.order_by.return_value.first.return_value = None
+            mocked_filter.return_value.only.return_value.__iter__.return_value = iter([])
 
             PurchaseSettingsService._last_saved_doc_in_scope(
                 entity_id=10,
                 entityfinid_id=8,
                 subentity_id=None,
                 doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+                current_number=1008,
             )
 
         mocked_filter.assert_called_once_with(
             entity_id=10,
             entityfinid_id=8,
             doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            status__in=[2, 3, 9],
             subentity_id__isnull=True,
         )
 

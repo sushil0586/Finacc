@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, Optional, Sequence
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q
 
 from purchase.models.purchase_core import PurchaseInvoiceHeader, Status
 from purchase.models.purchase_core import PurchaseInvoiceLine
@@ -29,17 +30,21 @@ class NavItem:
 
 class PurchaseInvoiceNavService:
     """
-    ✅ Prev/Next strictly by id, but only within SAME:
+    ✅ Prev/Next by numbered voucher sequence (doc_no), within SAME:
       - entity
       - financial year (entityfinid)
       - subentity (including NULL vs non-NULL)
       - doc_type
       - doc_code
       - allowed statuses
+
+    Navigation is intentionally computed across combined goods+service invoices
+    so doc sequence stays contiguous regardless of current screen mode.
     """
 
+    # Navigation should move across confirmed, posted, and cancelled invoices.
+    # Cancelled invoices are included only when they are numbered.
     DEFAULT_ALLOWED_STATUSES = (
-        int(Status.DRAFT),
         int(Status.CONFIRMED),
         int(Status.POSTED),
         int(Status.CANCELLED),
@@ -62,7 +67,7 @@ class PurchaseInvoiceNavService:
         entityfinid_id: int,
         subentity_id: Optional[int],
         doc_type: int,
-        doc_code: str,
+        doc_code: Optional[str],
         allowed_statuses: Sequence[int],
         line_mode: Optional[str] = None,
     ):
@@ -70,9 +75,10 @@ class PurchaseInvoiceNavService:
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
             "doc_type": doc_type,
-            "doc_code": doc_code,
             "status__in": list(allowed_statuses),
         }
+        if doc_code:
+            filters["doc_code"] = doc_code
 
         # ✅ important: NULL subentity must match NULL only
         if subentity_id is None:
@@ -85,6 +91,12 @@ class PurchaseInvoiceNavService:
             .filter(**filters)
             .only("id", "doc_no", "purchase_number", "status", "bill_date")
         )
+        if int(Status.CANCELLED) in set(int(value) for value in allowed_statuses):
+            qs = qs.exclude(
+                Q(status=int(Status.CANCELLED))
+                & (Q(doc_no__isnull=True) | Q(doc_no__lte=0))
+                & (Q(purchase_number__isnull=True) | Q(purchase_number__exact=""))
+            )
         return PurchaseInvoiceNavService._apply_line_mode_filter(qs, line_mode)
 
     @staticmethod
@@ -105,6 +117,19 @@ class PurchaseInvoiceNavService:
         ).to_dict()
 
     @staticmethod
+    def _sequence_no(obj: Any) -> int:
+        doc_no = int(getattr(obj, "doc_no", 0) or 0)
+        if doc_no > 0:
+            return doc_no
+        purchase_number = str(getattr(obj, "purchase_number", "") or "").strip()
+        if not purchase_number:
+            return 0
+        match = PurchaseInvoiceNavService._TRAILING_NUMBER_PATTERN.search(purchase_number)
+        if not match:
+            return 0
+        return int(match.group(1) or 0)
+
+    @staticmethod
     def get_prev_next_for_instance(
         instance: PurchaseInvoiceHeader,
         *,
@@ -113,38 +138,72 @@ class PurchaseInvoiceNavService:
     ) -> Dict[str, Any]:
         allowed_statuses = allowed_statuses or PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES
 
-        qs = PurchaseInvoiceNavService._scope_qs(
+        # Keep doc-code scoped queryset available for future tuning/debug parity.
+        _doc_code_qs = PurchaseInvoiceNavService._scope_qs(
             entity_id=instance.entity_id,
             entityfinid_id=instance.entityfinid_id,
             subentity_id=instance.subentity_id,
             doc_type=int(instance.doc_type),
             doc_code=str(instance.doc_code),
             allowed_statuses=allowed_statuses,
-            line_mode=line_mode,
+            line_mode=None,
+        )
+        all_code_qs = PurchaseInvoiceNavService._scope_qs(
+            entity_id=instance.entity_id,
+            entityfinid_id=instance.entityfinid_id,
+            subentity_id=instance.subentity_id,
+            doc_type=int(instance.doc_type),
+            doc_code=None,
+            allowed_statuses=allowed_statuses,
+            line_mode=None,
         )
 
-        # ✅ strictly by id, within scope
-        prev_obj = qs.filter(id__lt=instance.id).order_by("-id").first()
-        next_obj = qs.filter(id__gt=instance.id).order_by("id").first()
-
-        # If mode-scoped neighbors are missing, fall back to same scope across all line modes.
-        # Frontend can auto-redirect when crossing goods/service pages.
-        if line_mode in ("service", "goods") and (not prev_obj or not next_obj):
-            all_mode_qs = PurchaseInvoiceNavService._scope_qs(
-                entity_id=instance.entity_id,
-                entityfinid_id=instance.entityfinid_id,
-                subentity_id=instance.subentity_id,
-                doc_type=int(instance.doc_type),
-                doc_code=str(instance.doc_code),
-                allowed_statuses=allowed_statuses,
-                line_mode=None,
+        current_seq = PurchaseInvoiceNavService._sequence_no(instance)
+        if current_seq > 0:
+            rows = list(all_code_qs)
+            prev_candidates = [
+                row for row in rows
+                if (
+                    (PurchaseInvoiceNavService._sequence_no(row) < current_seq)
+                    or (
+                        PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                        and int(getattr(row, "id", 0) or 0) < int(getattr(instance, "id", 0) or 0)
+                    )
+                )
+            ]
+            next_candidates = [
+                row for row in rows
+                if (
+                    (PurchaseInvoiceNavService._sequence_no(row) > current_seq)
+                    or (
+                        PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                        and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
+                    )
+                )
+            ]
+            prev_obj = max(
+                prev_candidates,
+                key=lambda row: (
+                    PurchaseInvoiceNavService._sequence_no(row),
+                    int(getattr(row, "id", 0) or 0),
+                ),
+                default=None,
             )
-            if not prev_obj:
-                prev_obj = all_mode_qs.filter(id__lt=instance.id).order_by("-id").first()
-            if not next_obj:
-                next_obj = all_mode_qs.filter(id__gt=instance.id).order_by("id").first()
+            next_obj = min(
+                next_candidates,
+                key=lambda row: (
+                    PurchaseInvoiceNavService._sequence_no(row),
+                    int(getattr(row, "id", 0) or 0),
+                ),
+                default=None,
+            )
+        else:
+            # Fallback for unnumbered current record (e.g., draft opened directly).
+            prev_obj = all_code_qs.filter(id__lt=instance.id).order_by("-id").first()
+            next_obj = all_code_qs.filter(id__gt=instance.id).order_by("id").first()
 
         return {
             "previous": PurchaseInvoiceNavService._to_item(prev_obj),
             "next": PurchaseInvoiceNavService._to_item(next_obj),
         }
+    _TRAILING_NUMBER_PATTERN = re.compile(r"(\d+)\s*$")

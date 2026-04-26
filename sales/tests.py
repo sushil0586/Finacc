@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from datetime import date
 
 from django.test import SimpleTestCase
@@ -23,6 +23,8 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceConfirmAPIView,
     SalesInvoiceListCreateAPIView,
     SalesInvoicePostAPIView,
+    SalesInvoicePrintAPIView,
+    SalesInvoiceTransportAPIView,
     SalesInvoiceReverseAPIView,
     SalesInvoiceRetrieveUpdateAPIView,
 )
@@ -30,6 +32,46 @@ from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
+    def test_normalize_invoice_printing_applies_defaults(self):
+        normalized = SalesSettingsService.normalize_invoice_printing(
+            {
+                "default_profile": "plain",
+                "default_copies": ["original", "duplicate"],
+                "profiles": [
+                    {
+                        "key": "plain",
+                        "label": "Plain",
+                        "options": {
+                            "show_bank_details": False,
+                            "show_terms": False,
+                            "show_einvoice_section": True,
+                        },
+                    }
+                ],
+                "copy_labels": {
+                    "original": "ORIGINAL",
+                    "duplicate": "DUPLICATE",
+                    "triplicate": "TRIPLICATE",
+                },
+            }
+        )
+
+        self.assertEqual(normalized["default_profile"], "plain")
+        self.assertEqual(normalized["default_copies"], ["original", "duplicate"])
+        self.assertEqual(len(normalized["profiles"]), 1)
+        self.assertEqual(normalized["profiles"][0]["key"], "plain")
+        self.assertFalse(normalized["profiles"][0]["options"]["show_bank_details"])
+        self.assertIn("pdf_render_scale", normalized["profiles"][0]["options"])
+        self.assertIn("pdf_image_quality", normalized["profiles"][0]["options"])
+        self.assertIn("show_eway_details", normalized["profiles"][0]["options"])
+        self.assertIn("show_transport_details", normalized["profiles"][0]["options"])
+        self.assertIn("show_compliance_qr", normalized["profiles"][0]["options"])
+        self.assertIn("show_gst_validation_panel", normalized["profiles"][0]["options"])
+        self.assertIn("gst_validation_checks", normalized["profiles"][0]["options"])
+        self.assertEqual(normalized["copy_labels"]["original"], "ORIGINAL")
+        self.assertIn("texts", normalized)
+        self.assertTrue(len(normalized["texts"]["line_columns"]) > 0)
+
     @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
     def test_compute_tcs_skips_when_entity_config_disables_tcs(self, mocked_get_cfg):
         mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=False, apply_tcs_206c1h=False)
@@ -161,6 +203,62 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
     @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_validate_stock_policy_allows_numeric_batch_aliases(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="STRICT",
+            allow_negative_stock=False,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        mocked_build_maps.return_value = (
+            {(1, "1", 5): Decimal("2.0000")},
+            {},
+        )
+        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs.__iter__.return_value = iter([
+            SimpleNamespace(
+                id=1,
+                productname="Product-B",
+                is_service=False,
+                is_batch_managed=True,
+                is_expiry_tracked=False,
+            )
+        ])
+
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=5,
+            godown_id=None,
+        )
+        lines = [
+            SimpleNamespace(
+                product_id=1,
+                qty=Decimal("2.000"),
+                free_qty=Decimal("0.000"),
+                batch_number="01",
+                expiry_date=date(2026, 5, 1),
+                line_no=1,
+            )
+        ]
+
+        SalesInvoiceService._validate_stock_policy_on_post(header=header, lines=lines)
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
     def test_allocate_batches_auto_picks_earliest_available_batch(
         self,
         mocked_product_objects,
@@ -225,6 +323,67 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         self.assertEqual(line.expiry_date, date(2026, 5, 1))
         self.assertTrue(saved)
         self.assertIn("batch_number", saved[0])
+
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_allocate_batches_infers_location_when_header_location_not_set(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="STRICT",
+            allow_negative_stock=False,
+            batch_required_for_sales=True,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        mocked_build_maps.return_value = (
+            {(1, "1", 1): Decimal("3.0000")},
+            {(1, "1", 1, date(2026, 5, 1)): Decimal("3.0000")},
+        )
+        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs.__iter__.return_value = iter([
+            SimpleNamespace(
+                id=1,
+                productname="Product-B",
+                is_service=False,
+                is_batch_managed=True,
+                is_expiry_tracked=False,
+            )
+        ])
+
+        line = SimpleNamespace(
+            product_id=1,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            batch_number="1",
+            manufacture_date=None,
+            expiry_date=None,
+            line_no=1,
+            save=lambda update_fields=None: None,
+        )
+
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=None,
+            godown_id=None,
+            save=MagicMock(),
+        )
+
+        SalesInvoiceService._allocate_batches_for_post(header=header, lines=[line])
+        self.assertEqual(header.location_id, 1)
+        header.save.assert_called()
+        self.assertTrue(mocked_resolve_location.called)
 
     def test_recompute_settlement_fields_open(self):
         header = SimpleNamespace(
@@ -608,21 +767,101 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
 
     def test_last_saved_doc_scope_queryset_uses_subentity_isnull(self):
         with patch("sales.services.sales_settings_service.SalesInvoiceHeader.objects.filter") as mocked_filter:
-            mocked_filter.return_value.only.return_value.order_by.return_value.first.return_value = None
+            mocked_filter.return_value.only.return_value.__iter__.return_value = iter([])
 
             SalesSettingsService._last_saved_doc_in_scope(
                 entity_id=10,
                 entityfinid_id=8,
                 subentity_id=None,
                 doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+                current_number=1008,
             )
 
         mocked_filter.assert_called_once_with(
             entity_id=10,
             entityfinid_id=8,
             doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            status__in=[2, 3, 9],
             subentity_id__isnull=True,
         )
+
+    @patch("sales.services.sales_nav_service.SalesInvoiceNavService._scope_qs")
+    def test_prev_next_orders_by_doc_no_with_id_tiebreaker(self, mocked_scope_qs):
+        scoped_qs = MagicMock()
+        all_code_rows = [
+            SimpleNamespace(id=77, doc_no=1006, invoice_number="SI/2026/1006", status=3, bill_date=None),
+            SimpleNamespace(id=88, doc_no=None, invoice_number="SI/2026/1007", status=3, bill_date=None),
+            SimpleNamespace(id=95, doc_no=1009, invoice_number="SI/2026/1009", status=3, bill_date=None),
+        ]
+        mocked_scope_qs.side_effect = [scoped_qs, all_code_rows]
+        instance = SimpleNamespace(
+            id=90,
+            doc_no=1008,
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="SI",
+        )
+
+        result = SalesInvoiceNavService.get_prev_next_for_instance(instance, line_mode="service")
+
+        self.assertEqual(result["previous"]["id"], 88)
+        self.assertEqual(result["previous"]["invoice_number"], "SI/2026/1007")
+        self.assertEqual(result["next"]["id"], 95)
+
+    @patch("sales.services.sales_settings_service.SalesSettingsService._last_saved_doc_in_scope")
+    @patch("sales.services.sales_settings_service.DocumentNumberService.peek_preview")
+    @patch("sales.services.sales_settings_service.DocumentType.objects.filter")
+    def test_get_current_doc_no_falls_back_to_latest_doc_code_when_configured_preview_is_low(
+        self,
+        mocked_doc_type_filter,
+        mocked_peek_preview,
+        mocked_last_saved_doc,
+    ):
+        mocked_doc_type_filter.return_value.only.return_value.first.return_value = SimpleNamespace(id=7)
+        latest_doc = SimpleNamespace(
+            id=30,
+            doc_no=21,
+            invoice_number="SDN/2026/21",
+            doc_code="SDN",
+            status=3,
+            bill_date=date(2026, 4, 26),
+        )
+        previous_doc = SimpleNamespace(
+            id=29,
+            doc_no=20,
+            invoice_number="SDN/2026/20",
+            doc_code="SDN",
+            status=3,
+            bill_date=date(2026, 4, 25),
+        )
+        mocked_last_saved_doc.side_effect = [latest_doc, previous_doc]
+
+        def _peek(**kwargs):
+            if kwargs.get("doc_code") == "WRONG":
+                return SimpleNamespace(doc_no=1, display_no="WRONG/1")
+            if kwargs.get("doc_code") == "SDN":
+                return SimpleNamespace(doc_no=22, display_no="SDN/22")
+            raise ValueError("Series not found")
+
+        mocked_peek_preview.side_effect = _peek
+
+        result = SalesSettingsService.get_current_doc_no(
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_key="sales_debit_note",
+            doc_code="WRONG",
+        )
+
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["doc_type_id"], 7)
+        self.assertEqual(result["current_number"], 22)
+        self.assertEqual(result["previous_number"], 20)
+        self.assertEqual(result["previous_invoice_id"], 29)
+        self.assertEqual(result["previous_invoice_number"], "SDN/2026/20")
+        self.assertEqual([call.kwargs.get("doc_code") for call in mocked_peek_preview.call_args_list], ["WRONG", "SDN"])
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
     @patch("sales.views.sales_invoice_views.SalesInvoiceService.confirm")
@@ -841,6 +1080,199 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data, {"bill_date": ["Enter a valid date."]})
         mocked_require_permission.assert_called_once()
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch.object(SalesInvoicePrintAPIView, "_build_payload")
+    @patch.object(SalesInvoicePrintAPIView, "_get_scoped_header")
+    def test_print_view_returns_payload_and_checks_permission(
+        self,
+        mocked_get_header,
+        mocked_build_payload,
+        mocked_require_permission,
+    ):
+        header = SimpleNamespace(
+            id=10,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+        )
+        mocked_get_header.return_value = header
+        mocked_build_payload.return_value = {"id": 10, "doctype": "Tax Invoice"}
+
+        request = self.factory.get("/api/sales/invoices/10/print/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoicePrintAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id"], 10)
+        mocked_require_permission.assert_called_once_with(
+            user=self.user,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            action="view",
+        )
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch.object(SalesInvoiceTransportAPIView, "_to_transport_payload")
+    @patch.object(SalesInvoiceTransportAPIView, "_get_scoped_header")
+    def test_transport_get_returns_snapshot_payload_when_available(
+        self,
+        mocked_get_header,
+        mocked_to_payload,
+        mocked_require_permission,
+    ):
+        header = SimpleNamespace(
+            id=10,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            transport_snapshot=SimpleNamespace(),
+            eway_artifact=None,
+        )
+        mocked_get_header.return_value = header
+        mocked_to_payload.return_value = {"source": "manual", "vehicle_no": "GJ01AA1111"}
+
+        request = self.factory.get("/api/sales/invoices/10/transport/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceTransportAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["has_snapshot"])
+        self.assertEqual(response.data["transport"]["vehicle_no"], "GJ01AA1111")
+        mocked_require_permission.assert_called_once_with(
+            user=self.user,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            action="view",
+        )
+        mocked_to_payload.assert_called_once_with(header.transport_snapshot, source="snapshot")
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceTransportSnapshotSerializer")
+    @patch.object(SalesInvoiceTransportAPIView, "_get_scoped_header")
+    def test_transport_put_creates_snapshot_when_missing(
+        self,
+        mocked_get_header,
+        mocked_serializer_cls,
+        mocked_require_permission,
+    ):
+        header = SimpleNamespace(
+            id=10,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            transport_snapshot=None,
+        )
+        mocked_get_header.return_value = header
+
+        saved_instance = SimpleNamespace()
+        serializer_instance = mocked_serializer_cls.return_value
+        serializer_instance.is_valid.return_value = True
+        serializer_instance.save.return_value = saved_instance
+        mocked_serializer_cls.return_value.data = {"vehicle_no": "GJ01AA1111", "source": "manual"}
+
+        request = self._build_put_request(
+            "/api/sales/invoices/10/transport/?entity=1",
+            {"vehicle_no": "GJ01AA1111"},
+        )
+
+        response = SalesInvoiceTransportAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["has_snapshot"])
+        mocked_require_permission.assert_called_once_with(
+            user=self.user,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            action="update",
+        )
+        serializer_instance.save.assert_called_once_with(
+            invoice=header,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch.object(SalesInvoiceTransportAPIView, "_get_scoped_header")
+    def test_transport_get_fallback_to_eway_formats_doc_date(
+        self,
+        mocked_get_header,
+        mocked_require_permission,
+    ):
+        header = SimpleNamespace(
+            id=25,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            transport_snapshot=None,
+            eway_artifact=SimpleNamespace(
+                transporter_id="24AAAAA0000A1Z5",
+                transporter_name="Eway Logistics",
+                transport_mode=1,
+                vehicle_no="MH01AB1234",
+                vehicle_type="R",
+                doc_no="LR-7788",
+                doc_date=date(2026, 4, 26),
+                distance_km=120,
+            ),
+        )
+        mocked_get_header.return_value = header
+
+        request = self.factory.get("/api/sales/invoices/25/transport/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceTransportAPIView.as_view()(request, pk=25)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["has_snapshot"])
+        self.assertEqual(response.data["transport"]["source"], "eway_prefill")
+        self.assertEqual(response.data["transport"]["lr_gr_no"], "LR-7788")
+        self.assertEqual(response.data["transport"]["lr_gr_date"], "2026-04-26")
+        mocked_require_permission.assert_called_once_with(
+            user=self.user,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            action="view",
+        )
+
+    def test_print_transport_prefers_snapshot_values_over_eway(self):
+        view = SalesInvoicePrintAPIView()
+        header = SimpleNamespace(
+            transport_snapshot=SimpleNamespace(
+                transporter_name="Snapshot Logistics",
+                transporter_id="27ABCDE1234F1Z5",
+                vehicle_no="GJ01AA1111",
+                lr_gr_no="LR-1001",
+            ),
+            eway_artifact=SimpleNamespace(
+                transporter_name="EWay Transport",
+                transporter_id="24AAAAA0000A1Z5",
+                vehicle_no="MH02BB2222",
+                doc_no="EWB-DOC-9",
+            ),
+        )
+
+        transport = view._resolve_transport_for_print(header)
+
+        self.assertEqual(transport["transportname"], "Snapshot Logistics")
+        self.assertEqual(transport["vehicle"], "GJ01AA1111")
+        self.assertEqual(transport["grno"], "LR-1001")
+
+    def test_print_transport_falls_back_to_eway_when_snapshot_missing(self):
+        view = SalesInvoicePrintAPIView()
+        header = SimpleNamespace(
+            transport_snapshot=None,
+            eway_artifact=SimpleNamespace(
+                transporter_name="EWay Transport",
+                transporter_id="24AAAAA0000A1Z5",
+                vehicle_no="MH02BB2222",
+                doc_no="EWB-DOC-9",
+            ),
+        )
+
+        transport = view._resolve_transport_for_print(header)
+
+        self.assertEqual(transport["transportname"], "EWay Transport")
+        self.assertEqual(transport["vehicle"], "MH02BB2222")
+        self.assertEqual(transport["grno"], "EWB-DOC-9")
 
 
 class IRPPayloadBuilderUnitTests(SimpleTestCase):

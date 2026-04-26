@@ -10,6 +10,7 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from financial.models import account
+from payments.models.payment_core import PaymentVoucherHeader
 from purchase.models.purchase_ap import (
     VendorBillOpenItem,
     VendorAdvanceBalance,
@@ -113,6 +114,7 @@ class PurchaseApService:
             entityfinid_id=entityfinid_id,
         )
         qs = PurchaseApService._apply_subentity_scope(qs, subentity_id)
+        qs = qs.exclude(payment_voucher__status=PaymentVoucherHeader.Status.CANCELLED)
         if vendor_id is not None:
             qs = qs.filter(vendor_id=vendor_id)
         if is_open is not None:
@@ -263,6 +265,7 @@ class PurchaseApService:
             entityfinid_id=entityfinid_id,
         )
         qs = PurchaseApService._apply_subentity_scope(qs, subentity_id)
+        qs = qs.exclude(header__status=PurchaseInvoiceHeader.Status.CANCELLED)
         if vendor_id is not None:
             qs = qs.filter(vendor_id=vendor_id)
         if is_open is not None:
@@ -566,6 +569,7 @@ class PurchaseApService:
             .select_related("vendor", "vendor_ledger", "advance_balance", "advance_balance__payment_voucher")
         )
         settlements_qs = PurchaseApService._apply_subentity_scope(settlements_qs, subentity_id)
+        settlements_qs = settlements_qs.exclude(status=VendorSettlement.Status.CANCELLED)
 
         if not include_closed:
             settlements_qs = settlements_qs.filter(status=VendorSettlement.Status.POSTED)
