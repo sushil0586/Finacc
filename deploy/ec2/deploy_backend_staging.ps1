@@ -34,6 +34,7 @@ if (-not (Test-Path $PemPath)) {
 $remoteCommand = @"
 set -e
 cd '$RemoteProjectDir'
+MEDIA_DIR='$RemoteProjectDir/media'
 
 if [ -d .git ]; then
   echo 'Pulling latest backend code...'
@@ -65,12 +66,12 @@ echo 'Running Django system checks...'
 python manage.py check
 
 echo 'Ensuring media directories are writable...'
-sudo mkdir -p /home/ubuntu/Finacc/media/barcodes
-sudo mkdir -p /home/ubuntu/Finacc/media/products
-sudo mkdir -p /home/ubuntu/Finacc/media/purchase
-sudo chown -R ubuntu:www-data /home/ubuntu/Finacc/media
-sudo find /home/ubuntu/Finacc/media -type d -exec chmod 775 {} \;
-sudo find /home/ubuntu/Finacc/media -type f -exec chmod 664 {} \;
+sudo mkdir -p "\$MEDIA_DIR/barcodes"
+sudo mkdir -p "\$MEDIA_DIR/products"
+sudo mkdir -p "\$MEDIA_DIR/purchase"
+sudo chown -R ubuntu:www-data "\$MEDIA_DIR"
+sudo find "\$MEDIA_DIR" -type d -exec chmod 775 {} \;
+sudo find "\$MEDIA_DIR" -type f -exec chmod 664 {} \;
 
 echo 'Restarting Gunicorn...'
 sudo systemctl restart '$RemoteService'
