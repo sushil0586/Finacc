@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/home/ubuntu/Finacc}"
 VENV_DIR="${VENV_DIR:-$PROJECT_DIR/venv}"
 GUNICORN_SERVICE="${GUNICORN_SERVICE:-finacc-gunicorn}"
+MEDIA_DIR="${MEDIA_DIR:-$PROJECT_DIR/media}"
 
 cd "$PROJECT_DIR"
 source "$VENV_DIR/bin/activate"
@@ -18,12 +19,12 @@ echo "Running Django system checks..."
 python manage.py check
 
 echo "Ensuring media directories are writable..."
-sudo mkdir -p /home/ubuntu/Finacc/media/barcodes
-sudo mkdir -p /home/ubuntu/Finacc/media/products
-sudo mkdir -p /home/ubuntu/Finacc/media/purchase
-sudo chown -R ubuntu:www-data /home/ubuntu/Finacc/media
-sudo find /home/ubuntu/Finacc/media -type d -exec chmod 775 {} \;
-sudo find /home/ubuntu/Finacc/media -type f -exec chmod 664 {} \;
+sudo mkdir -p "$MEDIA_DIR/barcodes"
+sudo mkdir -p "$MEDIA_DIR/products"
+sudo mkdir -p "$MEDIA_DIR/purchase"
+sudo chown -R ubuntu:www-data "$MEDIA_DIR"
+sudo find "$MEDIA_DIR" -type d -exec chmod 775 {} \;
+sudo find "$MEDIA_DIR" -type f -exec chmod 664 {} \;
 
 echo "Restarting gunicorn..."
 sudo systemctl restart "$GUNICORN_SERVICE"
