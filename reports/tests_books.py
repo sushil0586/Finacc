@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
@@ -25,17 +25,14 @@ class BookReportAPITests(APITestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(username="reportuser", email="report@example.com", password="pass123")
         self.client.force_authenticate(user=self.user)
-
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="State", statecode="ST", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="City", citycode="CT", pincode="123456", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Finacc Test Entity",
             legalname="Finacc Test Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -53,7 +50,6 @@ class BookReportAPITests(APITestCase):
         self.other_entity = Entity.objects.create(
             entityname="Other Entity",
             legalname="Other Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -64,7 +60,6 @@ class BookReportAPITests(APITestCase):
             finendyear=fy_end,
             createdby=self.user,
         )
-
         self.acc_type = accounttype.objects.create(entity=self.entity, accounttypename="Assets", accounttypecode="A100", createdby=self.user)
         self.head_cash = accountHead.objects.create(
             entity=self.entity,
@@ -143,7 +138,6 @@ class BookReportAPITests(APITestCase):
         static_bank = StaticAccount.objects.create(code="BANK_MAIN", name="Bank", group="CASH_BANK")
         EntityStaticAccountMap.objects.create(entity=self.entity, static_account=static_cash, account=self.cash_account, ledger=self.cash_ledger, createdby=self.user)
         EntityStaticAccountMap.objects.create(entity=self.entity, static_account=static_bank, account=self.bank_account, ledger=self.bank_ledger, createdby=self.user)
-
         self.cash_entry = self._create_entry(
             txn_type=TxnType.JOURNAL_CASH,
             txn_id=1,
@@ -369,7 +363,6 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-meta"), {"entity": self.entity.id})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-
         self.assertIn("voucher_types", data)
         self.assertIn("daybook_voucher_types", data)
         self.assertIn("cashbook_voucher_types", data)
@@ -498,7 +491,6 @@ class BookReportAPITests(APITestCase):
             reverse("reports_api:financial-daybook"),
             {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
         )
-
         self.assertEqual(response.status_code, 200)
         rows = [row for row in response.json()["results"] if row["entry_id"] == purchase_entry.id]
         self.assertEqual(len(rows), 1)
@@ -596,3 +588,118 @@ class BookReportAPITests(APITestCase):
         self.assertIn("account_id", summary)
         self.assertIn("opening_balance", summary)
         self.assertIn("closing_balance", summary)
+
+    def test_balance_sheet_moves_negative_bank_balance_to_liabilities(self):
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL_BANK,
+            txn_id=88,
+            voucher_no="BV-OD-001",
+            posting_date="2025-04-08",
+            voucher_date="2025-04-08",
+            status=EntryStatus.POSTED,
+            narration="Bank overdraft test",
+            lines=[
+                (self.expense_account, self.expense_ledger, True, "6000.00", "Expense"),
+                (self.bank_account, self.bank_ledger, False, "6000.00", "Bank overdraft"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "account_group": "ledger",
+                "posted_only": True,
+                "hide_zero_rows": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        asset_ledger_names = {row.get("ledger_name") for row in data.get("assets", [])}
+        self.assertNotIn("Main Bank", asset_ledger_names)
+
+    def test_balance_sheet_moves_debit_balance_of_liability_head_to_assets(self):
+        liability_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Liabilities",
+            accounttypecode="1006",
+            createdby=self.user,
+        )
+        liability_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Accrued Expenses",
+            code=8401,
+            detailsingroup=3,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=liability_type,
+            createdby=self.user,
+        )
+        liability_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=8401,
+            name="Accrued Expenses Control",
+            accounthead=liability_head,
+            accounttype=liability_type,
+            openingbcr=Decimal("100.00"),
+            createdby=self.user,
+        )
+        liability_account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": liability_ledger,
+                "accountname": "Accrued Expenses Control",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "ledger_code": 8401,
+                "accounthead": liability_head,
+                "is_party": True,
+            },
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=89,
+            voucher_no="JV-CONTRA-001",
+            posting_date="2025-04-09",
+            voucher_date="2025-04-09",
+            status=EntryStatus.POSTED,
+            narration="Liability debit balance test",
+            lines=[
+                (liability_account, liability_ledger, True, "250.00", "Over-adjusted liability"),
+                (self.income_account, self.income_ledger, False, "250.00", "Offset credit"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "account_group": "ledger",
+                "posted_only": True,
+                "hide_zero_rows": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        asset_ledger_names = {row.get("ledger_name") for row in data.get("assets", [])}
+        liability_ledger_names = {row.get("ledger_name") for row in data.get("liabilities_and_equity", [])}
+
+        self.assertIn("Accrued Expenses Control", asset_ledger_names)
+        self.assertNotIn("Accrued Expenses Control", liability_ledger_names)

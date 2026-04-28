@@ -4,8 +4,9 @@ from __future__ import annotations
 Export helpers for GSTR-1. Keeps accountant-friendly column ordering, labels, and totals.
 """
 
-from io import BytesIO
+import json
 from decimal import Decimal
+from io import BytesIO
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -366,7 +367,7 @@ def _write_sheet(
     totals_row,
 ):
     ws = wb.create_sheet(title=_safe_sheet_title(title))
-    ws.append(headers)
+    ws.append([_excel_safe_value(header) for header in headers])
     header_row = ws.max_row
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=header_row, column=col_idx)
@@ -376,9 +377,9 @@ def _write_sheet(
         cell.border = border
         ws.column_dimensions[get_column_letter(col_idx)].width = max(len(headers[col_idx - 1]) + 4, 16)
     for row in rows:
-        ws.append(row)
+        ws.append([_excel_safe_value(value) for value in row])
     if totals_row:
-        ws.append(totals_row)
+        ws.append([_excel_safe_value(value) for value in totals_row])
     for row in ws.iter_rows(min_row=header_row, max_row=ws.max_row, min_col=1, max_col=len(headers)):
         for cell in row:
             cell.border = border
@@ -406,3 +407,13 @@ def _safe_sheet_title(value: str) -> str:
         title = title.replace(ch, " ")
     title = " ".join(title.split()).strip()
     return (title or "Sheet")[:31]
+
+
+def _excel_safe_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool, Decimal)):
+        return value
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, default=str, sort_keys=True)
+    return str(value)

@@ -11,7 +11,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
@@ -31,19 +31,15 @@ class SalesRegisterAPITests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
         self.url = reverse("reports_api:sales-register")
-
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
         self.other_state = State.objects.create(statename="Karnataka", statecode="29", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="Mumbai", citycode="MUM", pincode="400001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
-
         self.entity = Entity.objects.create(
             entityname="Finacc Sales Entity",
             legalname="Finacc Sales Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -69,11 +65,9 @@ class SalesRegisterAPITests(APITestCase):
         self.mock_entity_for_user.start()
         self.mock_permission_codes.start()
         self.mock_subscription_access.start()
-
         self.other_entity = Entity.objects.create(
             entityname="Other Entity",
             legalname="Other Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -88,7 +82,6 @@ class SalesRegisterAPITests(APITestCase):
             entity=self.other_entity,
             subentityname="Other Entity Branch",
         )
-
         self.acc_type = accounttype.objects.create(
             entity=self.entity,
             accounttypename="Receivable",
@@ -128,7 +121,6 @@ class SalesRegisterAPITests(APITestCase):
             accounttype=self.other_acc_type,
             createdby=self.user,
         )
-
         self.customer_alpha = self._create_customer(name="Alpha Retail", gstin="27ABCDE1234F1Z5", accountcode=5001)
         self.customer_beta = self._create_customer(name="Beta Mart", gstin="27BBBBB1234B1Z5", accountcode=5002)
         self.other_entity_customer = self._create_customer(
@@ -138,7 +130,6 @@ class SalesRegisterAPITests(APITestCase):
             entity=self.other_entity,
             account_head=self.other_customer_head,
         )
-
         self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="NOS", description="Numbers")
         self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Goods")
         self.product = Product.objects.create(
@@ -149,7 +140,6 @@ class SalesRegisterAPITests(APITestCase):
             base_uom=self.uom,
             sales_account=self.customer_alpha,
         )
-
         self.base_params = {
             "entity": self.entity.id,
             "entityfinid": self.entityfin.id,

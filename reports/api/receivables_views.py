@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from io import BytesIO, StringIO
+import json
 
 from django.http import HttpResponse
 from reportlab.lib import colors
@@ -138,10 +139,10 @@ def _write_excel(title, subtitle, headers, rows, *, numeric_columns):
     ws.title = title[:31]
     header_font, header_fill, center, left, right, border = _workbook_styles()
 
-    ws.append([title])
-    ws.append([subtitle])
+    ws.append([_excel_safe_value(title)])
+    ws.append([_excel_safe_value(subtitle)])
     ws.append([])
-    ws.append(headers)
+    ws.append([_excel_safe_value(header) for header in headers])
     header_row = ws.max_row
 
     for col_idx in range(1, len(headers) + 1):
@@ -153,7 +154,7 @@ def _write_excel(title, subtitle, headers, rows, *, numeric_columns):
         ws.column_dimensions[get_column_letter(col_idx)].width = max(len(headers[col_idx - 1]) + 4, 16)
 
     for row in rows:
-        ws.append(row)
+        ws.append([_excel_safe_value(value) for value in row])
 
     for row in ws.iter_rows(min_row=header_row, max_row=ws.max_row, min_col=1, max_col=len(headers)):
         for cell in row:
@@ -174,6 +175,16 @@ def _write_csv(headers, rows):
     writer.writerow(headers)
     writer.writerows(rows)
     return stream.getvalue().encode("utf-8")
+
+
+def _excel_safe_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, default=str, sort_keys=True)
+    return str(value)
 
 
 def _estimate_pdf_col_widths(headers, rows, *, available_width, min_width=42, max_width=150):
@@ -214,6 +225,15 @@ def _decorate_pdf(canvas, doc, title):
 
 
 def _write_pdf(title, subtitle, headers, rows):
+    headers = list(headers or [])
+    rows = list(rows or [])
+    if not headers:
+        if rows:
+            headers = [f"Column {index + 1}" for index in range(len(rows[0]))]
+        else:
+            headers = ["Details"]
+            rows = [["No records found"]]
+
     buffer = BytesIO()
     page_width, _page_height = landscape(A4)
     available_width = page_width - 36

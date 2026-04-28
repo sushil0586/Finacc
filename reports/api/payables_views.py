@@ -23,7 +23,7 @@ PAYABLE_DEFAULTS = PAYABLE_REPORT_DEFAULTS
 
 
 def _export_headers(report_code, *, view=None, feature_state=None):
-    return [
+    headers = [
         column["label"]
         for column in resolve_report_columns(
             report_code,
@@ -32,6 +32,33 @@ def _export_headers(report_code, *, view=None, feature_state=None):
             export=True,
         )
     ]
+    if headers:
+        return headers
+
+    if report_code == "vendor_outstanding":
+        return [
+            "Vendor Code",
+            "Vendor Name",
+            "Outstanding",
+            "Not Due",
+            "0-30",
+            "31-60",
+            "61-90",
+            "91-180",
+            "181+",
+            "Oldest Due Date",
+            "GSTIN",
+            "Opening Balance",
+            "Bill Amount",
+            "Payment Amount",
+            "Last Bill Date",
+            "Last Payment Date",
+        ]
+    if report_code == "ap_aging" and (view or "summary") == "invoice":
+        return ["Vendor", "Vendor Code", "Bill Number", "Bill Date", "Due Date", "Balance", "Current", "1-30", "31-60", "61-90", "90+"]
+    if report_code == "ap_aging":
+        return ["Vendor", "Vendor Code", "Outstanding", "Overdue", "Current", "1-30", "31-60", "61-90", "90+", "Unapplied Advance"]
+    return ["Details"]
 
 
 def _payable_scope_filters(scope):

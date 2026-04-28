@@ -10,7 +10,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.profile_access import account_gstno
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
@@ -34,7 +34,6 @@ class Gstr1ReportAPITests(APITestCase):
             password="pass123",
         )
         self.client.force_authenticate(user=self.user)
-
         self.summary_url = reverse("reports_api:gstr1-summary")
         self.section_url = lambda section: reverse("reports_api:gstr1-section", args=[section])
         self.validation_url = reverse("reports_api:gstr1-validations")
@@ -42,19 +41,15 @@ class Gstr1ReportAPITests(APITestCase):
         self.export_url = reverse("reports_api:gstr1-export")
         self.invoice_url = lambda pk: reverse("reports_api:gstr1-invoice-detail", args=[pk])
         self.table_url = lambda code: reverse("reports_api:gstr1-table", args=[code])
-
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
         self.other_state = State.objects.create(statename="Karnataka", statecode="29", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="Mumbai", citycode="MUM", pincode="400001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
-
         self.entity = Entity.objects.create(
             entityname="Finacc Entity",
             legalname="Finacc Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -69,7 +64,6 @@ class Gstr1ReportAPITests(APITestCase):
             finendyear=fy_end,
             createdby=self.user,
         )
-
         self.acc_type = accounttype.objects.create(
             entity=self.entity,
             accounttypename="Receivable",
@@ -87,7 +81,6 @@ class Gstr1ReportAPITests(APITestCase):
         )
         self.customer_alpha = self._create_customer(name="Alpha Retail", gstin="27ABCDE1234F1Z5", accountcode=5001)
         self.customer_beta = self._create_customer(name="Beta Mart", gstin="", accountcode=5002)
-
         self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="NOS", description="Numbers")
         self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Goods")
         self.product = Product.objects.create(
@@ -98,7 +91,6 @@ class Gstr1ReportAPITests(APITestCase):
             base_uom=self.uom,
             sales_account=self.customer_alpha,
         )
-
         self.base_params = {
             "entity": self.entity.id,
             "entityfinid": self.entityfin.id,
@@ -180,6 +172,7 @@ class Gstr1ReportAPITests(APITestCase):
         doc_no = self.doc_no_seq
         self.doc_no_seq += 1
         doc_code = doc_code_override or doc_code_map[doc_type]
+        resolved_customer_gstin = customer_gstin if customer_gstin is not None else (account_gstno(customer) or "")
 
         header = SalesInvoiceHeader.objects.create(
             entity=self.entity,
@@ -187,8 +180,8 @@ class Gstr1ReportAPITests(APITestCase):
             subentity=self.subentity,
             customer=customer,
             customer_name=customer.accountname,
-            customer_gstin=customer_gstin if customer_gstin is not None else account_gstno(customer),
-            customer_state_code=customer_gstin and "27" or "",
+            customer_gstin=resolved_customer_gstin,
+            customer_state_code="27" if resolved_customer_gstin else "",
             seller_gstin="27AAAAA1111A1Z1",
             seller_state_code="27",
             doc_type=doc_type,
@@ -556,8 +549,8 @@ class Gstr1ReportAPITests(APITestCase):
         payload = response.json()
         self.assertEqual(payload["coverage"]["status"], "implemented")
         row = next(r for r in payload["rows"] if r["invoice_id"] == invoice.id)
-        self.assertEqual(str(row["gst_rate"]), "18.00")
-        self.assertEqual(str(row["reported_cess_amount"]), "2280.00")
+        self.assertEqual(Decimal(str(row["gst_rate"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(row["reported_cess_amount"])), Decimal("2280.00"))
 
     def test_table_endpoints_5_7_10(self):
         b2cl = self._create_sales_document(

@@ -55,8 +55,14 @@ def _balance_sheet_bucket(head, acc_type):
 
 def _balance_sheet_bucket_for_amount(amount, head, acc_type):
     bucket = _balance_sheet_bucket(head, acc_type)
-    if bucket in {"asset", "liability"}:
-        return bucket
+    if bucket == "asset":
+        # Debit-nature accounts with credit balance are contra balances
+        # and should be shown on liabilities side (for example, bank overdraft).
+        return "liability" if amount < 0 else "asset"
+    if bucket == "liability":
+        # Credit-nature accounts with debit balance are contra balances
+        # and should be shown on assets side.
+        return "asset" if amount > 0 else "liability"
     if amount > 0:
         return "asset"
     if amount < 0:
@@ -1089,7 +1095,17 @@ def _inventory_rows(rows):
     ]
 
 
-def _stock_context(*, entity_id, entityfin_id=None, subentity_id=None, from_date, to_date, assets_source, requested_mode, valuation_method):
+def _stock_context(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    from_date,
+    to_date,
+    balance_rows,
+    requested_mode,
+    valuation_method,
+):
     mode = (requested_mode or "auto").strip().lower()
     if mode not in STOCK_VALUATION_MODES:
         mode = "auto"
@@ -1112,7 +1128,7 @@ def _stock_context(*, entity_id, entityfin_id=None, subentity_id=None, from_date
             closing_inventory = Decimal("0.00")
             valuation_available = False
 
-    inventory_gl_rows = _inventory_rows(assets_source)
+    inventory_gl_rows = _inventory_rows(balance_rows)
     inventory_gl_total = sum((abs(row["amount_decimal"]) for row in inventory_gl_rows), Decimal("0.00"))
 
     effective_mode = mode
@@ -1202,32 +1218,35 @@ def _build_snapshot(
         subentity_id=subentity_id,
         from_date=from_date,
         to_date=to_date,
-        assets_source=assets_source,
+        balance_rows=rows,
         requested_mode=stock_valuation_mode,
         valuation_method=stock_valuation_method,
     )
     if stock_context["effective_mode"] == "valuation":
         gl_inventory_ids = {id(row) for row in stock_context["gl_inventory_rows"]}
         assets_source = [row for row in assets_source if id(row) not in gl_inventory_ids]
+        liabilities_source = [row for row in liabilities_source if id(row) not in gl_inventory_ids]
         if stock_context["closing_inventory"] != Decimal("0.00"):
-            closing_inventory = stock_context["closing_inventory"].copy_abs()
-            assets_source.append(
-                {
-                    "ledger_id": None,
-                    "ledger_code": None,
-                    "ledger_name": INVENTORY_LABEL,
-                    "accounthead_id": None,
-                    "accounthead_name": "Inventory",
-                    "accounttype_id": None,
-                    "accounttype_name": "Inventory",
-                    "amount_decimal": closing_inventory,
-                    "amount": f"{closing_inventory:.2f}",
-                    "bucket": "asset",
-                    "can_drilldown": False,
-                    "drilldown_target": None,
-                    "drilldown_params": None,
-                }
-            )
+            closing_inventory = stock_context["closing_inventory"]
+            inventory_row = {
+                "ledger_id": None,
+                "ledger_code": None,
+                "ledger_name": INVENTORY_LABEL,
+                "accounthead_id": None,
+                "accounthead_name": "Inventory",
+                "accounttype_id": None,
+                "accounttype_name": "Inventory",
+                "amount_decimal": closing_inventory,
+                "amount": f"{abs(closing_inventory):.2f}",
+                "bucket": "asset" if closing_inventory > 0 else "liability",
+                "can_drilldown": False,
+                "drilldown_target": None,
+                "drilldown_params": None,
+            }
+            if closing_inventory > 0:
+                assets_source.append(inventory_row)
+            else:
+                liabilities_source.append(inventory_row)
 
     asset_total = sum((abs(row["amount_decimal"]) for row in assets_source), Decimal("0.00"))
     liability_total = sum((abs(row["amount_decimal"]) for row in liabilities_source), Decimal("0.00"))

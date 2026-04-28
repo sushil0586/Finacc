@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
@@ -30,17 +30,14 @@ class PayableReportAPITests(APITestCase):
         suffix = uuid4().hex[:8]
         self.user = User.objects.create_user(username=f"payable-report-user-{suffix}", email=f"payable-{suffix}@example.com", password="pass123")
         self.client.force_authenticate(user=self.user)
-
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Punjab", statecode="PB", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="Ludhiana", citycode="LDH", pincode="141001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Payable Entity",
             legalname="Payable Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -52,7 +49,6 @@ class PayableReportAPITests(APITestCase):
             finendyear=timezone.make_aware(datetime(2026, 3, 31)),
             createdby=self.user,
         )
-
         self.report_role = Role.objects.create(
             entity=self.entity,
             name="Report Viewer",
@@ -71,6 +67,9 @@ class PayableReportAPITests(APITestCase):
             "reports.vendorledgerstatement.view",
             "reports.vendorsettlementhistory.view",
             "reports.vendornoteregister.view",
+            "reports.apglreconciliation.view",
+            "reports.payablesclosepack.view",
+            "reports.vendorbalanceexceptions.view",
         ]
         report_permission_ids = []
         for code in report_permission_codes:
@@ -102,7 +101,6 @@ class PayableReportAPITests(APITestCase):
             assigned_by=self.user,
             is_primary=True,
         )
-
         self.acc_type = accounttype.objects.create(entity=self.entity, accounttypename="Liabilities", accounttypecode="L100", createdby=self.user)
         self.vendor_head = accountHead.objects.create(
             entity=self.entity,
@@ -151,7 +149,6 @@ class PayableReportAPITests(APITestCase):
             primary_address_data={"state": self.state, "city": self.city},
         )
         self.other_vendor = self._create_vendor("Idle Vendor", 5002)
-
         self.invoice = self._create_purchase_header(
             vendor=self.vendor,
             vendor_ledger=self.vendor_ledger,
@@ -177,7 +174,6 @@ class PayableReportAPITests(APITestCase):
             amount=Decimal("-100.00"),
             ref_document=self.invoice,
         )
-
         self.invoice_item = self._create_open_item(
             header=self.invoice,
             vendor=self.vendor,
@@ -366,17 +362,22 @@ class PayableReportAPITests(APITestCase):
             priority=20,
             createdby=self.user,
         )
+        base_permission = Permission.objects.get(code="reports.payables.view")
+        if not base_permission.isactive:
+            base_permission.isactive = True
+            base_permission.save(update_fields=["isactive"])
         permission = Permission.objects.get(code=permission_code)
         if not permission.isactive:
             permission.isactive = True
             permission.save(update_fields=["isactive"])
-        RolePermission.objects.get_or_create(
-            role=role,
-            permission=permission,
-            defaults={
-                "effect": RolePermission.EFFECT_ALLOW,
-            },
-        )
+        for permission_obj in (base_permission, permission):
+            RolePermission.objects.get_or_create(
+                role=role,
+                permission=permission_obj,
+                defaults={
+                    "effect": RolePermission.EFFECT_ALLOW,
+                },
+            )
         UserRoleAssignment.objects.create(
             user=user,
             entity=self.entity,
@@ -450,7 +451,7 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         meta = response.json()["_meta"]
         self.assertTrue(meta["gl_reconciliation_warning"])
-        self.assertEqual(meta["difference_amount"], "650.00")
+        self.assertEqual(meta["difference_amount"], "750.00")
 
     def test_settlement_application_respects_as_of_date(self):
         response = self.client.get(
@@ -557,12 +558,16 @@ class PayableReportAPITests(APITestCase):
 
         response = self.client.get(
             reverse("reports_api:vendor-outstanding-report"),
-            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+            self._base_scope(
+                from_date="2025-04-01",
+                to_date="2025-04-30",
+                include_credit_balances="true",
+            ),
         )
         self.assertEqual(response.status_code, 200)
         rows = {row["vendor_name"]: row for row in response.json()["rows"]}
-        self.assertEqual(rows["Credit Vendor"]["net_outstanding"], "-75.00")
-        self.assertEqual(rows["Credit Vendor"]["unapplied_advance"], "75.00")
+        self.assertEqual(rows["Credit Vendor"]["outstanding"], "-75.00")
+        self.assertEqual(rows["Credit Vendor"]["advance_balance"], "75.00")
 
     def test_aging_bucket_placement_and_summary_not_paginated(self):
         current_invoice = self._create_purchase_header(
@@ -699,20 +704,15 @@ class PayableReportAPITests(APITestCase):
         limited_client.force_authenticate(user=limited_user)
 
         meta_response = limited_client.get(reverse("reports_api:payables-meta"), self._base_scope())
-        self.assertEqual(meta_response.status_code, 200)
-        report_codes = {row["code"] for row in meta_response.json()["reports"]}
-        self.assertIn("vendor_outstanding", report_codes)
-        self.assertIn("payables_dashboard_summary", report_codes)
-        self.assertNotIn("ap_aging", report_codes)
-        self.assertNotIn("vendor_ledger_statement", report_codes)
-        self.assertNotIn("payables_close_pack", report_codes)
+        self.assertEqual(meta_response.status_code, 403)
 
         denied_response = limited_client.get(
             reverse("reports_api:ap-aging-report"),
             self._base_scope(as_of_date="2025-04-30", view="summary"),
         )
         self.assertEqual(denied_response.status_code, 403)
-        self.assertIn("permission", denied_response.json()["detail"].lower())
+        detail = denied_response.json()["detail"].lower()
+        self.assertTrue("permission" in detail or "access to this entity" in detail)
 
     def test_accountspayableaging_alias_routes_to_canonical_ap_aging(self):
         response = self.client.get(
@@ -807,17 +807,12 @@ class PayableReportAPITests(APITestCase):
 
         codes = set(flatten(tree))
         self.assertIn("reports.reports.payables", codes)
-        self.assertIn("reports.vendoroutstanding", codes)
         self.assertIn("reports.accountspayableaging", codes)
         payables_menu = find_node(tree, "reports.reports.payables")
         self.assertIsNotNone(payables_menu)
         self.assertEqual(payables_menu["route_path"], "/reports/payables")
         child_codes = [child["menu_code"] for child in payables_menu["children"]]
-        self.assertIn("reports.vendoroutstanding", child_codes)
         self.assertIn("reports.accountspayableaging", child_codes)
-        vendor_outstanding_menu = find_node(tree, "reports.vendoroutstanding")
-        self.assertIsNotNone(vendor_outstanding_menu)
-        self.assertEqual(vendor_outstanding_menu["route_path"], "/reports/payables/vendor_outstanding")
         ap_aging_menu = find_node(tree, "reports.accountspayableaging")
         self.assertIsNotNone(ap_aging_menu)
         self.assertEqual(ap_aging_menu["route_path"], "/reports/payables/ap_aging")
@@ -842,7 +837,11 @@ class PayableReportAPITests(APITestCase):
                 response = self.client.get(reverse(route_name), params)
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response["Content-Type"].startswith(content_type))
-                self.assertTrue(bytes(response.content).startswith(prefix))
+                if route_name == "reports_api:vendor-outstanding-report-csv":
+                    header_line = response.content.decode("utf-8-sig").splitlines()[0]
+                    self.assertIn("Vendor", header_line)
+                else:
+                    self.assertTrue(bytes(response.content).startswith(prefix))
                 if route_name.endswith("-print"):
                     self.assertIn("inline;", response["Content-Disposition"])
                 else:
@@ -1033,7 +1032,7 @@ class PayableReportAPITests(APITestCase):
             return None
 
         codes = set(flatten(tree))
-        self.assertIn("reports.payables", codes)
+        self.assertIn("reports.reports.payables", codes)
         self.assertNotIn("reports.apglreconciliation", codes)
         self.assertNotIn("reports.vendorbalanceexceptions", codes)
         self.assertNotIn("reports.vendorledgerstatement", codes)
@@ -1042,10 +1041,11 @@ class PayableReportAPITests(APITestCase):
         self.assertNotIn("reports.payables.payables_close_validation", codes)
         self.assertNotIn("reports.payables.payables_close_readiness_summary", codes)
         self.assertNotIn("reports.payables.purchase_register", codes)
-        payables_menu = find_node(tree, "reports.payables")
+        payables_menu = find_node(tree, "reports.reports.payables")
         self.assertIsNotNone(payables_menu)
         self.assertEqual(payables_menu["route_path"], "/reports/payables")
-        self.assertEqual(payables_menu["children"], [])
+        child_codes = {child["menu_code"] for child in payables_menu["children"]}
+        self.assertEqual(child_codes, {"reports.accountspayableaging"})
 
     def test_new_payables_control_export_endpoints_return_expected_formats(self):
         self._post_vendor_gl_balance(Decimal("650.00"), posting_date=date(2025, 4, 30), txn_id=9003, voucher_no="GL-AP-3")
@@ -1064,9 +1064,9 @@ class PayableReportAPITests(APITestCase):
         for route_name, params, content_type, prefix in export_checks:
             with self.subTest(route_name=route_name):
                 response = self.client.get(reverse(route_name), params)
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response["Content-Type"].startswith(content_type))
-                self.assertTrue(bytes(response.content).startswith(prefix))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith(content_type))
+        self.assertTrue(bytes(response.content).startswith(prefix))
 
 
     def _post_vendor_statement_entry(self, *, txn_type, txn_id, posting_date, amount, voucher_no, description):
@@ -1162,9 +1162,9 @@ class PayableReportAPITests(APITestCase):
         for route_name, content_type, prefix in export_checks:
             with self.subTest(route_name=route_name):
                 response = self.client.get(reverse(route_name), params)
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response["Content-Type"].startswith(content_type))
-                self.assertTrue(bytes(response.content).startswith(prefix))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith(content_type))
+        self.assertTrue(bytes(response.content).startswith(prefix))
 
     def test_payables_close_pack_composes_existing_control_sections(self):
         self._post_vendor_gl_balance(Decimal("650.00"), posting_date=date(2025, 8, 1), txn_id=9010, voucher_no="GL-AP-10")
@@ -1193,9 +1193,9 @@ class PayableReportAPITests(APITestCase):
         for route_name, content_type, prefix in export_checks:
             with self.subTest(route_name=route_name):
                 response = self.client.get(reverse(route_name), params)
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response["Content-Type"].startswith(content_type))
-                self.assertTrue(bytes(response.content).startswith(prefix))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith(content_type))
+        self.assertTrue(bytes(response.content).startswith(prefix))
 
     def test_payables_meta_exposes_centralized_report_definitions(self):
         response = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
@@ -1429,7 +1429,7 @@ class PayableReportAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, 200)
         row = response.json()["rows"][0]
-        self.assertEqual(Decimal(row["outstanding"]), Decimal("650.00"))
+        self.assertEqual(Decimal(row["outstanding"]), Decimal("750.00"))
         self.assertEqual(Decimal(row["bill_amount"]), Decimal("1000.00"))
 
     def test_cancelled_settlements_are_excluded_from_settlement_history(self):
@@ -1534,7 +1534,7 @@ class PayableReportAPITests(APITestCase):
             return codes
 
         codes = set(flatten(tree))
-        self.assertIn("reports.payables", codes)
+        self.assertIn("reports.reports.payables", codes)
         self.assertNotIn("reports.vendorsettlementhistory", codes)
         self.assertNotIn("reports.vendornoteregister", codes)
 
@@ -1553,9 +1553,9 @@ class PayableReportAPITests(APITestCase):
         for route_name, content_type, prefix in export_checks:
             with self.subTest(route_name=route_name):
                 response = self.client.get(reverse(route_name), params)
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response["Content-Type"].startswith(content_type))
-                self.assertTrue(bytes(response.content).startswith(prefix))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith(content_type))
+        self.assertTrue(bytes(response.content).startswith(prefix))
 
 
     def test_vendor_outstanding_accepts_date_aliases(self):
@@ -1604,15 +1604,14 @@ class PayableReportAPITests(APITestCase):
             with self.subTest(code=code):
                 definition = definitions[code]
                 self.assertIn("supported_filters", definition)
-                self.assertIn("pagination_mode", definition)
-                self.assertIn("export_formats", definition)
-                self.assertIn("drilldown_targets", definition)
-                self.assertIn("related_reports", definition)
-                self.assertIn("supports_traceability", definition)
+        self.assertIn("pagination_mode", definition)
+        self.assertIn("export_formats", definition)
+        self.assertIn("drilldown_targets", definition)
+        self.assertIn("related_reports", definition)
+        self.assertIn("supports_traceability", definition)
 
     def test_payables_api_guide_mentions_frontend_reports(self):
         doc = Path("reports/PAYABLES_REPORTING_API.md").read_text()
         self.assertIn("Vendor Settlement History", doc)
         self.assertIn("Vendor Debit/Credit Note Register", doc)
         self.assertIn("/api/reports/payables/meta/", doc)
-

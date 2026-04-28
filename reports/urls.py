@@ -108,6 +108,18 @@ from reports.gstr1.views import (
     Gstr1ValidationAPIView,
 )
 from reports.gstr3b.views import Gstr3bExportAPIView, Gstr3bMetaAPIView, Gstr3bSummaryAPIView, Gstr3bValidationAPIView
+from reports.gstr9.views import (
+    Gstr9ExportAPIView,
+    Gstr9FilingPrepareAPIView,
+    Gstr9FilingStatusAPIView,
+    Gstr9FilingSubmitAPIView,
+    Gstr9FreezeAPIView,
+    Gstr9FreezeHistoryAPIView,
+    Gstr9MetaAPIView,
+    Gstr9SummaryAPIView,
+    Gstr9TableAPIView,
+    Gstr9ValidationAPIView,
+)
 from reports.api.statutory import Gstr1ReportAPIView
 from reports.api.receivables_views import (
     CollectionsHistoryCSVAPIView,
@@ -350,6 +362,16 @@ urlpatterns = [
     path("gstr3b1/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b1-validations"),
     path("gstr3b1/export/", Gstr3bExportAPIView.as_view(), name="gstr3b1-export"),
     path("gstr3b1/export", Gstr3bExportAPIView.as_view(), name="gstr3b1-export-noslash"),
+    path("gstr9/meta/", Gstr9MetaAPIView.as_view(), name="gstr9-meta"),
+    path("gstr9/summary/", Gstr9SummaryAPIView.as_view(), name="gstr9-summary"),
+    path("gstr9/table/<str:table_code>/", Gstr9TableAPIView.as_view(), name="gstr9-table"),
+    path("gstr9/validations/", Gstr9ValidationAPIView.as_view(), name="gstr9-validations"),
+    path("gstr9/export/", Gstr9ExportAPIView.as_view(), name="gstr9-export"),
+    path("gstr9/freeze/", Gstr9FreezeAPIView.as_view(), name="gstr9-freeze"),
+    path("gstr9/freeze/history/", Gstr9FreezeHistoryAPIView.as_view(), name="gstr9-freeze-history"),
+    path("gstr9/filing/prepare/", Gstr9FilingPrepareAPIView.as_view(), name="gstr9-filing-prepare"),
+    path("gstr9/filing/submit/", Gstr9FilingSubmitAPIView.as_view(), name="gstr9-filing-submit"),
+    path("gstr9/filing/status/", Gstr9FilingStatusAPIView.as_view(), name="gstr9-filing-status"),
     path("statutory/gstr1/", Gstr1ReportAPIView.as_view(), name="gstr1-register"),
     path("financial/trial-balance/", TrialBalanceAPIView.as_view(), name="financial-trial-balance"),
     path("financial/trial-balance/excel/", TrialBalanceExcelAPIView.as_view(), name="financial-trial-balance-excel"),

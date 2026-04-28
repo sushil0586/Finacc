@@ -11,7 +11,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, ProductPlanning, UnitOfMeasure
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from posting.models import Entry, EntryStatus, InventoryMove, PostingBatch, TxnType
 from reports.services.inventory.stock_summary import build_inventory_stock_summary
@@ -28,13 +28,10 @@ class InventoryReportAPITests(APITestCase):
             password='pass123',
         )
         self.client.force_authenticate(user=self.user)
-
-        self.unit_type = UnitType.objects.create(UnitName='Business', UnitDesc='Business')
         self.gst_type = GstRegistrationType.objects.create(Name='Regular', Description='Regular')
         self.entity = Entity.objects.create(
             entityname='Inventory Entity',
             legalname='Inventory Entity Pvt Ltd',
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -46,7 +43,6 @@ class InventoryReportAPITests(APITestCase):
             finendyear=timezone.make_aware(datetime(2026, 3, 31)),
             createdby=self.user,
         )
-
         self.godown = Godown.objects.create(
             entity=self.entity,
             subentity=self.subentity,
@@ -58,7 +54,6 @@ class InventoryReportAPITests(APITestCase):
             pincode='141001',
             is_active=True,
         )
-
         self.category = ProductCategory.objects.create(
             entity=self.entity,
             pcategoryname='Finished Goods',
@@ -76,7 +71,6 @@ class InventoryReportAPITests(APITestCase):
             description='Piece',
             uqc='NOS',
         )
-
         self.product = Product.objects.create(
             entity=self.entity,
             productname='Laptop',
@@ -107,7 +101,6 @@ class InventoryReportAPITests(APITestCase):
             gst_rate=Decimal('18.00'),
             isdefault=True,
         )
-
         self.batch = PostingBatch.objects.create(
             entity=self.entity,
             entityfin=self.entityfin,
@@ -162,7 +155,6 @@ class InventoryReportAPITests(APITestCase):
             posted_at=timezone.now(),
             created_by=self.user,
         )
-
         self._grant_inventory_permission('reports.inventory.stock_summary.view')
         self._grant_inventory_permission('reports.inventory.stock_ledger.view')
         self._grant_inventory_permission('reports.inventory.stock_aging.view')
@@ -352,7 +344,6 @@ class InventoryReportAPITests(APITestCase):
         csv_response = self.client.get(reverse('reports_api:inventory-stock-summary-csv'), self._scope())
         pdf = self.client.get(reverse('reports_api:inventory-stock-summary-pdf'), self._scope())
         print_response = self.client.get(reverse('reports_api:inventory-stock-summary-print'), self._scope())
-
         self.assertEqual(excel.status_code, 200)
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(pdf.status_code, 200)
@@ -559,7 +550,6 @@ class InventoryReportAPITests(APITestCase):
             product_ids=[valuation_product.id],
             paginate=False,
         )
-
         self.assertEqual(fifo['rows'][0]['closing_qty'], '15.0000')
         self.assertEqual(lifo['rows'][0]['closing_qty'], '15.0000')
         self.assertNotEqual(fifo['rows'][0]['closing_value'], lifo['rows'][0]['closing_value'])
@@ -824,7 +814,6 @@ class InventoryReportAPITests(APITestCase):
                 'product_ids': [valuation_product.id],
             }
         )
-
         self.assertEqual(fifo.status_code, 200)
         self.assertEqual(lifo.status_code, 200)
         fifo_data = fifo.json()
@@ -861,7 +850,6 @@ class InventoryReportAPITests(APITestCase):
         csv_response = self.client.get(reverse('reports_api:inventory-stock-ledger-csv'), self._scope())
         pdf = self.client.get(reverse('reports_api:inventory-stock-ledger-pdf'), self._scope())
         print_response = self.client.get(reverse('reports_api:inventory-stock-ledger-print'), self._scope())
-
         self.assertEqual(excel.status_code, 200)
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(pdf.status_code, 200)
@@ -972,7 +960,6 @@ class InventoryReportAPITests(APITestCase):
         csv_response = self.client.get(reverse('reports_api:inventory-stock-aging-csv'), aging_scope)
         pdf = self.client.get(reverse('reports_api:inventory-stock-aging-pdf'), aging_scope)
         print_response = self.client.get(reverse('reports_api:inventory-stock-aging-print'), aging_scope)
-
         self.assertEqual(excel.status_code, 200)
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(pdf.status_code, 200)
@@ -1032,7 +1019,6 @@ class InventoryReportAPITests(APITestCase):
         csv_response = self.client.get(reverse('reports_api:inventory-location-stock-csv'), self._scope())
         pdf = self.client.get(reverse('reports_api:inventory-location-stock-pdf'), self._scope())
         print_response = self.client.get(reverse('reports_api:inventory-location-stock-print'), self._scope())
-
         self.assertEqual(excel.status_code, 200)
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(pdf.status_code, 200)
@@ -1056,14 +1042,13 @@ class InventoryReportAPITests(APITestCase):
 
         for response in [movement, day_book, book_summary, book_detail]:
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()['available_exports'], ['excel', 'pdf', 'csv', 'print'])
-            self.assertTrue(response.json()['actions']['can_drilldown'])
+        self.assertEqual(response.json()['available_exports'], ['excel', 'pdf', 'csv', 'print'])
+        self.assertTrue(response.json()['actions']['can_drilldown'])
 
         movement_data = movement.json()
         day_book_data = day_book.json()
         book_summary_data = book_summary.json()
         book_detail_data = book_detail.json()
-
         self.assertEqual(movement_data['report_code'], 'inventory_stock_movement')
         self.assertEqual(book_summary_data['report_code'], 'inventory_stock_book_summary')
         self.assertEqual(book_detail_data['report_code'], 'inventory_stock_book_detail')

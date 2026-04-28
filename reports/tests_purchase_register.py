@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.test import override_settings
@@ -11,7 +12,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
@@ -32,19 +33,15 @@ class PurchaseRegisterAPITests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
         self.url = reverse("reports_api:purchase-register")
-
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
         self.other_state = State.objects.create(statename="Karnataka", statecode="29", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
         self.city = City.objects.create(cityname="Mumbai", citycode="MUM", pincode="400001", distt=self.district)
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
-
         self.entity = Entity.objects.create(
             entityname="Finacc Purchase Entity",
             legalname="Finacc Purchase Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -60,11 +57,30 @@ class PurchaseRegisterAPITests(APITestCase):
             finendyear=fy_end,
             createdby=self.user,
         )
-
+        self.permission_entity = self.entity
+        self.mock_entity_for_user = patch("reports.api.purchase_register_view.EffectivePermissionService.entity_for_user", return_value=self.permission_entity)
+        self.mock_permission_codes = patch(
+            "reports.api.purchase_register_view.EffectivePermissionService.permission_codes_for_user",
+            return_value=[
+                "reports.purchasebook.view",
+                "reports.purchasebook.export",
+                "reports.vendoroutstanding.view",
+                "reports.accountspayableaging.view",
+                "reports.vendorledgerstatement.view",
+                "reports.apglreconciliation.view",
+                "reports.payablesclosepack.view",
+            ],
+        )
+        self.mock_subscription_access = patch(
+            "reports.api.purchase_register_view.SubscriptionService.assert_entity_access",
+            return_value=self.permission_entity,
+        )
+        self.mock_entity_for_user.start()
+        self.mock_permission_codes.start()
+        self.mock_subscription_access.start()
         self.other_entity = Entity.objects.create(
             entityname="Other Entity",
             legalname="Other Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -79,7 +95,6 @@ class PurchaseRegisterAPITests(APITestCase):
             entity=self.other_entity,
             subentityname="Other Entity Branch",
         )
-
         self.acc_type = accounttype.objects.create(
             entity=self.entity,
             accounttypename="Sundry",
@@ -110,7 +125,6 @@ class PurchaseRegisterAPITests(APITestCase):
             accounttype=self.other_acc_type,
             createdby=self.user,
         )
-
         self.vendor_alpha = self._create_vendor(
             name="Alpha Traders",
             gstin="27ABCDE1234F1Z5",
@@ -128,13 +142,16 @@ class PurchaseRegisterAPITests(APITestCase):
             entity=self.other_entity,
             account_head=self.other_vendor_head,
         )
-
         self.base_params = {
             "entity": self.entity.id,
             "entityfinid": self.entityfin.id,
             "subentity": self.subentity.id,
         }
         self.doc_no_seq = 1
+
+    def tearDown(self):
+        patch.stopall()
+        super().tearDown()
 
     def _create_vendor(self, *, name, gstin, accountcode, entity=None, account_head=None):
         entity = entity or self.entity
