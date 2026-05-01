@@ -28,24 +28,30 @@ class PurchaseWithholdingService:
         taxable_total: Decimal,
         gross_total: Decimal,
     ) -> WithholdingResult:
-        # feature flag
+        # Resolve config for defaults/policy (when available).
         cfg = WithholdingResolver.get_entity_config(
             entity_id=header.entity_id,
             entityfin_id=header.entityfinid_id,
             subentity_id=header.subentity_id,
             doc_date=bill_date,
         )
-        if not (cfg and cfg.enable_tds) or not header.withholding_enabled:
+        if not header.withholding_enabled:
             return WithholdingResult(False, None, Decimal("0.0000"), ZERO2, ZERO2, "TDS disabled")
 
+        # Explicitly selected section should be honored even when cfg row is missing.
+        explicit_section_id = getattr(header, "tds_section_id", None)
         section = WithholdingResolver.resolve_section(
             tax_type=WithholdingTaxType.TDS,
-            explicit_section_id=getattr(header, "tds_section_id", None),
+            explicit_section_id=explicit_section_id,
             cfg=cfg,
             doc_date=bill_date,
         )
         if not section:
             return WithholdingResult(False, None, Decimal("0.0000"), ZERO2, ZERO2, "No TDS section")
+
+        # If a config exists and TDS is explicitly disabled there, block auto compute.
+        if cfg and not getattr(cfg, "enable_tds", True):
+            return WithholdingResult(False, section, Decimal("0.0000"), ZERO2, ZERO2, "TDS disabled in withholding configuration for this scope/date.")
 
         if int(getattr(section, "base_rule", 0) or 0) not in {
             int(WithholdingBaseRule.INVOICE_VALUE_EXCL_GST),

@@ -255,7 +255,8 @@ class SalesPolicy:
 
     @property
     def round_decimals(self) -> int:
-        return int(self.settings.round_grand_total_to or 2)
+        value = self.settings.round_grand_total_to
+        return 2 if value is None else int(value)
 
     @property
     def enable_round_off(self) -> bool:

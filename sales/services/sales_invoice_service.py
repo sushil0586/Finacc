@@ -100,6 +100,42 @@ class Totals:
 
 
 class SalesInvoiceService:
+    _BACKEND_CONTROLLED_HEADER_FIELDS = {
+        "status",
+        "doc_no",
+        "invoice_number",
+        "posting_date",
+        "due_date",
+        "tax_regime",
+        "is_igst",
+        "gst_compliance_mode",
+        "is_einvoice_applicable",
+        "is_eway_applicable",
+        "total_taxable_value",
+        "total_cgst",
+        "total_sgst",
+        "total_igst",
+        "total_cess",
+        "total_discount",
+        "total_other_charges",
+        "round_off",
+        "grand_total",
+        "settled_amount",
+        "outstanding_amount",
+        "settlement_status",
+        "reversed_at",
+        "reversed_by",
+        "reverse_reason",
+        "is_posting_reversed",
+    }
+
+    @classmethod
+    def _sanitize_header_data_inputs(cls, header_data: dict) -> dict:
+        clean = dict(header_data or {})
+        for field in cls._BACKEND_CONTROLLED_HEADER_FIELDS:
+            clean.pop(field, None)
+        return clean
+
     @staticmethod
     def _policy_controls(header: SalesInvoiceHeader) -> dict:
         settings_obj = SalesInvoiceService.get_settings(
@@ -1312,6 +1348,7 @@ class SalesInvoiceService:
         charges_data: Optional[list],
         user,
     ) -> SalesInvoiceHeader:
+        header_data = cls._sanitize_header_data_inputs(header_data)
         bill_date = header_data.get("bill_date") or timezone.localdate()
         cls.assert_not_locked(entity_id=entity_id, subentity_id=subentity_id, bill_date=bill_date)
 
@@ -1427,6 +1464,7 @@ class SalesInvoiceService:
         charges_data: Optional[list],
         user,
     ) -> SalesInvoiceHeader:
+        header_data = cls._sanitize_header_data_inputs(header_data)
         if header.status in (SalesInvoiceHeader.Status.POSTED, SalesInvoiceHeader.Status.CANCELLED):
             raise ValueError("Posted/Cancelled invoices cannot be edited.")
         if int(header.status) == int(SalesInvoiceHeader.Status.CONFIRMED):
@@ -2207,7 +2245,8 @@ class SalesInvoiceService:
 
         round_off = ZERO2
         if bool(getattr(settings_obj, "enable_round_off", True)):
-            decimals = int(getattr(settings_obj, "round_grand_total_to", 2) or 2)
+            decimals_raw = getattr(settings_obj, "round_grand_total_to", 2)
+            decimals = 2 if decimals_raw is None else int(decimals_raw)
             quant = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)  # 10^-decimals
             rounded = raw.quantize(quant, rounding=ROUND_HALF_UP)
             round_off = q2(rounded - raw)

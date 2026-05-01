@@ -299,26 +299,28 @@ class SalesInvoicePostingAdapter:
         _add_out(out_igst, out_igst_ledger, output_tax["igst"], "Output IGST")
         _add_out(out_cess, out_cess_ledger, output_tax["cess"], "Output CESS")
 
-        # 1C) Round-off (same semantics as purchase)
-        # Original semantics:
-        #   roundoff > 0 => Dr expense, < 0 => Cr income
-        # For CN, flip direction.
+        # 1C) Round-off.
+        # round_off is stored as (rounded_total - raw_total).
+        # So for invoice/DN:
+        #   +ve round_off -> credit (income) to increase customer receivable
+        #   -ve round_off -> debit (expense) to decrease customer receivable
+        # For credit note, direction is flipped.
         if header_roundoff != ZERO2:
             if header_roundoff > ZERO2:
-                jl.append(JLInput(
-                    account_id=ro_exp_ac,
-                    ledger_id=ro_exp_ledger,
-                    drcr=not is_credit_note,  # invoice/DN Dr, CN Cr
-                    amount=header_roundoff,
-                    description=f"{narration} (Round-off expense)",
-                ))
-            else:
                 jl.append(JLInput(
                     account_id=ro_income_ac,
                     ledger_id=ro_income_ledger,
                     drcr=is_credit_note,  # invoice/DN Cr, CN Dr
-                    amount=abs(header_roundoff),
+                    amount=header_roundoff,
                     description=f"{narration} (Round-off income)",
+                ))
+            else:
+                jl.append(JLInput(
+                    account_id=ro_exp_ac,
+                    ledger_id=ro_exp_ledger,
+                    drcr=not is_credit_note,  # invoice/DN Dr, CN Cr
+                    amount=abs(header_roundoff),
+                    description=f"{narration} (Round-off expense)",
                 ))
 
         # Legacy fallback for old payloads that still use header.total_other_charges without charge lines.

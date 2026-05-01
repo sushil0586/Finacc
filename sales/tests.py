@@ -32,6 +32,42 @@ from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
+    def test_sanitize_header_data_inputs_removes_backend_controlled_totals(self):
+        payload = {
+            "bill_date": date(2026, 4, 1),
+            "customer_id": 10,
+            "round_off": Decimal("9.99"),
+            "grand_total": Decimal("9999.99"),
+            "total_taxable_value": Decimal("5000.00"),
+            "total_other_charges": Decimal("10.00"),
+            "status": SalesInvoiceHeader.Status.POSTED,
+            "remarks": "keep me",
+        }
+
+        clean = SalesInvoiceService._sanitize_header_data_inputs(payload)
+
+        self.assertEqual(clean["bill_date"], date(2026, 4, 1))
+        self.assertEqual(clean["customer_id"], 10)
+        self.assertEqual(clean["remarks"], "keep me")
+        self.assertNotIn("round_off", clean)
+        self.assertNotIn("grand_total", clean)
+        self.assertNotIn("total_taxable_value", clean)
+        self.assertNotIn("total_other_charges", clean)
+        self.assertNotIn("status", clean)
+
+    def test_sanitize_header_data_inputs_keeps_user_editable_fields(self):
+        payload = {
+            "doc_type": SalesInvoiceHeader.DocType.TAX_INVOICE,
+            "bill_date": date(2026, 4, 2),
+            "reference": "PO-123",
+            "remarks": "ok",
+            "withholding_enabled": True,
+        }
+
+        clean = SalesInvoiceService._sanitize_header_data_inputs(payload)
+
+        self.assertEqual(clean, payload)
+
     def test_normalize_invoice_printing_applies_defaults(self):
         normalized = SalesSettingsService.normalize_invoice_printing(
             {

@@ -70,12 +70,30 @@ class GstTdsService:
 
         cfg = GstTdsService._config_for(inv)
         if not cfg or not cfg.enabled:
-            return GstTdsComputed(False, "gst tds config disabled/missing", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(
+                False,
+                f"gst tds config disabled/missing (entity={getattr(inv, 'entity_id', None)}, subentity={getattr(inv, 'subentity_id', None)})",
+                q4(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+            )
         rule = GstTdsService._master_rule_for_config(cfg)
 
         contract_ref = normalize_contract_ref(getattr(inv, "gst_tds_contract_ref", ""))
         if not contract_ref:
-            return GstTdsComputed(False, "contract ref missing", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(
+                False,
+                f"contract ref missing (entity={getattr(inv, 'entity_id', None)}, subentity={getattr(inv, 'subentity_id', None)})",
+                q4(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+            )
 
         base_full = q2(getattr(inv, "total_taxable", None) or ZERO2)
         if base_full <= ZERO2:
@@ -97,7 +115,16 @@ class GstTdsService:
 
         if after <= threshold:
             # not eligible yet (but store base for display if you want)
-            return GstTdsComputed(False, f"threshold not reached (after={after})", q4(ZERO2), base_full, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(
+                False,
+                f"threshold not reached (before={before}, after={after}, threshold={threshold}, contract={contract_ref})",
+                q4(ZERO2),
+                base_full,
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+                q2(ZERO2),
+            )
 
         # Apply on amount above threshold if crossing occurs now; else full base
         if before < threshold:
@@ -143,7 +170,9 @@ class GstTdsService:
         inv.gst_tds_amount = q2(res.total)
 
         inv.gst_tds_status = (1 if res.eligible else 0)  # ELIGIBLE else NA
-        # keep inv.gst_tds_reason as UI provided; do not overwrite
+        # Persist machine-readable reason for easier audit/debug in admin + API consumers.
+        # This is especially useful for NA outcomes (config missing, threshold not reached, etc.).
+        inv.gst_tds_reason = (res.reason or None)
 
     @staticmethod
     def _scope_key_for_header(inv):
