@@ -41,6 +41,8 @@ class PaymentSettings(TrackingModel):
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, related_name="payment_settings")
 
     default_doc_code_payment = models.CharField(max_length=10, default="PPV")
+    enable_round_off = models.BooleanField(default=True)
+    round_grand_total_to = models.PositiveSmallIntegerField(default=0)
     default_workflow_action = models.CharField(
         max_length=10,
         choices=DefaultWorkflowAction.choices,

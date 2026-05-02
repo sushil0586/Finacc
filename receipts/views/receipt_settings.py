@@ -51,6 +51,8 @@ POLICY_CONTROLS_SCHEMA = [
     {"key": "allocation_policy", "label": "Allocation Policy", "type": "choice", "choices": ["manual", "fifo"]},
     {"key": "over_settlement_rule", "label": "Over Settlement Rule", "type": "choice", "choices": ["block", "warn"]},
     {"key": "allocation_amount_match_rule", "label": "Allocation Amount Match Rule", "type": "choice", "choices": ["off", "warn", "hard"]},
+    {"key": "auto_paisa_adjustment_on_receipt", "label": "Auto Paisa Adjustment On Receipt", "type": "choice", "choices": ["on", "off"]},
+    {"key": "paisa_adjustment_tolerance", "label": "Paisa Adjustment Tolerance", "type": "string"},
     {"key": "receipt_maker_checker", "label": "Receipt Maker Checker", "type": "choice", "choices": ["off", "warn", "hard"]},
     {"key": "same_user_submit_approve", "label": "Same User Submit Approve", "type": "choice", "choices": ["on", "off"]},
     {"key": "require_reference_number", "label": "Require Reference Number", "type": "choice", "choices": ["off", "warn", "hard"]},
@@ -59,6 +61,8 @@ POLICY_CONTROLS_SCHEMA = [
 
 RECEIPT_SETTINGS_SCHEMA = [
     {"name": "default_doc_code_receipt", "label": "Receipt Doc Code", "type": "string", "group": "numbering_defaults"},
+    {"name": "enable_round_off", "label": "Enable Round Off", "type": "boolean", "group": "rounding"},
+    {"name": "round_grand_total_to", "label": "Round Grand Total To", "type": "integer", "group": "rounding"},
     {"name": "default_workflow_action", "label": "Default Workflow", "type": "choice", "group": "workflow", "choices": _choice_payload(ReceiptSettings.DefaultWorkflowAction.choices)},
     {"name": "policy_controls", "label": "Policy Controls", "type": "json", "group": "policy"},
 ]
@@ -85,6 +89,8 @@ LOCK_PERIOD_SCHEMA = [
 
 EDITABLE_FIELDS = {
     "default_doc_code_receipt",
+    "enable_round_off",
+    "round_grand_total_to",
     "default_workflow_action",
     "policy_controls",
 }
@@ -299,6 +305,8 @@ class ReceiptSettingsAPIView(ScopedEntitlementMixin, APIView):
                 "entity": settings_obj.entity_id,
                 "subentity": settings_obj.subentity_id,
                 "default_doc_code_receipt": settings_obj.default_doc_code_receipt,
+                "enable_round_off": settings_obj.enable_round_off,
+                "round_grand_total_to": settings_obj.round_grand_total_to,
                 "default_workflow_action": settings_obj.default_workflow_action,
                 "policy_controls": ReceiptSettingsService.effective_policy_controls(settings_obj),
             },

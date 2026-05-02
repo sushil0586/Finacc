@@ -66,7 +66,7 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
-        rows = list(qs)
+        rows = [PurchaseApService.repair_open_item_if_drifted(x) for x in qs]
         payload = VendorBillOpenItemSerializer(rows, many=True).data
 
         entity_id, entityfinid_id, subentity_id, vendor_id, open_flag = self._scope()

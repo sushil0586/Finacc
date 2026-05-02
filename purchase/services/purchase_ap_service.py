@@ -51,6 +51,33 @@ class SettlementCancelResult:
 
 class PurchaseApService:
     @staticmethod
+    def _compute_net_payable_from_header(header: PurchaseInvoiceHeader) -> Dict[str, Decimal]:
+        sign = PurchaseApService._doc_sign(int(header.doc_type))
+        # Canonical payable base should follow invoice component totals so
+        # CESS + round-off scenarios stay aligned with UI/summary even if
+        # historical grand_total snapshots drifted.
+        component_total = q2(
+            q2(getattr(header, "total_taxable", ZERO2))
+            + q2(getattr(header, "total_cgst", ZERO2))
+            + q2(getattr(header, "total_sgst", ZERO2))
+            + q2(getattr(header, "total_igst", ZERO2))
+            + q2(getattr(header, "total_cess", ZERO2))
+            + q2(getattr(header, "round_off", ZERO2))
+        )
+        grand_total = q2(getattr(header, "grand_total", ZERO2))
+        gross_base = component_total if abs(component_total) > TOL else grand_total
+        gross_amount = q2(sign * gross_base)
+        tds_deducted = q2(sign * q2(getattr(header, "tds_amount", ZERO2)))
+        gst_tds_deducted = q2(sign * q2(getattr(header, "gst_tds_amount", ZERO2)))
+        net_payable = q2(gross_amount - tds_deducted - gst_tds_deducted)
+        return {
+            "gross_amount": gross_amount,
+            "tds_deducted": tds_deducted,
+            "gst_tds_deducted": gst_tds_deducted,
+            "net_payable": net_payable,
+        }
+
+    @staticmethod
     def _apply_subentity_scope(qs, subentity_id: Optional[int]):
         """
         AP items can be created at entity scope (subentity null) or branch scope.
@@ -194,11 +221,11 @@ class PurchaseApService:
         Create/update AP open item from posted purchase header.
         Idempotent and safe to call multiple times.
         """
-        sign = PurchaseApService._doc_sign(int(header.doc_type))
-        gross_amount = q2(sign * q2(getattr(header, "grand_total", ZERO2)))
-        tds_deducted = q2(sign * q2(getattr(header, "tds_amount", ZERO2)))
-        gst_tds_deducted = q2(sign * q2(getattr(header, "gst_tds_amount", ZERO2)))
-        net_payable = q2(gross_amount - tds_deducted - gst_tds_deducted)
+        computed = PurchaseApService._compute_net_payable_from_header(header)
+        gross_amount = computed["gross_amount"]
+        tds_deducted = computed["tds_deducted"]
+        gst_tds_deducted = computed["gst_tds_deducted"]
+        net_payable = computed["net_payable"]
 
         item, _ = VendorBillOpenItem.objects.select_for_update().get_or_create(
             header=header,
@@ -250,6 +277,48 @@ class PurchaseApService:
 
         PurchaseApService._auto_adjust_credit_note_if_enabled(header=header, cn_item=item)
         return item
+
+    @staticmethod
+    @transaction.atomic
+    def repair_open_item_if_drifted(item: VendorBillOpenItem) -> VendorBillOpenItem:
+        """
+        Self-heal stale AP snapshots when source purchase totals changed because of
+        rounding/withholding recomputation after the original AP row was created.
+        """
+        header = getattr(item, "header", None)
+        if not header:
+            return item
+
+        computed = PurchaseApService._compute_net_payable_from_header(header)
+        expected_net = computed["net_payable"]
+        if abs(q2(item.original_amount) - expected_net) <= TOL:
+            return item
+
+        locked = VendorBillOpenItem.objects.select_for_update().select_related("header", "vendor").get(pk=item.pk)
+        locked.gross_amount = computed["gross_amount"]
+        locked.tds_deducted = computed["tds_deducted"]
+        locked.gst_tds_deducted = computed["gst_tds_deducted"]
+        locked.original_amount = expected_net
+        locked.net_payable_amount = expected_net
+        locked.outstanding_amount = q2(locked.original_amount - q2(locked.settled_amount))
+        if abs(locked.outstanding_amount) <= TOL:
+            locked.outstanding_amount = ZERO2
+            locked.is_open = False
+        else:
+            locked.is_open = True
+        locked.save(
+            update_fields=[
+                "gross_amount",
+                "tds_deducted",
+                "gst_tds_deducted",
+                "original_amount",
+                "net_payable_amount",
+                "outstanding_amount",
+                "is_open",
+                "updated_at",
+            ]
+        )
+        return locked
 
     @staticmethod
     def list_open_items(
@@ -563,6 +632,7 @@ class PurchaseApService:
             vendor_id=vendor_id,
             is_open=None if include_closed else True,
         )
+        open_items = [PurchaseApService.repair_open_item_if_drifted(x) for x in open_items_qs]
         settlements_qs = (
             VendorSettlement.objects
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id, vendor_id=vendor_id)
@@ -576,9 +646,9 @@ class PurchaseApService:
 
         settlements_qs = settlements_qs.prefetch_related("lines__open_item")
         totals = {
-            "original_total": q2(sum((q2(x.original_amount) for x in open_items_qs), ZERO2)),
-            "settled_total": q2(sum((q2(x.settled_amount) for x in open_items_qs), ZERO2)),
-            "outstanding_total": q2(sum((q2(x.outstanding_amount) for x in open_items_qs), ZERO2)),
+            "original_total": q2(sum((q2(x.original_amount) for x in open_items), ZERO2)),
+            "settled_total": q2(sum((q2(x.settled_amount) for x in open_items), ZERO2)),
+            "outstanding_total": q2(sum((q2(x.outstanding_amount) for x in open_items), ZERO2)),
         }
         advances_qs = PurchaseApService.list_open_advances(
             entity_id=entity_id,
@@ -595,7 +665,7 @@ class PurchaseApService:
         totals["net_ap_position"] = q2(totals["outstanding_total"] - totals["advance_outstanding_total"])
         return {
             "vendor": vendor,
-            "open_items": open_items_qs,
+            "open_items": open_items,
             "advances": advances_qs,
             "settlements": settlements_qs.order_by("-settlement_date", "-id"),
             "totals": totals,

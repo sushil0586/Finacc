@@ -7,8 +7,8 @@ from decimal import Decimal
 import re
 
 
-
 from entity.models import Godown
+from entity.financial_year_validation import assert_document_date_within_financial_year
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
@@ -375,8 +375,6 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_cess",
             "total_discount",
             "total_other_charges",
-            "round_off",
-            "grand_total",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",
@@ -470,8 +468,6 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_igst",
             "total_cess",
             "total_discount",
-            "round_off",
-            "grand_total",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",
@@ -498,6 +494,28 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         # note_reason / affects_inventory are only meaningful on CN/DN
         inst = self.instance
+        entity = attrs.get("entity") or getattr(inst, "entity", None)
+        entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
+        bill_date = attrs.get("bill_date") or getattr(inst, "bill_date", None)
+        posting_date = attrs.get("posting_date") or getattr(inst, "posting_date", None)
+
+        try:
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=bill_date,
+                field_name="bill_date",
+            )
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=posting_date,
+                field_name="posting_date",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+
         doc_type = attrs.get("doc_type") or getattr(inst, "doc_type", None)
         note_reason = attrs.get("note_reason") or getattr(inst, "note_reason", None)
         affects_inventory_provided = "affects_inventory" in attrs

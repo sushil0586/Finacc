@@ -50,6 +50,20 @@ class SettlementCancelResult:
 
 class SalesArService:
     @staticmethod
+    def _compute_net_receivable_from_header(header: SalesInvoiceHeader) -> Dict[str, Decimal]:
+        sign = SalesArService._doc_sign(int(header.doc_type))
+        gross_amount = q2(sign * q2(getattr(header, "grand_total", ZERO2)))
+        tds_collected = ZERO2
+        gst_tds_collected = q2(sign * q2(getattr(header, "tcs_amount", ZERO2)))
+        net_receivable = q2(gross_amount + gst_tds_collected)
+        return {
+            "gross_amount": gross_amount,
+            "tds_collected": tds_collected,
+            "gst_tds_collected": gst_tds_collected,
+            "net_receivable": net_receivable,
+        }
+
+    @staticmethod
     def _get_policy(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None):
         return SalesSettingsService.get_policy(entity_id, subentity_id, entityfinid_id=entityfinid_id)
 
@@ -221,11 +235,11 @@ class SalesArService:
         Create/update AR open item from posted sales header.
         Idempotent and safe to call multiple times.
         """
-        sign = SalesArService._doc_sign(int(header.doc_type))
-        gross_amount = q2(sign * q2(getattr(header, "grand_total", ZERO2)))
-        tds_collected = ZERO2
-        gst_tds_collected = q2(sign * q2(getattr(header, "tcs_amount", ZERO2)))
-        net_receivable = gross_amount
+        computed = SalesArService._compute_net_receivable_from_header(header)
+        gross_amount = computed["gross_amount"]
+        tds_collected = computed["tds_collected"]
+        gst_tds_collected = computed["gst_tds_collected"]
+        net_receivable = computed["net_receivable"]
 
         item, _ = CustomerBillOpenItem.objects.select_for_update().get_or_create(
             header=header,
@@ -277,6 +291,48 @@ class SalesArService:
 
         SalesArService._auto_adjust_credit_note_if_enabled(header=header, cn_item=item)
         return item
+
+    @staticmethod
+    @transaction.atomic
+    def repair_open_item_if_drifted(item: CustomerBillOpenItem) -> CustomerBillOpenItem:
+        """
+        Self-heal stale AR snapshots when source sales totals changed because of
+        round-off or TCS recomputation after original AR row creation.
+        """
+        header = getattr(item, "header", None)
+        if not header:
+            return item
+
+        computed = SalesArService._compute_net_receivable_from_header(header)
+        expected_net = computed["net_receivable"]
+        if abs(q2(item.original_amount) - expected_net) <= TOL:
+            return item
+
+        locked = CustomerBillOpenItem.objects.select_for_update().select_related("header").get(pk=item.pk)
+        locked.gross_amount = computed["gross_amount"]
+        locked.tds_collected = computed["tds_collected"]
+        locked.gst_tds_collected = computed["gst_tds_collected"]
+        locked.original_amount = expected_net
+        locked.net_receivable_amount = expected_net
+        locked.outstanding_amount = q2(locked.original_amount - q2(locked.settled_amount))
+        if abs(locked.outstanding_amount) <= TOL:
+            locked.outstanding_amount = ZERO2
+            locked.is_open = False
+        else:
+            locked.is_open = True
+        locked.save(
+            update_fields=[
+                "gross_amount",
+                "tds_collected",
+                "gst_tds_collected",
+                "original_amount",
+                "net_receivable_amount",
+                "outstanding_amount",
+                "is_open",
+                "updated_at",
+            ]
+        )
+        return locked
 
     @staticmethod
     def list_open_items(

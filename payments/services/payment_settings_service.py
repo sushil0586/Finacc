@@ -121,12 +121,24 @@ class PaymentSettingsService:
         settings, _ = PaymentSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
         editable_fields = {
             "default_doc_code_payment",
+            "enable_round_off",
+            "round_grand_total_to",
             "default_workflow_action",
             "policy_controls",
         }
         for key, val in updates.items():
             if key not in editable_fields:
                 continue
+            if key == "enable_round_off":
+                val = bool(val)
+            if key == "round_grand_total_to":
+                try:
+                    iv = int(val)
+                except (TypeError, ValueError):
+                    raise ValueError("round_grand_total_to must be an integer.")
+                if iv < 0:
+                    raise ValueError("round_grand_total_to must be >= 0.")
+                val = iv
             if key == "policy_controls":
                 val = PaymentSettingsService.normalize_policy_controls(val)
             setattr(settings, key, val)

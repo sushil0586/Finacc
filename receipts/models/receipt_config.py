@@ -20,6 +20,8 @@ DEFAULT_RECEIPT_POLICY_CONTROLS = {
     "allocation_policy": "manual",             # manual|fifo
     "over_settlement_rule": "block",           # block|warn
     "allocation_amount_match_rule": "hard",    # off|warn|hard
+    "auto_paisa_adjustment_on_receipt": "on",  # on|off
+    "paisa_adjustment_tolerance": "0.50",      # decimal string, e.g. 0.50
     "receipt_maker_checker": "off",            # off|warn|hard
     "same_user_submit_approve": "on",          # on|off
     "require_reference_number": "off",         # off|warn|hard
@@ -43,6 +45,8 @@ class ReceiptSettings(TrackingModel):
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, related_name="receipt_settings")
 
     default_doc_code_receipt = models.CharField(max_length=10, default="RV")
+    enable_round_off = models.BooleanField(default=True)
+    round_grand_total_to = models.PositiveSmallIntegerField(default=0)
     default_workflow_action = models.CharField(
         max_length=10,
         choices=DefaultWorkflowAction.choices,

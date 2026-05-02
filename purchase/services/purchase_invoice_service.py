@@ -747,7 +747,13 @@ class PurchaseInvoiceService:
         }
 
     @staticmethod
-    def apply_totals_to_header(header: PurchaseInvoiceHeader, totals: Dict[str, Decimal]) -> None:
+    def apply_totals_to_header(
+        header: PurchaseInvoiceHeader,
+        totals: Dict[str, Decimal],
+        *,
+        round_off_explicit: bool = False,
+        grand_total_hint: Optional[Decimal] = None,
+    ) -> None:
         header.total_taxable = totals["total_taxable"]
         header.total_cgst = totals["total_cgst"]
         header.total_sgst = totals["total_sgst"]
@@ -755,9 +761,16 @@ class PurchaseInvoiceService:
         header.total_cess = totals["total_cess"]
         header.total_gst = totals["total_gst"]
 
-        ro = q2(getattr(header, "round_off", ZERO2))
+        base_total = q2(totals["grand_total_base"])
+        if round_off_explicit:
+            ro = q2(getattr(header, "round_off", ZERO2))
+        elif grand_total_hint is not None:
+            ro = q2(q2(grand_total_hint) - base_total)
+        else:
+            nearest_rupee = base_total.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            ro = q2(nearest_rupee - base_total)
         header.round_off = ro
-        header.grand_total = q2(totals["grand_total_base"] + ro)
+        header.grand_total = q2(base_total + ro)
         fx = Decimal(getattr(header, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
         if fx <= 0:
             fx = Decimal("1.000000")
@@ -1341,6 +1354,8 @@ class PurchaseInvoiceService:
     @staticmethod
     @transaction.atomic
     def create_with_lines(validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
+        round_off_explicit = "round_off" in validated_data
+        grand_total_hint = validated_data.get("grand_total") if "grand_total" in validated_data else None
         lines_client = validated_data.pop("lines", []) or []
         charges_client = validated_data.pop("charges", []) or []
         # Numbering is controlled by allocation services on confirm/post.
@@ -1404,7 +1419,12 @@ class PurchaseInvoiceService:
         db_lines = list(header.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
         db_charges = list(header.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
         totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
-        PurchaseInvoiceService.apply_totals_to_header(header, totals)
+        PurchaseInvoiceService.apply_totals_to_header(
+            header,
+            totals,
+            round_off_explicit=round_off_explicit,
+            grand_total_hint=grand_total_hint,
+        )
 
         # ✅ TDS AFTER totals (now includes charges)
         PurchaseInvoiceService._apply_tds(header=header)
@@ -1437,6 +1457,8 @@ class PurchaseInvoiceService:
     @transaction.atomic
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         old_scope_key = GstTdsService._scope_key_for_header(instance)
+        round_off_explicit = "round_off" in validated_data
+        grand_total_hint = validated_data.get("grand_total") if "grand_total" in validated_data else None
         lines_provided = "lines" in validated_data
         lines_client = validated_data.pop("lines", None)
         # Never allow replacing allocated numbering from update payload.
@@ -1505,7 +1527,12 @@ class PurchaseInvoiceService:
         db_lines = list(instance.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
         db_charges = list(instance.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
         totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
-        PurchaseInvoiceService.apply_totals_to_header(instance, totals)
+        PurchaseInvoiceService.apply_totals_to_header(
+            instance,
+            totals,
+            round_off_explicit=round_off_explicit,
+            grand_total_hint=grand_total_hint,
+        )
 
         # TDS AFTER totals
         PurchaseInvoiceService._apply_tds(header=instance)

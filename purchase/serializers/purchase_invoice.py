@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
+from entity.financial_year_validation import assert_document_date_within_financial_year
 from withholding.models import WithholdingSection, WithholdingTaxType
 
 from numbering.models import DocumentType
@@ -535,6 +536,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         inst = getattr(self, "instance", None)
 
         entity = attrs.get("entity") or getattr(inst, "entity_id", None)
+        entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
         subentity = attrs.get("subentity") or getattr(inst, "subentity_id", None)
         bill_date = attrs.get("bill_date") or getattr(inst, "bill_date", None)
         posting_date = attrs.get("posting_date") or getattr(inst, "posting_date", None)
@@ -556,6 +558,23 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         posting_date_final = attrs.get("posting_date") or posting_date
         if bill_date and posting_date_final and posting_date_final < bill_date:
             raise serializers.ValidationError({"posting_date": "Posting date cannot be before bill date."})
+
+        try:
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=bill_date,
+                field_name="bill_date",
+            )
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=posting_date_final,
+                field_name="posting_date",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
 
         if inst and inst.status in (Status.POSTED, Status.CANCELLED):
             raise serializers.ValidationError("Cannot edit a POSTED or CANCELLED purchase document.")

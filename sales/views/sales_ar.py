@@ -108,6 +108,12 @@ class CustomerBillOpenItemListAPIView(generics.ListAPIView):
             is_open=open_flag,
         ).select_related("customer", "customer__ledger", "header")
 
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        rows = [SalesArService.repair_open_item_if_drifted(x) for x in qs]
+        serializer = self.get_serializer(rows, many=True)
+        return Response(serializer.data)
+
 
 class CustomerAdvanceBalanceListAPIView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]

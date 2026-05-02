@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from entity.financial_year_validation import assert_document_date_within_financial_year
 from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallan,
     PurchaseStatutoryChallanLine,
@@ -101,6 +102,38 @@ class PurchaseStatutoryChallanSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def validate(self, attrs):
+        inst = getattr(self, "instance", None)
+        entity = attrs.get("entity") or getattr(inst, "entity", None)
+        entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
+        challan_date = attrs.get("challan_date") or getattr(inst, "challan_date", None)
+        period_from = attrs.get("period_from") if "period_from" in attrs else getattr(inst, "period_from", None)
+        period_to = attrs.get("period_to") if "period_to" in attrs else getattr(inst, "period_to", None)
+
+        try:
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=challan_date,
+                field_name="challan_date",
+            )
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=period_from,
+                field_name="period_from",
+            )
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=period_to,
+                field_name="period_to",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        return attrs
+
 
 class PurchaseStatutoryChallanCreateLineInputSerializer(serializers.Serializer):
     header_id = serializers.IntegerField(min_value=1)
@@ -129,6 +162,31 @@ class PurchaseStatutoryChallanCreateInputSerializer(serializers.Serializer):
     remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     auto_populate = serializers.BooleanField(required=False, default=False)
     lines = PurchaseStatutoryChallanCreateLineInputSerializer(many=True, required=False)
+
+    def validate(self, attrs):
+        try:
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("challan_date"),
+                field_name="challan_date",
+            )
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("period_from"),
+                field_name="period_from",
+            )
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("period_to"),
+                field_name="period_to",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        return attrs
 
 
 class PurchaseStatutoryReturnLineSerializer(serializers.ModelSerializer):
@@ -237,6 +295,38 @@ class PurchaseStatutoryReturnSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def validate(self, attrs):
+        inst = getattr(self, "instance", None)
+        entity = attrs.get("entity") or getattr(inst, "entity", None)
+        entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
+        period_from = attrs.get("period_from") if "period_from" in attrs else getattr(inst, "period_from", None)
+        period_to = attrs.get("period_to") if "period_to" in attrs else getattr(inst, "period_to", None)
+        filed_on = attrs.get("filed_on") if "filed_on" in attrs else getattr(inst, "filed_on", None)
+
+        try:
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=period_from,
+                field_name="period_from",
+            )
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=period_to,
+                field_name="period_to",
+            )
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=filed_on,
+                field_name="filed_on",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        return attrs
+
 
 class PurchaseStatutoryReturnCreateLineInputSerializer(serializers.Serializer):
     header_id = serializers.IntegerField(min_value=1)
@@ -279,3 +369,22 @@ class PurchaseStatutoryReturnCreateInputSerializer(serializers.Serializer):
     remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     auto_populate = serializers.BooleanField(required=False, default=False)
     lines = PurchaseStatutoryReturnCreateLineInputSerializer(many=True, required=False)
+
+    def validate(self, attrs):
+        try:
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("period_from"),
+                field_name="period_from",
+            )
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("period_to"),
+                field_name="period_to",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        return attrs

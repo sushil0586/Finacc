@@ -51,6 +51,7 @@ class ReceiptVoucherResult:
 
 class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_WITHHOLDING_TCS_REMARK = "__AUTO_WITHHOLDING_TCS__"
+    AUTO_PAISE_ROUND_OFF_REMARK = "__AUTO_PAISE_ROUND_OFF__"
 
     @staticmethod
     def _runtime_tcs_document_no(header: ReceiptVoucherHeader) -> str:
@@ -538,6 +539,113 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         }
 
     @staticmethod
+    def _paisa_adjustment_tolerance(controls: Optional[Dict[str, Any]]) -> Decimal:
+        raw = (controls or {}).get("paisa_adjustment_tolerance", Decimal("0.50"))
+        try:
+            tol = q2(raw)
+        except Exception:
+            tol = Decimal("0.50")
+        if tol < ZERO2:
+            return ZERO2
+        return tol
+
+    @staticmethod
+    def _should_auto_paisa_adjustment(controls: Optional[Dict[str, Any]]) -> bool:
+        return str((controls or {}).get("auto_paisa_adjustment_on_receipt", "on")).lower().strip() == "on"
+
+    @classmethod
+    def _resolve_roundoff_accounts(cls, entity_id: int, *, use_income: bool) -> tuple[int, Optional[int]]:
+        code = StaticAccountCodes.ROUND_OFF_INCOME if use_income else StaticAccountCodes.ROUND_OFF_EXPENSE
+        account_id = StaticAccountService.get_account_id(int(entity_id), code, required=True)
+        ledger_id = StaticAccountService.get_ledger_id(int(entity_id), code, required=False)
+        return int(account_id), (int(ledger_id) if ledger_id else None)
+
+    @classmethod
+    def _apply_auto_paisa_adjustment_rows(
+        cls,
+        *,
+        entity_id: int,
+        controls: Optional[Dict[str, Any]],
+        adjustments: List[Dict[str, Any]],
+        allocation_total: Decimal,
+        total_support_amount: Decimal,
+    ) -> List[Dict[str, Any]]:
+        rows = [dict(x or {}) for x in (adjustments or [])]
+        auto_rows = [r for r in rows if str(r.get("remarks") or "").strip() == cls.AUTO_PAISE_ROUND_OFF_REMARK]
+        non_auto_rows = [r for r in rows if str(r.get("remarks") or "").strip() != cls.AUTO_PAISE_ROUND_OFF_REMARK]
+
+        if not cls._should_auto_paisa_adjustment(controls):
+            return non_auto_rows
+
+        diff = q2(q2(allocation_total) - q2(total_support_amount))
+        if diff == ZERO2:
+            return non_auto_rows
+
+        tolerance = cls._paisa_adjustment_tolerance(controls)
+        if abs(diff) > tolerance:
+            return non_auto_rows
+
+        # diff > 0: support is short, increase support via PLUS + RoundOff Expense (Dr)
+        # diff < 0: support is excess, reduce support via MINUS + RoundOff Income (Cr)
+        amount = q2(abs(diff))
+        is_short_support = diff > ZERO2
+        account_id, ledger_id = cls._resolve_roundoff_accounts(entity_id, use_income=not is_short_support)
+        auto_row = auto_rows[0] if auto_rows else {}
+        auto_row.update(
+            {
+                "allocation": None,
+                "adj_type": ReceiptVoucherAdjustment.AdjType.ROUND_OFF,
+                "ledger_account": int(account_id),
+                "ledger": int(ledger_id) if ledger_id else None,
+                "amount": amount,
+                "settlement_effect": ReceiptVoucherAdjustment.Effect.PLUS if is_short_support else ReceiptVoucherAdjustment.Effect.MINUS,
+                "remarks": cls.AUTO_PAISE_ROUND_OFF_REMARK,
+            }
+        )
+        return non_auto_rows + [auto_row]
+
+    @classmethod
+    def _apply_auto_paisa_adjustment_db(
+        cls,
+        *,
+        voucher: ReceiptVoucherHeader,
+        controls: Optional[Dict[str, Any]],
+        allocation_total: Decimal,
+        total_support_amount: Decimal,
+    ) -> None:
+        rows = list(voucher.adjustments.all())
+        auto_rows = [r for r in rows if str(getattr(r, "remarks", "") or "").strip() == cls.AUTO_PAISE_ROUND_OFF_REMARK]
+        non_auto = [r for r in rows if str(getattr(r, "remarks", "") or "").strip() != cls.AUTO_PAISE_ROUND_OFF_REMARK]
+
+        if not cls._should_auto_paisa_adjustment(controls):
+            for row in auto_rows:
+                row.delete()
+            return
+
+        diff = q2(q2(allocation_total) - q2(total_support_amount))
+        tolerance = cls._paisa_adjustment_tolerance(controls)
+        if diff == ZERO2 or abs(diff) > tolerance:
+            for row in auto_rows:
+                row.delete()
+            return
+
+        amount = q2(abs(diff))
+        is_short_support = diff > ZERO2
+        account_id, ledger_id = cls._resolve_roundoff_accounts(voucher.entity_id, use_income=not is_short_support)
+        row = auto_rows[0] if auto_rows else ReceiptVoucherAdjustment(receipt_voucher=voucher)
+        row.allocation_id = None
+        row.adj_type = ReceiptVoucherAdjustment.AdjType.ROUND_OFF
+        row.ledger_account_id = int(account_id)
+        row.ledger_id = int(ledger_id) if ledger_id else None
+        row.amount = amount
+        row.settlement_effect = ReceiptVoucherAdjustment.Effect.PLUS if is_short_support else ReceiptVoucherAdjustment.Effect.MINUS
+        row.remarks = cls.AUTO_PAISE_ROUND_OFF_REMARK
+        row.save()
+
+        for extra in auto_rows[1:]:
+            extra.delete()
+
+    @staticmethod
     def _resolve_entity_runtime_tcs_mapping(
         *,
         entity_id: int,
@@ -973,9 +1081,6 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             q2(validated_data.get("cash_received_amount", ZERO2)),
             adjustment_total,
         )
-        validated_data["total_adjustment_amount"] = adjustment_total
-        validated_data["settlement_effective_amount"] = effective
-        validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
         validated_data["received_in_ledger_id"] = ReceiptVoucherService._account_ledger_id(validated_data.get("received_in"))
         validated_data["received_from_ledger_id"] = ReceiptVoucherService._account_ledger_id(validated_data.get("received_from"))
 
@@ -994,12 +1099,30 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 controls=policy.controls,
             )
 
-        amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
+        allocation_total = ReceiptVoucherService._sum_allocations(allocations)
         total_support = q2(effective + advance_total)
+        adjustments = ReceiptVoucherService._apply_auto_paisa_adjustment_rows(
+            entity_id=validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data["entity"],
+            controls=policy.controls,
+            adjustments=adjustments,
+            allocation_total=allocation_total,
+            total_support_amount=total_support,
+        )
+        adjustment_total = ReceiptVoucherService._compute_adjustment_total(adjustments)
+        effective = ReceiptVoucherService._effective_settlement_amount(
+            q2(validated_data.get("cash_received_amount", ZERO2)),
+            adjustment_total,
+        )
+        total_support = q2(effective + advance_total)
+        validated_data["total_adjustment_amount"] = adjustment_total
+        validated_data["settlement_effective_amount"] = effective
+        validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
+
+        amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
         if allocations:
             ReceiptVoucherService._validate_allocation_effective_match(
                 effective_amount=total_support,
-                allocation_total=ReceiptVoucherService._sum_allocations(allocations),
+                allocation_total=allocation_total,
                 level=amount_match_level,
             )
 
@@ -1158,17 +1281,44 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                     }
                     for x in instance.advance_adjustments.all()
                 ]
+            allocation_total = ReceiptVoucherService._sum_allocations(allocations)
+            effective_adjustments = adjustments
+            if effective_adjustments is None:
+                effective_adjustments = [
+                    {
+                        "id": x.id,
+                        "allocation": x.allocation_id,
+                        "adj_type": x.adj_type,
+                        "ledger_account": x.ledger_account_id,
+                        "ledger": x.ledger_id,
+                        "amount": x.amount,
+                        "settlement_effect": x.settlement_effect,
+                        "remarks": x.remarks,
+                    }
+                    for x in instance.adjustments.all()
+                ]
+            runtime_effective = ReceiptVoucherService._effective_settlement_amount(
+                q2(validated_data.get("cash_received_amount", instance.cash_received_amount)),
+                ReceiptVoucherService._compute_adjustment_total(effective_adjustments),
+            )
+            runtime_total_support = q2(runtime_effective + ReceiptVoucherService._sum_advance_adjustments(live_advance_rows))
+            effective_adjustments = ReceiptVoucherService._apply_auto_paisa_adjustment_rows(
+                entity_id=instance.entity_id,
+                controls=policy.controls,
+                adjustments=effective_adjustments,
+                allocation_total=allocation_total,
+                total_support_amount=runtime_total_support,
+            )
+            adjustments = effective_adjustments
             ReceiptVoucherService._validate_allocation_effective_match(
                 effective_amount=q2(
                     ReceiptVoucherService._effective_settlement_amount(
                     q2(validated_data.get("cash_received_amount", instance.cash_received_amount)),
                     ReceiptVoucherService._compute_adjustment_total(
                         adjustments
-                        if adjustments is not None
-                        else instance.adjustments.values("amount", "settlement_effect")
                     ),
                 ) + ReceiptVoucherService._sum_advance_adjustments(live_advance_rows)),
-                allocation_total=ReceiptVoucherService._sum_allocations(allocations),
+                allocation_total=allocation_total,
                 level=amount_match_level,
             )
             existing = {x.id: x for x in instance.allocations.all()}
@@ -1546,6 +1696,37 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             allocation_total = ReceiptVoucherService._sum_allocations(
                 [{"settled_amount": r.settled_amount} for r in allocation_rows]
             )
+            ReceiptVoucherService._apply_auto_paisa_adjustment_db(
+                voucher=h,
+                controls=policy.controls,
+                allocation_total=allocation_total,
+                total_support_amount=total_support_amount,
+            )
+            live_adjustment_total = ReceiptVoucherService._compute_adjustment_total(
+                h.adjustments.values("amount", "settlement_effect")
+            )
+            effective_amount = ReceiptVoucherService._effective_settlement_amount(
+                q2(h.cash_received_amount),
+                live_adjustment_total,
+            )
+            total_support_amount = q2(effective_amount + live_advance_total)
+            if (
+                q2(h.total_adjustment_amount) != q2(live_adjustment_total)
+                or q2(h.settlement_effective_amount) != q2(effective_amount)
+            ):
+                ex_rate = Decimal(getattr(h, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
+                if ex_rate <= 0:
+                    ex_rate = Decimal("1.000000")
+                h.total_adjustment_amount = live_adjustment_total
+                h.settlement_effective_amount = effective_amount
+                h.settlement_effective_amount_base_currency = q2(effective_amount * ex_rate)
+                h.save(update_fields=[
+                    "total_adjustment_amount",
+                    "settlement_effective_amount",
+                    "settlement_effective_amount_base_currency",
+                    "updated_at",
+                ])
+
             ReceiptVoucherService._validate_advance_adjustments(
                 voucher=h,
                 allocations=[{"open_item": r.open_item_id, "settled_amount": r.settled_amount} for r in allocation_rows],
@@ -1809,5 +1990,3 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         h.save(update_fields=["status", "is_cancelled", "cancel_reason", "cancelled_by", "cancelled_at", "workflow_payload", "updated_at"])
         ReceiptVoucherService._sync_runtime_tcs_computation(h)
         return ReceiptVoucherResult(h, "Cancelled.")
-
-

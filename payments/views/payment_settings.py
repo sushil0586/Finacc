@@ -57,6 +57,8 @@ POLICY_CONTROLS_SCHEMA = [
 
 PAYMENT_SETTINGS_SCHEMA = [
     {"name": "default_doc_code_payment", "label": "Payment Doc Code", "type": "string", "group": "numbering_defaults"},
+    {"name": "enable_round_off", "label": "Enable Round Off", "type": "boolean", "group": "rounding"},
+    {"name": "round_grand_total_to", "label": "Round Grand Total To", "type": "integer", "group": "rounding"},
     {"name": "default_workflow_action", "label": "Default Workflow", "type": "choice", "group": "workflow", "choices": _choice_payload(PaymentSettings.DefaultWorkflowAction.choices)},
     {"name": "policy_controls", "label": "Policy Controls", "type": "json", "group": "policy"},
 ]
@@ -83,6 +85,8 @@ LOCK_PERIOD_SCHEMA = [
 
 EDITABLE_FIELDS = {
     "default_doc_code_payment",
+    "enable_round_off",
+    "round_grand_total_to",
     "default_workflow_action",
     "policy_controls",
 }
@@ -297,6 +301,8 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
                 "entity": settings_obj.entity_id,
                 "subentity": settings_obj.subentity_id,
                 "default_doc_code_payment": settings_obj.default_doc_code_payment,
+                "enable_round_off": settings_obj.enable_round_off,
+                "round_grand_total_to": settings_obj.round_grand_total_to,
                 "default_workflow_action": settings_obj.default_workflow_action,
                 "policy_controls": PaymentSettingsService.effective_policy_controls(settings_obj),
             },

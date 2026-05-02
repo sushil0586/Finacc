@@ -1348,6 +1348,8 @@ class SalesInvoiceService:
         charges_data: Optional[list],
         user,
     ) -> SalesInvoiceHeader:
+        round_off_explicit = "round_off" in (header_data or {})
+        grand_total_hint = (header_data or {}).get("grand_total") if "grand_total" in (header_data or {}) else None
         header_data = cls._sanitize_header_data_inputs(header_data)
         bill_date = header_data.get("bill_date") or timezone.localdate()
         cls.assert_not_locked(entity_id=entity_id, subentity_id=subentity_id, bill_date=bill_date)
@@ -1434,7 +1436,12 @@ class SalesInvoiceService:
         cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
         cls.validate_charges(header=header, charges=charges_data or [])
         cls.upsert_charges(header=header, incoming_charges=charges_data or [], user=user, allow_delete=True)
-        cls._recompute_invoice_state(header=header, user=user)
+        cls._recompute_invoice_state(
+            header=header,
+            user=user,
+            round_off_explicit=round_off_explicit,
+            grand_total_hint=grand_total_hint,
+        )
         header.save(update_fields=[
             "gst_compliance_mode",
             "is_einvoice_applicable",
@@ -1464,6 +1471,8 @@ class SalesInvoiceService:
         charges_data: Optional[list],
         user,
     ) -> SalesInvoiceHeader:
+        round_off_explicit = "round_off" in (header_data or {})
+        grand_total_hint = (header_data or {}).get("grand_total") if "grand_total" in (header_data or {}) else None
         header_data = cls._sanitize_header_data_inputs(header_data)
         if header.status in (SalesInvoiceHeader.Status.POSTED, SalesInvoiceHeader.Status.CANCELLED):
             raise ValueError("Posted/Cancelled invoices cannot be edited.")
@@ -1558,7 +1567,12 @@ class SalesInvoiceService:
         if charges_data is not None:
             cls.validate_charges(header=header, charges=charges_data)
             cls.upsert_charges(header=header, incoming_charges=charges_data, user=user, allow_delete=True)
-        cls._recompute_invoice_state(header=header, user=user)
+        cls._recompute_invoice_state(
+            header=header,
+            user=user,
+            round_off_explicit=round_off_explicit,
+            grand_total_hint=grand_total_hint,
+        )
         header.save(update_fields=[
             "gst_compliance_mode",
             "is_einvoice_applicable",
@@ -2206,6 +2220,8 @@ class SalesInvoiceService:
         settings_obj=None,
         lines: Optional[list[SalesInvoiceLine]] = None,
         charges: Optional[list[SalesChargeLine]] = None,
+        round_off_explicit: bool = False,
+        grand_total_hint: Optional[Decimal] = None,
     ):
         settings_obj = settings_obj or cls.get_settings(
             header.entity_id,
@@ -2244,7 +2260,14 @@ class SalesInvoiceService:
         )
 
         round_off = ZERO2
-        if bool(getattr(settings_obj, "enable_round_off", True)):
+        if round_off_explicit:
+            round_off = q2(getattr(header, "round_off", ZERO2) or ZERO2)
+            totals.grand_total = q2(raw + round_off)
+        elif grand_total_hint is not None:
+            hinted_grand_total = q2(grand_total_hint)
+            round_off = q2(hinted_grand_total - raw)
+            totals.grand_total = hinted_grand_total
+        elif bool(getattr(settings_obj, "enable_round_off", True)):
             decimals_raw = getattr(settings_obj, "round_grand_total_to", 2)
             decimals = 2 if decimals_raw is None else int(decimals_raw)
             quant = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)  # 10^-decimals
@@ -2291,6 +2314,8 @@ class SalesInvoiceService:
         settings_obj=None,
         lines: Optional[list[SalesInvoiceLine]] = None,
         charges: Optional[list[SalesChargeLine]] = None,
+        round_off_explicit: bool = False,
+        grand_total_hint: Optional[Decimal] = None,
     ) -> tuple[list[SalesInvoiceLine], list[SalesChargeLine]]:
         settings_obj = settings_obj or cls.get_settings(
             header.entity_id,
@@ -2305,6 +2330,8 @@ class SalesInvoiceService:
             settings_obj=settings_obj,
             lines=lines,
             charges=charges,
+            round_off_explicit=round_off_explicit,
+            grand_total_hint=grand_total_hint,
         )
         cls._derive_compliance_flags(
             header=header,

@@ -61,7 +61,9 @@ class PaymentVendorBillOpenItemListAPIView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
-        rows = list(qs)
+        # Keep payment-voucher open items in sync with latest purchase totals
+        # (including round-off/net-payable drift repairs).
+        rows = [PurchaseApService.repair_open_item_if_drifted(x) for x in qs]
         payload = VendorBillOpenItemSerializer(rows, many=True).data
 
         entity_id, entityfinid_id, subentity_id, vendor_id, open_flag = self._scope()

@@ -5,6 +5,7 @@ from typing import Any
 
 from rest_framework import serializers
 
+from entity.financial_year_validation import assert_document_date_within_financial_year
 from financial.profile_access import account_partytype
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.services.voucher_settings_service import VoucherSettingsService
@@ -315,6 +316,20 @@ class VoucherWriteSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs: Any):
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        entityfinid = attrs.get("entityfinid") or getattr(self.instance, "entityfinid", None)
+        voucher_date = attrs.get("voucher_date") or getattr(self.instance, "voucher_date", None)
+        try:
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=voucher_date,
+                field_name="voucher_date",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"voucher_date": str(payload)})
+
         voucher_type = attrs.get("voucher_type") or getattr(self.instance, "voucher_type", VoucherHeader.VoucherType.JOURNAL)
         cash_bank_account = attrs.get("cash_bank_account", getattr(self.instance, "cash_bank_account", None))
         lines = attrs.get("lines", [])

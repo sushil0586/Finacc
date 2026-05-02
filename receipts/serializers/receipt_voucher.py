@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from entity.financial_year_validation import assert_document_date_within_financial_year
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from receipts.models import (
@@ -340,6 +341,21 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         inst = getattr(self, "instance", None)
+        entity = attrs.get("entity") or getattr(inst, "entity", None)
+        entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
+        voucher_date = attrs.get("voucher_date") or getattr(inst, "voucher_date", None)
+
+        try:
+            assert_document_date_within_financial_year(
+                entity=entity,
+                entityfinid=entityfinid,
+                document_date=voucher_date,
+                field_name="voucher_date",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"voucher_date": str(payload)})
+
         if inst and int(inst.status) in (
             int(ReceiptVoucherHeader.Status.POSTED),
             int(ReceiptVoucherHeader.Status.CANCELLED),
