@@ -152,6 +152,21 @@ class RBACEntityAccessMixin:
         if role.is_system_role:
             raise ValidationError({"detail": f"System roles cannot be {action_label}d."})
 
+    def _active_assignment_count_for_role(self, role):
+        return UserRoleAssignment.objects.filter(role=role, isactive=True).count()
+
+    def _validate_role_deactivation(self, role):
+        active_assignment_count = self._active_assignment_count_for_role(role)
+        if active_assignment_count > 0:
+            raise ValidationError(
+                {
+                    "detail": (
+                        f"Cannot deactivate role '{role.name}' while {active_assignment_count} active "
+                        "assignment(s) reference it. Reassign or deactivate those assignments first."
+                    )
+                }
+            )
+
 
 class RBACHealthView(APIView):
     permission_classes = [IsAuthenticated]
@@ -497,6 +512,9 @@ class RoleAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
         if permission_error:
             raise PermissionDenied(permission_error.data["detail"])
         self._assert_not_system_role(role, "change")
+        requested_isactive = serializer.validated_data.get("isactive")
+        if role.isactive and requested_isactive is False:
+            self._validate_role_deactivation(role)
         role = serializer.save()
         RBACAuditService.log(
             actor=self.request.user,
@@ -513,6 +531,7 @@ class RoleAdminDetailView(RBACEntityAccessMixin, RetrieveUpdateDestroyAPIView):
         if permission_error:
             return permission_error
         self._assert_not_system_role(role, "delete")
+        self._validate_role_deactivation(role)
         self._soft_delete(role, actor=request.user, message=f"Deactivated role {role.name}.")
         return Response(status=status.HTTP_204_NO_CONTENT)
 
