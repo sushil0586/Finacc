@@ -36,7 +36,14 @@ class RbacUserAccessAdminTests(APITestCase):
             role_level=Role.LEVEL_ENTITY,
             createdby=self.admin_user,
         )
-        for code in ("admin.user.view", "admin.user.create", "admin.user.update", "admin.role.view"):
+        for code in (
+            "admin.user.view",
+            "admin.user.create",
+            "admin.user.update",
+            "admin.role.view",
+            "admin.role.update",
+            "admin.role.delete",
+        ):
             permission, _ = Permission.objects.get_or_create(
                 code=code,
                 defaults={
@@ -316,3 +323,37 @@ class RbacUserAccessAdminTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("role", response.data)
+
+    def test_role_deactivation_is_blocked_when_active_assignments_exist(self):
+        target_role = Role.objects.create(
+            entity=self.entity,
+            name="Operator",
+            code="entity.operator.locked",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.admin_user,
+        )
+        target_user = User.objects.create_user(
+            username="operator-blocked",
+            email="operator-blocked@example.com",
+            password="Secure@123",
+        )
+        SubscriptionService.ensure_account_membership(
+            customer_account=self.entity.customer_account,
+            user=target_user,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.admin_user,
+        )
+        UserRoleAssignment.objects.create(
+            user=target_user,
+            entity=self.entity,
+            role=target_role,
+            assigned_by=self.admin_user,
+            isactive=True,
+        )
+
+        response = self.client.delete(
+            f"{reverse('rbac_api:admin-role-detail', kwargs={'pk': target_role.id})}?entity={self.entity.id}"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Cannot deactivate role", response.data["detail"])
