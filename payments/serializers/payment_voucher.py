@@ -342,6 +342,8 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
         entity = attrs.get("entity") or getattr(inst, "entity", None)
         entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
         voucher_date = attrs.get("voucher_date") or getattr(inst, "voucher_date", None)
+        cash_paid_amount = Decimal(str(attrs.get("cash_paid_amount", getattr(inst, "cash_paid_amount", 0)) or 0))
+        payment_mode = attrs.get("payment_mode", getattr(inst, "payment_mode", None))
 
         try:
             assert_document_date_within_financial_year(
@@ -361,6 +363,8 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["Cannot edit a POSTED or CANCELLED payment voucher."]}
             )
+        if cash_paid_amount > Decimal("0.00") and payment_mode is None:
+            raise serializers.ValidationError({"payment_mode": "payment_mode is required when cash_paid_amount is greater than 0."})
         return attrs
 
     def create(self, validated_data):

@@ -28,6 +28,8 @@ from rbac.services import EffectivePermissionService
 from purchase.serializers.purchase_statutory import (
     PurchaseStatutoryChallanSerializer,
     PurchaseStatutoryChallanCreateInputSerializer,
+    PurchaseStatutoryReviewNoteInputSerializer,
+    PurchaseStatutoryReviewNoteSerializer,
     PurchaseStatutoryReturnSerializer,
     PurchaseStatutoryReturnCreateInputSerializer,
 )
@@ -349,6 +351,7 @@ class PurchaseStatutoryReturnListCreateAPIView(generics.ListCreateAPIView):
                 tax_type=data["tax_type"],
                 period_from=data["period_from"],
                 period_to=data["period_to"],
+                return_code=data.get("return_code"),
             )
             lines = [
                 {
@@ -538,6 +541,87 @@ class PurchaseStatutoryItcStatusRegisterAPIView(APIView):
         except ValueError as e:
             raise ValidationError({"detail": str(e)})
         return Response(payload)
+
+
+class PurchaseStatutoryReviewNoteAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_statutory_view(request, entity_id)
+        period_from_raw = request.query_params.get("period_from")
+        period_to_raw = request.query_params.get("period_to")
+        if not period_from_raw or not period_to_raw:
+            raise ValidationError({"detail": "period_from and period_to are required."})
+        try:
+            period_from = date.fromisoformat(str(period_from_raw))
+            period_to = date.fromisoformat(str(period_to_raw))
+        except ValueError:
+            raise ValidationError({"detail": "period_from and period_to must be YYYY-MM-DD."})
+        tax_type = request.query_params.get("tax_type") or None
+        try:
+            note = PurchaseStatutoryService.get_review_note(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type,
+                period_from=period_from,
+                period_to=period_to,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({"data": PurchaseStatutoryReviewNoteSerializer(note).data if note else None})
+
+    def post(self, request):
+        inp = PurchaseStatutoryReviewNoteInputSerializer(data=request.data)
+        inp.is_valid(raise_exception=True)
+        data = inp.validated_data
+        _require_statutory_manage(request, int(data["entity"]))
+        try:
+            res = PurchaseStatutoryService.save_review_note(
+                entity_id=int(data["entity"]),
+                entityfinid_id=int(data["entityfinid"]),
+                subentity_id=data.get("subentity"),
+                tax_type=data.get("tax_type"),
+                period_from=data["period_from"],
+                period_to=data["period_to"],
+                reviewer_name=data.get("reviewer_name"),
+                closure_status=data.get("closure_status"),
+                review_summary=data.get("review_summary"),
+                open_points=data.get("open_points"),
+                closure_comment=data.get("closure_comment"),
+                reviewed_by_id=request.user.id,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({"message": res.message, "data": PurchaseStatutoryReviewNoteSerializer(res.obj).data})
+
+    def delete(self, request):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_statutory_manage(request, entity_id)
+        period_from_raw = request.query_params.get("period_from")
+        period_to_raw = request.query_params.get("period_to")
+        if not period_from_raw or not period_to_raw:
+            raise ValidationError({"detail": "period_from and period_to are required."})
+        try:
+            period_from = date.fromisoformat(str(period_from_raw))
+            period_to = date.fromisoformat(str(period_to_raw))
+        except ValueError:
+            raise ValidationError({"detail": "period_from and period_to must be YYYY-MM-DD."})
+        tax_type = request.query_params.get("tax_type") or None
+        try:
+            PurchaseStatutoryService.delete_review_note(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type,
+                period_from=period_from,
+                period_to=period_to,
+                reviewed_by_id=request.user.id,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({"message": "Review note deleted."}, status=status.HTTP_200_OK)
 
 
 class PurchaseStatutoryGlReconciliationAPIView(APIView):
@@ -1005,15 +1089,18 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
             ws["A10"] = "Included Sheets"
             included = [
-                "01_IT_TDS_Deductions",
-                "02_IT_TDS_Challans",
-                "03_IT_TDS_Returns",
-                "04_GST_TDS_Deductions",
-                "05_GST_TDS_Challans",
-                "06_GST_TDS_Returns",
-                "07_Reconciliation",
-                "08_Exceptions",
-                "09_Supporting_Doc_Index",
+                "01_Management_Summary",
+                "02_Reviewer_Signoff",
+                "03_Action_Items",
+                "04_IT_TDS_Deductions",
+                "05_IT_TDS_Challans",
+                "06_IT_TDS_Returns",
+                "07_GST_TDS_Deductions",
+                "08_GST_TDS_Challans",
+                "09_GST_TDS_Returns",
+                "10_Reconciliation",
+                "11_Exceptions",
+                "12_Supporting_Doc_Index",
             ]
             for idx, name in enumerate(included, start=11):
                 ws[f"A{idx}"] = name
@@ -1028,10 +1115,10 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
         add_cover_sheet()
 
-        def add_sheet(title: str, headers, rows, total_columns=None):
+        def add_sheet(title: str, headers, rows, total_columns=None, index=None):
             total_columns = total_columns or []
             rows = list(rows or [])
-            ws = wb.create_sheet(title=title)
+            ws = wb.create_sheet(title=title, index=index) if index is not None else wb.create_sheet(title=title)
             ws.append(headers)
             for row in rows:
                 ws.append(list(row))
@@ -1086,9 +1173,286 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
                     max_len = max(max_len, len(str(v)))
                 ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 42)
 
+        def decimal_or_zero(value):
+            try:
+                return Decimal(str(value or 0))
+            except Exception:
+                return Decimal("0.00")
+
+        def review_note_rows(note, scope_label: str):
+            if note is None:
+                return [
+                    (scope_label, "No saved signoff note", "", "", "", "", "", ""),
+                ]
+            reviewed_by = ""
+            if getattr(note, "reviewed_by", None):
+                reviewed_by = getattr(note.reviewed_by, "username", "") or getattr(note.reviewed_by, "email", "") or f"User#{note.reviewed_by_id}"
+            return [
+                (
+                    scope_label,
+                    note.get_closure_status_display(),
+                    note.reviewer_name or "",
+                    note.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if note.reviewed_at else "",
+                    reviewed_by,
+                    note.review_summary or "",
+                    note.open_points or "",
+                    note.closure_comment or "",
+                )
+            ]
+
+        global_summary = PurchaseStatutoryService.reconciliation_summary(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=None,
+            date_from=period_from,
+            date_to=period_to,
+        )
+        it_summary = PurchaseStatutoryService.reconciliation_summary(
+            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
+            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS, date_from=period_from, date_to=period_to
+        )
+        gst_summary = PurchaseStatutoryService.reconciliation_summary(
+            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
+            tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS, date_from=period_from, date_to=period_to
+        )
+        it_exc_payload = PurchaseStatutoryService.reconciliation_exceptions(
+            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
+            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS, period_from=period_from, period_to=period_to
+        )
+        gst_exc_payload = PurchaseStatutoryService.reconciliation_exceptions(
+            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
+            tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS, period_from=period_from, period_to=period_to
+        )
+        it_exc = it_exc_payload.get("exceptions", {})
+        gst_exc = gst_exc_payload.get("exceptions", {})
+
+        all_scope_note = PurchaseStatutoryService.get_review_note(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=None,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        it_scope_note = PurchaseStatutoryService.get_review_note(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        gst_scope_note = PurchaseStatutoryService.get_review_note(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS,
+            period_from=period_from,
+            period_to=period_to,
+        )
+
+        filed_or_revised_returns = [
+            row for row in return_qs
+            if int(row.status) in (
+                int(PurchaseStatutoryReturn.Status.FILED),
+                int(PurchaseStatutoryReturn.Status.REVISED),
+            )
+        ]
+        evidence_follow_up = [
+            row for row in filed_or_revised_returns
+            if not (row.ack_no or "").strip() or not (row.arn_no or "").strip()
+        ]
+        open_draft_challans = [row for row in challan_qs if int(row.status) == int(PurchaseStatutoryChallan.Status.DRAFT)]
+        open_draft_returns = [row for row in return_qs if int(row.status) == int(PurchaseStatutoryReturn.Status.DRAFT)]
+        open_it_draft_challans = [row for row in open_draft_challans if row.tax_type == PurchaseStatutoryChallan.TaxType.IT_TDS]
+        open_gst_draft_challans = [row for row in open_draft_challans if row.tax_type == PurchaseStatutoryChallan.TaxType.GST_TDS]
+        open_it_draft_returns = [row for row in open_draft_returns if row.tax_type == PurchaseStatutoryReturn.TaxType.IT_TDS]
+        open_gst_draft_returns = [row for row in open_draft_returns if row.tax_type == PurchaseStatutoryReturn.TaxType.GST_TDS]
+
+        closure_rate = Decimal("100.00")
+        deducted_value = decimal_or_zero(global_summary.get("deducted"))
+        filed_value = decimal_or_zero(global_summary.get("filed"))
+        pending_deposit_value = decimal_or_zero(global_summary.get("pending_deposit"))
+        pending_filing_value = decimal_or_zero(global_summary.get("pending_filing"))
+        if deducted_value > 0:
+            closure_rate = min(Decimal("100.00"), (filed_value / deducted_value) * Decimal("100.00"))
+        elif pending_deposit_value > 0 or pending_filing_value > 0:
+            closure_rate = Decimal("0.00")
+
+        deposit_coverage = Decimal("100.00")
+        deposited_value = decimal_or_zero(global_summary.get("deposited"))
+        if deducted_value > 0:
+            deposit_coverage = min(Decimal("100.00"), (deposited_value / deducted_value) * Decimal("100.00"))
+        elif pending_deposit_value > 0:
+            deposit_coverage = Decimal("0.00")
+
+        add_sheet(
+            "01_Management_Summary",
+            ["Metric", "Overall", "IT_TDS", "GST_TDS", "Comment"],
+            [
+                ("Deducted Value", global_summary.get("deducted", "0.00"), it_summary.get("deducted", "0.00"), gst_summary.get("deducted", "0.00"), "Source statutory value booked in the current period."),
+                ("Deposited Value", global_summary.get("deposited", "0.00"), it_summary.get("deposited", "0.00"), gst_summary.get("deposited", "0.00"), "Value already covered through challan deposit."),
+                ("Filed Value", global_summary.get("filed", "0.00"), it_summary.get("filed", "0.00"), gst_summary.get("filed", "0.00"), "Value already closed through return filing."),
+                ("Pending Deposit", global_summary.get("pending_deposit", "0.00"), it_summary.get("pending_deposit", "0.00"), gst_summary.get("pending_deposit", "0.00"), "Deducted but not yet deposited."),
+                ("Pending Filing", global_summary.get("pending_filing", "0.00"), it_summary.get("pending_filing", "0.00"), gst_summary.get("pending_filing", "0.00"), "Deposited but not yet filed."),
+                ("Draft Challans", len(open_draft_challans), len(open_it_draft_challans), len(open_gst_draft_challans), "Open challan drafts still needing action."),
+                ("Draft Returns", len(open_draft_returns), len(open_it_draft_returns), len(open_gst_draft_returns), "Open return drafts still needing action."),
+                ("Reconciliation Exceptions", len(it_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(it_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])) + len(gst_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(gst_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])), len(it_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(it_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])), len(gst_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(gst_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])), "Open mapping exceptions visible in reconciliation helpers."),
+                ("Evidence Follow-up", len(evidence_follow_up), len([row for row in evidence_follow_up if row.tax_type == PurchaseStatutoryReturn.TaxType.IT_TDS]), len([row for row in evidence_follow_up if row.tax_type == PurchaseStatutoryReturn.TaxType.GST_TDS]), "Filed or revised returns still missing ACK or ARN."),
+                ("Closure Rate %", f"{closure_rate.quantize(Decimal('0.01'))}", "", "", "Filed value as a percentage of deducted value."),
+                ("Deposit Coverage %", f"{deposit_coverage.quantize(Decimal('0.01'))}", "", "", "Deposited value as a percentage of deducted value."),
+            ],
+            index=1,
+        )
+
+        reviewer_rows = []
+        reviewer_rows.extend(review_note_rows(all_scope_note, "All Tax Types"))
+        reviewer_rows.extend(review_note_rows(it_scope_note, "IT_TDS"))
+        reviewer_rows.extend(review_note_rows(gst_scope_note, "GST_TDS"))
+        add_sheet(
+            "02_Reviewer_Signoff",
+            ["Scope", "Closure Status", "Reviewer Name", "Reviewed At", "Saved By", "Review Summary", "Open Points", "Closure Comment"],
+            reviewer_rows,
+            index=2,
+        )
+
+        review_timeline_rows = []
+        for scope_label, note in (
+            ("All Tax Types", all_scope_note),
+            ("IT_TDS", it_scope_note),
+            ("GST_TDS", gst_scope_note),
+        ):
+            if note is None:
+                continue
+            for event in note.events.select_related("changed_by").order_by("-changed_at")[:12]:
+                changed_by = ""
+                if getattr(event, "changed_by", None):
+                    changed_by = getattr(event.changed_by, "username", "") or getattr(event.changed_by, "email", "") or f"User#{event.changed_by_id}"
+                review_timeline_rows.append(
+                    (
+                        scope_label,
+                        event.get_action_display(),
+                        event.get_closure_status_display(),
+                        event.reviewer_name or "",
+                        changed_by,
+                        event.changed_at.strftime("%Y-%m-%d %H:%M:%S") if event.changed_at else "",
+                        event.review_summary or "",
+                        event.open_points or "",
+                        event.closure_comment or "",
+                    )
+                )
+        if review_timeline_rows:
+            add_sheet(
+                "03_Action_Items",
+                ["Category", "Tax Type", "Priority", "Reference", "Date / Period", "Amount", "Why Open", "Next Action"],
+                [],
+                index=3,
+            )
+            action_sheet = wb["03_Action_Items"]
+            action_sheet.append([])
+            action_sheet.append(["Reviewer Timeline", "", "", "", "", "", "", ""])
+            action_sheet.append(["Scope", "Action", "Closure Status", "Reviewer", "Changed By", "Changed At", "Review Summary", "Open Points / Closure Comment"])
+            for row in review_timeline_rows:
+                action_sheet.append(
+                    [
+                        row[0], row[1], row[2], row[3], row[4], row[5],
+                        row[6], f"{row[7]} {row[8]}".strip(),
+                    ]
+                )
+        else:
+            add_sheet(
+                "03_Action_Items",
+                ["Category", "Tax Type", "Priority", "Reference", "Date / Period", "Amount", "Why Open", "Next Action"],
+                [],
+                index=3,
+            )
+
+        action_rows = []
+        for tax_label, payload in (("IT_TDS", it_exc_payload), ("GST_TDS", gst_exc_payload)):
+            pending_challans = payload.get("exceptions", {}).get("invoices_pending_challan_mapping", {})
+            for line in pending_challans.get("rows", []):
+                action_rows.append(
+                    (
+                        "Pending Challan Mapping",
+                        tax_label,
+                        "High",
+                        line.get("purchase_number") or f"Invoice#{line.get('header_id')}",
+                        str(line.get("bill_date") or ""),
+                        line.get("amount") or "0.00",
+                        "Invoice still has statutory value not yet covered by a challan line.",
+                        "Create or update challan mapping for this invoice.",
+                    )
+                )
+            pending_returns = payload.get("exceptions", {}).get("challan_lines_pending_return_mapping", {})
+            for line in pending_returns.get("rows", []):
+                action_rows.append(
+                    (
+                        "Pending Return Mapping",
+                        tax_label,
+                        "High",
+                        line.get("challan_no") or f"Challan#{line.get('challan_id')}",
+                        "",
+                        line.get("amount") or "0.00",
+                        "Deposited challan value still needs to be consumed by a return line.",
+                        "Prepare or update the relevant return before period closure.",
+                    )
+                )
+            missing_evidence = payload.get("exceptions", {}).get("filed_returns_missing_ack_or_arn", {})
+            for row in missing_evidence.get("rows", []):
+                action_rows.append(
+                    (
+                        "Missing Filing Evidence",
+                        tax_label,
+                        "Medium",
+                        row.get("return_code") or f"Return#{row.get('id')}",
+                        f"{row.get('period_from')} to {row.get('period_to')}",
+                        "",
+                        "Filed return is still missing ACK or ARN details.",
+                        "Capture acknowledgement references and attach supporting proof.",
+                    )
+                )
+        for challan in open_draft_challans:
+            action_rows.append(
+                (
+                    "Draft Challan",
+                    challan.tax_type,
+                    "Medium",
+                    challan.challan_no or f"Draft Challan#{challan.id}",
+                    str(challan.challan_date or ""),
+                    str(challan.amount or "0.00"),
+                    "Draft challan is still open and not yet ready for final closure.",
+                    "Complete review, approval, and deposit if the challan is valid.",
+                )
+            )
+        for filing in open_draft_returns:
+            action_rows.append(
+                (
+                    "Draft Return",
+                    filing.tax_type,
+                    "Medium",
+                    filing.return_code or f"Draft Return#{filing.id}",
+                    f"{filing.period_from} to {filing.period_to}",
+                    str(filing.amount or "0.00"),
+                    "Draft return is still open and keeps the period from full closure.",
+                    "Complete line review, approval, and filing once evidence is ready.",
+                )
+            )
+        if action_rows:
+            action_sheet = wb["03_Action_Items"]
+            if action_sheet.max_row == 1:
+                for row in action_rows:
+                    action_sheet.append(list(row))
+            else:
+                action_sheet.append([])
+                action_sheet.append(["Open Action Queue", "", "", "", "", "", "", ""])
+                action_sheet.append(["Category", "Tax Type", "Priority", "Reference", "Date / Period", "Amount", "Why Open", "Next Action"])
+                for row in action_rows:
+                    action_sheet.append(list(row))
+
         it_invoices = [h for h in invoice_qs if (h.tds_amount or 0) > 0]
         add_sheet(
-            "01_IT_TDS_Deductions",
+            "04_IT_TDS_Deductions",
             [
                 "Invoice No", "Bill Date", "Vendor", "Vendor PAN", "Section Code", "Section Desc",
                 "Base Amount", "TDS Rate", "TDS Amount", "Subentity", "Status",
@@ -1112,7 +1476,7 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
         it_challans = challan_qs.filter(tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS)
         add_sheet(
-            "02_IT_TDS_Challans",
+            "05_IT_TDS_Challans",
             ["Challan No", "Date", "Period From", "Period To", "Amount", "Interest", "Late Fee", "Penalty", "CIN", "BSR", "Minor Head", "Status"],
             [
                 (c.challan_no, c.challan_date, c.period_from, c.period_to, c.amount, c.interest_amount, c.late_fee_amount, c.penalty_amount, c.cin_no, c.bsr_code, c.minor_head_code, c.get_status_display())
@@ -1139,7 +1503,7 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
                     )
                 )
         add_sheet(
-            "03_IT_TDS_Returns",
+            "06_IT_TDS_Returns",
             ["Return Code", "Period From", "Period To", "Invoice", "PAN", "Section", "Amount", "Challan", "CIN", "Ack No", "ARN No", "Status"],
             it_return_rows,
             total_columns=[6],
@@ -1147,7 +1511,7 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
         gst_invoices = [h for h in invoice_qs if (h.gst_tds_amount or 0) > 0]
         add_sheet(
-            "04_GST_TDS_Deductions",
+            "07_GST_TDS_Deductions",
             ["Invoice No", "Bill Date", "Vendor", "Vendor GSTIN", "Contract Ref", "Base", "Rate", "CGST", "SGST", "IGST", "Total", "Subentity", "Status"],
             [
                 (
@@ -1168,7 +1532,7 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
         gst_challans = challan_qs.filter(tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS)
         add_sheet(
-            "05_GST_TDS_Challans",
+            "08_GST_TDS_Challans",
             ["Challan No", "Date", "Period From", "Period To", "Amount", "Interest", "Late Fee", "Penalty", "CIN", "BSR", "Minor Head", "Status"],
             [
                 (c.challan_no, c.challan_date, c.period_from, c.period_to, c.amount, c.interest_amount, c.late_fee_amount, c.penalty_amount, c.cin_no, c.bsr_code, c.minor_head_code, c.get_status_display())
@@ -1194,36 +1558,20 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
                     )
                 )
         add_sheet(
-            "06_GST_TDS_Returns",
+            "09_GST_TDS_Returns",
             ["Return Code", "Period From", "Period To", "Invoice", "Deductee GSTIN", "Amount", "Challan", "CIN", "Ack No", "ARN No", "Status"],
             gst_return_rows,
             total_columns=[5],
         )
 
-        it_summary = PurchaseStatutoryService.reconciliation_summary(
-            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
-            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS, date_from=period_from, date_to=period_to
-        )
-        gst_summary = PurchaseStatutoryService.reconciliation_summary(
-            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
-            tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS, date_from=period_from, date_to=period_to
-        )
         add_sheet(
-            "07_Reconciliation",
+            "10_Reconciliation",
             ["Metric", "IT_TDS", "GST_TDS"],
             [(k, it_summary.get(k, "0.00"), gst_summary.get(k, "0.00")) for k in ["deducted", "deposited", "filed", "pending_deposit", "pending_filing", "draft_challan", "draft_return"]],
         )
 
-        it_exc = PurchaseStatutoryService.reconciliation_exceptions(
-            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
-            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS, period_from=period_from, period_to=period_to
-        ).get("exceptions", {})
-        gst_exc = PurchaseStatutoryService.reconciliation_exceptions(
-            entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id,
-            tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS, period_from=period_from, period_to=period_to
-        ).get("exceptions", {})
         add_sheet(
-            "08_Exceptions",
+            "11_Exceptions",
             ["Exception", "IT_TDS", "GST_TDS"],
             [
                 ("Pending challan mapping", it_exc.get("invoices_pending_challan_mapping", {}).get("line_count", 0), gst_exc.get("invoices_pending_challan_mapping", {}).get("line_count", 0)),
@@ -1233,7 +1581,7 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
         )
 
         add_sheet(
-            "09_Supporting_Doc_Index",
+            "12_Supporting_Doc_Index",
             ["Doc Type", "Tax Type", "Number", "Date", "Attachment", "Status"],
             [
                 ("Challan", c.tax_type, c.challan_no, c.challan_date, str(c.ack_document or ""), c.get_status_display())
@@ -1283,6 +1631,7 @@ class PurchaseStatutoryReturnEligibleLinesAPIView(APIView):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
         _require_statutory_view(request, entity_id)
         tax_type, period_from, period_to = _parse_required_period_and_tax_type(request)
+        return_code = request.query_params.get("return_code")
         try:
             payload = PurchaseStatutoryService.return_eligible_lines(
                 entity_id=entity_id,
@@ -1291,6 +1640,7 @@ class PurchaseStatutoryReturnEligibleLinesAPIView(APIView):
                 tax_type=tax_type,
                 period_from=period_from,
                 period_to=period_to,
+                return_code=return_code,
             )
         except ValueError as e:
             raise ValidationError({"detail": str(e)})

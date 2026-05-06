@@ -344,6 +344,8 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
         entity = attrs.get("entity") or getattr(inst, "entity", None)
         entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
         voucher_date = attrs.get("voucher_date") or getattr(inst, "voucher_date", None)
+        cash_received_amount = attrs.get("cash_received_amount", getattr(inst, "cash_received_amount", None))
+        receipt_mode = attrs.get("receipt_mode", getattr(inst, "receipt_mode", None))
 
         try:
             assert_document_date_within_financial_year(
@@ -355,6 +357,9 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
         except ValueError as ex:
             payload = ex.args[0] if ex.args else str(ex)
             raise serializers.ValidationError(payload if isinstance(payload, dict) else {"voucher_date": str(payload)})
+
+        if cash_received_amount is not None and Decimal(str(cash_received_amount or "0")) > Decimal("0") and receipt_mode is None:
+            raise serializers.ValidationError({"receipt_mode": ["Receipt mode is required when cash received amount is greater than 0."]})
 
         if inst and int(inst.status) in (
             int(ReceiptVoucherHeader.Status.POSTED),

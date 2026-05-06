@@ -492,6 +492,15 @@ class TcsQuarterlyReturn(models.Model):
     filed_on = models.DateField(null=True, blank=True)
     json_snapshot = models.JSONField(null=True, blank=True)
     file_path = models.CharField(max_length=255, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    original_return = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="corrections",
+        help_text="For CORRECTION returns: reference to the original return being revised.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -1,9 +1,12 @@
 from datetime import date
 from decimal import Decimal
+import io
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import zipfile
 
 from django.test import SimpleTestCase, TestCase
+from rest_framework.test import APIRequestFactory, force_authenticate
 
 from withholding.models import (
     EntityPartyTaxProfile,
@@ -16,9 +19,24 @@ from withholding.models import (
 )
 from withholding.seed_withholding_service import WithholdingSeedService
 from withholding.serializers import WithholdingSectionSerializer
-from withholding.serializers import EntityWithholdingConfigSerializer, EntityWithholdingSectionPostingMapSerializer
+from withholding.serializers import EntityWithholdingConfigSerializer, EntityWithholdingSectionPostingMapSerializer, TcsQuarterlyReturnSerializer
 from withholding.services import WithholdingResolver, compute_withholding_preview
-from withholding.views import _runtime_quality_flags, _row_readiness_status, _filing_readiness_errors
+from withholding.views import (
+    TcsReportFilingPackExportAPIView,
+    TcsReportFilingPackAPIView,
+    TcsReturn27EqListCreateAPIView,
+    TcsReturn27EqRetrieveUpdateDestroyAPIView,
+    TcsDepositAllocateAPIView,
+    _filing_readiness_errors,
+    _row_readiness_status,
+    _runtime_quality_flags,
+    _tcs_computation_total_deposited,
+    _sum_tcs_allocation_rows,
+    _tcs_deposit_status_allows_allocation,
+    _tcs_deposit_status_counts_as_deposited,
+    _tcs_return_status_requires_clean_snapshot,
+    _tcs_runtime_quality_flags,
+)
 
 
 class WithholdingResolverRateTests(SimpleTestCase):
@@ -258,6 +276,27 @@ class WithholdingReadinessFlagTests(SimpleTestCase):
         self.assertTrue(flags["missing_tax_id"])
         self.assertTrue(flags["residency_mismatch"])
 
+    def test_tcs_runtime_flags_follow_section_rules_not_tds_sections(self):
+        section = SimpleNamespace(requires_pan=True)
+        flags = _tcs_runtime_quality_flags(
+            section=section,
+            reason_code="INVALID_BASE_RULE",
+            pan="",
+        )
+        self.assertTrue(flags["missing_pan"])
+        self.assertTrue(flags["invalid_base_rule"])
+        self.assertFalse(flags["missing_tax_id"])
+        self.assertFalse(flags["residency_mismatch"])
+
+    def test_tcs_runtime_flags_only_mark_missing_section_when_section_absent(self):
+        flags = _tcs_runtime_quality_flags(
+            section=None,
+            reason_code="",
+            pan="ABCDE1234F",
+        )
+        self.assertTrue(flags["missing_section"])
+        self.assertFalse(flags["missing_pan"])
+
     def test_row_status_classification(self):
         ready = _row_readiness_status(
             amount=Decimal("100.00"),
@@ -368,6 +407,349 @@ class WithholdingReadinessFlagTests(SimpleTestCase):
         )
         self.assertTrue(ok)
         self.assertIsNone(reason_code)
+
+
+class WithholdingTcsDepositStateTests(SimpleTestCase):
+    def test_deposit_status_helpers_distinguish_draft_from_effective_deposit(self):
+        self.assertFalse(_tcs_deposit_status_counts_as_deposited("DRAFT"))
+        self.assertTrue(_tcs_deposit_status_counts_as_deposited("CONFIRMED"))
+        self.assertTrue(_tcs_deposit_status_counts_as_deposited("FILED"))
+        self.assertFalse(_tcs_deposit_status_allows_allocation("DRAFT"))
+        self.assertTrue(_tcs_deposit_status_allows_allocation("CONFIRMED"))
+        self.assertFalse(_tcs_deposit_status_allows_allocation("FILED"))
+
+    def test_sum_tcs_allocation_rows_can_ignore_draft_deposits(self):
+        allocations = [
+            SimpleNamespace(
+                allocated_amount=Decimal("40.00"),
+                deposit=SimpleNamespace(status="DRAFT"),
+            ),
+            SimpleNamespace(
+                allocated_amount=Decimal("60.00"),
+                deposit=SimpleNamespace(status="CONFIRMED"),
+            ),
+            SimpleNamespace(
+                allocated_amount=Decimal("25.00"),
+                deposit=SimpleNamespace(status="FILED"),
+            ),
+        ]
+
+        self.assertEqual(_sum_tcs_allocation_rows(allocations), Decimal("125.00"))
+        self.assertEqual(_sum_tcs_allocation_rows(allocations, deposited_only=True), Decimal("85.00"))
+
+    def test_computation_deposited_total_uses_only_linked_effective_allocations(self):
+        deposit_allocations = [
+            SimpleNamespace(
+                allocated_amount=Decimal("40.00"),
+                deposit=SimpleNamespace(status="DRAFT"),
+            ),
+            SimpleNamespace(
+                allocated_amount=Decimal("60.00"),
+                deposit=SimpleNamespace(status="CONFIRMED"),
+            ),
+        ]
+        collection_open = SimpleNamespace(
+            status="OPEN",
+            deposit_allocations=SimpleNamespace(all=lambda: deposit_allocations),
+        )
+        collection_cancelled = SimpleNamespace(
+            status="CANCELLED",
+            deposit_allocations=SimpleNamespace(all=lambda: [
+                SimpleNamespace(
+                    allocated_amount=Decimal("25.00"),
+                    deposit=SimpleNamespace(status="FILED"),
+                )
+            ]),
+        )
+        computation = SimpleNamespace(
+            collections=SimpleNamespace(all=lambda: [collection_open, collection_cancelled]),
+        )
+
+        self.assertEqual(_tcs_computation_total_deposited(computation, deposited_only=True), Decimal("60.00"))
+        self.assertEqual(_tcs_computation_total_deposited(computation, deposited_only=False), Decimal("100.00"))
+
+    @patch("withholding.views.TcsCollection.objects.get")
+    @patch("withholding.views.TcsDeposit.objects.get")
+    def test_allocate_api_rejects_draft_deposit(self, mocked_deposit_get, mocked_collection_get):
+        deposit = SimpleNamespace(id=10, status="DRAFT")
+        computation = SimpleNamespace(entity_id=1, fiscal_year="2026-27")
+        collection = SimpleNamespace(id=20, status="OPEN", computation=computation)
+        mocked_deposit_get.return_value = deposit
+        mocked_collection_get.return_value = collection
+
+        request = APIRequestFactory().post(
+            "/tcs/deposits/10/allocate/",
+            {"collection_id": 20, "allocated_amount": "50.00"},
+            format="json",
+        )
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsDepositAllocateAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "Allocation is allowed only against confirmed deposits.")
+
+
+class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
+    def test_return_status_helper_requires_clean_snapshot_for_validated_and_filed(self):
+        self.assertFalse(_tcs_return_status_requires_clean_snapshot("DRAFT"))
+        self.assertTrue(_tcs_return_status_requires_clean_snapshot("VALIDATED"))
+        self.assertTrue(_tcs_return_status_requires_clean_snapshot("FILED"))
+
+    def test_serializer_blocks_editing_filed_return(self):
+        instance = SimpleNamespace(
+            status="FILED",
+            fy="2026-27",
+            quarter="Q1",
+            form_name="27EQ",
+            return_type="ORIGINAL",
+            entity=SimpleNamespace(id=1),
+            ack_no="ACK-1",
+            filed_on=date(2026, 5, 1),
+        )
+        serializer = TcsQuarterlyReturnSerializer(instance=instance)
+
+        with self.assertRaises(Exception) as exc:
+            serializer.validate({"status": "VALIDATED"})
+
+        self.assertIn("Filed returns cannot be edited", str(exc.exception))
+
+    @patch("withholding.views._build_tcs_27eq_snapshot")
+    def test_create_validated_return_uses_same_readiness_gate_as_filed(self, mocked_snapshot):
+        mocked_snapshot.return_value = {
+            "counts": {
+                "missing_pan": 1,
+                "missing_section": 0,
+                "not_collected": 0,
+                "not_deposited": 0,
+                "partially_allocated": 0,
+                "deposit_mismatch": 0,
+            },
+            "totals": {"pending_collection": "0.00", "pending_deposit": "0.00"},
+        }
+        serializer = MagicMock()
+        serializer.validated_data = {
+            "entity": SimpleNamespace(id=1),
+            "fy": "2026-27",
+            "quarter": "Q1",
+            "status": "VALIDATED",
+            "json_snapshot": None,
+        }
+        view = TcsReturn27EqListCreateAPIView()
+
+        with self.assertRaises(Exception) as exc:
+            view.perform_create(serializer)
+
+        self.assertIn("Missing PAN rows exist", str(exc.exception))
+
+    def test_destroy_blocks_filed_return(self):
+        instance = SimpleNamespace(status="FILED", delete=MagicMock())
+        view = TcsReturn27EqRetrieveUpdateDestroyAPIView()
+
+        with self.assertRaises(Exception) as exc:
+            view.perform_destroy(instance)
+
+        self.assertIn("Filed returns cannot be deleted", str(exc.exception))
+        instance.delete.assert_not_called()
+
+
+class WithholdingTcsCorrectionReturnTests(SimpleTestCase):
+    def _serializer_with_instance(self, **instance_overrides):
+        instance = SimpleNamespace(
+            status="DRAFT",
+            fy="2026-27",
+            quarter="Q1",
+            form_name="27EQ",
+            return_type="CORRECTION",
+            entity=SimpleNamespace(id=10),
+            original_return=None,
+            ack_no="",
+            filed_on=None,
+        )
+        for key, value in instance_overrides.items():
+            setattr(instance, key, value)
+        return TcsQuarterlyReturnSerializer(instance=instance)
+
+    def test_correction_return_requires_original_reference(self):
+        serializer = self._serializer_with_instance(original_return=None)
+
+        with self.assertRaises(Exception) as exc:
+            serializer.validate({"return_type": "CORRECTION"})
+
+        self.assertIn("original return reference", str(exc.exception).lower())
+
+    def test_correction_return_requires_filed_original(self):
+        original = SimpleNamespace(
+            id=1,
+            entity_id=10,
+            fy="2026-27",
+            quarter="Q1",
+            return_type="ORIGINAL",
+            status="DRAFT",
+        )
+        serializer = self._serializer_with_instance(original_return=original)
+
+        with self.assertRaises(Exception) as exc:
+            serializer.validate({"return_type": "CORRECTION"})
+
+        self.assertIn("filed original return", str(exc.exception).lower())
+
+    def test_correction_return_rejects_original_from_other_quarter(self):
+        original = SimpleNamespace(
+            id=1,
+            entity_id=10,
+            fy="2026-27",
+            quarter="Q2",
+            return_type="ORIGINAL",
+            status="FILED",
+        )
+        serializer = self._serializer_with_instance(original_return=original)
+
+        with self.assertRaises(Exception) as exc:
+            serializer.validate({"return_type": "CORRECTION"})
+
+        self.assertIn("same quarter", str(exc.exception).lower())
+
+    def test_correction_return_accepts_matching_filed_original(self):
+        original = SimpleNamespace(
+            id=1,
+            entity_id=10,
+            fy="2026-27",
+            quarter="Q1",
+            return_type="ORIGINAL",
+            status="FILED",
+        )
+        serializer = self._serializer_with_instance(original_return=original)
+
+        data = serializer.validate({"return_type": "CORRECTION"})
+
+        self.assertEqual(data["return_type"], "CORRECTION")
+
+
+class WithholdingTcsReportingExportTests(SimpleTestCase):
+    def test_filing_pack_view_requires_valid_scope_params(self):
+        request = APIRequestFactory().get("/tcs/reports/filing-pack/?entity_id=1&fy=2026-27&quarter=Q5")
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsReportFilingPackAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("quarter", response.data)
+
+    def test_filing_pack_export_requires_financial_year(self):
+        request = APIRequestFactory().get("/tcs/reports/filing-pack/export/?entity_id=1&quarter=Q1")
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsReportFilingPackExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("fy", response.data)
+
+    @patch.object(TcsReportFilingPackAPIView, "get")
+    def test_filing_pack_export_includes_management_and_tracker_sheets(self, mocked_get):
+        mocked_get.return_value = SimpleNamespace(
+            data={
+                "header": {
+                    "fy": "2026-27",
+                    "quarter": "Q1",
+                    "return_status": "FILED",
+                    "row_count": 2,
+                    "exception_row_count": 1,
+                    "total_tcs": "100.00",
+                    "total_collected": "100.00",
+                    "total_deposited": "90.00",
+                    "pending_collection": "0.00",
+                    "pending_deposit": "10.00",
+                },
+                "section_summary": [{"section_code": "206C(1H)", "total_tcs": "100.00"}],
+                "rows": [
+                    {
+                        "doc_date": "2026-04-10",
+                        "document_type": "invoice",
+                        "document_no": "INV-1",
+                        "party_name": "Buyer One",
+                        "pan": "ABCDE1234F",
+                        "section_code": "206C(1H)",
+                        "taxable_base": "1000.00",
+                        "tcs_rate": "0.10",
+                        "tcs_amount": "100.00",
+                        "tcs_collected_amount": "100.00",
+                        "allocated_amount": "90.00",
+                        "return_id": 5,
+                        "return_quarter": "Q1",
+                        "return_type": "ORIGINAL",
+                        "return_status": "FILED",
+                        "ack_no": "ACK-1",
+                        "filed_on": "2026-05-05",
+                        "exceptions": {
+                            "missing_pan": False,
+                            "invalid_pan_format": False,
+                            "missing_tax_id": False,
+                            "residency_mismatch": False,
+                            "missing_section": False,
+                            "not_collected": False,
+                            "not_deposited": True,
+                            "partially_allocated": True,
+                            "deposit_mismatch": True,
+                            "quarter_boundary_violation": False,
+                            "reversal_case": False,
+                        },
+                    },
+                    {
+                        "doc_date": "2026-04-11",
+                        "document_type": "invoice",
+                        "document_no": "INV-2",
+                        "party_name": "Buyer Two",
+                        "pan": "AAAAA1111A",
+                        "section_code": "206C(1H)",
+                        "taxable_base": "500.00",
+                        "tcs_rate": "0.10",
+                        "tcs_amount": "50.00",
+                        "tcs_collected_amount": "50.00",
+                        "allocated_amount": "50.00",
+                        "return_id": 5,
+                        "return_quarter": "Q1",
+                        "return_type": "ORIGINAL",
+                        "return_status": "FILED",
+                        "ack_no": "ACK-1",
+                        "filed_on": "2026-05-05",
+                        "exceptions": {
+                            "missing_pan": False,
+                            "invalid_pan_format": False,
+                            "missing_tax_id": False,
+                            "residency_mismatch": False,
+                            "missing_section": False,
+                            "not_collected": False,
+                            "not_deposited": False,
+                            "partially_allocated": False,
+                            "deposit_mismatch": False,
+                            "quarter_boundary_violation": False,
+                            "reversal_case": False,
+                        },
+                    },
+                ],
+            }
+        )
+
+        request = APIRequestFactory().get("/tcs/reports/filing-pack/export/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsReportFilingPackExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        names = set(archive.namelist())
+
+        self.assertIn("filing_pack_management_summary.csv", names)
+        self.assertIn("filing_pack_exception_spotlight.csv", names)
+        self.assertIn("filing_pack_return_tracker.csv", names)
+        self.assertIn("filing_pack_transactions.csv", names)
+
+        tracker_csv = archive.read("filing_pack_return_tracker.csv").decode("utf-8")
+        self.assertIn("return_id", tracker_csv)
+        tracker_lines = [line for line in tracker_csv.strip().splitlines() if line.strip()]
+        self.assertEqual(len(tracker_lines), 2)
+        self.assertIn("5", tracker_lines[1])
+
+        spotlight_csv = archive.read("filing_pack_exception_spotlight.csv").decode("utf-8")
+        self.assertIn("not_deposited", spotlight_csv)
+        self.assertIn("deposit_mismatch", spotlight_csv)
 
 
 class WithholdingSeedServiceTests(SimpleTestCase):

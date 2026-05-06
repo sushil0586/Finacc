@@ -17,6 +17,8 @@ from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallan,
     PurchaseStatutoryChallanLine,
     PurchaseStatutoryForm16AOfficialDocument,
+    PurchaseStatutoryReviewNote,
+    PurchaseStatutoryReviewNoteEvent,
     PurchaseStatutoryReturn,
     PurchaseStatutoryReturnLine,
 )
@@ -37,6 +39,225 @@ class StatutoryResult:
 
 
 class PurchaseStatutoryService:
+    @staticmethod
+    def _validate_period_bounds(
+        *,
+        period_from,
+        period_to,
+        period_label: str,
+        anchor_date=None,
+        anchor_label: Optional[str] = None,
+        allow_partial: bool = False,
+    ) -> None:
+        if period_from is None and period_to is None:
+            return
+        if not allow_partial and (period_from is None or period_to is None):
+            raise ValueError(f"{period_label}: both period_from and period_to are required together.")
+        if period_from is not None and period_to is not None and period_from > period_to:
+            raise ValueError(f"{period_label}: period_from cannot be greater than period_to.")
+        if (
+            anchor_date is not None
+            and period_from is not None
+            and period_to is not None
+            and (anchor_date < period_from or anchor_date > period_to)
+        ):
+            raise ValueError(f"{anchor_label or 'document date'} must fall within {period_label}.")
+
+    @staticmethod
+    def _reset_approval_state(status: str = "DRAFT") -> Dict[str, object]:
+        normalized = (status or "DRAFT").strip().upper() or "DRAFT"
+        return {
+            "status": normalized,
+            "submitted_by": None,
+            "submitted_at": None,
+            "approved_by": None,
+            "approved_at": None,
+            "rejected_by": None,
+            "rejected_at": None,
+            "remarks": None,
+        }
+
+    @staticmethod
+    def _merge_payload_for_draft_update(
+        *,
+        existing_payload: Optional[Dict],
+        incoming_payload: Optional[Dict],
+        reset_approval_to_draft: bool = False,
+    ) -> Dict:
+        merged = dict(existing_payload or {})
+        if isinstance(incoming_payload, dict):
+            merged.update(incoming_payload)
+        if reset_approval_to_draft:
+            merged = PurchaseStatutoryService._set_approval_state(
+                merged,
+                PurchaseStatutoryService._reset_approval_state("DRAFT"),
+            )
+        return merged
+
+    @staticmethod
+    def _assert_editable_draft_approval_state(*, payload: Optional[Dict], record_label: str) -> bool:
+        state = PurchaseStatutoryService._approval_state(payload)
+        status = str(state.get("status") or "DRAFT").upper()
+        if status in {"SUBMITTED", "APPROVED"}:
+            raise ValueError(f"{record_label} cannot be edited while approval state is {status}.")
+        return status == "REJECTED"
+
+    @staticmethod
+    def _require_submitted_approval_state(*, payload: Optional[Dict], action_label: str) -> Dict[str, object]:
+        st = PurchaseStatutoryService._approval_state(payload)
+        if str(st.get("status") or "").upper() != "SUBMITTED":
+            raise ValueError(f"{action_label} requires the record to be in SUBMITTED approval state.")
+        return st
+
+    @staticmethod
+    def _requested_challan_amounts_by_header(line_rows: List[Dict]) -> Dict[int, Decimal]:
+        requested: Dict[int, Decimal] = {}
+        for idx, row in enumerate(line_rows, start=1):
+            header_id = int(row.get("header_id") or 0)
+            if not header_id:
+                raise ValueError(f"Line {idx}: header_id is required.")
+            requested[header_id] = q2(requested.get(header_id, ZERO2) + q2(row.get("amount")))
+        return requested
+
+    @staticmethod
+    def _requested_return_amounts_by_key(line_rows: List[Dict]) -> Dict[tuple[int, int], Decimal]:
+        requested: Dict[tuple[int, int], Decimal] = {}
+        for idx, row in enumerate(line_rows, start=1):
+            header_id = int(row.get("header_id") or 0)
+            challan_id = int(row.get("challan_id") or 0)
+            if not header_id:
+                raise ValueError(f"Line {idx}: header_id is required.")
+            if not challan_id:
+                raise ValueError(f"Line {idx}: challan_id is required.")
+            key = (header_id, challan_id)
+            requested[key] = q2(requested.get(key, ZERO2) + q2(row.get("amount")))
+        return requested
+
+    @staticmethod
+    def _validate_challan_balance_for_lines(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        line_rows: List[Dict],
+        exclude_challan_id: Optional[int] = None,
+    ) -> None:
+        requested_by_header = PurchaseStatutoryService._requested_challan_amounts_by_header(line_rows)
+        if not requested_by_header:
+            return
+
+        mapped_rows = (
+            PurchaseStatutoryChallanLine.objects.filter(
+                challan__entity_id=entity_id,
+                challan__entityfinid_id=entityfinid_id,
+                challan__tax_type=tax_type,
+                header_id__in=list(requested_by_header.keys()),
+            )
+            .exclude(challan__status=PurchaseStatutoryChallan.Status.CANCELLED)
+        )
+        if subentity_id is None:
+            mapped_rows = mapped_rows.filter(challan__subentity__isnull=True)
+        else:
+            mapped_rows = mapped_rows.filter(challan__subentity_id=subentity_id)
+        if exclude_challan_id:
+            mapped_rows = mapped_rows.exclude(challan_id=exclude_challan_id)
+        used_by_header = {
+            int(row["header_id"]): q2(row["total"])
+            for row in mapped_rows.values("header_id").annotate(total=Sum("amount"))
+        }
+
+        for header_id, requested_amount in requested_by_header.items():
+            header = PurchaseInvoiceHeader.objects.filter(pk=header_id).first()
+            if not header:
+                raise ValueError(f"Header {header_id} not found.")
+            if int(header.entity_id or 0) != int(entity_id) or int(header.entityfinid_id or 0) != int(entityfinid_id):
+                raise ValueError(f"Header {header_id}: scope mismatch with entity/entityfinid.")
+            if header.subentity_id != subentity_id:
+                raise ValueError(f"Header {header_id}: subentity mismatch.")
+
+            if tax_type == PurchaseStatutoryChallan.TaxType.IT_TDS:
+                base_amount = q2(getattr(header, "tds_amount", ZERO2))
+                label = "IT-TDS"
+            elif tax_type == PurchaseStatutoryChallan.TaxType.GST_TDS:
+                base_amount = q2(getattr(header, "gst_tds_amount", ZERO2))
+                label = "GST-TDS"
+            else:
+                raise ValueError("Unsupported tax_type.")
+
+            remaining = q2(base_amount - q2(used_by_header.get(header_id, ZERO2)))
+            if requested_amount > remaining:
+                raise ValueError(
+                    f"Invoice {header_id}: requested {requested_amount} exceeds remaining {label} balance {remaining}."
+                )
+
+    @staticmethod
+    def _validate_return_balance_for_lines(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        line_rows: List[Dict],
+        exclude_filing_id: Optional[int] = None,
+    ) -> None:
+        requested_by_key = PurchaseStatutoryService._requested_return_amounts_by_key(line_rows)
+        if not requested_by_key:
+            return
+
+        challan_keys = list(requested_by_key.keys())
+        challan_ids = sorted({challan_id for _, challan_id in challan_keys})
+        header_ids = sorted({header_id for header_id, _ in challan_keys})
+
+        challan_line_rows = PurchaseStatutoryChallanLine.objects.filter(
+            challan__entity_id=entity_id,
+            challan__entityfinid_id=entityfinid_id,
+            challan__tax_type=tax_type,
+            challan_id__in=challan_ids,
+            header_id__in=header_ids,
+        ).exclude(challan__status=PurchaseStatutoryChallan.Status.CANCELLED)
+        if subentity_id is None:
+            challan_line_rows = challan_line_rows.filter(challan__subentity__isnull=True)
+        else:
+            challan_line_rows = challan_line_rows.filter(challan__subentity_id=subentity_id)
+        available_by_key = {
+            (int(row["header_id"]), int(row["challan_id"])): q2(row["total"])
+            for row in challan_line_rows.values("header_id", "challan_id").annotate(total=Sum("amount"))
+        }
+
+        consumed_rows = (
+            PurchaseStatutoryReturnLine.objects.filter(
+                filing__entity_id=entity_id,
+                filing__entityfinid_id=entityfinid_id,
+                filing__tax_type=tax_type,
+                challan_id__in=challan_ids,
+                header_id__in=header_ids,
+            )
+            .exclude(filing__status=PurchaseStatutoryReturn.Status.CANCELLED)
+        )
+        if subentity_id is None:
+            consumed_rows = consumed_rows.filter(filing__subentity__isnull=True)
+        else:
+            consumed_rows = consumed_rows.filter(filing__subentity_id=subentity_id)
+        if exclude_filing_id:
+            consumed_rows = consumed_rows.exclude(filing_id=exclude_filing_id)
+        consumed_by_key = {
+            (int(row["header_id"]), int(row["challan_id"])): q2(row["total"])
+            for row in consumed_rows.values("header_id", "challan_id").annotate(total=Sum("amount"))
+        }
+
+        for (header_id, challan_id), requested_amount in requested_by_key.items():
+            available = q2(available_by_key.get((header_id, challan_id), ZERO2))
+            if available <= ZERO2:
+                raise ValueError(
+                    f"Line for invoice {header_id} and challan {challan_id} has no allocable challan balance."
+                )
+            remaining = q2(available - q2(consumed_by_key.get((header_id, challan_id), ZERO2)))
+            if requested_amount > remaining:
+                raise ValueError(
+                    f"Invoice {header_id} against challan {challan_id}: requested {requested_amount} exceeds remaining balance {remaining}."
+                )
+
     @staticmethod
     def _form16a_certificate_data(
         *,
@@ -85,6 +306,146 @@ class PurchaseStatutoryService:
     @staticmethod
     def _clean_text(value: Optional[str]) -> Optional[str]:
         return (value or "").strip() or None
+
+    @staticmethod
+    def get_review_note(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: Optional[str],
+        period_from,
+        period_to,
+    ) -> Optional[PurchaseStatutoryReviewNote]:
+        PurchaseStatutoryService._validate_period_bounds(
+            period_from=period_from,
+            period_to=period_to,
+            period_label="review note period",
+        )
+        qs = PurchaseStatutoryReviewNote.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        if tax_type:
+            qs = qs.filter(tax_type=tax_type)
+        else:
+            qs = qs.filter(tax_type__isnull=True)
+        return qs.first()
+
+    @staticmethod
+    @transaction.atomic
+    def save_review_note(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: Optional[str],
+        period_from,
+        period_to,
+        reviewer_name: Optional[str],
+        closure_status: Optional[str],
+        review_summary: Optional[str],
+        open_points: Optional[str],
+        closure_comment: Optional[str],
+        reviewed_by_id: Optional[int],
+    ) -> StatutoryResult:
+        note = PurchaseStatutoryService.get_review_note(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        is_new = note is None
+        if note is None:
+            note = PurchaseStatutoryReviewNote(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type or None,
+                period_from=period_from,
+                period_to=period_to,
+            )
+        note.reviewer_name = PurchaseStatutoryService._clean_text(reviewer_name)
+        note.closure_status = closure_status or PurchaseStatutoryReviewNote.ClosureStatus.NOT_READY
+        note.review_summary = PurchaseStatutoryService._clean_text(review_summary)
+        note.open_points = PurchaseStatutoryService._clean_text(open_points)
+        note.closure_comment = PurchaseStatutoryService._clean_text(closure_comment)
+        note.reviewed_by_id = reviewed_by_id
+        note.reviewed_at = timezone.now()
+        note.save()
+        PurchaseStatutoryReviewNoteEvent.objects.create(
+            review_note=note,
+            action=PurchaseStatutoryReviewNoteEvent.Action.CREATED if is_new else PurchaseStatutoryReviewNoteEvent.Action.UPDATED,
+            reviewer_name=note.reviewer_name,
+            closure_status=note.closure_status,
+            review_summary=note.review_summary,
+            open_points=note.open_points,
+            closure_comment=note.closure_comment,
+            changed_by_id=reviewed_by_id,
+            changed_at=note.reviewed_at,
+        )
+        return StatutoryResult(obj=note, message="Review note created." if is_new else "Review note updated.")
+
+    @staticmethod
+    @transaction.atomic
+    def delete_review_note(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: Optional[str],
+        period_from,
+        period_to,
+        reviewed_by_id: Optional[int],
+    ) -> None:
+        note = PurchaseStatutoryService.get_review_note(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        if note is None:
+            raise ValueError("Review note not found for the selected scope.")
+        note.reviewer_name = None
+        note.closure_status = PurchaseStatutoryReviewNote.ClosureStatus.NOT_READY
+        note.review_summary = None
+        note.open_points = None
+        note.closure_comment = None
+        note.reviewed_by_id = reviewed_by_id
+        note.reviewed_at = timezone.now()
+        note.save(
+            update_fields=[
+                "reviewer_name",
+                "closure_status",
+                "review_summary",
+                "open_points",
+                "closure_comment",
+                "reviewed_by",
+                "reviewed_at",
+                "updated_at",
+            ]
+        )
+        PurchaseStatutoryReviewNoteEvent.objects.create(
+            review_note=note,
+            action=PurchaseStatutoryReviewNoteEvent.Action.CLEARED,
+            reviewer_name=None,
+            closure_status=note.closure_status,
+            review_summary=None,
+            open_points=None,
+            closure_comment=None,
+            changed_by_id=reviewed_by_id,
+            changed_at=note.reviewed_at,
+        )
 
     @staticmethod
     def _coerce_date(value, *, field_name: str):
@@ -444,6 +805,30 @@ class PurchaseStatutoryService:
                     raise ValueError("27Q requires deductee_tax_id_snapshot for all deductees.")
 
     @staticmethod
+    def _validate_it_tds_return_snapshot(
+        *,
+        return_code: str,
+        deductee_residency_snapshot: Optional[str],
+        deductee_pan_snapshot: Optional[str],
+        deductee_tax_id_snapshot: Optional[str],
+        line_label: str,
+    ) -> None:
+        code = (return_code or "").strip().upper()
+        if code not in {"26Q", "27Q"}:
+            return
+        residency = (deductee_residency_snapshot or "").strip().upper()
+        if code == "26Q":
+            if residency != PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT:
+                raise ValueError(f"{line_label}: 26Q allows only RESIDENT deductees.")
+            if not (deductee_pan_snapshot or "").strip():
+                raise ValueError(f"{line_label}: 26Q requires PAN for all deductees.")
+        if code == "27Q":
+            if residency != PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
+                raise ValueError(f"{line_label}: 27Q allows only NON_RESIDENT deductees.")
+            if not (deductee_tax_id_snapshot or "").strip():
+                raise ValueError(f"{line_label}: 27Q requires deductee_tax_id_snapshot for all deductees.")
+
+    @staticmethod
     def _validate_revision_lines(
         *,
         entity_id: int,
@@ -487,6 +872,58 @@ class PurchaseStatutoryService:
                 raise ValueError(
                     f"Line {idx}: challan remap is disabled for revisions. Use same header/challan as original return."
                 )
+
+    @staticmethod
+    def _get_original_return_for_revision(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        return_code: str,
+        period_from,
+        period_to,
+        original_return_id: Optional[int],
+    ):
+        if not original_return_id:
+            return None
+        original = PurchaseStatutoryReturn.objects.filter(pk=original_return_id).first()
+        if not original:
+            raise ValueError("original_return_id not found.")
+        if original.original_return_id is not None:
+            raise ValueError("original_return_id must reference the original return, not a prior revision.")
+        if int(original.entity_id) != int(entity_id) or int(original.entityfinid_id) != int(entityfinid_id):
+            raise ValueError("original_return scope mismatch with entity/entityfinid.")
+        if original.subentity_id != subentity_id:
+            raise ValueError("original_return subentity mismatch.")
+        if str(original.tax_type) != str(tax_type):
+            raise ValueError("original_return tax_type mismatch.")
+        if (original.return_code or "").strip().upper() != (return_code or "").strip().upper():
+            raise ValueError("original_return return_code mismatch.")
+        if original.period_from != period_from or original.period_to != period_to:
+            raise ValueError("original_return period mismatch.")
+        return original
+
+    @staticmethod
+    def _assert_unique_revision_number(
+        *,
+        original_return_id: Optional[int],
+        revision_no: int,
+        exclude_filing_id: Optional[int] = None,
+    ) -> None:
+        if not original_return_id:
+            return
+        rev_no = int(revision_no or 0)
+        if rev_no <= 0:
+            raise ValueError("revision_no must be > 0 when original_return_id is provided.")
+        qs = PurchaseStatutoryReturn.objects.filter(
+            original_return_id=original_return_id,
+            revision_no=rev_no,
+        ).exclude(status=PurchaseStatutoryReturn.Status.CANCELLED)
+        if exclude_filing_id:
+            qs = qs.exclude(pk=exclude_filing_id)
+        if qs.exists():
+            raise ValueError("A revision already exists for this original_return_id and revision_no.")
 
     @staticmethod
     def _validate_header_amount_for_tax_type(*, header: PurchaseInvoiceHeader, tax_type: str, amount: Decimal) -> None:
@@ -577,6 +1014,21 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        PurchaseStatutoryService._validate_period_bounds(
+            period_from=period_from,
+            period_to=period_to,
+            period_label="Challan period",
+            anchor_date=challan_date,
+            anchor_label="challan_date",
+            allow_partial=False,
+        )
+        PurchaseStatutoryService._validate_challan_balance_for_lines(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            line_rows=line_rows,
+        )
 
         challan = PurchaseStatutoryChallan.objects.create(
             entity_id=entity_id,
@@ -656,10 +1108,30 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        PurchaseStatutoryService._validate_period_bounds(
+            period_from=period_from,
+            period_to=period_to,
+            period_label="Challan period",
+            anchor_date=challan_date,
+            anchor_label="challan_date",
+            allow_partial=False,
+        )
+        PurchaseStatutoryService._validate_challan_balance_for_lines(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            line_rows=line_rows,
+            exclude_challan_id=challan_id,
+        )
 
         challan = PurchaseStatutoryChallan.objects.select_for_update().get(pk=challan_id)
         if int(challan.status) != int(PurchaseStatutoryChallan.Status.DRAFT):
             raise ValueError("Only draft challan can be edited.")
+        reset_approval = PurchaseStatutoryService._assert_editable_draft_approval_state(
+            payload=challan.payment_payload_json,
+            record_label="Challan",
+        )
 
         challan.entity_id = entity_id
         challan.entityfinid_id = entityfinid_id
@@ -676,7 +1148,19 @@ class PurchaseStatutoryService:
         challan.interest_amount = q2(interest_amount)
         challan.late_fee_amount = q2(late_fee_amount)
         challan.penalty_amount = q2(penalty_amount)
-        challan.payment_payload_json = payment_payload_json or {}
+        challan.payment_payload_json = PurchaseStatutoryService._merge_payload_for_draft_update(
+            existing_payload=challan.payment_payload_json,
+            incoming_payload=payment_payload_json,
+            reset_approval_to_draft=reset_approval,
+        )
+        if reset_approval:
+            challan.payment_payload_json = PurchaseStatutoryService._append_audit_event(
+                challan.payment_payload_json,
+                {
+                    "action": "EDITED_AFTER_REJECTION",
+                    "at": timezone.now().isoformat(),
+                },
+            )
         if ack_document is not None:
             challan.ack_document = ack_document
         challan.remarks = PurchaseStatutoryService._clean_text(remarks)
@@ -846,6 +1330,19 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        PurchaseStatutoryService._validate_period_bounds(
+            period_from=period_from,
+            period_to=period_to,
+            period_label="Return period",
+            allow_partial=False,
+        )
+        PurchaseStatutoryService._validate_return_balance_for_lines(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            line_rows=line_rows,
+        )
         if not original_return_id:
             PurchaseStatutoryService._assert_unique_original_return(
                 entity_id=entity_id,
@@ -864,16 +1361,20 @@ class PurchaseStatutoryService:
             revision_no=revision_no,
             line_rows=line_rows,
         )
-        if original_return_id:
-            original = PurchaseStatutoryReturn.objects.filter(pk=original_return_id).first()
-            if not original:
-                raise ValueError("original_return_id not found.")
-            if int(original.entity_id) != int(entity_id) or int(original.entityfinid_id) != int(entityfinid_id):
-                raise ValueError("original_return scope mismatch with entity/entityfinid.")
-            if original.subentity_id != subentity_id:
-                raise ValueError("original_return subentity mismatch.")
-            if str(original.tax_type) != str(tax_type):
-                raise ValueError("original_return tax_type mismatch.")
+        original = PurchaseStatutoryService._get_original_return_for_revision(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            return_code=return_code,
+            period_from=period_from,
+            period_to=period_to,
+            original_return_id=original_return_id,
+        )
+        PurchaseStatutoryService._assert_unique_revision_number(
+            original_return_id=original_return_id,
+            revision_no=revision_no,
+        )
 
         filing = PurchaseStatutoryReturn.objects.create(
             entity_id=entity_id,
@@ -925,6 +1426,8 @@ class PurchaseStatutoryService:
                     raise ValueError(f"Line {idx}: challan subentity mismatch.")
                 if challan.tax_type != tax_type:
                     raise ValueError(f"Line {idx}: challan tax_type mismatch.")
+                if int(challan.status) != int(PurchaseStatutoryChallan.Status.DEPOSITED):
+                    raise ValueError(f"Line {idx}: challan must be in DEPOSITED status before it can be used in a return.")
 
             PurchaseStatutoryService._validate_header_amount_for_tax_type(
                 header=header,
@@ -937,6 +1440,13 @@ class PurchaseStatutoryService:
             if not section_snapshot_desc and section_obj is not None:
                 section_snapshot_desc = PurchaseStatutoryService._clean_text(getattr(section_obj, "description", None))
             ds = PurchaseStatutoryService._vendor_deductee_snapshot(header)
+            PurchaseStatutoryService._validate_it_tds_return_snapshot(
+                return_code=return_code,
+                deductee_residency_snapshot=ds["deductee_residency_snapshot"],
+                deductee_pan_snapshot=ds["deductee_pan_snapshot"],
+                deductee_tax_id_snapshot=ds["deductee_tax_id_snapshot"],
+                line_label=f"Line {idx}",
+            )
             if not cin_snapshot and challan is not None:
                 cin_snapshot = PurchaseStatutoryService._clean_text(getattr(challan, "cin_no", None))
             PurchaseStatutoryReturnLine.objects.create(
@@ -960,9 +1470,6 @@ class PurchaseStatutoryService:
 
         filing.amount = total
         filing.save(update_fields=["amount", "updated_at"])
-        if original_return_id:
-            filing.status = PurchaseStatutoryReturn.Status.REVISED
-            filing.save(update_fields=["status", "updated_at"])
         return StatutoryResult(filing, "Return draft created.")
 
     @staticmethod
@@ -992,6 +1499,20 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        PurchaseStatutoryService._validate_period_bounds(
+            period_from=period_from,
+            period_to=period_to,
+            period_label="Return period",
+            allow_partial=False,
+        )
+        PurchaseStatutoryService._validate_return_balance_for_lines(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            line_rows=line_rows,
+            exclude_filing_id=filing_id,
+        )
         if not original_return_id:
             PurchaseStatutoryService._assert_unique_original_return(
                 entity_id=entity_id,
@@ -1015,17 +1536,26 @@ class PurchaseStatutoryService:
         filing = PurchaseStatutoryReturn.objects.select_for_update().get(pk=filing_id)
         if int(filing.status) != int(PurchaseStatutoryReturn.Status.DRAFT):
             raise ValueError("Only draft return can be edited.")
+        reset_approval = PurchaseStatutoryService._assert_editable_draft_approval_state(
+            payload=filing.filed_payload_json,
+            record_label="Return",
+        )
 
-        if original_return_id:
-            original = PurchaseStatutoryReturn.objects.filter(pk=original_return_id).first()
-            if not original:
-                raise ValueError("original_return_id not found.")
-            if int(original.entity_id) != int(entity_id) or int(original.entityfinid_id) != int(entityfinid_id):
-                raise ValueError("original_return scope mismatch with entity/entityfinid.")
-            if original.subentity_id != subentity_id:
-                raise ValueError("original_return subentity mismatch.")
-            if str(original.tax_type) != str(tax_type):
-                raise ValueError("original_return tax_type mismatch.")
+        PurchaseStatutoryService._get_original_return_for_revision(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            return_code=return_code,
+            period_from=period_from,
+            period_to=period_to,
+            original_return_id=original_return_id,
+        )
+        PurchaseStatutoryService._assert_unique_revision_number(
+            original_return_id=original_return_id,
+            revision_no=revision_no,
+            exclude_filing_id=filing_id,
+        )
 
         filing.entity_id = entity_id
         filing.entityfinid_id = entityfinid_id
@@ -1039,7 +1569,19 @@ class PurchaseStatutoryService:
         filing.interest_amount = q2(interest_amount)
         filing.late_fee_amount = q2(late_fee_amount)
         filing.penalty_amount = q2(penalty_amount)
-        filing.filed_payload_json = filed_payload_json or {}
+        filing.filed_payload_json = PurchaseStatutoryService._merge_payload_for_draft_update(
+            existing_payload=filing.filed_payload_json,
+            incoming_payload=filed_payload_json,
+            reset_approval_to_draft=reset_approval,
+        )
+        if reset_approval:
+            filing.filed_payload_json = PurchaseStatutoryService._append_audit_event(
+                filing.filed_payload_json,
+                {
+                    "action": "EDITED_AFTER_REJECTION",
+                    "at": timezone.now().isoformat(),
+                },
+            )
         if ack_document is not None:
             filing.ack_document = ack_document
         filing.original_return_id = original_return_id
@@ -1078,6 +1620,8 @@ class PurchaseStatutoryService:
                     raise ValueError(f"Line {idx}: challan subentity mismatch.")
                 if challan.tax_type != tax_type:
                     raise ValueError(f"Line {idx}: challan tax_type mismatch.")
+                if int(challan.status) != int(PurchaseStatutoryChallan.Status.DEPOSITED):
+                    raise ValueError(f"Line {idx}: challan must be in DEPOSITED status before it can be used in a return.")
 
             PurchaseStatutoryService._validate_header_amount_for_tax_type(
                 header=header,
@@ -1090,6 +1634,13 @@ class PurchaseStatutoryService:
             if not section_snapshot_desc and section_obj is not None:
                 section_snapshot_desc = PurchaseStatutoryService._clean_text(getattr(section_obj, "description", None))
             ds = PurchaseStatutoryService._vendor_deductee_snapshot(header)
+            PurchaseStatutoryService._validate_it_tds_return_snapshot(
+                return_code=return_code,
+                deductee_residency_snapshot=ds["deductee_residency_snapshot"],
+                deductee_pan_snapshot=ds["deductee_pan_snapshot"],
+                deductee_tax_id_snapshot=ds["deductee_tax_id_snapshot"],
+                line_label=f"Line {idx}",
+            )
             if not cin_snapshot and challan is not None:
                 cin_snapshot = PurchaseStatutoryService._clean_text(getattr(challan, "cin_no", None))
             PurchaseStatutoryReturnLine.objects.create(
@@ -1112,8 +1663,6 @@ class PurchaseStatutoryService:
             total = q2(total + amount)
 
         filing.amount = total
-        if original_return_id:
-            filing.status = PurchaseStatutoryReturn.Status.REVISED
         filing.save()
         return StatutoryResult(filing, "Return draft updated.")
 
@@ -1169,6 +1718,11 @@ class PurchaseStatutoryService:
         f = PurchaseStatutoryReturn.objects.select_for_update().get(pk=filing_id)
         if int(f.status) == int(PurchaseStatutoryReturn.Status.CANCELLED):
             return StatutoryResult(f, "Already cancelled.")
+        active_revisions = PurchaseStatutoryReturn.objects.filter(
+            original_return_id=f.id,
+        ).exclude(status=PurchaseStatutoryReturn.Status.CANCELLED).exists()
+        if active_revisions:
+            raise ValueError("Cannot cancel original return while active revisions exist.")
         f.status = PurchaseStatutoryReturn.Status.CANCELLED
         f.remarks = PurchaseStatutoryService._clean_text(reason) or f.remarks
         f.filed_payload_json = PurchaseStatutoryService._append_audit_event(
@@ -1212,7 +1766,10 @@ class PurchaseStatutoryService:
         )
         if int(f.status) == int(PurchaseStatutoryReturn.Status.CANCELLED):
             raise ValueError("Cancelled return cannot be filed.")
-        if int(f.status) == int(PurchaseStatutoryReturn.Status.FILED):
+        if int(f.status) in (
+            int(PurchaseStatutoryReturn.Status.FILED),
+            int(PurchaseStatutoryReturn.Status.REVISED),
+        ):
             return StatutoryResult(f, "Already filed.")
 
         lines = list(f.lines.all())
@@ -1243,7 +1800,11 @@ class PurchaseStatutoryService:
             f.late_fee_amount = q2(calc["late_fee_amount"])
             f.penalty_amount = q2(calc["penalty_amount"])
 
-        f.status = PurchaseStatutoryReturn.Status.FILED
+        f.status = (
+            PurchaseStatutoryReturn.Status.REVISED
+            if f.original_return_id
+            else PurchaseStatutoryReturn.Status.FILED
+        )
         f.filed_on = filing_date
         f.filed_at = timezone.now()
         f.filed_by_id = filed_by_id
@@ -1663,6 +2224,7 @@ class PurchaseStatutoryService:
         tax_type: str,
         period_from,
         period_to,
+        return_code: Optional[str] = None,
     ) -> Dict[str, object]:
         if tax_type not in (PurchaseStatutoryReturn.TaxType.IT_TDS, PurchaseStatutoryReturn.TaxType.GST_TDS):
             raise ValueError("tax_type must be IT_TDS or GST_TDS.")
@@ -1704,6 +2266,7 @@ class PurchaseStatutoryService:
             (int(r["header_id"]), int(r["challan_id"])): q2(r["total"])
             for r in consumed_rows
         }
+        normalized_return_code = (return_code or "").strip().upper()
 
         lines: List[Dict[str, object]] = []
         total_amount = ZERO2
@@ -1720,6 +2283,17 @@ class PurchaseStatutoryService:
             section_code = (getattr(section_obj, "section_code", None) or "")
             section_desc = (getattr(section_obj, "description", None) or "")
             ds = PurchaseStatutoryService._vendor_deductee_snapshot(h)
+            if tax_type == PurchaseStatutoryReturn.TaxType.IT_TDS and normalized_return_code in {"26Q", "27Q"}:
+                try:
+                    PurchaseStatutoryService._validate_it_tds_return_snapshot(
+                        return_code=normalized_return_code,
+                        deductee_residency_snapshot=ds["deductee_residency_snapshot"],
+                        deductee_pan_snapshot=ds["deductee_pan_snapshot"],
+                        deductee_tax_id_snapshot=ds["deductee_tax_id_snapshot"],
+                        line_label=f"Invoice {cl.header_id}",
+                    )
+                except ValueError:
+                    continue
 
             lines.append(
                 {
@@ -1818,8 +2392,18 @@ class PurchaseStatutoryService:
 
         return {
             "exceptions": {
-                "invoices_pending_challan_mapping": challan_data["totals"],
-                "challan_lines_pending_return_mapping": return_data["totals"],
+                "invoices_pending_challan_mapping": {
+                    "count": len(challan_data.get("lines", [])),
+                    "line_count": challan_data.get("totals", {}).get("line_count", 0),
+                    "amount": challan_data.get("totals", {}).get("amount", "0.00"),
+                    "rows": challan_data.get("lines", []),
+                },
+                "challan_lines_pending_return_mapping": {
+                    "count": len(return_data.get("lines", [])),
+                    "line_count": return_data.get("totals", {}).get("line_count", 0),
+                    "amount": return_data.get("totals", {}).get("amount", "0.00"),
+                    "rows": return_data.get("lines", []),
+                },
                 "filed_returns_missing_ack_or_arn": {
                     "count": len(missing_ack),
                     "rows": missing_ack,
@@ -1998,6 +2582,8 @@ class PurchaseStatutoryService:
         if int(c.status) != int(PurchaseStatutoryChallan.Status.DRAFT):
             raise ValueError("Only draft challan can be submitted.")
         st = PurchaseStatutoryService._approval_state(c.payment_payload_json)
+        if str(st.get("status") or "DRAFT").upper() in {"SUBMITTED", "APPROVED"}:
+            raise ValueError("Challan is already in approval workflow.")
         st.update(
             {
                 "status": "SUBMITTED",
@@ -2020,7 +2606,17 @@ class PurchaseStatutoryService:
         c = PurchaseStatutoryChallan.objects.select_for_update().get(pk=challan_id)
         if int(c.status) != int(PurchaseStatutoryChallan.Status.DRAFT):
             raise ValueError("Only draft challan can be approved.")
-        st = PurchaseStatutoryService._approval_state(c.payment_payload_json)
+        st = PurchaseStatutoryService._require_submitted_approval_state(
+            payload=c.payment_payload_json,
+            action_label="Challan approval",
+        )
+        PurchaseStatutoryService._require_maker_checker(
+            entity_id=int(c.entity_id),
+            subentity_id=c.subentity_id,
+            maker_user_id=c.created_by_id,
+            checker_user_id=user_id,
+            action_label="challan approval",
+        )
         if st.get("submitted_by") and user_id and int(st.get("submitted_by")) == int(user_id):
             raise ValueError("Approver must be different from submitter.")
         st.update(
@@ -2045,7 +2641,17 @@ class PurchaseStatutoryService:
         c = PurchaseStatutoryChallan.objects.select_for_update().get(pk=challan_id)
         if int(c.status) != int(PurchaseStatutoryChallan.Status.DRAFT):
             raise ValueError("Only draft challan can be rejected.")
-        st = PurchaseStatutoryService._approval_state(c.payment_payload_json)
+        st = PurchaseStatutoryService._require_submitted_approval_state(
+            payload=c.payment_payload_json,
+            action_label="Challan rejection",
+        )
+        PurchaseStatutoryService._require_maker_checker(
+            entity_id=int(c.entity_id),
+            subentity_id=c.subentity_id,
+            maker_user_id=c.created_by_id,
+            checker_user_id=user_id,
+            action_label="challan rejection",
+        )
         st.update(
             {
                 "status": "REJECTED",
@@ -2066,12 +2672,11 @@ class PurchaseStatutoryService:
     @transaction.atomic
     def submit_return_for_approval(*, filing_id: int, user_id: Optional[int], remarks: Optional[str] = None) -> StatutoryResult:
         f = PurchaseStatutoryReturn.objects.select_for_update().get(pk=filing_id)
-        if int(f.status) not in (
-            int(PurchaseStatutoryReturn.Status.DRAFT),
-            int(PurchaseStatutoryReturn.Status.REVISED),
-        ):
-            raise ValueError("Only draft/revised return can be submitted.")
+        if int(f.status) != int(PurchaseStatutoryReturn.Status.DRAFT):
+            raise ValueError("Only draft return can be submitted.")
         st = PurchaseStatutoryService._approval_state(f.filed_payload_json)
+        if str(st.get("status") or "DRAFT").upper() in {"SUBMITTED", "APPROVED"}:
+            raise ValueError("Return is already in approval workflow.")
         st.update(
             {
                 "status": "SUBMITTED",
@@ -2092,12 +2697,19 @@ class PurchaseStatutoryService:
     @transaction.atomic
     def approve_return(*, filing_id: int, user_id: Optional[int], remarks: Optional[str] = None) -> StatutoryResult:
         f = PurchaseStatutoryReturn.objects.select_for_update().get(pk=filing_id)
-        if int(f.status) not in (
-            int(PurchaseStatutoryReturn.Status.DRAFT),
-            int(PurchaseStatutoryReturn.Status.REVISED),
-        ):
-            raise ValueError("Only draft/revised return can be approved.")
-        st = PurchaseStatutoryService._approval_state(f.filed_payload_json)
+        if int(f.status) != int(PurchaseStatutoryReturn.Status.DRAFT):
+            raise ValueError("Only draft return can be approved.")
+        st = PurchaseStatutoryService._require_submitted_approval_state(
+            payload=f.filed_payload_json,
+            action_label="Return approval",
+        )
+        PurchaseStatutoryService._require_maker_checker(
+            entity_id=int(f.entity_id),
+            subentity_id=f.subentity_id,
+            maker_user_id=f.created_by_id,
+            checker_user_id=user_id,
+            action_label="return approval",
+        )
         if st.get("submitted_by") and user_id and int(st.get("submitted_by")) == int(user_id):
             raise ValueError("Approver must be different from submitter.")
         st.update(
@@ -2120,12 +2732,19 @@ class PurchaseStatutoryService:
     @transaction.atomic
     def reject_return(*, filing_id: int, user_id: Optional[int], remarks: Optional[str] = None) -> StatutoryResult:
         f = PurchaseStatutoryReturn.objects.select_for_update().get(pk=filing_id)
-        if int(f.status) not in (
-            int(PurchaseStatutoryReturn.Status.DRAFT),
-            int(PurchaseStatutoryReturn.Status.REVISED),
-        ):
-            raise ValueError("Only draft/revised return can be rejected.")
-        st = PurchaseStatutoryService._approval_state(f.filed_payload_json)
+        if int(f.status) != int(PurchaseStatutoryReturn.Status.DRAFT):
+            raise ValueError("Only draft return can be rejected.")
+        st = PurchaseStatutoryService._require_submitted_approval_state(
+            payload=f.filed_payload_json,
+            action_label="Return rejection",
+        )
+        PurchaseStatutoryService._require_maker_checker(
+            entity_id=int(f.entity_id),
+            subentity_id=f.subentity_id,
+            maker_user_id=f.created_by_id,
+            checker_user_id=user_id,
+            action_label="return rejection",
+        )
         st.update(
             {
                 "status": "REJECTED",

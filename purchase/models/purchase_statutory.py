@@ -401,3 +401,114 @@ class PurchaseStatutoryForm16ADeducteeDocument(TrackingModel):
 
     def __str__(self) -> str:
         return f"Form16ADeductee({self.filing_id}, {self.deductee_key})"
+
+
+class PurchaseStatutoryReviewNote(TrackingModel):
+    class ClosureStatus(models.TextChoices):
+        NOT_READY = "NOT_READY", "Not Ready"
+        IN_REVIEW = "IN_REVIEW", "In Review"
+        READY_TO_SIGN_OFF = "READY_TO_SIGN_OFF", "Ready To Sign Off"
+
+    entity = models.ForeignKey("entity.Entity", on_delete=models.PROTECT, db_index=True)
+    entityfinid = models.ForeignKey("entity.EntityFinancialYear", on_delete=models.PROTECT, db_index=True)
+    subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True, db_index=True)
+    tax_type = models.CharField(
+        max_length=10,
+        choices=PurchaseStatutoryChallan.TaxType.choices,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    period_from = models.DateField(db_index=True)
+    period_to = models.DateField(db_index=True)
+    reviewer_name = models.CharField(max_length=120, null=True, blank=True)
+    closure_status = models.CharField(
+        max_length=24,
+        choices=ClosureStatus.choices,
+        default=ClosureStatus.NOT_READY,
+        db_index=True,
+    )
+    review_summary = models.TextField(null=True, blank=True)
+    open_points = models.TextField(null=True, blank=True)
+    closure_comment = models.TextField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_statutory_review_notes",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "tax_type", "period_from", "period_to"),
+                condition=Q(subentity__isnull=False, tax_type__isnull=False),
+                name="uq_pur_stat_review_scope_sub_tax",
+            ),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "period_from", "period_to"),
+                condition=Q(subentity__isnull=False, tax_type__isnull=True),
+                name="uq_pur_stat_review_scope_sub_alltax",
+            ),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "tax_type", "period_from", "period_to"),
+                condition=Q(subentity__isnull=True, tax_type__isnull=False),
+                name="uq_pur_stat_review_scope_nsub_tax",
+            ),
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "period_from", "period_to"),
+                condition=Q(subentity__isnull=True, tax_type__isnull=True),
+                name="uq_pur_stat_review_scope_nsub_alltax",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "entityfinid", "period_from", "period_to"], name="ix_pur_stat_review_period"),
+            models.Index(fields=["reviewed_at"], name="ix_pur_stat_review_reviewed"),
+        ]
+
+    def __str__(self) -> str:
+        scope = self.tax_type or "ALL"
+        return f"ReviewNote({self.entity_id}, {self.entityfinid_id}, {scope}, {self.period_from}-{self.period_to})"
+
+
+class PurchaseStatutoryReviewNoteEvent(TrackingModel):
+    class Action(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        UPDATED = "UPDATED", "Updated"
+        CLEARED = "CLEARED", "Cleared"
+
+    review_note = models.ForeignKey(
+        PurchaseStatutoryReviewNote,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    action = models.CharField(max_length=20, choices=Action.choices, db_index=True)
+    reviewer_name = models.CharField(max_length=120, null=True, blank=True)
+    closure_status = models.CharField(
+        max_length=24,
+        choices=PurchaseStatutoryReviewNote.ClosureStatus.choices,
+        default=PurchaseStatutoryReviewNote.ClosureStatus.NOT_READY,
+        db_index=True,
+    )
+    review_summary = models.TextField(null=True, blank=True)
+    open_points = models.TextField(null=True, blank=True)
+    closure_comment = models.TextField(null=True, blank=True)
+    changed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="purchase_statutory_review_note_events",
+    )
+    changed_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["review_note", "changed_at"], name="ix_pur_stat_review_evt_note"),
+            models.Index(fields=["action", "changed_at"], name="ix_pur_stat_review_evt_act"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ReviewNoteEvent({self.review_note_id}, {self.action}, {self.changed_at})"

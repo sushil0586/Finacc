@@ -773,6 +773,10 @@ class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         instance = getattr(self, "instance", None)
+        if instance is not None and instance.status == TcsQuarterlyReturn.Status.FILED:
+            raise serializers.ValidationError(
+                {"status": "Filed returns cannot be edited. Create a correction return for changes."}
+            )
         fy = (data.get("fy") or getattr(instance, "fy", "") or "").strip()
         quarter = (data.get("quarter") or getattr(instance, "quarter", "") or "").strip().upper()
         form_name = (data.get("form_name") or getattr(instance, "form_name", "") or "").strip().upper()
@@ -812,15 +816,19 @@ class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
                     {"return_type": "Original 27EQ return already exists for this entity/FY/quarter. Use Correction return."}
                 )
         if return_type == TcsQuarterlyReturn.ReturnType.CORRECTION and entity and fy and quarter:
-            has_original = TcsQuarterlyReturn.objects.filter(
-                entity=entity,
-                fy=fy,
-                quarter=quarter,
-                form_name="27EQ",
-                return_type=TcsQuarterlyReturn.ReturnType.ORIGINAL,
-            ).exclude(pk=getattr(instance, "pk", None)).exists()
-            if not has_original:
-                raise serializers.ValidationError({"return_type": "Correction return requires an existing Original return."})
+            original_return = data.get("original_return") if "original_return" in data else getattr(instance, "original_return", None)
+            if original_return is None:
+                raise serializers.ValidationError({"original_return": "Correction return requires an original return reference."})
+            if getattr(original_return, "return_type", None) != TcsQuarterlyReturn.ReturnType.ORIGINAL:
+                raise serializers.ValidationError({"original_return": "Correction return must reference an original 27EQ return."})
+            if getattr(original_return, "entity_id", None) != getattr(entity, "id", entity):
+                raise serializers.ValidationError({"original_return": "Original return must belong to the same entity."})
+            if str(getattr(original_return, "fy", "") or "").strip() != fy:
+                raise serializers.ValidationError({"original_return": "Original return must belong to the same financial year."})
+            if str(getattr(original_return, "quarter", "") or "").strip().upper() != quarter:
+                raise serializers.ValidationError({"original_return": "Original return must belong to the same quarter."})
+            if getattr(original_return, "status", None) != TcsQuarterlyReturn.Status.FILED:
+                raise serializers.ValidationError({"original_return": "Correction return requires a filed original return."})
         return data
 
     class Meta:
@@ -837,6 +845,8 @@ class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
             "filed_on",
             "json_snapshot",
             "file_path",
+            "notes",
+            "original_return",
             "created_at",
             "updated_at",
         ]

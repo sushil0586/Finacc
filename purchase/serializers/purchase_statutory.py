@@ -8,6 +8,8 @@ from entity.financial_year_validation import assert_document_date_within_financi
 from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallan,
     PurchaseStatutoryChallanLine,
+    PurchaseStatutoryReviewNote,
+    PurchaseStatutoryReviewNoteEvent,
     PurchaseStatutoryReturn,
     PurchaseStatutoryReturnLine,
 )
@@ -132,6 +134,12 @@ class PurchaseStatutoryChallanSerializer(serializers.ModelSerializer):
         except ValueError as ex:
             payload = ex.args[0] if ex.args else str(ex)
             raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        if (period_from is None) ^ (period_to is None):
+            raise serializers.ValidationError({"detail": "period_from and period_to must be provided together."})
+        if period_from and period_to and period_from > period_to:
+            raise serializers.ValidationError({"detail": "period_from cannot be greater than period_to."})
+        if period_from and period_to and challan_date and (challan_date < period_from or challan_date > period_to):
+            raise serializers.ValidationError({"detail": "challan_date must fall within period_from and period_to."})
         return attrs
 
 
@@ -186,6 +194,15 @@ class PurchaseStatutoryChallanCreateInputSerializer(serializers.Serializer):
         except ValueError as ex:
             payload = ex.args[0] if ex.args else str(ex)
             raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        period_from = attrs.get("period_from")
+        period_to = attrs.get("period_to")
+        challan_date = attrs.get("challan_date")
+        if (period_from is None) ^ (period_to is None):
+            raise serializers.ValidationError({"detail": "period_from and period_to must be provided together."})
+        if period_from and period_to and period_from > period_to:
+            raise serializers.ValidationError({"detail": "period_from cannot be greater than period_to."})
+        if period_from and period_to and challan_date and (challan_date < period_from or challan_date > period_to):
+            raise serializers.ValidationError({"detail": "challan_date must fall within period_from and period_to."})
         return attrs
 
 
@@ -325,6 +342,8 @@ class PurchaseStatutoryReturnSerializer(serializers.ModelSerializer):
         except ValueError as ex:
             payload = ex.args[0] if ex.args else str(ex)
             raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        if period_from and period_to and period_from > period_to:
+            raise serializers.ValidationError({"detail": "period_from cannot be greater than period_to."})
         return attrs
 
 
@@ -387,4 +406,102 @@ class PurchaseStatutoryReturnCreateInputSerializer(serializers.Serializer):
         except ValueError as ex:
             payload = ex.args[0] if ex.args else str(ex)
             raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        if attrs.get("period_from") and attrs.get("period_to") and attrs["period_from"] > attrs["period_to"]:
+            raise serializers.ValidationError({"detail": "period_from cannot be greater than period_to."})
+        return attrs
+
+
+class PurchaseStatutoryReviewNoteSerializer(serializers.ModelSerializer):
+    history = serializers.SerializerMethodField()
+    closure_status_name = serializers.CharField(source="get_closure_status_display", read_only=True)
+
+    def get_history(self, obj):
+        events = getattr(obj, "events", None)
+        rows = events.all().order_by("-changed_at", "-id")[:10] if events is not None else obj.events.all().order_by("-changed_at", "-id")[:10]
+        return PurchaseStatutoryReviewNoteEventSerializer(rows, many=True).data
+
+    class Meta:
+        model = PurchaseStatutoryReviewNote
+        fields = [
+            "id",
+            "entity",
+            "entityfinid",
+            "subentity",
+            "tax_type",
+            "period_from",
+            "period_to",
+            "reviewer_name",
+            "closure_status",
+            "closure_status_name",
+            "review_summary",
+            "open_points",
+            "closure_comment",
+            "reviewed_by",
+            "reviewed_at",
+            "history",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["reviewed_by", "reviewed_at", "created_at", "updated_at"]
+
+
+class PurchaseStatutoryReviewNoteEventSerializer(serializers.ModelSerializer):
+    action_name = serializers.CharField(source="get_action_display", read_only=True)
+    closure_status_name = serializers.CharField(source="get_closure_status_display", read_only=True)
+
+    class Meta:
+        model = PurchaseStatutoryReviewNoteEvent
+        fields = [
+            "id",
+            "action",
+            "action_name",
+            "reviewer_name",
+            "closure_status",
+            "closure_status_name",
+            "review_summary",
+            "open_points",
+            "closure_comment",
+            "changed_by",
+            "changed_at",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class PurchaseStatutoryReviewNoteInputSerializer(serializers.Serializer):
+    entity = serializers.IntegerField(min_value=1)
+    entityfinid = serializers.IntegerField(min_value=1)
+    subentity = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    tax_type = serializers.ChoiceField(
+        choices=PurchaseStatutoryChallan.TaxType.choices,
+        required=False,
+        allow_null=True,
+    )
+    period_from = serializers.DateField()
+    period_to = serializers.DateField()
+    reviewer_name = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+    closure_status = serializers.ChoiceField(choices=PurchaseStatutoryReviewNote.ClosureStatus.choices, required=False)
+    review_summary = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    open_points = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    closure_comment = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs):
+        try:
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("period_from"),
+                field_name="period_from",
+            )
+            assert_document_date_within_financial_year(
+                entity=attrs.get("entity"),
+                entityfinid=attrs.get("entityfinid"),
+                document_date=attrs.get("period_to"),
+                field_name="period_to",
+            )
+        except ValueError as ex:
+            payload = ex.args[0] if ex.args else str(ex)
+            raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
+        if attrs.get("period_from") and attrs.get("period_to") and attrs["period_from"] > attrs["period_to"]:
+            raise serializers.ValidationError({"detail": "period_from cannot be greater than period_to."})
         return attrs

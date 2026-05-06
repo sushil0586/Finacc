@@ -2,8 +2,11 @@ from django.urls import path
 
 from .views import (
     InventoryAdjustmentCreateAPIView,
+    InventoryAdjustmentCancelAPIView,
     InventoryAdjustmentDetailAPIView,
     InventoryAdjustmentListAPIView,
+    InventoryAdjustmentPostAPIView,
+    InventoryAdjustmentUnpostAPIView,
     InventoryGodownListAPIView,
     InventoryGodownMasterAPIView,
     InventoryGodownMasterDetailAPIView,
@@ -34,4 +37,7 @@ urlpatterns = [
     path("adjustments/", InventoryAdjustmentCreateAPIView.as_view(), name="inventory-adjustments"),
     path("adjustments/list/", InventoryAdjustmentListAPIView.as_view(), name="inventory-adjustments-list"),
     path("adjustments/<int:pk>/", InventoryAdjustmentDetailAPIView.as_view(), name="inventory-adjustment-detail"),
+    path("adjustments/<int:pk>/post/", InventoryAdjustmentPostAPIView.as_view(), name="inventory-adjustment-post"),
+    path("adjustments/<int:pk>/unpost/", InventoryAdjustmentUnpostAPIView.as_view(), name="inventory-adjustment-unpost"),
+    path("adjustments/<int:pk>/cancel/", InventoryAdjustmentCancelAPIView.as_view(), name="inventory-adjustment-cancel"),
 ]

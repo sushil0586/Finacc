@@ -633,52 +633,19 @@ class InventoryTransferService:
 @dataclass
 class InventoryAdjustmentResult:
     adjustment: InventoryAdjustment
-    entry_id: int
+    entry_id: int | None
 
 
 class InventoryAdjustmentService:
     @staticmethod
-    @transaction.atomic
-    def create_adjustment(*, payload: dict, user_id: int | None) -> InventoryAdjustmentResult:
-        settings_obj = _get_inventory_ops_settings(entity_id=payload["entity"], subentity_id=payload.get("subentity"))
-        location_id = resolve_posting_location_id(
-            entity_id=payload["entity"],
-            subentity_id=payload.get("subentity"),
-            godown_id=payload.get("location"),
-            location_id=payload.get("location"),
-        )
-        if location_id is None:
-            raise ValidationError("A stock location is required for inventory adjustment.")
-        require_reason = bool(_policy_value(settings_obj, "require_reason_on_adjustment", True))
-        if require_reason:
-            header_reason = str(payload.get("narration") or "").strip()
-            line_reason_present = any(str((line or {}).get("note") or "").strip() for line in payload.get("lines", []))
-            if not header_reason and not line_reason_present:
-                raise ValidationError({"narration": "Narration or line note is required for inventory adjustment."})
-
-        adjustment = InventoryAdjustment.objects.create(
-            entity_id=payload["entity"],
-            entityfin_id=payload.get("entityfinid"),
-            subentity_id=payload.get("subentity"),
-            adjustment_date=payload["adjustment_date"],
-            location_id=location_id,
-            reference_no=payload.get("reference_no") or "",
-            narration=payload.get("narration") or "",
-            status=InventoryAdjustmentStatus.DRAFT,
-            created_by_id=user_id,
-            updated_by_id=user_id,
-        )
-        adjustment.adjustment_no = _allocate_inventory_doc_number(
-            settings_obj=settings_obj,
-            entity_id=adjustment.entity_id,
-            entityfinid_id=adjustment.entityfin_id,
-            subentity_id=adjustment.subentity_id,
-            series_key="inventory_adjustment",
-            on_date=adjustment.adjustment_date,
-        )
-        adjustment.save(update_fields=["adjustment_no"])
-
-        line_objs = []
+    def _build_adjustment_lines_and_inputs(
+        *,
+        adjustment: InventoryAdjustment,
+        payload: dict,
+        location_id: int,
+        settings_obj: InventoryOpsSettings,
+    ) -> tuple[list[InventoryAdjustmentLine], list[IMInput]]:
+        line_objs: list[InventoryAdjustmentLine] = []
         im_inputs: list[IMInput] = []
         reserved_stock: dict[tuple[int, int, str], Decimal] = {}
         for idx, raw_line in enumerate(payload["lines"], start=1):
@@ -755,28 +722,237 @@ class InventoryAdjustmentService:
                     movement_reason=raw_line.get("note") or adjustment.narration or "inventory adjustment",
                 )
             )
+        if not line_objs:
+            raise ValidationError({"lines": ["At least one valid adjustment line is required."]})
+        return line_objs, im_inputs
 
+    @staticmethod
+    def _replace_adjustment_lines(*, adjustment: InventoryAdjustment, line_objs: list[InventoryAdjustmentLine]) -> None:
+        adjustment.lines.all().delete()
         InventoryAdjustmentLine.objects.bulk_create(line_objs)
 
+    @staticmethod
+    def _post_adjustment(*, adjustment: InventoryAdjustment, im_inputs: list[IMInput], user_id: int | None, narration_prefix: str | None = None):
         posting = PostingService(
             entity_id=adjustment.entity_id,
             entityfin_id=adjustment.entityfin_id,
             subentity_id=adjustment.subentity_id,
             user_id=user_id,
         )
-        entry = posting.post(
+        return posting.post(
             txn_type=TxnType.INVENTORY_ADJUSTMENT,
             txn_id=adjustment.id,
             voucher_no=adjustment.adjustment_no,
             voucher_date=adjustment.adjustment_date,
             posting_date=adjustment.adjustment_date,
-            narration=adjustment.narration or f"Inventory adjustment {adjustment.adjustment_no}",
+            narration=(narration_prefix or adjustment.narration or f"Inventory adjustment {adjustment.adjustment_no}"),
             jl_inputs=[],
             im_inputs=im_inputs,
             use_advisory_lock=False,
             mark_posted=True,
         )
 
-        InventoryAdjustment.objects.filter(id=adjustment.id).update(status=InventoryAdjustmentStatus.POSTED, posting_entry_id=entry.id)
+    @staticmethod
+    def _get_adjustment_for_update(*, adjustment_id: int) -> InventoryAdjustment:
+        try:
+            return InventoryAdjustment.objects.select_for_update().get(id=adjustment_id)
+        except InventoryAdjustment.DoesNotExist as exc:
+            raise ValidationError("Inventory adjustment not found.") from exc
+
+    @staticmethod
+    @transaction.atomic
+    def create_adjustment(*, payload: dict, user_id: int | None, auto_post: bool = True) -> InventoryAdjustmentResult:
+        settings_obj = _get_inventory_ops_settings(entity_id=payload["entity"], subentity_id=payload.get("subentity"))
+        location_id = resolve_posting_location_id(
+            entity_id=payload["entity"],
+            subentity_id=payload.get("subentity"),
+            godown_id=payload.get("location"),
+            location_id=payload.get("location"),
+        )
+        if location_id is None:
+            raise ValidationError("A stock location is required for inventory adjustment.")
+        require_reason = bool(_policy_value(settings_obj, "require_reason_on_adjustment", True))
+        if require_reason:
+            header_reason = str(payload.get("narration") or "").strip()
+            line_reason_present = any(str((line or {}).get("note") or "").strip() for line in payload.get("lines", []))
+            if not header_reason and not line_reason_present:
+                raise ValidationError({"narration": "Narration or line note is required for inventory adjustment."})
+
+        adjustment = InventoryAdjustment.objects.create(
+            entity_id=payload["entity"],
+            entityfin_id=payload.get("entityfinid"),
+            subentity_id=payload.get("subentity"),
+            adjustment_date=payload["adjustment_date"],
+            location_id=location_id,
+            reference_no=payload.get("reference_no") or "",
+            narration=payload.get("narration") or "",
+            status=InventoryAdjustmentStatus.DRAFT,
+            created_by_id=user_id,
+            updated_by_id=user_id,
+        )
+        adjustment.adjustment_no = _allocate_inventory_doc_number(
+            settings_obj=settings_obj,
+            entity_id=adjustment.entity_id,
+            entityfinid_id=adjustment.entityfin_id,
+            subentity_id=adjustment.subentity_id,
+            series_key="inventory_adjustment",
+            on_date=adjustment.adjustment_date,
+        )
+        adjustment.save(update_fields=["adjustment_no"])
+        line_objs, im_inputs = InventoryAdjustmentService._build_adjustment_lines_and_inputs(
+            adjustment=adjustment,
+            payload=payload,
+            location_id=location_id,
+            settings_obj=settings_obj,
+        )
+        InventoryAdjustmentLine.objects.bulk_create(line_objs)
+
+        if auto_post:
+            entry = InventoryAdjustmentService._post_adjustment(
+                adjustment=adjustment,
+                im_inputs=im_inputs,
+                user_id=user_id,
+            )
+            InventoryAdjustment.objects.filter(id=adjustment.id).update(status=InventoryAdjustmentStatus.POSTED, posting_entry_id=entry.id)
+            adjustment.refresh_from_db()
+            return InventoryAdjustmentResult(adjustment=adjustment, entry_id=entry.id)
+
+        adjustment.refresh_from_db()
+        return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id)
+
+    @staticmethod
+    @transaction.atomic
+    def update_adjustment(*, adjustment_id: int, payload: dict, user_id: int | None) -> InventoryAdjustmentResult:
+        adjustment = InventoryAdjustmentService._get_adjustment_for_update(adjustment_id=adjustment_id)
+        if adjustment.status != InventoryAdjustmentStatus.DRAFT:
+            raise ValidationError("Only draft adjustments can be edited.")
+        location_id = resolve_posting_location_id(
+            entity_id=payload["entity"],
+            subentity_id=payload.get("subentity"),
+            godown_id=payload.get("location"),
+            location_id=payload.get("location"),
+        )
+        if location_id is None:
+            raise ValidationError("A stock location is required for inventory adjustment.")
+        settings_obj = _get_inventory_ops_settings(entity_id=payload["entity"], subentity_id=payload.get("subentity"))
+        adjustment.entityfin_id = payload.get("entityfinid")
+        adjustment.subentity_id = payload.get("subentity")
+        adjustment.adjustment_date = payload["adjustment_date"]
+        adjustment.location_id = location_id
+        adjustment.reference_no = payload.get("reference_no") or ""
+        adjustment.narration = payload.get("narration") or ""
+        adjustment.updated_by_id = user_id
+        adjustment.save(
+            update_fields=[
+                "entityfin",
+                "subentity",
+                "adjustment_date",
+                "location",
+                "reference_no",
+                "narration",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        line_objs, _ = InventoryAdjustmentService._build_adjustment_lines_and_inputs(
+            adjustment=adjustment,
+            payload=payload,
+            location_id=location_id,
+            settings_obj=settings_obj,
+        )
+        InventoryAdjustmentService._replace_adjustment_lines(adjustment=adjustment, line_objs=line_objs)
+        adjustment.refresh_from_db()
+        return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id)
+
+    @staticmethod
+    @transaction.atomic
+    def post_adjustment(*, adjustment_id: int, user_id: int | None) -> InventoryAdjustmentResult:
+        adjustment = InventoryAdjustmentService._get_adjustment_for_update(adjustment_id=adjustment_id)
+        if adjustment.status == InventoryAdjustmentStatus.CANCELLED:
+            raise ValidationError("Cancelled adjustment cannot be posted.")
+        if adjustment.status == InventoryAdjustmentStatus.POSTED:
+            return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id)
+        payload = {
+            "entity": adjustment.entity_id,
+            "entityfinid": adjustment.entityfin_id,
+            "subentity": adjustment.subentity_id,
+            "adjustment_date": adjustment.adjustment_date,
+            "location": adjustment.location_id,
+            "reference_no": adjustment.reference_no,
+            "narration": adjustment.narration,
+            "lines": [
+                {
+                    "product": line.product_id,
+                    "direction": line.direction,
+                    "qty": line.qty,
+                    "unit_cost": line.unit_cost,
+                    "batch_number": line.batch_number,
+                    "manufacture_date": line.manufacture_date,
+                    "expiry_date": line.expiry_date,
+                    "note": line.note,
+                }
+                for line in adjustment.lines.all().select_related("product")
+            ],
+        }
+        _, im_inputs = InventoryAdjustmentService._build_adjustment_lines_and_inputs(
+            adjustment=adjustment,
+            payload=payload,
+            location_id=adjustment.location_id,
+            settings_obj=_get_inventory_ops_settings(entity_id=adjustment.entity_id, subentity_id=adjustment.subentity_id),
+        )
+        entry = InventoryAdjustmentService._post_adjustment(
+            adjustment=adjustment,
+            im_inputs=im_inputs,
+            user_id=user_id,
+        )
+        adjustment.status = InventoryAdjustmentStatus.POSTED
+        adjustment.posting_entry_id = entry.id
+        adjustment.updated_by_id = user_id
+        adjustment.save(update_fields=["status", "posting_entry_id", "updated_by", "updated_at"])
         adjustment.refresh_from_db()
         return InventoryAdjustmentResult(adjustment=adjustment, entry_id=entry.id)
+
+    @staticmethod
+    @transaction.atomic
+    def unpost_adjustment(*, adjustment_id: int, user_id: int | None, reason: str | None = None) -> InventoryAdjustmentResult:
+        adjustment = InventoryAdjustmentService._get_adjustment_for_update(adjustment_id=adjustment_id)
+        if adjustment.status != InventoryAdjustmentStatus.POSTED:
+            raise ValidationError("Only posted adjustments can be unposted.")
+        entry = InventoryAdjustmentService._post_adjustment(
+            adjustment=adjustment,
+            im_inputs=[],
+            user_id=user_id,
+            narration_prefix=f"Reversal for {adjustment.adjustment_no}: {(reason or '').strip()}".strip(),
+        )
+        Entry.objects.filter(
+            entity_id=adjustment.entity_id,
+            entityfin_id=adjustment.entityfin_id,
+            subentity_id=adjustment.subentity_id,
+            txn_type=TxnType.INVENTORY_ADJUSTMENT,
+            txn_id=adjustment.id,
+        ).update(
+            status=EntryStatus.REVERSED,
+            narration=f"Reversed: {(reason or '').strip()}".strip(),
+        )
+        adjustment.status = InventoryAdjustmentStatus.DRAFT
+        adjustment.posting_entry_id = entry.id
+        adjustment.updated_by_id = user_id
+        adjustment.save(update_fields=["status", "posting_entry_id", "updated_by", "updated_at"])
+        adjustment.refresh_from_db()
+        return InventoryAdjustmentResult(adjustment=adjustment, entry_id=entry.id)
+
+    @staticmethod
+    @transaction.atomic
+    def cancel_adjustment(*, adjustment_id: int, user_id: int | None, reason: str | None = None) -> InventoryAdjustmentResult:
+        adjustment = InventoryAdjustmentService._get_adjustment_for_update(adjustment_id=adjustment_id)
+        if adjustment.status == InventoryAdjustmentStatus.POSTED:
+            raise ValidationError("Posted adjustment must be unposted before cancellation.")
+        if adjustment.status == InventoryAdjustmentStatus.CANCELLED:
+            return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id)
+        adjustment.status = InventoryAdjustmentStatus.CANCELLED
+        suffix = f" | Cancelled: {reason.strip()}" if reason and reason.strip() else ""
+        adjustment.narration = f"{adjustment.narration or ''}{suffix}".strip(" |")
+        adjustment.updated_by_id = user_id
+        adjustment.save(update_fields=["status", "narration", "updated_by", "updated_at"])
+        adjustment.refresh_from_db()
+        return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id or 0)

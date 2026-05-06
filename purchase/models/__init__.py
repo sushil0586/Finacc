@@ -40,6 +40,8 @@ from .purchase_statutory import (
     PurchaseStatutoryForm16AOfficialDocument,
     PurchaseStatutoryForm16ACertificateDocument,
     PurchaseStatutoryForm16ADeducteeDocument,
+    PurchaseStatutoryReviewNote,
+    PurchaseStatutoryReviewNoteEvent,
 )
 
 __all__ = [
@@ -67,4 +69,6 @@ __all__ = [
     "PurchaseStatutoryForm16AOfficialDocument",
     "PurchaseStatutoryForm16ACertificateDocument",
     "PurchaseStatutoryForm16ADeducteeDocument",
+    "PurchaseStatutoryReviewNote",
+    "PurchaseStatutoryReviewNoteEvent",
 ]

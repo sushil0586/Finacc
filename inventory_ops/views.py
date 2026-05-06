@@ -493,15 +493,17 @@ class InventoryTransferCreateAPIView(_BaseInventoryOpsAPIView):
 
 class InventoryTransferListAPIView(_BaseInventoryOpsAPIView):
     def get(self, request):
-        entity_id = int(request.query_params.get("entity") or 0)
-        if not entity_id:
-            return Response({"detail": "entity is required."}, status=status.HTTP_400_BAD_REQUEST)
-        self.enforce_scope(request, entity_id=entity_id)
+        entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=False)
         self.assert_permission(request, entity_id, "inventory.transfer.view")
         from .models import InventoryTransfer
 
+        qs = InventoryTransfer.objects.filter(entity_id=entity_id)
+        if entityfinid_id is not None:
+            qs = qs.filter(entityfin_id=entityfinid_id)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
         qs = (
-            InventoryTransfer.objects.filter(entity_id=entity_id)
+            qs
             .select_related("source_location", "destination_location")
             .prefetch_related("lines")
             .order_by("-transfer_date", "-id")
@@ -614,7 +616,7 @@ class InventoryAdjustmentCreateAPIView(_BaseInventoryOpsAPIView):
             subentity_id=payload.get("subentity"),
         )
         self.assert_permission(request, payload["entity"], "inventory.adjustment.create")
-        result = InventoryAdjustmentService.create_adjustment(payload=payload, user_id=request.user.id)
+        result = InventoryAdjustmentService.create_adjustment(payload=payload, user_id=request.user.id, auto_post=False)
         response = InventoryAdjustmentResponseSerializer(result.adjustment)
         return Response(
             {
@@ -628,15 +630,17 @@ class InventoryAdjustmentCreateAPIView(_BaseInventoryOpsAPIView):
 
 class InventoryAdjustmentListAPIView(_BaseInventoryOpsAPIView):
     def get(self, request):
-        entity_id = int(request.query_params.get("entity") or 0)
-        if not entity_id:
-            return Response({"detail": "entity is required."}, status=status.HTTP_400_BAD_REQUEST)
-        self.enforce_scope(request, entity_id=entity_id)
+        entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=False)
         self.assert_permission(request, entity_id, "inventory.adjustment.view")
         from .models import InventoryAdjustment
 
+        qs = InventoryAdjustment.objects.filter(entity_id=entity_id)
+        if entityfinid_id is not None:
+            qs = qs.filter(entityfin_id=entityfinid_id)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
         qs = (
-            InventoryAdjustment.objects.filter(entity_id=entity_id)
+            qs
             .select_related("location")
             .prefetch_related("lines")
             .order_by("-adjustment_date", "-id")
@@ -646,13 +650,97 @@ class InventoryAdjustmentListAPIView(_BaseInventoryOpsAPIView):
 
 
 class InventoryAdjustmentDetailAPIView(_BaseInventoryOpsAPIView):
-    def get(self, request, pk: int):
+    def get_object(self, pk: int):
         from .models import InventoryAdjustment
 
-        adjustment = get_object_or_404(
+        return get_object_or_404(
             InventoryAdjustment.objects.select_related("location").prefetch_related("lines__product", "lines__uom"),
             pk=pk,
         )
+
+    def get(self, request, pk: int):
+        adjustment = self.get_object(pk)
         self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.view")
         return Response(InventoryAdjustmentResponseSerializer(adjustment).data)
+
+    def patch(self, request, pk: int):
+        adjustment = self.get_object(pk)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.update")
+        serializer = InventoryAdjustmentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        try:
+            result = InventoryAdjustmentService.update_adjustment(adjustment_id=pk, payload=payload, user_id=request.user.id)
+        except (ValueError, ValidationError) as exc:
+            _raise_inventory_validation(exc)
+        return Response(
+            {
+                "message": "Adjustment updated successfully.",
+                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "entry_id": result.entry_id,
+            }
+        )
+
+
+class InventoryAdjustmentPostAPIView(_BaseInventoryOpsAPIView):
+    def post(self, request, pk: int):
+        from .models import InventoryAdjustment
+
+        adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.post")
+        try:
+            result = InventoryAdjustmentService.post_adjustment(adjustment_id=pk, user_id=request.user.id)
+        except (ValueError, ValidationError) as exc:
+            _raise_inventory_validation(exc)
+        return Response(
+            {
+                "message": "Adjustment posted successfully.",
+                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "entry_id": result.entry_id,
+            }
+        )
+
+
+class InventoryAdjustmentUnpostAPIView(_BaseInventoryOpsAPIView):
+    def post(self, request, pk: int):
+        from .models import InventoryAdjustment
+
+        adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.unpost")
+        reason = str(request.data.get("reason") or "").strip() or None
+        try:
+            result = InventoryAdjustmentService.unpost_adjustment(adjustment_id=pk, user_id=request.user.id, reason=reason)
+        except (ValueError, ValidationError) as exc:
+            _raise_inventory_validation(exc)
+        return Response(
+            {
+                "message": "Adjustment unposted successfully.",
+                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "entry_id": result.entry_id,
+            }
+        )
+
+
+class InventoryAdjustmentCancelAPIView(_BaseInventoryOpsAPIView):
+    def post(self, request, pk: int):
+        from .models import InventoryAdjustment
+
+        adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.cancel")
+        reason = str(request.data.get("reason") or "").strip() or None
+        try:
+            result = InventoryAdjustmentService.cancel_adjustment(adjustment_id=pk, user_id=request.user.id, reason=reason)
+        except (ValueError, ValidationError) as exc:
+            _raise_inventory_validation(exc)
+        return Response(
+            {
+                "message": "Adjustment cancelled successfully.",
+                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "entry_id": result.entry_id,
+            }
+        )

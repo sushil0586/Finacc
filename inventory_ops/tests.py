@@ -46,6 +46,14 @@ class InventoryOpsTests(APITestCase):
             finendyear=timezone.make_aware(datetime(2026, 3, 31)),
             createdby=self.user,
         )
+        self.entityfin_alt = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc='FY 2026-27',
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            createdby=self.user,
+        )
+        self.subentity_alt = SubEntity.objects.create(entity=self.entity, subentityname='Branch B')
 
         self.source = Godown.objects.create(
             entity=self.entity,
@@ -67,6 +75,28 @@ class InventoryOpsTests(APITestCase):
             city='Ludhiana',
             state='Punjab',
             pincode='141002',
+            is_active=True,
+        )
+        self.source_alt = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity_alt,
+            name='Branch B Warehouse',
+            code='WH-B1',
+            address='Branch B Area',
+            city='Ludhiana',
+            state='Punjab',
+            pincode='141003',
+            is_active=True,
+        )
+        self.destination_alt = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity_alt,
+            name='Branch B Overflow',
+            code='WH-B2',
+            address='Branch B Phase 2',
+            city='Ludhiana',
+            state='Punjab',
+            pincode='141004',
             is_active=True,
         )
 
@@ -130,6 +160,10 @@ class InventoryOpsTests(APITestCase):
         self._grant_inventory_permission('inventory.transfer.cancel')
         self._grant_inventory_permission('inventory.adjustment.view')
         self._grant_inventory_permission('inventory.adjustment.create')
+        self._grant_inventory_permission('inventory.adjustment.update')
+        self._grant_inventory_permission('inventory.adjustment.post')
+        self._grant_inventory_permission('inventory.adjustment.unpost')
+        self._grant_inventory_permission('inventory.adjustment.cancel')
         self._grant_inventory_permission('inventory.location.view')
         self._grant_inventory_permission('inventory.location.create')
         self._grant_inventory_permission('inventory.location.update')
@@ -358,8 +392,51 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(len(response.json()['rows']), 1)
 
-    def test_create_adjustment_posts_inventory_moves(self):
-        payload = {
+    def test_transfer_list_honors_entityfinid_and_subentity_scope(self):
+        self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
+
+        InventoryAdjustmentService.create_adjustment(
+            payload={
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin_alt.id,
+                'subentity': self.subentity_alt.id,
+                'adjustment_date': '2026-04-10',
+                'location': self.source_alt.id,
+                'reference_no': 'ALT-SEED',
+                'narration': 'Seed alternate branch stock',
+                'lines': [
+                    {
+                        'product': self.product.id,
+                        'direction': 'INCREASE',
+                        'qty': '10.0000',
+                        'unit_cost': '25000.0000',
+                        'note': 'Alternate branch stock',
+                    }
+                ],
+            },
+            user_id=self.user.id,
+        )
+
+        other_scope_payload = self._transfer_payload()
+        other_scope_payload['entityfinid'] = self.entityfin_alt.id
+        other_scope_payload['subentity'] = self.subentity_alt.id
+        other_scope_payload['source_location'] = self.source_alt.id
+        other_scope_payload['destination_location'] = self.destination_alt.id
+        other_scope_payload['reference_no'] = 'REF-ALT'
+        other_created = self.client.post(reverse('inventory_ops:inventory-transfers'), other_scope_payload, format='json')
+        self.assertEqual(other_created.status_code, 201)
+
+        response = self.client.get(
+            reverse('inventory_ops:inventory-transfers-list'),
+            {'entity': self.entity.id, 'entityfinid': self.entityfin.id, 'subentity': self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        reference_nos = {row['reference_no'] for row in response.json()['rows']}
+        self.assertIn('REF-1001', reference_nos)
+        self.assertNotIn('REF-ALT', reference_nos)
+
+    def _adjustment_payload(self):
+        return {
             'entity': self.entity.id,
             'entityfinid': self.entityfin.id,
             'subentity': self.subentity.id,
@@ -377,14 +454,47 @@ class InventoryOpsTests(APITestCase):
                 }
             ],
         }
-        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+
+    def test_create_adjustment_saves_draft_without_posting_moves(self):
+        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
         self.assertEqual(response.status_code, 201)
         body = response.json()
-        self.assertEqual(body['adjustment']['status'], 'POSTED')
+        self.assertEqual(body['adjustment']['status'], 'DRAFT')
         self.assertAlmostEqual(float(body['adjustment']['total_qty']), 2.0)
         self.assertAlmostEqual(float(body['adjustment']['total_value']), 50000.0)
         adjustment_id = body['adjustment']['id']
+        self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 0)
+
+    def test_adjustment_post_unpost_and_cancel_flow(self):
+        created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
+        self.assertEqual(created.status_code, 201)
+        adjustment_id = created.json()['adjustment']['id']
+
+        post_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(post_resp.status_code, 200)
+        self.assertEqual(post_resp.json()['adjustment']['status'], 'POSTED')
         self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 1)
+
+        unpost_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-unpost', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(unpost_resp.status_code, 200)
+        self.assertEqual(unpost_resp.json()['adjustment']['status'], 'DRAFT')
+        self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 0)
+
+        cancel_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-cancel', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(cancel_resp.status_code, 200)
+        self.assertEqual(cancel_resp.json()['adjustment']['status'], 'CANCELLED')
+
+    def test_adjustment_update_replaces_lines_for_draft(self):
+        created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
+        adjustment_id = created.json()['adjustment']['id']
+        payload = self._adjustment_payload()
+        payload['lines'][0]['qty'] = '3.0000'
+        payload['lines'][0]['note'] = 'Updated quantity'
+        response = self.client.patch(reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': adjustment_id}), payload, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['adjustment']['status'], 'DRAFT')
+        self.assertAlmostEqual(float(response.json()['adjustment']['total_qty']), 3.0)
+        self.assertEqual(response.json()['adjustment']['lines'][0]['note'], 'Updated quantity')
 
     def test_increase_adjustment_requires_cost_when_no_default_exists(self):
         payload = {
@@ -453,13 +563,8 @@ class InventoryOpsTests(APITestCase):
 
     def test_adjustment_list_returns_rows(self):
         payload = {
-            'entity': self.entity.id,
-            'entityfinid': self.entityfin.id,
-            'subentity': self.subentity.id,
-            'adjustment_date': '2025-04-12',
-            'location': self.source.id,
+            **self._adjustment_payload(),
             'reference_no': 'ADJ-1002',
-            'narration': 'Adjustment list test',
             'lines': [
                 {
                     'product': self.product.id,
@@ -474,6 +579,29 @@ class InventoryOpsTests(APITestCase):
         response = self.client.get(reverse('inventory_ops:inventory-adjustments-list'), {'entity': self.entity.id})
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(len(response.json()['rows']), 1)
+
+    def test_adjustment_list_honors_entityfinid_and_subentity_scope(self):
+        payload = {**self._adjustment_payload(), 'reference_no': 'ADJ-SCOPE-A'}
+        self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+
+        other_scope_payload = {
+            **self._adjustment_payload(),
+            'entityfinid': self.entityfin_alt.id,
+            'subentity': self.subentity_alt.id,
+            'location': self.source_alt.id,
+            'reference_no': 'ADJ-SCOPE-B',
+        }
+        other_created = self.client.post(reverse('inventory_ops:inventory-adjustments'), other_scope_payload, format='json')
+        self.assertEqual(other_created.status_code, 201)
+
+        response = self.client.get(
+            reverse('inventory_ops:inventory-adjustments-list'),
+            {'entity': self.entity.id, 'entityfinid': self.entityfin.id, 'subentity': self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        reference_nos = {row['reference_no'] for row in response.json()['rows']}
+        self.assertIn('ADJ-SCOPE-A', reference_nos)
+        self.assertNotIn('ADJ-SCOPE-B', reference_nos)
 
     def test_inventory_settings_returns_defaults_and_numbering_rows(self):
         response = self.client.get(

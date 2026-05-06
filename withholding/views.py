@@ -117,6 +117,40 @@ def _safe_decimal(raw) -> Decimal:
         return Decimal("0.00")
 
 
+def _tcs_deposit_status_counts_as_deposited(status_value: str | None) -> bool:
+    status_token = str(status_value or "").strip().upper()
+    return status_token in {TcsDeposit.Status.CONFIRMED, TcsDeposit.Status.FILED}
+
+
+def _tcs_deposit_status_allows_allocation(status_value: str | None) -> bool:
+    status_token = str(status_value or "").strip().upper()
+    return status_token == TcsDeposit.Status.CONFIRMED
+
+
+def _sum_tcs_allocation_rows(allocations, *, deposited_only: bool = False) -> Decimal:
+    total = Decimal("0.00")
+    for allocation in allocations:
+        deposit = getattr(allocation, "deposit", None)
+        if deposited_only and not _tcs_deposit_status_counts_as_deposited(getattr(deposit, "status", None)):
+            continue
+        total += q2(getattr(allocation, "allocated_amount", Decimal("0.00")) or Decimal("0.00"))
+    return q2(total)
+
+
+def _tcs_computation_total_deposited(comp, *, deposited_only: bool = True) -> Decimal:
+    total = Decimal("0.00")
+    for collection in getattr(comp, "collections", []).all():
+        if getattr(collection, "status", None) == TcsCollection.Status.CANCELLED:
+            continue
+        total += _sum_tcs_allocation_rows(collection.deposit_allocations.all(), deposited_only=deposited_only)
+    return q2(total)
+
+
+def _tcs_return_status_requires_clean_snapshot(status_value: str | None) -> bool:
+    status_token = str(status_value or "").strip().upper()
+    return status_token in {TcsQuarterlyReturn.Status.VALIDATED, TcsQuarterlyReturn.Status.FILED}
+
+
 def _is_valid_pan(pan: str) -> bool:
     token = (pan or "").strip().upper()
     if not token:
@@ -249,6 +283,18 @@ def _runtime_quality_flags(*, section_code: str, reason_code: str, pan: str, tax
         "residency_mismatch": bool((code == "195" and residency and residency != "non_resident") or (code in {"194A", "194N"} and residency == "non_resident")),
         "invalid_base_rule": reason == "INVALID_BASE_RULE",
         "missing_section": not code,
+    }
+
+
+def _tcs_runtime_quality_flags(*, section, reason_code: str, pan: str) -> dict[str, bool]:
+    reason = (reason_code or "").strip().upper()
+    requires_pan = bool(getattr(section, "requires_pan", False)) if section is not None else False
+    return {
+        "missing_pan": bool(requires_pan and not pan),
+        "missing_tax_id": False,
+        "residency_mismatch": False,
+        "invalid_base_rule": reason == "INVALID_BASE_RULE",
+        "missing_section": section is None,
     }
 
 
@@ -693,8 +739,8 @@ class TcsDepositAllocateAPIView(APIView):
         except (TcsCollection.DoesNotExist, ValueError, TypeError):
             return Response({"detail": "Invalid collection_id."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if deposit.status == TcsDeposit.Status.FILED:
-            return Response({"detail": "Cannot allocate against a filed deposit."}, status=status.HTTP_400_BAD_REQUEST)
+        if not _tcs_deposit_status_allows_allocation(deposit.status):
+            return Response({"detail": "Allocation is allowed only against confirmed deposits."}, status=status.HTTP_400_BAD_REQUEST)
         if collection.status == TcsCollection.Status.CANCELLED:
             return Response({"detail": "Cannot allocate a cancelled collection."}, status=status.HTTP_400_BAD_REQUEST)
         if int(collection.computation.entity_id) != int(deposit.entity_id):
@@ -766,9 +812,9 @@ class TcsReturn27EqListCreateAPIView(generics.ListCreateAPIView):
         quarter = (serializer.validated_data.get("quarter") or "").strip().upper()
         status_value = serializer.validated_data.get("status") or TcsQuarterlyReturn.Status.DRAFT
         snapshot = serializer.validated_data.get("json_snapshot")
-        if (status_value == TcsQuarterlyReturn.Status.FILED and entity and fy and quarter) or (not snapshot and entity and fy and quarter):
+        if (_tcs_return_status_requires_clean_snapshot(status_value) and entity and fy and quarter) or (not snapshot and entity and fy and quarter):
             snapshot = _build_tcs_27eq_snapshot(entity_id=int(entity.id), fy=fy, quarter=quarter)
-        if status_value == TcsQuarterlyReturn.Status.FILED:
+        if _tcs_return_status_requires_clean_snapshot(status_value):
             filing_errors = _filing_readiness_errors(snapshot or {})
             if filing_errors:
                 raise ValidationError({"status": filing_errors})
@@ -787,18 +833,25 @@ class TcsReturn27EqRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
         return qs
 
     def perform_update(self, serializer):
+        if serializer.instance.status == TcsQuarterlyReturn.Status.FILED:
+            raise ValidationError({"status": ["Filed returns cannot be edited. Create a correction return instead."]})
         entity = serializer.validated_data.get("entity") or serializer.instance.entity
         fy = (serializer.validated_data.get("fy") or serializer.instance.fy or "").strip()
         quarter = (serializer.validated_data.get("quarter") or serializer.instance.quarter or "").strip().upper()
         status_value = serializer.validated_data.get("status") or serializer.instance.status
         snapshot = serializer.validated_data.get("json_snapshot")
-        if (status_value == TcsQuarterlyReturn.Status.FILED and entity and fy and quarter) or (not snapshot and entity and fy and quarter):
+        if (_tcs_return_status_requires_clean_snapshot(status_value) and entity and fy and quarter) or (not snapshot and entity and fy and quarter):
             snapshot = _build_tcs_27eq_snapshot(entity_id=int(entity.id), fy=fy, quarter=quarter)
-        if status_value == TcsQuarterlyReturn.Status.FILED:
+        if _tcs_return_status_requires_clean_snapshot(status_value):
             filing_errors = _filing_readiness_errors(snapshot or {})
             if filing_errors:
                 raise ValidationError({"status": filing_errors})
         serializer.save(form_name="27EQ", json_snapshot=snapshot)
+
+    def perform_destroy(self, instance):
+        if instance.status == TcsQuarterlyReturn.Status.FILED:
+            raise ValidationError({"status": ["Filed returns cannot be deleted. Create a correction return instead."]})
+        instance.delete()
 
 
 class TcsReturn27EqPrefillAPIView(APIView):
@@ -916,7 +969,9 @@ class TcsReportLedgerDetailAPIView(APIView):
                 comp_collected += q2(collection.tcs_collected_amount or Decimal("0.00"))
                 for alloc in collection.deposit_allocations.all():
                     alloc_amt = q2(alloc.allocated_amount or Decimal("0.00"))
-                    comp_deposited += alloc_amt
+                    dep = alloc.deposit
+                    counted_alloc_amt = alloc_amt if _tcs_deposit_status_counts_as_deposited(getattr(dep, "status", None)) else Decimal("0.00")
+                    comp_deposited += counted_alloc_amt
                     dep = alloc.deposit
                     if dep:
                         key = dep.id
@@ -927,7 +982,7 @@ class TcsReportLedgerDetailAPIView(APIView):
                                 "challan_date": dep.challan_date,
                                 "allocated_amount": Decimal("0.00"),
                             }
-                        challan_map[key]["allocated_amount"] = q2(challan_map[key]["allocated_amount"] + alloc_amt)
+                        challan_map[key]["allocated_amount"] = q2(challan_map[key]["allocated_amount"] + counted_alloc_amt)
 
             pending_collection = q2(comp_tcs - comp_collected)
             pending_deposit = q2(comp_collected - comp_deposited)
@@ -1092,8 +1147,9 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                 for alloc in col.deposit_allocations.all():
                     alloc_amt = q2(alloc.allocated_amount or Decimal("0.00"))
                     dep = alloc.deposit
-                    col_deposited += alloc_amt
-                    comp_deposited += alloc_amt
+                    counted_alloc_amt = alloc_amt if _tcs_deposit_status_counts_as_deposited(getattr(dep, "status", None)) else Decimal("0.00")
+                    col_deposited += counted_alloc_amt
+                    comp_deposited += counted_alloc_amt
                     allocation_rows.append(
                         {
                             "id": alloc.id,
@@ -1126,15 +1182,6 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             has_invalid_pan_format = bool(pan_token) and not _is_valid_pan(pan_token)
             has_missing_section = comp.section_id is None
             sec_code = comp.section.section_code if comp.section else "UNMAPPED"
-            section_upper = str(sec_code or "").strip().upper()
-            profile = profile_map.get(comp.party_account_id)
-            tax_identifier = str(getattr(profile, "tax_identifier", "") or "").strip()
-            residency_status = str(getattr(profile, "residency_status", "") or "").strip().lower()
-            has_missing_tax_id = bool(section_upper == "195" and not tax_identifier)
-            has_residency_mismatch = bool(
-                (section_upper == "195" and residency_status and residency_status != "non_resident")
-                or (section_upper in {"194A", "194N"} and residency_status == "non_resident")
-            )
             has_quarter_violation = _quarter_boundary_violation(
                 doc_date=comp.doc_date,
                 fiscal_year=comp.fiscal_year or "",
@@ -1145,13 +1192,20 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                 or (comp.rule_snapshot_json or {}).get("reason_code")
                 or ""
             ).strip().upper()
-            has_invalid_base_rule = reason_code == "INVALID_BASE_RULE"
+            runtime_flags = _tcs_runtime_quality_flags(
+                section=comp.section,
+                reason_code=reason_code,
+                pan=pan_token,
+            )
+            has_missing_tax_id = bool(runtime_flags["missing_tax_id"])
+            has_residency_mismatch = bool(runtime_flags["residency_mismatch"])
+            has_invalid_base_rule = bool(runtime_flags["invalid_base_rule"])
             has_incomplete = bool(
-                has_missing_pan
+                bool(runtime_flags["missing_pan"])
                 or has_invalid_pan_format
                 or has_missing_tax_id
                 or has_residency_mismatch
-                or has_missing_section
+                or bool(runtime_flags["missing_section"])
                 or has_invalid_base_rule
                 or has_quarter_violation
             )
@@ -1193,7 +1247,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             bucket["pending_collection"] = q2(bucket["pending_collection"] + pending_collection)
             bucket["pending_deposit"] = q2(bucket["pending_deposit"] + pending_deposit)
 
-            if has_missing_pan:
+            if runtime_flags["missing_pan"]:
                 quality_counts["missing_pan"] += 1
             if has_invalid_pan_format:
                 quality_counts["invalid_pan_format"] += 1
@@ -1201,7 +1255,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                 quality_counts["missing_tax_id"] += 1
             if has_residency_mismatch:
                 quality_counts["residency_mismatch"] += 1
-            if has_missing_section:
+            if runtime_flags["missing_section"]:
                 quality_counts["missing_section"] += 1
             if has_invalid_base_rule:
                 quality_counts["invalid_base_rule"] += 1
@@ -1241,11 +1295,11 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                         "collected": bool(comp_collected > Decimal("0.00")),
                         "deposited": bool(comp_deposited > Decimal("0.00")),
                         "pending": bool(pending_collection > Decimal("0.00") or pending_deposit > Decimal("0.00")),
-                        "missing_pan": has_missing_pan,
+                        "missing_pan": bool(runtime_flags["missing_pan"]),
                         "invalid_pan_format": has_invalid_pan_format,
                         "missing_tax_id": has_missing_tax_id,
                         "residency_mismatch": has_residency_mismatch,
-                        "missing_section": has_missing_section,
+                        "missing_section": bool(runtime_flags["missing_section"]),
                         "invalid_base_rule": has_invalid_base_rule,
                         "quarter_boundary_violation": has_quarter_violation,
                         "incomplete_compliance": has_incomplete,
@@ -1347,6 +1401,7 @@ class TcsReportFilingPackAPIView(APIView):
         months = self._quarter_months(quarter)
         exceptions_only = _safe_bool(request.query_params.get("exceptions_only"))
         pending_only = _safe_bool(request.query_params.get("pending_only"))
+        include_cancelled = _safe_bool(request.query_params.get("include_cancelled"))
 
         fy_candidates = _expand_fy_values(fy)
         computations = (
@@ -1355,12 +1410,8 @@ class TcsReportFilingPackAPIView(APIView):
             .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
             .order_by("doc_date", "id")
         )
-        party_ids = {int(row.party_account_id) for row in computations}
-        profile_map = {
-            row.party_account_id: row
-            for row in EntityPartyTaxProfile.objects.filter(entity_id=entity_id, party_account_id__in=party_ids, is_active=True).order_by("-updated_at")
-        }
-
+        if not include_cancelled:
+            computations = _exclude_cancelled_documents(computations)
         deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months).order_by("challan_date", "id")
         return_row = TcsQuarterlyReturn.objects.filter(entity_id=entity_id, fy__in=fy_candidates, quarter=quarter, form_name="27EQ").order_by("-id").first()
 
@@ -1376,14 +1427,15 @@ class TcsReportFilingPackAPIView(APIView):
             party_name = (getattr(party, "legalname", None) or getattr(party, "accountname", None) or "").strip()
             pan = (account_pan(party) or getattr(party, "pan", None) or "").strip().upper()
             invalid_pan_format = bool(pan) and not _is_valid_pan(pan)
-            profile = profile_map.get(comp.party_account_id)
-            residency_status = str(getattr(profile, "residency_status", "") or "").strip().lower()
-            tax_identifier = str(getattr(profile, "tax_identifier", "") or "").strip()
-            section_upper = str(getattr(section, "section_code", "") or "").strip().upper()
-            missing_tax_id = bool(section_upper == "195" and not tax_identifier)
-            residency_mismatch = bool(
-                (section_upper == "195" and residency_status and residency_status != "non_resident")
-                or (section_upper in {"194A", "194N"} and residency_status == "non_resident")
+            reason_code = str(
+                (comp.computation_json or {}).get("reason_code")
+                or (comp.rule_snapshot_json or {}).get("reason_code")
+                or ""
+            ).strip().upper()
+            runtime_flags = _tcs_runtime_quality_flags(
+                section=section,
+                reason_code=reason_code,
+                pan=pan,
             )
             quarter_boundary_violation = _quarter_boundary_violation(
                 doc_date=comp.doc_date,
@@ -1399,8 +1451,7 @@ class TcsReportFilingPackAPIView(APIView):
             comp_collected_total = Decimal("0.00")
             for c in comp.collections.all():
                 comp_collected_total += q2(c.tcs_collected_amount or Decimal("0.00"))
-                alloc_sum = c.deposit_allocations.aggregate(v=Sum("allocated_amount")).get("v") or Decimal("0.00")
-                comp_alloc_total += q2(alloc_sum)
+                comp_alloc_total += _sum_tcs_allocation_rows(c.deposit_allocations.all(), deposited_only=True)
 
             total_base += q2(comp.tcs_base_amount or Decimal("0.00"))
             total_tcs += q2(comp.tcs_amount or Decimal("0.00"))
@@ -1450,7 +1501,11 @@ class TcsReportFilingPackAPIView(APIView):
                         "bsr_code": dep.bsr_code if dep else None,
                         "cin": dep.cin if dep else None,
                         "bank_name": dep.bank_name if dep else None,
-                        "allocated_amount": q2(alloc.allocated_amount) if alloc else Decimal("0.00"),
+                        "allocated_amount": (
+                            q2(alloc.allocated_amount)
+                            if alloc and _tcs_deposit_status_counts_as_deposited(getattr(dep, "status", None))
+                            else Decimal("0.00")
+                        ),
                         "deposit_status": dep.status if dep else None,
                         "return_id": return_row.id if return_row else None,
                         "return_quarter": return_row.quarter if return_row else quarter,
@@ -1460,11 +1515,11 @@ class TcsReportFilingPackAPIView(APIView):
                         "filed_on": return_row.filed_on if return_row else None,
                     }
                     row["exceptions"] = {
-                        "missing_pan": not bool(pan),
+                        "missing_pan": bool(runtime_flags["missing_pan"]),
                         "invalid_pan_format": invalid_pan_format,
-                        "missing_tax_id": missing_tax_id,
-                        "residency_mismatch": residency_mismatch,
-                        "missing_section": comp.section_id is None,
+                        "missing_tax_id": bool(runtime_flags["missing_tax_id"]),
+                        "residency_mismatch": bool(runtime_flags["residency_mismatch"]),
+                        "missing_section": bool(runtime_flags["missing_section"]),
                         "not_collected": comp_collected_total <= Decimal("0.00"),
                         "not_deposited": comp_alloc_total <= Decimal("0.00"),
                         "partially_allocated": comp_alloc_total > Decimal("0.00") and comp_alloc_total < q2(comp.tcs_amount or Decimal("0.00")),
@@ -1483,7 +1538,7 @@ class TcsReportFilingPackAPIView(APIView):
                         continue
                     rows.append(row)
 
-        total_deposited = q2(deposits.aggregate(v=Sum("total_deposit_amount")).get("v") or Decimal("0.00"))
+        total_deposited = q2(sum((_tcs_computation_total_deposited(comp, deposited_only=True) for comp in computations), Decimal("0.00")))
         pending_collection = q2(total_tcs - total_collected)
         pending_deposit = q2(total_collected - total_deposited)
         exception_row_count = sum(1 for r in rows if any(bool(v) for v in (r.get("exceptions") or {}).values()))
@@ -1563,10 +1618,27 @@ class TcsReportFilingPackExportAPIView(APIView):
         rows = payload.get("rows") or []
         section_summary = payload.get("section_summary") or []
         header = payload.get("header") or {}
+        exception_keys = [
+            "missing_pan",
+            "invalid_pan_format",
+            "missing_tax_id",
+            "residency_mismatch",
+            "missing_section",
+            "not_collected",
+            "not_deposited",
+            "partially_allocated",
+            "deposit_mismatch",
+            "quarter_boundary_violation",
+            "reversal_case",
+        ]
 
         filing_rows = []
+        exception_spotlight = {key: 0 for key in exception_keys}
         for row in rows:
             exc = row.get("exceptions") or {}
+            for key in exception_keys:
+                if exc.get(key):
+                    exception_spotlight[key] += 1
             filing_rows.append(
                 {
                     "doc_date": row.get("doc_date"),
@@ -1595,9 +1667,46 @@ class TcsReportFilingPackExportAPIView(APIView):
                 }
             )
         header_rows = [{"key": k, "value": v} for k, v in header.items()]
+        management_summary = [
+            {"metric": "fy", "value": header.get("fy")},
+            {"metric": "quarter", "value": header.get("quarter")},
+            {"metric": "return_status", "value": header.get("return_status")},
+            {"metric": "row_count", "value": header.get("row_count")},
+            {"metric": "exception_row_count", "value": header.get("exception_row_count")},
+            {"metric": "total_tcs", "value": header.get("total_tcs")},
+            {"metric": "total_collected", "value": header.get("total_collected")},
+            {"metric": "total_deposited", "value": header.get("total_deposited")},
+            {"metric": "pending_collection", "value": header.get("pending_collection")},
+            {"metric": "pending_deposit", "value": header.get("pending_deposit")},
+        ]
+        exception_rows = [
+            {"exception": key, "affected_rows": count}
+            for key, count in exception_spotlight.items()
+            if count > 0
+        ]
+        return_tracker = []
+        seen_returns = set()
+        for row in rows:
+            return_id = row.get("return_id")
+            if not return_id or return_id in seen_returns:
+                continue
+            seen_returns.add(return_id)
+            return_tracker.append(
+                {
+                    "return_id": return_id,
+                    "return_quarter": row.get("return_quarter"),
+                    "return_type": row.get("return_type"),
+                    "return_status": row.get("return_status"),
+                    "ack_no": row.get("ack_no"),
+                    "filed_on": row.get("filed_on"),
+                }
+            )
         zip_bytes = _zip_csv_payload(
             {
+                "filing_pack_management_summary.csv": management_summary,
                 "filing_pack_transactions.csv": filing_rows,
+                "filing_pack_exception_spotlight.csv": exception_rows,
+                "filing_pack_return_tracker.csv": return_tracker,
                 "filing_pack_section_summary.csv": section_summary,
                 "filing_pack_header.csv": header_rows,
             }
@@ -1811,15 +1920,6 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
         .prefetch_related("collections__deposit_allocations")
         .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
     )
-    party_ids = {int(comp.party_account_id) for comp in computations}
-    profile_map = {
-        row.party_account_id: row
-        for row in EntityPartyTaxProfile.objects.filter(
-            entity_id=entity_id,
-            party_account_id__in=party_ids,
-            is_active=True,
-        ).order_by("-updated_at")
-    }
     deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months)
 
     total_base = q2(computations.aggregate(v=Sum("tcs_base_amount")).get("v") or Decimal("0.00"))
@@ -1828,7 +1928,7 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
         TcsCollection.objects.filter(computation__in=computations).exclude(status=TcsCollection.Status.CANCELLED).aggregate(v=Sum("tcs_collected_amount")).get("v")
         or Decimal("0.00")
     )
-    total_deposited = q2(deposits.aggregate(v=Sum("total_deposit_amount")).get("v") or Decimal("0.00"))
+    total_deposited = q2(sum((_tcs_computation_total_deposited(comp, deposited_only=True) for comp in computations), Decimal("0.00")))
 
     missing_pan_count = 0
     invalid_pan_format_count = 0
@@ -1843,21 +1943,25 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
 
     for comp in computations:
         pan = (account_pan(comp.party_account) or getattr(comp.party_account, "pan", None) or "").strip().upper()
-        if not pan:
+        reason_code = str(
+            (comp.computation_json or {}).get("reason_code")
+            or (comp.rule_snapshot_json or {}).get("reason_code")
+            or ""
+        ).strip().upper()
+        runtime_flags = _tcs_runtime_quality_flags(
+            section=comp.section,
+            reason_code=reason_code,
+            pan=pan,
+        )
+        if runtime_flags["missing_pan"]:
             missing_pan_count += 1
-        elif not _is_valid_pan(pan):
+        elif pan and not _is_valid_pan(pan):
             invalid_pan_format_count += 1
-        if not comp.section_id:
+        if runtime_flags["missing_section"]:
             missing_section_count += 1
-        section_upper = str(getattr(comp.section, "section_code", "") or "").strip().upper()
-        party_profile = profile_map.get(comp.party_account_id)
-        residency_status = str(getattr(party_profile, "residency_status", "") or "").strip().lower()
-        tax_identifier = str(getattr(party_profile, "tax_identifier", "") or "").strip()
-        if section_upper == "195" and not tax_identifier:
+        if runtime_flags["missing_tax_id"]:
             missing_tax_id_count += 1
-        if (section_upper == "195" and residency_status and residency_status != "non_resident") or (
-            section_upper in {"194A", "194N"} and residency_status == "non_resident"
-        ):
+        if runtime_flags["residency_mismatch"]:
             residency_mismatch_count += 1
         if _quarter_boundary_violation(doc_date=comp.doc_date, fiscal_year=comp.fiscal_year or "", quarter=comp.quarter or ""):
             quarter_boundary_violation_count += 1
@@ -1868,7 +1972,7 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
             if col.status == TcsCollection.Status.CANCELLED:
                 continue
             comp_collected_total += q2(col.tcs_collected_amount or Decimal("0.00"))
-            comp_alloc_total += q2(col.deposit_allocations.aggregate(v=Sum("allocated_amount")).get("v") or Decimal("0.00"))
+            comp_alloc_total += _sum_tcs_allocation_rows(col.deposit_allocations.all(), deposited_only=True)
 
         comp_tcs = q2(comp.tcs_amount or Decimal("0.00"))
         if comp_tcs > Decimal("0.00") and comp_collected_total <= Decimal("0.00"):
