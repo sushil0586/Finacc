@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 
+from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import ValidationError
@@ -446,40 +447,58 @@ class AssetBulkAPIView(AssetScopedAPIView):
         token = (request.data.get("validation_token") or "").strip()
         if not token:
             raise ValidationError({"validation_token": "validation_token is required."})
-        vjob = get_object_or_404(
-            AssetBulkJob,
-            entity=entity,
-            scope_type=self.bulk_scope_type,
-            validation_token=token,
-            job_type=AssetBulkJob.JobType.VALIDATE,
-        )
-        if vjob.errors:
-            raise ValidationError({"detail": "Cannot commit while validation has errors.", "error_count": len(vjob.errors)})
-        upsert_mode = (request.data.get("upsert_mode") or vjob.upsert_mode or AssetBulkJob.UpsertMode.UPSERT)
-        duplicate_strategy = (request.data.get("duplicate_strategy") or vjob.duplicate_strategy or AssetBulkJob.DuplicateStrategy.FAIL)
-        result = commit_payload(
-            vjob.payload or {},
-            entity,
-            self.bulk_scope_type,
-            subentity=subentity,
-            entityfinid=entityfinid,
-            upsert_mode=upsert_mode,
-            duplicate_strategy=duplicate_strategy,
-            user_id=request.user.id,
-        )
-        job = AssetBulkJob.objects.create(
-            entity=entity,
-            subentity=subentity,
-            created_by=request.user,
-            scope_type=self.bulk_scope_type,
-            job_type=AssetBulkJob.JobType.IMPORT,
-            status=AssetBulkJob.JobStatus.COMPLETED if not result.errors else AssetBulkJob.JobStatus.FAILED,
-            file_format=vjob.file_format,
-            upsert_mode=upsert_mode,
-            duplicate_strategy=duplicate_strategy,
-            summary=result.summary,
-            errors=result.errors,
-        )
+        with transaction.atomic():
+            vjob = get_object_or_404(
+                AssetBulkJob.objects.select_for_update(),
+                entity=entity,
+                scope_type=self.bulk_scope_type,
+                validation_token=token,
+                job_type=AssetBulkJob.JobType.VALIDATE,
+            )
+            if vjob.errors:
+                raise ValidationError({"detail": "Cannot commit while validation has errors.", "error_count": len(vjob.errors)})
+            if vjob.committed_import_job_id:
+                job = vjob.committed_import_job
+                return Response(
+                    {
+                        "job_id": job.id,
+                        "summary": job.summary,
+                        "errors": job.errors,
+                        "status": job.status,
+                        "idempotent_replay": True,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            upsert_mode = (request.data.get("upsert_mode") or vjob.upsert_mode or AssetBulkJob.UpsertMode.UPSERT)
+            duplicate_strategy = (request.data.get("duplicate_strategy") or vjob.duplicate_strategy or AssetBulkJob.DuplicateStrategy.FAIL)
+            result = commit_payload(
+                vjob.payload or {},
+                entity,
+                self.bulk_scope_type,
+                subentity=subentity,
+                entityfinid=entityfinid,
+                upsert_mode=upsert_mode,
+                duplicate_strategy=duplicate_strategy,
+                user_id=request.user.id,
+            )
+            job = AssetBulkJob.objects.create(
+                entity=entity,
+                subentity=subentity,
+                created_by=request.user,
+                scope_type=self.bulk_scope_type,
+                job_type=AssetBulkJob.JobType.IMPORT,
+                status=AssetBulkJob.JobStatus.COMPLETED if not result.errors else AssetBulkJob.JobStatus.FAILED,
+                file_format=vjob.file_format,
+                upsert_mode=upsert_mode,
+                duplicate_strategy=duplicate_strategy,
+                summary=result.summary,
+                errors=result.errors,
+            )
+            vjob.committed_import_job = job
+            vjob.committed_at = job.created_at
+            vjob.updated_by = request.user
+            vjob.save(update_fields=["committed_import_job", "committed_at", "updated_by", "updated_at"])
         return Response(
             {
                 "job_id": job.id,

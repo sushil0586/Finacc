@@ -61,7 +61,7 @@ def _report_registry() -> list[dict]:
             "code": "trial_balance",
             "name": "Trial Balance",
             "path": "/api/reports/financial/trial-balance/",
-            "route_name": "trailbalance",
+            "route_name": "reports-financial-trial-balance",
             "category": "financial_statement",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom", "as_of"],
             "supports": {
@@ -144,7 +144,7 @@ def _report_registry() -> list[dict]:
             "code": "profit_loss",
             "name": "Profit & Loss",
             "path": "/api/reports/financial/profit-loss/",
-            "route_name": "incomeexpenditurereport",
+            "route_name": "reports-financial-profit-loss",
             "category": "financial_statement",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom", "as_of"],
             "supports": {
@@ -179,7 +179,7 @@ def _report_registry() -> list[dict]:
             "code": "balance_sheet",
             "name": "Balance Sheet",
             "path": "/api/reports/financial/balance-sheet/",
-            "route_name": "balancesheet",
+            "route_name": "reports-financial-balance-sheet",
             "category": "financial_statement",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom", "as_of"],
             "supports": {
@@ -212,7 +212,7 @@ def _report_registry() -> list[dict]:
             "code": "daybook",
             "name": "Daybook",
             "path": "/api/reports/financial/daybook/",
-            "route_name": "daybook",
+            "route_name": "reports-financial-daybook",
             "category": "book_report",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom"],
             "supports": {
@@ -232,7 +232,7 @@ def _report_registry() -> list[dict]:
             "code": "cashbook",
             "name": "Cashbook",
             "path": "/api/reports/financial/cashbook/",
-            "route_name": "cashbook",
+            "route_name": "reports-financial-cashbook",
             "category": "book_report",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom"],
             "supports": {
@@ -251,7 +251,7 @@ def _report_registry() -> list[dict]:
             "code": "purchase_register",
             "name": "Purchase Register",
             "path": "/api/reports/purchases/register/",
-            "route_name": "reports/purchaseregister",
+            "route_name": "reports-payables-purchase-register",
             "category": "register",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom"],
             "supports": {
@@ -269,7 +269,7 @@ def _report_registry() -> list[dict]:
             "code": "sales_register",
             "name": "Sales Register",
             "path": "/api/reports/sales/register/",
-            "route_name": "reports/salesregister",
+            "route_name": "reports-receivables-sales-register",
             "category": "register",
             "scope_modes": ["financial_year", "month", "quarter", "year", "custom"],
             "supports": {

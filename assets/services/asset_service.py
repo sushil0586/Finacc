@@ -11,12 +11,31 @@ from assets.models import AssetCategory, AssetSettings, DepreciationRun, FixedAs
 from assets.services.depreciation import attach_preview_lines, preview_run, q2 as dep_q2
 from assets.services.settings import AssetSettingsService
 from entity.models import SubEntity
+from entity.models import Entity
 from financial.models import Ledger
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from posting.services.posting_service import JLInput, PostingService
 
 Q2 = Decimal("0.01")
 ZERO = Decimal("0.00")
+SYSTEM_MANAGED_WRITE_FIELDS = {
+    "accumulated_depreciation",
+    "impairment_amount",
+    "net_book_value",
+    "capitalization_posting_batch",
+    "capitalization_posting_batch_id",
+    "impairment_posting_batch",
+    "impairment_posting_batch_id",
+    "disposal_posting_batch",
+    "disposal_posting_batch_id",
+    "disposal_proceeds",
+    "disposal_gain_loss",
+}
+MANUALLY_SETTABLE_STATUSES = {
+    FixedAsset.AssetStatus.DRAFT,
+    FixedAsset.AssetStatus.CAPITAL_WIP,
+    FixedAsset.AssetStatus.HELD_FOR_SALE,
+}
 
 
 def q2(value) -> Decimal:
@@ -109,6 +128,19 @@ def _jl_for_ledger(*, entity_id: int, ledger_id: int, drcr: bool, amount: Decima
     return JLInput(accounthead_id=ledger.accounthead_id, ledger_id=ledger_id, drcr=drcr, amount=amount, description=description)
 
 
+def _ensure_manual_asset_payload_allowed(*, data: dict, instance: FixedAsset | None = None) -> None:
+    prohibited_fields = sorted(field for field in SYSTEM_MANAGED_WRITE_FIELDS if field in data)
+    if prohibited_fields:
+        raise ValueError(f"These asset fields are system managed and cannot be set directly: {', '.join(prohibited_fields)}.")
+
+    status_value = data.get("status")
+    if status_value is not None and status_value not in MANUALLY_SETTABLE_STATUSES:
+        raise ValueError("Asset status can only be set manually to Draft, Capital WIP, or Held for Sale.")
+
+    if instance and instance.capitalization_posting_batch_id and "status" in data and data["status"] != instance.status:
+        raise ValueError("Asset status cannot be edited directly after capitalization.")
+
+
 class AssetService:
     @staticmethod
     def generate_asset_code(*, entity_id: int, settings: AssetSettings) -> str:
@@ -171,7 +203,9 @@ class AssetService:
         return None
 
     @staticmethod
+    @transaction.atomic
     def create_asset(*, data: dict, user_id: int | None = None) -> FixedAsset:
+        _ensure_manual_asset_payload_allowed(data=data)
         entity = data["entity"]
         entity_id = entity.id
         subentity = data.get("subentity")
@@ -189,6 +223,7 @@ class AssetService:
         )
         subentity_id = subentity.id if subentity else None
         settings = AssetSettingsService.get_settings(entity_id, subentity_id)
+        Entity.objects.select_for_update().filter(pk=entity_id).exists()
         payload = dict(data)
         if not payload.get("asset_code") and settings.auto_number_assets:
             payload["asset_code"] = AssetService.generate_asset_code(entity_id=entity_id, settings=settings)
@@ -205,6 +240,7 @@ class AssetService:
 
     @staticmethod
     def update_asset(*, instance: FixedAsset, data: dict, user_id: int | None = None) -> FixedAsset:
+        _ensure_manual_asset_payload_allowed(data=data, instance=instance)
         immutable_if_posted = {"entity", "entityfinid", "subentity", "category", "gross_block"}
         for key, value in data.items():
             if instance.capitalization_posting_batch_id and key in immutable_if_posted:
@@ -406,7 +442,6 @@ class AssetService:
             if run.posting_batch_id:
                 run.posting_batch.is_active = False
                 run.posting_batch.save(update_fields=["is_active"])
-                JournalLine.objects.filter(posting_batch=run.posting_batch).delete()
 
             entry = Entry.objects.filter(
                 entity_id=run.entity_id,
@@ -417,11 +452,9 @@ class AssetService:
             ).first()
             if entry:
                 entry.status = EntryStatus.REVERSED
-                entry.posting_batch = None
                 entry.posted_at = None
                 entry.posted_by = None
-                entry.save(update_fields=["status", "posting_batch", "posted_at", "posted_by"])
-            run.posting_batch_id = None
+                entry.save(update_fields=["status", "posted_at", "posted_by"])
         elif run.posting_batch_id:
             run.posting_batch.is_active = False
             run.posting_batch.save(update_fields=["is_active"])
@@ -441,7 +474,6 @@ class AssetService:
                 "calculated_at",
                 "posted_at",
                 "posted_by",
-                "posting_batch",
                 "updated_by",
                 "updated_at",
             ]

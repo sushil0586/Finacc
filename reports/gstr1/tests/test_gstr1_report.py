@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
@@ -678,6 +680,19 @@ class Gstr1ReportAPITests(APITestCase):
         anon = APIClient()
         response = anon.get(self.summary_url, self.base_params)
         self.assertIn(response.status_code, (401, 403))
+
+    @patch("reports.gstr1.views.summary.Gstr1SummaryAPIView.enforce_report_scope", side_effect=PermissionDenied("forbidden"))
+    def test_summary_denies_when_scope_enforcement_fails(self, _enforce_scope):
+        response = self.client.get(self.summary_url, self.base_params)
+        self.assertEqual(response.status_code, 403)
+
+    @patch("reports.gstr1.views.meta.Gstr1MetaAPIView.enforce_entity_scope", side_effect=PermissionDenied("forbidden"))
+    def test_meta_denies_when_scope_enforcement_fails(self, _enforce_scope):
+        response = self.client.get(
+            self.meta_url,
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 403)
 
     @override_settings(GSTR1_ENABLE_GSTIN_CHECKSUM=False)
     def test_checksum_validation_disabled(self):

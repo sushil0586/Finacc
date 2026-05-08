@@ -1803,14 +1803,6 @@ class SalesInvoiceService:
 
         net = q2(gross - disc)
 
-        cess_amt = ZERO2
-
-        # If cess percent used (most cases): cess = net * percent
-        if q4(line.cess_percent) > ZERO4:
-            cess_amt = q2(net * q4(line.cess_percent) / Decimal("100"))
-        else:
-            cess_amt = q2(line.cess_amount)
-
         # If rate is inclusive of tax, back-calculate taxable
         taxable = net
         cgst = sgst = igst = ZERO2
@@ -1822,6 +1814,15 @@ class SalesInvoiceService:
             tax_total = q2(net - taxable)
         elif gst_rate > ZERO4:
             tax_total = q2(taxable * gst_rate / Decimal("100"))
+
+        # Align with purchase + UI preview behavior:
+        # ad-valorem cess should be derived from the taxable base, not the
+        # gross inclusive amount, otherwise inclusive-GST invoices can post a
+        # different total than the user saw on screen.
+        if q4(line.cess_percent) > ZERO4:
+            cess_amt = q2(taxable * q4(line.cess_percent) / Decimal("100"))
+        else:
+            cess_amt = q2(line.cess_amount)
 
         # Reverse-charge invoices should not carry GST/CESS amounts on invoice lines.
         if bool(getattr(header, "is_reverse_charge", False)):

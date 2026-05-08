@@ -5,8 +5,9 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from core.entitlements import ScopedEntitlementMixin
 from posting.serializers import (
     StaticAccountRowSerializer,
     StaticAccountUpsertSerializer,
@@ -14,6 +15,8 @@ from posting.serializers import (
     StaticAccountValidationResponseSerializer,
 )
 from posting.static_account_service import StaticAccountMappingService
+from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
@@ -34,10 +37,23 @@ def _parse_int(value: Optional[str], label: str) -> Optional[int]:
         raise ValidationError(f"Invalid {label}; expected integer.")
 
 
-class StaticAccountSettingsView(APIView):
+class _BaseStaticAccountSettingsAPIView(ScopedEntitlementMixin, APIView):
+    permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
+
+    def _enforce_access(self, request, *, entity_id: int, permission_code: str):
+        self.enforce_scope(request, entity_id=entity_id)
+        permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
+        if permission_code not in permission_codes:
+            raise PermissionDenied(f"Missing permission: {permission_code}")
+
+
+class StaticAccountSettingsView(_BaseStaticAccountSettingsAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, entity_id: int):
+        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.view")
         sub_entity_id = _parse_int(request.query_params.get("sub_entity_id"), "sub_entity_id")
         effective_on = _parse_date(request.query_params.get("effective_on"))
 
@@ -56,10 +72,11 @@ class StaticAccountSettingsView(APIView):
         return Response(data)
 
 
-class StaticAccountSettingDetailView(APIView):
+class StaticAccountSettingDetailView(_BaseStaticAccountSettingsAPIView):
     permission_classes = [IsAuthenticated]
 
     def put(self, request, entity_id: int, static_account_code: str):
+        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.update")
         sub_entity_id = _parse_int(request.query_params.get("sub_entity_id"), "sub_entity_id")
 
         serializer = StaticAccountUpsertSerializer(data=request.data)
@@ -78,6 +95,7 @@ class StaticAccountSettingDetailView(APIView):
         return Response(StaticAccountRowSerializer.from_row(row), status=status.HTTP_200_OK)
 
     def delete(self, request, entity_id: int, static_account_code: str):
+        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.delete")
         sub_entity_id = _parse_int(request.query_params.get("sub_entity_id"), "sub_entity_id")
 
         row = StaticAccountMappingService.deactivate(
@@ -88,10 +106,11 @@ class StaticAccountSettingDetailView(APIView):
         return Response(StaticAccountRowSerializer.from_row(row), status=status.HTTP_200_OK)
 
 
-class StaticAccountSettingsBulkUpsertView(APIView):
+class StaticAccountSettingsBulkUpsertView(_BaseStaticAccountSettingsAPIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, entity_id: int):
+        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.bulk_upsert")
         sub_entity_id = _parse_int(
             request.data.get("sub_entity_id") or request.query_params.get("sub_entity_id"),
             "sub_entity_id",
@@ -115,10 +134,11 @@ class StaticAccountSettingsBulkUpsertView(APIView):
         return Response(response, status=status.HTTP_200_OK)
 
 
-class StaticAccountSettingsValidateView(APIView):
+class StaticAccountSettingsValidateView(_BaseStaticAccountSettingsAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, entity_id: int):
+        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.validate")
         sub_entity_id = _parse_int(request.query_params.get("sub_entity_id"), "sub_entity_id")
         effective_on = _parse_date(request.query_params.get("effective_on"))
 

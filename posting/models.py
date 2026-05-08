@@ -57,6 +57,7 @@ class StaticAccountGroup(models.TextChoices):
     TCS = "TCS", "TCS"
     PURCHASE = "PURCHASE", "Purchase Defaults"
     SALES = "SALES", "Sales Defaults"
+    MANUFACTURING = "MANUFACTURING", "Manufacturing"
     EQUITY = "EQUITY", "Equity / Opening"
     OTHER = "OTHER", "Other"
 

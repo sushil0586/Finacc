@@ -585,7 +585,7 @@ PAYABLE_REPORTS.update(
             "path": "/api/reports/purchases/register/",
             "menu_code": "reports.payables.purchase_register",
             "route_name": "reports-payables-purchase-register",
-            "required_permission": "reports.purchasebook.view",
+            "required_permission": "reports.purchase_register.view",
             "feature_flags": OrderedDict(
                 {
                     "include_outstanding": {"label": "Outstanding Amount", "type": "boolean", "default": False},
@@ -1233,7 +1233,6 @@ def resolve_close_pack_sections(section_codes=None):
 
 def get_close_pack_section_codes(section_codes=None):
     return [section["code"] for section in resolve_close_pack_sections(section_codes)]
-
 
 
 

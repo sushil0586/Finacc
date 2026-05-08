@@ -7,11 +7,11 @@ from rest_framework.views import APIView
 from reports.gstr9.services.freeze import Gstr9FreezeService
 from reports.gstr9.serializers.table import Gstr9TableEnvelopeSerializer
 from reports.gstr9.services.report import Gstr9ReportService
-from reports.gstr9.views.utils import parse_freeze_version, scope_filters
+from reports.gstr9.views.utils import Gstr9ScopedReportMixin, parse_freeze_version, scope_filters
 from reports.schemas.common import build_report_envelope
 
 
-class Gstr9TableAPIView(APIView):
+class Gstr9TableAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -19,6 +19,7 @@ class Gstr9TableAPIView(APIView):
     def get(self, request, table_code: str):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        self.enforce_report_scope(request, scope)
         freeze_service = self.freeze_service_class(report_service=service)
         frozen_meta = None
         try:

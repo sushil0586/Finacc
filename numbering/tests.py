@@ -11,6 +11,7 @@ from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.seeding import NumberingSeedService
 from numbering.services import ensure_document_type, ensure_series
 from numbering.services.document_number_service import DocumentNumberService
+from numbering.services.series_validation import find_series_pattern_conflict, validate_unique_series_pattern
 
 
 User = get_user_model()
@@ -19,8 +20,9 @@ User = get_user_model()
 class NumberingTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="numuser", email="num@example.com", password="pass123")
-        self.entity = Entity.objects.create(entityname="Demo Entity", address="Addr")
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", address="Branch Addr")
+        self.entity = Entity.objects.create(entityname="Demo Entity", createdby=self.user)
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A")
+        self.subentity_b = SubEntity.objects.create(entity=self.entity, subentityname="Branch B")
         self.entityfin = EntityFinancialYear.objects.create(
             entity=self.entity,
             desc="FY 2026-27",
@@ -190,3 +192,76 @@ class NumberingTests(TestCase):
         self.assertEqual(series.doc_code, "SCN")
         self.assertEqual(series.current_number, 7)
         self.assertEqual(series.subentity_id, self.subentity.id)
+
+    def test_validate_unique_series_pattern_blocks_duplicate_branch_pattern(self):
+        branch_a_series, _ = ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            prefix="BR",
+            start=1,
+            padding=4,
+            reset="yearly",
+        )
+        branch_b_series, _ = ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity_b.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            prefix="BR",
+            start=1,
+            padding=4,
+            reset="yearly",
+        )
+        branch_b_series.suffix = ""
+        branch_b_series.separator = "-"
+        branch_b_series.include_year = True
+        branch_b_series.include_month = False
+        branch_b_series.custom_format = ""
+        branch_b_series.is_active = True
+
+        conflict = find_series_pattern_conflict(series=branch_b_series)
+        self.assertIsNotNone(conflict)
+        self.assertEqual(conflict.subentity_id, self.subentity.id)
+
+        with self.assertRaisesMessage(ValueError, "already active for Branch A"):
+            validate_unique_series_pattern(series=branch_b_series, doc_label="Test Voucher")
+
+        branch_a_series.refresh_from_db()
+        self.assertEqual(branch_a_series.prefix, "BR")
+
+    def test_validate_unique_series_pattern_allows_distinct_branch_pattern(self):
+        ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            prefix="BRA",
+            start=1,
+            padding=4,
+            reset="yearly",
+        )
+        branch_b_series, _ = ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity_b.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            prefix="BRB",
+            start=1,
+            padding=4,
+            reset="yearly",
+        )
+        branch_b_series.suffix = ""
+        branch_b_series.separator = "-"
+        branch_b_series.include_year = True
+        branch_b_series.include_month = False
+        branch_b_series.custom_format = ""
+        branch_b_series.is_active = True
+
+        self.assertIsNone(find_series_pattern_conflict(series=branch_b_series))
+        validate_unique_series_pattern(series=branch_b_series, doc_label="Test Voucher")

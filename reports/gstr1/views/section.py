@@ -9,7 +9,7 @@ from reports.schemas.common import build_report_envelope
 from reports.gstr1.serializers.section import Gstr1SectionEnvelopeSerializer, Gstr1SectionRowSerializer
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr1.services.section import Gstr1SectionService
-from reports.gstr1.views.utils import filtered_query, scope_filters
+from reports.gstr1.views.utils import Gstr1ScopedReportMixin, filtered_query, scope_filters
 
 
 class Gstr1SectionPagination(PageNumberPagination):
@@ -19,7 +19,7 @@ class Gstr1SectionPagination(PageNumberPagination):
     page_query_param = "page"
 
 
-class Gstr1SectionAPIView(APIView):
+class Gstr1SectionAPIView(Gstr1ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = Gstr1SectionPagination
     service_class = Gstr1ReportService
@@ -27,6 +27,7 @@ class Gstr1SectionAPIView(APIView):
     def get(self, request, section_name):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        self.enforce_report_scope(request, scope)
         smart_filters = service.build_smart_filters(request.query_params)
         qs = service.section(scope, section_name, smart_filters=smart_filters)
         qs = Gstr1SectionService.annotate_rows(qs).order_by(

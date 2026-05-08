@@ -6,17 +6,18 @@ from rest_framework.views import APIView
 
 from reports.schemas.common import build_report_envelope
 from reports.gstr1.services.report import Gstr1ReportService
-from reports.gstr1.views.utils import scope_filters
+from reports.gstr1.views.utils import Gstr1ScopedReportMixin, scope_filters
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 
 
-class Gstr1InvoiceDetailAPIView(APIView):
+class Gstr1InvoiceDetailAPIView(Gstr1ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr1ReportService
 
     def get(self, request, invoice_id):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        self.enforce_report_scope(request, scope)
         invoice = service.invoice_detail(scope, invoice_id)
         payload = {
             "invoice": SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data,

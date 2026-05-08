@@ -13,6 +13,7 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from reports.schemas.assets_reports import (
     AssetEventReportScopeSerializer,
     AssetHistoryScopeSerializer,
@@ -21,6 +22,7 @@ from reports.schemas.assets_reports import (
 )
 from reports.schemas.common import build_report_envelope
 from reports.services.assets import build_asset_event_report, build_asset_history, build_depreciation_schedule, build_fixed_asset_register
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 ASSET_REPORT_DEFAULTS = {
     "default_page_size": 100,
@@ -128,8 +130,22 @@ def _write_pdf(title, subtitle, headers, rows):
     return pdf
 
 
-class _BaseAssetReportAPIView(APIView):
+class _BaseAssetReportAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def get_scope(self, request, serializer_class):
+        serializer = serializer_class(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        self.enforce_scope(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
+        return scope
 
     def build_envelope(self, *, report_code, report_name, payload, scope, request, export_base_path):
         response = build_report_envelope(
@@ -145,9 +161,7 @@ class _BaseAssetReportAPIView(APIView):
 class FixedAssetRegisterAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
-        serializer = FixedAssetRegisterScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, FixedAssetRegisterScopeSerializer)
         payload = build_fixed_asset_register(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -165,9 +179,7 @@ class FixedAssetRegisterAPIView(_BaseAssetReportAPIView):
 class DepreciationScheduleAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
-        serializer = DepreciationScheduleScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, DepreciationScheduleScopeSerializer)
         payload = build_depreciation_schedule(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -184,9 +196,7 @@ class DepreciationScheduleAPIView(_BaseAssetReportAPIView):
 
 class AssetEventReportAPIView(_BaseAssetReportAPIView):
     def get(self, request):
-        serializer = AssetEventReportScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, AssetEventReportScopeSerializer)
         payload = build_asset_event_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -201,13 +211,10 @@ class AssetEventReportAPIView(_BaseAssetReportAPIView):
         return Response(self.build_envelope(report_code="fixed_asset_events", report_name="Fixed Asset Events", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/events/"))
 
 
-class AssetHistoryAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class AssetHistoryAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
-        serializer = AssetHistoryScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, AssetHistoryScopeSerializer)
         payload = build_asset_history(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -232,9 +239,7 @@ class _BaseAssetExportAPIView(_BaseAssetReportAPIView):
 
 class _FixedAssetRegisterExportMixin(_BaseAssetExportAPIView):
     def get_payload(self, request):
-        serializer = FixedAssetRegisterScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, FixedAssetRegisterScopeSerializer)
         payload = build_fixed_asset_register(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -299,9 +304,7 @@ class FixedAssetRegisterPrintAPIView(FixedAssetRegisterPDFAPIView):
 
 class _DepreciationScheduleExportMixin(_BaseAssetExportAPIView):
     def get_payload(self, request):
-        serializer = DepreciationScheduleScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, DepreciationScheduleScopeSerializer)
         payload = build_depreciation_schedule(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -360,9 +363,7 @@ class DepreciationSchedulePrintAPIView(DepreciationSchedulePDFAPIView):
 
 class _AssetEventExportMixin(_BaseAssetExportAPIView):
     def get_payload(self, request):
-        serializer = AssetEventReportScopeSerializer(data=request.query_params)
-        serializer.is_valid(raise_exception=True)
-        scope = serializer.validated_data
+        scope = self.get_scope(request, AssetEventReportScopeSerializer)
         payload = build_asset_event_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),

@@ -434,6 +434,12 @@ class ManufacturingWorkOrderAdditionalCostResponseSerializer(serializers.ModelSe
 
 class ManufacturingWorkOrderOperationResponseSerializer(serializers.ModelSerializer):
     route_step_id = serializers.IntegerField(read_only=True, allow_null=True)
+    started_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    started_by_name = serializers.CharField(source="started_by.username", read_only=True, allow_null=True)
+    completed_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    completed_by_name = serializers.CharField(source="completed_by.username", read_only=True, allow_null=True)
+    qc_decision_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    qc_decision_by_name = serializers.CharField(source="qc_decision_by.username", read_only=True, allow_null=True)
 
     class Meta:
         model = ManufacturingWorkOrderOperation
@@ -450,7 +456,14 @@ class ManufacturingWorkOrderOperationResponseSerializer(serializers.ModelSeriali
             "output_qty",
             "scrap_qty",
             "started_at",
+            "started_by_id",
+            "started_by_name",
             "completed_at",
+            "completed_by_id",
+            "completed_by_name",
+            "qc_decision_at",
+            "qc_decision_by_id",
+            "qc_decision_by_name",
             "remarks",
         ]
 
@@ -503,6 +516,13 @@ class ManufacturingWorkOrderResponseSerializer(serializers.ModelSerializer):
     operations_complete = serializers.SerializerMethodField()
     total_input_value = serializers.SerializerMethodField()
     total_output_qty = serializers.SerializerMethodField()
+    yield_variance_value_snapshot = serializers.SerializerMethodField()
+    posted_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    posted_by_name = serializers.CharField(source="posted_by.username", read_only=True, allow_null=True)
+    last_unposted_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    last_unposted_by_name = serializers.CharField(source="last_unposted_by.username", read_only=True, allow_null=True)
+    cancelled_by_id = serializers.IntegerField(read_only=True, allow_null=True)
+    cancelled_by_name = serializers.CharField(source="cancelled_by.username", read_only=True, allow_null=True)
 
     class Meta:
         model = ManufacturingWorkOrder
@@ -514,6 +534,17 @@ class ManufacturingWorkOrderResponseSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "posted_at",
+            "posted_by_id",
+            "posted_by_name",
+            "last_unposted_at",
+            "last_unposted_by_id",
+            "last_unposted_by_name",
+            "last_unpost_reason",
+            "cancelled_at",
+            "cancelled_by_id",
+            "cancelled_by_name",
+            "cancel_reason",
             "bom_id",
             "bom_code",
             "route_id",
@@ -530,6 +561,8 @@ class ManufacturingWorkOrderResponseSerializer(serializers.ModelSerializer):
             "standard_material_cost_snapshot",
             "actual_material_cost_snapshot",
             "total_additional_cost_snapshot",
+            "capitalized_additional_cost_snapshot",
+            "expensed_additional_cost_snapshot",
             "standard_recovery_value_snapshot",
             "actual_recovery_value_snapshot",
             "net_production_cost_snapshot",
@@ -540,6 +573,7 @@ class ManufacturingWorkOrderResponseSerializer(serializers.ModelSerializer):
             "material_variance_value_snapshot",
             "yield_variance_qty_snapshot",
             "yield_variance_percent_snapshot",
+            "yield_variance_value_snapshot",
             "materials",
             "outputs",
             "additional_costs",
@@ -554,6 +588,13 @@ class ManufacturingWorkOrderResponseSerializer(serializers.ModelSerializer):
     def get_total_output_qty(self, obj):
         total = sum((Decimal(line.actual_qty or 0) for line in obj.outputs.all()), Decimal("0"))
         return total.quantize(Decimal("0.0000"))
+
+    def get_yield_variance_value_snapshot(self, obj):
+        standard_output_value = (
+            (Decimal(obj.standard_unit_cost_snapshot or 0) * Decimal(obj.actual_output_qty_snapshot or 0))
+            + Decimal(obj.actual_recovery_value_snapshot or 0)
+        )
+        return (Decimal(obj.standard_material_cost_snapshot or 0) - standard_output_value).quantize(Decimal("0.01"))
 
     def get_current_operation(self, obj):
         operation = obj.operations.exclude(status__in=[ManufacturingOperationStatus.COMPLETED, ManufacturingOperationStatus.SKIPPED]).order_by("sequence_no", "id").first()

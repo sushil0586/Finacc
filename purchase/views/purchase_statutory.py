@@ -83,9 +83,8 @@ def _require_statutory_view(request, entity_id: int) -> None:
         entity_id,
         [
             "purchase.statutory.view",
-            "purchase.invoice.view",
-            "purchase.invoice.list",
-            "purchase.invoice.read",
+            "purchase.statutory.manage",
+            "purchase.statutory.approve",
         ],
     )
 
@@ -96,8 +95,6 @@ def _require_statutory_manage(request, entity_id: int) -> None:
         entity_id,
         [
             "purchase.statutory.manage",
-            "purchase.invoice.update",
-            "purchase.invoice.edit",
         ],
     )
 
@@ -108,9 +105,6 @@ def _require_statutory_approve(request, entity_id: int) -> None:
         entity_id,
         [
             "purchase.statutory.approve",
-            "purchase.invoice.approve",
-            "purchase.invoice.update",
-            "purchase.invoice.edit",
         ],
     )
 
@@ -573,10 +567,13 @@ class PurchaseStatutoryReviewNoteAPIView(APIView):
         return Response({"data": PurchaseStatutoryReviewNoteSerializer(note).data if note else None})
 
     def post(self, request):
+        entity_id = _extract_entity_id_from_request(request)
+        if entity_id is None:
+            raise ValidationError({"detail": "entity is required."})
+        _require_statutory_manage(request, entity_id)
         inp = PurchaseStatutoryReviewNoteInputSerializer(data=request.data)
         inp.is_valid(raise_exception=True)
         data = inp.validated_data
-        _require_statutory_manage(request, int(data["entity"]))
         try:
             res = PurchaseStatutoryService.save_review_note(
                 entity_id=int(data["entity"]),

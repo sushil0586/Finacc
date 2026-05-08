@@ -7,16 +7,17 @@ from rest_framework.views import APIView
 from reports.schemas.common import build_report_envelope
 from reports.gstr1.serializers.validation import Gstr1ValidationWarningSerializer
 from reports.gstr1.services.report import Gstr1ReportService
-from reports.gstr1.views.utils import scope_filters
+from reports.gstr1.views.utils import Gstr1ScopedReportMixin, scope_filters
 
 
-class Gstr1ValidationAPIView(APIView):
+class Gstr1ValidationAPIView(Gstr1ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr1ReportService
 
     def get(self, request):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        self.enforce_report_scope(request, scope)
         smart_filters = service.build_smart_filters(request.query_params)
         warnings = service.validations(scope, smart_filters=smart_filters)
         payload = {

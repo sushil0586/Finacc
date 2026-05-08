@@ -9,6 +9,15 @@ from django.utils import timezone
 from catalog.models import Product, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, Godown, SubEntity
 
+DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES = [
+    "LABOUR",
+    "ELECTRICITY",
+    "FUEL",
+    "MACHINE",
+    "OVERHEAD",
+    "OTHER",
+]
+
 
 class ManufacturingRoute(models.Model):
     entity = models.ForeignKey(Entity, on_delete=models.PROTECT, related_name="+")
@@ -129,6 +138,8 @@ DEFAULT_MANUFACTURING_POLICY_CONTROLS = {
     "require_expiry_when_expiry_tracked": True,
     "block_negative_stock": True,
     "default_output_batch_mode": "manual",
+    "output_valuation_basis": "actual_cost",
+    "capitalized_additional_cost_types": list(DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES),
 }
 
 
@@ -172,6 +183,8 @@ class ManufacturingOperationStatus(models.TextChoices):
     PENDING = "PENDING", "Pending"
     READY = "READY", "Ready"
     IN_PROGRESS = "IN_PROGRESS", "In Progress"
+    AWAITING_QC = "AWAITING_QC", "Awaiting QC"
+    QC_REJECTED = "QC_REJECTED", "QC Rejected"
     COMPLETED = "COMPLETED", "Completed"
     SKIPPED = "SKIPPED", "Skipped"
 
@@ -190,9 +203,19 @@ class ManufacturingWorkOrder(models.Model):
     narration = models.CharField(max_length=500, blank=True)
     status = models.CharField(max_length=20, choices=ManufacturingWorkOrderStatus.choices, default=ManufacturingWorkOrderStatus.DRAFT, db_index=True)
     posting_entry_id = models.IntegerField(null=True, blank=True, db_index=True)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    posted_by = models.ForeignKey("Authentication.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    last_unposted_at = models.DateTimeField(null=True, blank=True)
+    last_unposted_by = models.ForeignKey("Authentication.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    last_unpost_reason = models.CharField(max_length=300, blank=True, default="")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey("Authentication.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    cancel_reason = models.CharField(max_length=300, blank=True, default="")
     standard_material_cost_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     actual_material_cost_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     total_additional_cost_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
+    capitalized_additional_cost_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
+    expensed_additional_cost_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     standard_recovery_value_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     actual_recovery_value_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     net_production_cost_snapshot = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
@@ -317,7 +340,11 @@ class ManufacturingWorkOrderOperation(models.Model):
     output_qty = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     scrap_qty = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"))
     started_at = models.DateTimeField(null=True, blank=True)
+    started_by = models.ForeignKey("Authentication.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey("Authentication.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    qc_decision_at = models.DateTimeField(null=True, blank=True)
+    qc_decision_by = models.ForeignKey("Authentication.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     remarks = models.CharField(max_length=300, blank=True, default="")
 
     class Meta:

@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from numbering.models import DocumentNumberSeries
-from numbering.services import ensure_document_type, ensure_series
+from numbering.services import ensure_document_type, ensure_series, validate_unique_series_pattern
 from sales.models import SalesChoiceOverride, SalesLockPeriod
 from sales.models.sales_settings import SalesSettings
 from sales.services.sales_choices_service import SalesChoicesService
@@ -313,6 +313,7 @@ class SalesSettingsAPIView(APIView):
             series.is_active = bool(row.get("is_active", True))
             if user_id and not series.created_by_id:
                 series.created_by_id = user_id
+            validate_unique_series_pattern(series=series, doc_label=config["name"])
             series.save()
 
         settings_obj.save()

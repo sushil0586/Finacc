@@ -217,6 +217,38 @@ STATIC_SEED_DEFS: tuple[StaticSeedDef, ...] = (
         is_required=False,
         default_account_name="TCS Payable",
     ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_WIP,
+        name="Manufacturing WIP",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Work-in-progress clearing ledger for manufacturing posting.",
+        is_required=False,
+        default_account_name="Manufacturing WIP",
+    ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_CONSUMPTION,
+        name="Manufacturing Consumption",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Consumption/issue ledger for manufacturing material usage.",
+        is_required=False,
+        default_account_name="Manufacturing Consumption",
+    ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION,
+        name="Manufacturing Overhead Absorption",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Offset ledger for additional production cost absorption.",
+        is_required=False,
+        default_account_name="Manufacturing Overhead Absorption",
+    ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_FINISHED_GOODS,
+        name="Manufacturing Finished Goods",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Finished goods / byproduct inventory capitalization ledger for manufacturing posting.",
+        is_required=False,
+        default_account_name="Manufacturing Finished Goods",
+    ),
 )
 
 

@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
 from numbering.models import DocumentNumberSeries
-from numbering.services import ensure_document_type, ensure_series
+from numbering.services import ensure_document_type, ensure_series, validate_unique_series_pattern
 from payments.models.payment_config import PaymentChoiceOverride, PaymentLockPeriod, PaymentSettings
 from payments.services.payment_choice_service import PaymentChoiceService
 from payments.services.payment_settings_service import PaymentSettingsService
@@ -277,6 +277,7 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
         series.is_active = bool(row.get("is_active", True))
         if user_id and not series.created_by_id:
             series.created_by_id = user_id
+        validate_unique_series_pattern(series=series, doc_label=cfg["name"])
         series.save()
         settings_obj.save()
 

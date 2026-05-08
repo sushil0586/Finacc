@@ -7,9 +7,10 @@ from rest_framework.views import APIView
 from reports.gstr9.services.filing import Gstr9FilingService
 from reports.gstr9.services.freeze import Gstr9FreezeService
 from reports.gstr9.services.report import Gstr9ReportService
+from reports.gstr9.views.utils import Gstr9ScopedReportMixin
 
 
-class Gstr9FilingPrepareAPIView(APIView):
+class Gstr9FilingPrepareAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -18,6 +19,7 @@ class Gstr9FilingPrepareAPIView(APIView):
     def post(self, request):
         service = self.service_class()
         scope = service.build_scope(request.data or request.query_params)
+        self.enforce_report_scope(request, scope)
         freeze_service = self.freeze_service_class(report_service=service)
         filing_service = self.filing_service_class(freeze_service=freeze_service)
         try:
@@ -30,7 +32,7 @@ class Gstr9FilingPrepareAPIView(APIView):
         return Response(payload, status=status.HTTP_201_CREATED)
 
 
-class Gstr9FilingSubmitAPIView(APIView):
+class Gstr9FilingSubmitAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -39,6 +41,7 @@ class Gstr9FilingSubmitAPIView(APIView):
     def post(self, request):
         service = self.service_class()
         scope = service.build_scope(request.data or request.query_params)
+        self.enforce_report_scope(request, scope)
         freeze_service = self.freeze_service_class(report_service=service)
         filing_service = self.filing_service_class(freeze_service=freeze_service)
         try:
@@ -51,7 +54,7 @@ class Gstr9FilingSubmitAPIView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
-class Gstr9FilingStatusAPIView(APIView):
+class Gstr9FilingStatusAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -60,6 +63,7 @@ class Gstr9FilingStatusAPIView(APIView):
     def get(self, request):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        self.enforce_report_scope(request, scope)
         freeze_service = self.freeze_service_class(report_service=service)
         filing_service = self.filing_service_class(freeze_service=freeze_service)
         try:

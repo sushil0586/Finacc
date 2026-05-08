@@ -5,7 +5,9 @@ from datetime import datetime
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient, APITestCase
+from unittest.mock import patch
 
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
@@ -61,3 +63,11 @@ class Gstr9MetaAPITests(APITestCase):
         self.assertEqual(payload["endpoints"]["filing_prepare"], "/api/reports/gstr9/filing/prepare/")
         self.assertEqual(payload["endpoints"]["filing_submit"], "/api/reports/gstr9/filing/submit/")
         self.assertEqual(payload["endpoints"]["filing_status"], "/api/reports/gstr9/filing/status/")
+
+    @patch("reports.gstr9.views.meta.Gstr9MetaAPIView.enforce_entity_scope", side_effect=PermissionDenied("forbidden"))
+    def test_meta_denies_when_scope_enforcement_fails(self, _enforce_scope):
+        response = self.client.get(
+            self.meta_url,
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 403)

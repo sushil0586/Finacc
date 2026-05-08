@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import zipfile
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
@@ -19,14 +20,23 @@ from withholding.models import (
 )
 from withholding.seed_withholding_service import WithholdingSeedService
 from withholding.serializers import WithholdingSectionSerializer
-from withholding.serializers import EntityWithholdingConfigSerializer, EntityWithholdingSectionPostingMapSerializer, TcsQuarterlyReturnSerializer
+from withholding.serializers import (
+    EntityWithholdingConfigSerializer,
+    EntityWithholdingSectionPostingMapSerializer,
+    TcsCollectionSerializer,
+    TcsDepositSerializer,
+    TcsQuarterlyReturnSerializer,
+)
 from withholding.services import WithholdingResolver, compute_withholding_preview
 from withholding.views import (
     TcsReportFilingPackExportAPIView,
     TcsReportFilingPackAPIView,
+    TcsReportLedgerAPIView,
     TcsReturn27EqListCreateAPIView,
     TcsReturn27EqRetrieveUpdateDestroyAPIView,
     TcsDepositAllocateAPIView,
+    TcsSectionListCreateAPIView,
+    TcsWorkspaceTransactionsAPIView,
     _filing_readiness_errors,
     _row_readiness_status,
     _runtime_quality_flags,
@@ -468,10 +478,16 @@ class WithholdingTcsDepositStateTests(SimpleTestCase):
         self.assertEqual(_tcs_computation_total_deposited(computation, deposited_only=True), Decimal("60.00"))
         self.assertEqual(_tcs_computation_total_deposited(computation, deposited_only=False), Decimal("100.00"))
 
+    @patch("withholding.views._require_tcs_scope_permission")
     @patch("withholding.views.TcsCollection.objects.get")
     @patch("withholding.views.TcsDeposit.objects.get")
-    def test_allocate_api_rejects_draft_deposit(self, mocked_deposit_get, mocked_collection_get):
-        deposit = SimpleNamespace(id=10, status="DRAFT")
+    def test_allocate_api_rejects_draft_deposit(
+        self,
+        mocked_deposit_get,
+        mocked_collection_get,
+        mocked_scope_permission,
+    ):
+        deposit = SimpleNamespace(id=10, entity_id=1, status="DRAFT")
         computation = SimpleNamespace(entity_id=1, fiscal_year="2026-27")
         collection = SimpleNamespace(id=20, status="OPEN", computation=computation)
         mocked_deposit_get.return_value = deposit
@@ -487,6 +503,7 @@ class WithholdingTcsDepositStateTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["detail"], "Allocation is allowed only against confirmed deposits.")
+        mocked_scope_permission.assert_called_once()
 
 
 class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
@@ -513,8 +530,13 @@ class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
 
         self.assertIn("Filed returns cannot be edited", str(exc.exception))
 
+    @patch("withholding.views._require_tcs_scope_permission")
     @patch("withholding.views._build_tcs_27eq_snapshot")
-    def test_create_validated_return_uses_same_readiness_gate_as_filed(self, mocked_snapshot):
+    def test_create_validated_return_uses_same_readiness_gate_as_filed(
+        self,
+        mocked_snapshot,
+        mocked_scope_permission,
+    ):
         mocked_snapshot.return_value = {
             "counts": {
                 "missing_pan": 1,
@@ -535,11 +557,14 @@ class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
             "json_snapshot": None,
         }
         view = TcsReturn27EqListCreateAPIView()
+        view.request = APIRequestFactory().post("/tcs/returns/27eq/", {}, format="json")
+        view.request.user = SimpleNamespace(is_authenticated=True)
 
         with self.assertRaises(Exception) as exc:
             view.perform_create(serializer)
 
         self.assertIn("Missing PAN rows exist", str(exc.exception))
+        mocked_scope_permission.assert_called_once()
 
     def test_destroy_blocks_filed_return(self):
         instance = SimpleNamespace(status="FILED", delete=MagicMock())
@@ -550,6 +575,78 @@ class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
 
         self.assertIn("Filed returns cannot be deleted", str(exc.exception))
         instance.delete.assert_not_called()
+
+
+class WithholdingTcsWorkflowFieldLockdownTests(SimpleTestCase):
+    def test_collection_serializer_rejects_direct_status_write(self):
+        instance = SimpleNamespace(
+            computation=None,
+            collection_date=date(2026, 4, 1),
+            amount_received=Decimal("100.00"),
+            tcs_collected_amount=Decimal("10.00"),
+            status="OPEN",
+        )
+        serializer = TcsCollectionSerializer(
+            instance=instance,
+            data={"status": "CANCELLED"},
+            partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("status", serializer.errors)
+
+    def test_deposit_serializer_rejects_direct_status_and_depositor_writes(self):
+        instance = SimpleNamespace(
+            entity=None,
+            financial_year="2026-27",
+            month=4,
+            challan_no="CH-1",
+            total_deposit_amount=Decimal("10.00"),
+            status="DRAFT",
+            deposited_by=None,
+        )
+        serializer = TcsDepositSerializer(
+            instance=instance,
+            data={"status": "FILED", "deposited_by": 99},
+            partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("status", serializer.errors)
+        self.assertIn("deposited_by", serializer.errors)
+
+    def test_return_serializer_rejects_direct_workflow_field_writes(self):
+        instance = SimpleNamespace(
+            status="DRAFT",
+            fy="2026-27",
+            quarter="Q1",
+            form_name="27EQ",
+            return_type="ORIGINAL",
+            entity=None,
+            ack_no="",
+            filed_on=None,
+            json_snapshot=None,
+            file_path="",
+            original_return=None,
+        )
+        serializer = TcsQuarterlyReturnSerializer(
+            instance=instance,
+            data={
+                "status": "FILED",
+                "ack_no": "ACK-1",
+                "filed_on": "2026-05-01",
+                "json_snapshot": {"counts": {"missing_pan": 0}},
+                "file_path": "returns/27eq.json",
+            },
+            partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("status", serializer.errors)
+        self.assertIn("ack_no", serializer.errors)
+        self.assertIn("filed_on", serializer.errors)
+        self.assertIn("json_snapshot", serializer.errors)
+        self.assertIn("file_path", serializer.errors)
 
 
 class WithholdingTcsCorrectionReturnTests(SimpleTestCase):
@@ -625,10 +722,17 @@ class WithholdingTcsCorrectionReturnTests(SimpleTestCase):
         self.assertEqual(data["return_type"], "CORRECTION")
 
 
-class WithholdingTcsReportingExportTests(SimpleTestCase):
+class WithholdingTcsReportingExportTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="tcs-reporting-tests",
+            email="tcs-reporting-tests@example.com",
+            password="testpass123",
+        )
+
     def test_filing_pack_view_requires_valid_scope_params(self):
         request = APIRequestFactory().get("/tcs/reports/filing-pack/?entity_id=1&fy=2026-27&quarter=Q5")
-        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        force_authenticate(request, user=self.user)
         response = TcsReportFilingPackAPIView.as_view()(request)
 
         self.assertEqual(response.status_code, 400)
@@ -636,7 +740,7 @@ class WithholdingTcsReportingExportTests(SimpleTestCase):
 
     def test_filing_pack_export_requires_financial_year(self):
         request = APIRequestFactory().get("/tcs/reports/filing-pack/export/?entity_id=1&quarter=Q1")
-        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        force_authenticate(request, user=self.user)
         response = TcsReportFilingPackExportAPIView.as_view()(request)
 
         self.assertEqual(response.status_code, 400)
@@ -729,7 +833,7 @@ class WithholdingTcsReportingExportTests(SimpleTestCase):
         )
 
         request = APIRequestFactory().get("/tcs/reports/filing-pack/export/?entity_id=1&fy=2026-27&quarter=Q1")
-        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        force_authenticate(request, user=self.user)
         response = TcsReportFilingPackExportAPIView.as_view()(request)
 
         self.assertEqual(response.status_code, 200)
@@ -750,6 +854,66 @@ class WithholdingTcsReportingExportTests(SimpleTestCase):
         spotlight_csv = archive.read("filing_pack_exception_spotlight.csv").decode("utf-8")
         self.assertIn("not_deposited", spotlight_csv)
         self.assertIn("deposit_mismatch", spotlight_csv)
+
+
+class WithholdingTcsApiPermissionTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = get_user_model().objects.create_user(
+            username="tcs-permission-tests",
+            email="tcs-permission-tests@example.com",
+            password="testpass123",
+        )
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_tcs_sections_list_requires_view_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+        request = self.factory.get("/tcs/sections/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        response = TcsSectionListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
+
+    def test_tcs_sections_list_requires_entity_scope(self):
+        request = self.factory.get("/tcs/sections/")
+        force_authenticate(request, user=self.user)
+
+        response = TcsSectionListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_tcs_ledger_report_requires_report_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+        request = self.factory.get("/tcs/reports/ledger/?entity_id=1&fy=2025-26")
+        force_authenticate(request, user=self.user)
+
+        response = TcsReportLedgerAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_tcs_workspace_requires_workspace_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+        request = self.factory.get("/tcs/workspace/transactions/?entity_id=1")
+        force_authenticate(request, user=self.user)
+
+        response = TcsWorkspaceTransactionsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
 
 
 class WithholdingSeedServiceTests(SimpleTestCase):

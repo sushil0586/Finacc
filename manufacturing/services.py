@@ -14,10 +14,13 @@ from rest_framework.exceptions import ValidationError
 from catalog.models import Product
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
 from posting.common.location_resolver import resolve_posting_location_id
-from posting.models import Entry, EntryStatus, InventoryMove, TxnType
-from posting.services.posting_service import IMInput, PostingService
+from posting.common.static_accounts import StaticAccountCodes
+from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, TxnType
+from posting.services.posting_service import IMInput, JLInput, PostingService
+from posting.services.static_accounts import StaticAccountService
 
 from .models import (
+    DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES,
     ManufacturingRoute,
     ManufacturingRouteStep,
     ManufacturingBOM,
@@ -36,6 +39,10 @@ from .models import (
 
 def _q4(value) -> Decimal:
     return Decimal(str(value or 0)).quantize(Decimal("0.0000"))
+
+
+def _q2(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"))
 
 
 def _q4_or_none(value) -> Decimal | None:
@@ -267,7 +274,9 @@ def _explode_bom_materials(*, bom: ManufacturingBOM, target_output_qty: Decimal)
     scale = _q4(target_output_qty / Decimal(bom.output_qty))
     rows: list[dict] = []
     for line in bom.materials.all().select_related("material_product", "uom").order_by("line_no", "id"):
-        required_qty = _q4(Decimal(line.qty) * scale)
+        base_qty = _q4(Decimal(line.qty) * scale)
+        waste_qty = _q4(base_qty * (Decimal(line.waste_percent or 0) / Decimal("100.0000")))
+        required_qty = _q4(base_qty + waste_qty)
         rows.append(
             {
                 "material_product": line.material_product_id,
@@ -277,11 +286,40 @@ def _explode_bom_materials(*, bom: ManufacturingBOM, target_output_qty: Decimal)
                 "batch_number": "",
                 "manufacture_date": None,
                 "expiry_date": None,
-                "waste_qty": Decimal("0.0000"),
+                "waste_qty": waste_qty,
                 "note": line.note or "",
             }
         )
     return rows
+
+
+def _trace_output_shares(outputs: list[ManufacturingWorkOrderOutput]) -> list[Decimal]:
+    if not outputs:
+        return []
+    if len(outputs) == 1:
+        return [Decimal("1.0000")]
+
+    uom_ids = {line.uom_id for line in outputs}
+    use_qty_weight = len(uom_ids) == 1
+    if use_qty_weight:
+        total_qty = sum((_q4(line.actual_qty) for line in outputs), Decimal("0.0000"))
+        if total_qty > Decimal("0.0000"):
+            shares: list[Decimal] = []
+            running_total = Decimal("0.0000")
+            last_index = len(outputs) - 1
+            for index, line in enumerate(outputs):
+                if index == last_index:
+                    share = _q4(Decimal("1.0000") - running_total)
+                else:
+                    share = _q4(_q4(line.actual_qty) / total_qty)
+                    running_total += share
+                shares.append(max(share, Decimal("0.0000")))
+            return shares
+
+    equal_share = _q4(Decimal("1.0000") / Decimal(len(outputs)))
+    shares = [equal_share for _ in outputs]
+    shares[-1] = _q4(Decimal("1.0000") - sum(shares[:-1], Decimal("0.0000")))
+    return shares
 
 
 @dataclass
@@ -291,6 +329,31 @@ class ManufacturingWorkOrderResult:
 
 
 class ManufacturingWorkOrderService:
+    MANUFACTURING_POSTING_CODES: tuple[str, ...] = (
+        StaticAccountCodes.MANUFACTURING_WIP,
+        StaticAccountCodes.MANUFACTURING_CONSUMPTION,
+        StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION,
+        StaticAccountCodes.MANUFACTURING_FINISHED_GOODS,
+    )
+    MANUFACTURING_VARIANCE_POSTING_CODES: tuple[str, ...] = (
+        StaticAccountCodes.MANUFACTURING_MATERIAL_VARIANCE,
+        StaticAccountCodes.MANUFACTURING_YIELD_VARIANCE,
+    )
+
+    MANUFACTURING_POSTING_LABELS: dict[str, str] = {
+        StaticAccountCodes.MANUFACTURING_WIP: "Manufacturing WIP",
+        StaticAccountCodes.MANUFACTURING_CONSUMPTION: "Manufacturing Consumption",
+        StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION: "Manufacturing Overhead Absorption",
+        StaticAccountCodes.MANUFACTURING_FINISHED_GOODS: "Manufacturing Finished Goods",
+        StaticAccountCodes.MANUFACTURING_MATERIAL_VARIANCE: "Manufacturing Material Variance",
+        StaticAccountCodes.MANUFACTURING_YIELD_VARIANCE: "Manufacturing Yield Variance",
+        StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE: "Manufacturing Additional Cost Expense",
+    }
+
+    OUTPUT_VALUATION_ACTUAL_COST = "actual_cost"
+    OUTPUT_VALUATION_STANDARD_COST = "standard_cost"
+    ALL_ADDITIONAL_COST_TYPES: tuple[str, ...] = tuple(DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES)
+
     @staticmethod
     def _resolve_locations(*, payload: dict) -> tuple[int, int]:
         source_location_id = resolve_posting_location_id(
@@ -310,6 +373,60 @@ class ManufacturingWorkOrderService:
         if destination_location_id is None:
             raise ValidationError({"destination_location": "A destination location is required."})
         return source_location_id, destination_location_id
+
+    @staticmethod
+    def _output_valuation_basis(settings_obj: ManufacturingSettings) -> str:
+        value = str(
+            _policy_value(
+                settings_obj,
+                "output_valuation_basis",
+                ManufacturingWorkOrderService.OUTPUT_VALUATION_ACTUAL_COST,
+            )
+            or ""
+        ).strip().lower()
+        if value not in {
+            ManufacturingWorkOrderService.OUTPUT_VALUATION_ACTUAL_COST,
+            ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST,
+        }:
+            return ManufacturingWorkOrderService.OUTPUT_VALUATION_ACTUAL_COST
+        return value
+
+    @staticmethod
+    def _required_posting_codes(*, settings_obj: ManufacturingSettings) -> tuple[str, ...]:
+        codes = list(ManufacturingWorkOrderService.MANUFACTURING_POSTING_CODES)
+        if ManufacturingWorkOrderService._output_valuation_basis(settings_obj) == ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST:
+            codes.extend(ManufacturingWorkOrderService.MANUFACTURING_VARIANCE_POSTING_CODES)
+        if len(ManufacturingWorkOrderService._capitalized_additional_cost_types(settings_obj)) < len(ManufacturingWorkOrderService.ALL_ADDITIONAL_COST_TYPES):
+            codes.append(StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE)
+        return tuple(codes)
+
+    @staticmethod
+    def _capitalized_additional_cost_types(settings_obj: ManufacturingSettings) -> set[str]:
+        raw_values = _policy_value(
+            settings_obj,
+            "capitalized_additional_cost_types",
+            list(ManufacturingWorkOrderService.ALL_ADDITIONAL_COST_TYPES),
+        )
+        if not isinstance(raw_values, (list, tuple, set)):
+            return set(ManufacturingWorkOrderService.ALL_ADDITIONAL_COST_TYPES)
+        normalized = {
+            str(value or "").strip().upper()
+            for value in raw_values
+            if str(value or "").strip().upper() in ManufacturingWorkOrderService.ALL_ADDITIONAL_COST_TYPES
+        }
+        return normalized or set(ManufacturingWorkOrderService.ALL_ADDITIONAL_COST_TYPES)
+
+    @staticmethod
+    def _split_additional_costs(
+        *,
+        settings_obj: ManufacturingSettings,
+        additional_costs: list[ManufacturingWorkOrderAdditionalCost] | None,
+    ) -> tuple[list[ManufacturingWorkOrderAdditionalCost], list[ManufacturingWorkOrderAdditionalCost]]:
+        rows = additional_costs or []
+        capitalized_types = ManufacturingWorkOrderService._capitalized_additional_cost_types(settings_obj)
+        capitalized = [line for line in rows if (line.cost_type or ManufacturingWorkOrderAdditionalCost.CostType.OTHER) in capitalized_types]
+        expensed = [line for line in rows if (line.cost_type or ManufacturingWorkOrderAdditionalCost.CostType.OTHER) not in capitalized_types]
+        return capitalized, expensed
 
     @staticmethod
     def _normalize_outputs(*, payload: dict, bom: ManufacturingBOM | None) -> list[dict]:
@@ -359,7 +476,42 @@ class ManufacturingWorkOrderService:
 
     @staticmethod
     def _normalize_materials(*, payload: dict, bom: ManufacturingBOM | None, output_qty: Decimal) -> list[dict]:
+        settings_obj = _get_settings(entity_id=payload["entity"], subentity_id=payload.get("subentity"))
         materials = [dict(row) for row in (payload.get("materials") or [])]
+        if bom is not None:
+            auto_explode = bool(_policy_value(settings_obj, "auto_explode_materials_from_bom", True))
+            allow_manual_override = bool(_policy_value(settings_obj, "allow_manual_material_override", True))
+            exploded_materials = _explode_bom_materials(bom=bom, target_output_qty=output_qty)
+
+            if not materials:
+                if not auto_explode:
+                    raise ValidationError({"materials": "Manual material lines are required because BOM auto explosion is disabled in manufacturing settings."})
+                return exploded_materials
+
+            if not allow_manual_override:
+                if len(materials) != len(exploded_materials):
+                    raise ValidationError({"materials": "Manual material override is disabled. Material lines must match the selected BOM."})
+                locked_rows: list[dict] = []
+                for idx, (raw_line, exploded_line) in enumerate(zip(materials, exploded_materials), start=1):
+                    raw_product_id = int(raw_line.get("material_product") or 0)
+                    expected_product_id = int(exploded_line["material_product"])
+                    if raw_product_id != expected_product_id:
+                        raise ValidationError({"materials": [f"Material line {idx} must use the BOM product when manual override is disabled."]})
+                    raw_required_qty = _q4(raw_line.get("required_qty") or exploded_line["required_qty"])
+                    if raw_required_qty != _q4(exploded_line["required_qty"]):
+                        raise ValidationError({"materials": [f"Required quantity on material line {idx} must follow the selected BOM when manual override is disabled."]})
+                    locked_line = dict(raw_line)
+                    locked_line["material_product"] = expected_product_id
+                    locked_line["required_qty"] = exploded_line["required_qty"]
+                    if locked_line.get("actual_qty") in (None, ""):
+                        locked_line["actual_qty"] = exploded_line["actual_qty"]
+                    if locked_line.get("waste_qty") in (None, ""):
+                        locked_line["waste_qty"] = exploded_line["waste_qty"]
+                    if locked_line.get("note") in (None, ""):
+                        locked_line["note"] = exploded_line["note"]
+                    locked_rows.append(locked_line)
+                return locked_rows
+
         if materials:
             return materials
         if bom is None:
@@ -410,9 +562,18 @@ class ManufacturingWorkOrderService:
         )
         if not materials or not outputs:
             return
+        output_shares = _trace_output_shares(outputs)
         links: list[ManufacturingBatchTraceLink] = []
-        for output_line in outputs:
+        for output_index, output_line in enumerate(outputs):
+            share = output_shares[output_index]
             for material_line in materials:
+                allocated_input_qty = _q4(material_line.actual_qty * share)
+                if output_index == len(outputs) - 1:
+                    prior_allocated = sum(
+                        (_q4(material_line.actual_qty * prior_share) for prior_share in output_shares[:output_index]),
+                        Decimal("0.0000"),
+                    )
+                    allocated_input_qty = _q4(_q4(material_line.actual_qty) - prior_allocated)
                 links.append(
                     ManufacturingBatchTraceLink(
                         work_order=work_order,
@@ -422,7 +583,7 @@ class ManufacturingWorkOrderService:
                         input_batch_number=material_line.batch_number or "",
                         input_manufacture_date=material_line.manufacture_date,
                         input_expiry_date=material_line.expiry_date,
-                        input_qty=_q4(material_line.actual_qty),
+                        input_qty=max(allocated_input_qty, Decimal("0.0000")),
                         output_product=output_line.finished_product,
                         output_batch_number=output_line.batch_number or "",
                         output_manufacture_date=output_line.manufacture_date,
@@ -438,6 +599,7 @@ class ManufacturingWorkOrderService:
         *,
         materials: list[ManufacturingWorkOrderMaterial],
         outputs: list[ManufacturingWorkOrderOutput],
+        settings_obj: ManufacturingSettings,
         additional_costs: list[ManufacturingWorkOrderAdditionalCost] | None = None,
     ) -> dict[str, Decimal]:
         main_outputs = [line for line in outputs if line.output_type == ManufacturingWorkOrderOutput.OutputType.MAIN]
@@ -452,7 +614,13 @@ class ManufacturingWorkOrderService:
             ((_q4(line.actual_qty) * _q4(line.unit_cost)) for line in materials),
             Decimal("0.0000"),
         )
+        capitalized_additional_costs, expensed_additional_costs = ManufacturingWorkOrderService._split_additional_costs(
+            settings_obj=settings_obj,
+            additional_costs=additional_cost_rows,
+        )
         total_additional_cost = sum((_q4(line.amount) for line in additional_cost_rows), Decimal("0.0000"))
+        capitalized_additional_cost = sum((_q4(line.amount) for line in capitalized_additional_costs), Decimal("0.0000"))
+        expensed_additional_cost = sum((_q4(line.amount) for line in expensed_additional_costs), Decimal("0.0000"))
         standard_recovery_value = sum(
             ((_q4(line.planned_qty) * _q4(line.estimated_recovery_unit_value)) for line in secondary_outputs),
             Decimal("0.0000"),
@@ -465,7 +633,7 @@ class ManufacturingWorkOrderService:
         actual_output_qty = sum((_q4(line.actual_qty) for line in main_outputs), Decimal("0.0000"))
 
         standard_net_cost = max(standard_material_cost - standard_recovery_value, Decimal("0.0000"))
-        actual_net_cost = max(actual_material_cost + total_additional_cost - actual_recovery_value, Decimal("0.0000"))
+        actual_net_cost = max(actual_material_cost + capitalized_additional_cost - actual_recovery_value, Decimal("0.0000"))
         standard_unit_cost = _q4(standard_net_cost / standard_output_qty) if standard_output_qty > Decimal("0.0000") else Decimal("0.0000")
         actual_unit_cost = _q4(actual_net_cost / actual_output_qty) if actual_output_qty > Decimal("0.0000") else Decimal("0.0000")
         material_variance_value = _q4(actual_material_cost - standard_material_cost)
@@ -476,6 +644,8 @@ class ManufacturingWorkOrderService:
             "standard_material_cost_snapshot": _q4(standard_material_cost),
             "actual_material_cost_snapshot": _q4(actual_material_cost),
             "total_additional_cost_snapshot": _q4(total_additional_cost),
+            "capitalized_additional_cost_snapshot": _q4(capitalized_additional_cost),
+            "expensed_additional_cost_snapshot": _q4(expensed_additional_cost),
             "standard_recovery_value_snapshot": _q4(standard_recovery_value),
             "actual_recovery_value_snapshot": _q4(actual_recovery_value),
             "net_production_cost_snapshot": _q4(actual_net_cost),
@@ -494,9 +664,15 @@ class ManufacturingWorkOrderService:
         work_order: ManufacturingWorkOrder,
         materials: list[ManufacturingWorkOrderMaterial],
         outputs: list[ManufacturingWorkOrderOutput],
+        settings_obj: ManufacturingSettings,
         additional_costs: list[ManufacturingWorkOrderAdditionalCost] | None = None,
     ) -> None:
-        snapshot = ManufacturingWorkOrderService._calculate_cost_snapshot(materials=materials, outputs=outputs, additional_costs=additional_costs)
+        snapshot = ManufacturingWorkOrderService._calculate_cost_snapshot(
+            materials=materials,
+            outputs=outputs,
+            settings_obj=settings_obj,
+            additional_costs=additional_costs,
+        )
         for field_name, value in snapshot.items():
             setattr(work_order, field_name, value)
         work_order.save(update_fields=[*snapshot.keys(), "updated_at"])
@@ -661,7 +837,14 @@ class ManufacturingWorkOrderService:
             next_operation.save(update_fields=["status"])
 
     @staticmethod
-    def _post_work_order(*, work_order: ManufacturingWorkOrder, im_inputs: list[IMInput], user_id: int | None, narration_prefix: str = "") -> Entry:
+    def _post_work_order(
+        *,
+        work_order: ManufacturingWorkOrder,
+        jl_inputs: list[JLInput],
+        im_inputs: list[IMInput],
+        user_id: int | None,
+        narration_prefix: str = "",
+    ) -> Entry:
         posting_service = PostingService(
             entity_id=work_order.entity_id,
             entityfin_id=work_order.entityfin_id,
@@ -676,10 +859,218 @@ class ManufacturingWorkOrderService:
             voucher_date=work_order.production_date,
             posting_date=work_order.production_date,
             narration=narration,
-            jl_inputs=[],
+            jl_inputs=jl_inputs,
             im_inputs=im_inputs,
             mark_posted=True,
         )
+
+    @staticmethod
+    def _static_jl_input(*, entity_id: int, code: str, drcr: bool, amount: Decimal, description: str, detail_id: int) -> JLInput:
+        return JLInput(
+            account_id=StaticAccountService.get_account_id(entity_id, code, required=True),
+            ledger_id=StaticAccountService.get_ledger_id(entity_id, code, required=False),
+            drcr=drcr,
+            amount=_q2(amount),
+            description=description,
+            detail_id=detail_id,
+        )
+
+    @staticmethod
+    def _signed_static_jl_input(*, entity_id: int, code: str, signed_amount: Decimal, description: str, detail_id: int) -> JLInput | None:
+        amount = _q2(abs(signed_amount))
+        if amount <= Decimal("0.00"):
+            return None
+        return ManufacturingWorkOrderService._static_jl_input(
+            entity_id=entity_id,
+            code=code,
+            drcr=signed_amount > Decimal("0.00"),
+            amount=amount,
+            description=description,
+            detail_id=detail_id,
+        )
+
+    @staticmethod
+    def _allocate_output_journal_amounts(*, outputs: list[ManufacturingWorkOrderOutput], target_total: Decimal) -> list[tuple[ManufacturingWorkOrderOutput, Decimal]]:
+        if not outputs:
+            return []
+
+        raw_amounts = [_q2(_q4(line.actual_qty) * _q4(line.unit_cost)) for line in outputs]
+        allocated_total = sum(raw_amounts, Decimal("0.00"))
+        delta = _q2(target_total - allocated_total)
+        if delta != Decimal("0.00"):
+            raw_amounts[-1] = _q2(raw_amounts[-1] + delta)
+        return list(zip(outputs, raw_amounts))
+
+    @staticmethod
+    def _build_posting_journal_inputs(
+        *,
+        work_order: ManufacturingWorkOrder,
+        materials: list[ManufacturingWorkOrderMaterial],
+        outputs: list[ManufacturingWorkOrderOutput],
+        additional_costs: list[ManufacturingWorkOrderAdditionalCost],
+        settings_obj: ManufacturingSettings,
+    ) -> list[JLInput]:
+        total_issue_value = _q2(
+            sum((_q4(line.actual_qty) * _q4(line.unit_cost) for line in materials), Decimal("0.0000"))
+        )
+        capitalized_additional_costs, expensed_additional_costs = ManufacturingWorkOrderService._split_additional_costs(
+            settings_obj=settings_obj,
+            additional_costs=additional_costs,
+        )
+        total_capitalized_additional_cost = _q2(sum((_q4(line.amount) for line in capitalized_additional_costs), Decimal("0.0000")))
+        total_expensed_additional_cost = _q2(sum((_q4(line.amount) for line in expensed_additional_costs), Decimal("0.0000")))
+        total_wip_value = _q2(total_issue_value + total_capitalized_additional_cost)
+        if total_wip_value <= Decimal("0.00"):
+            return []
+
+        jl_inputs: list[JLInput] = []
+        entity_id = work_order.entity_id
+
+        if total_issue_value > Decimal("0.00"):
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_WIP,
+                    drcr=True,
+                    amount=total_issue_value,
+                    description="Manufacturing material issue to WIP",
+                    detail_id=1001,
+                )
+            )
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_CONSUMPTION,
+                    drcr=False,
+                    amount=total_issue_value,
+                    description="Manufacturing material consumption",
+                    detail_id=1002,
+                )
+            )
+
+        if total_capitalized_additional_cost > Decimal("0.00"):
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_WIP,
+                    drcr=True,
+                    amount=total_capitalized_additional_cost,
+                    description="Manufacturing additional cost absorbed to WIP",
+                    detail_id=1003,
+                )
+            )
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION,
+                    drcr=False,
+                    amount=total_capitalized_additional_cost,
+                    description="Manufacturing additional cost absorption",
+                    detail_id=1004,
+                )
+            )
+
+        if total_expensed_additional_cost > Decimal("0.00"):
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE,
+                    drcr=True,
+                    amount=total_expensed_additional_cost,
+                    description="Manufacturing additional cost expensed",
+                    detail_id=1005,
+                )
+            )
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION,
+                    drcr=False,
+                    amount=total_expensed_additional_cost,
+                    description="Manufacturing additional cost absorption offset",
+                    detail_id=1006,
+                )
+            )
+
+        output_valuation_basis = ManufacturingWorkOrderService._output_valuation_basis(settings_obj)
+        total_fg_capitalized = total_wip_value
+        material_variance_amount = Decimal("0.00")
+        yield_variance_amount = Decimal("0.00")
+        if output_valuation_basis == ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST:
+            total_fg_capitalized = _q2(
+                sum((_q4(line.actual_qty) * _q4(line.unit_cost) for line in outputs), Decimal("0.0000"))
+            )
+            total_variance_amount = _q2(total_wip_value - total_fg_capitalized)
+            material_variance_amount = _q2(
+                _q4(work_order.actual_material_cost_snapshot) - _q4(work_order.standard_material_cost_snapshot)
+            )
+            yield_variance_amount = _q2(total_variance_amount - material_variance_amount)
+
+        for output_line, amount in ManufacturingWorkOrderService._allocate_output_journal_amounts(
+            outputs=outputs,
+            target_total=total_fg_capitalized,
+        ):
+            if amount <= Decimal("0.00"):
+                continue
+            output_label = "main output" if output_line.output_type == ManufacturingWorkOrderOutput.OutputType.MAIN else output_line.output_type.lower().replace("_", " ")
+            jl_inputs.append(
+                ManufacturingWorkOrderService._static_jl_input(
+                    entity_id=entity_id,
+                    code=StaticAccountCodes.MANUFACTURING_FINISHED_GOODS,
+                    drcr=True,
+                    amount=amount,
+                    description=f"Manufacturing capitalization for {output_label}",
+                    detail_id=2000 + int(output_line.line_no or 0),
+                )
+            )
+
+        if output_valuation_basis == ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST:
+            material_variance_input = ManufacturingWorkOrderService._signed_static_jl_input(
+                entity_id=entity_id,
+                code=StaticAccountCodes.MANUFACTURING_MATERIAL_VARIANCE,
+                signed_amount=material_variance_amount,
+                description="Manufacturing material variance",
+                detail_id=3001,
+            )
+            if material_variance_input is not None:
+                jl_inputs.append(material_variance_input)
+
+            yield_variance_input = ManufacturingWorkOrderService._signed_static_jl_input(
+                entity_id=entity_id,
+                code=StaticAccountCodes.MANUFACTURING_YIELD_VARIANCE,
+                signed_amount=yield_variance_amount,
+                description="Manufacturing yield variance",
+                detail_id=3002,
+            )
+            if yield_variance_input is not None:
+                jl_inputs.append(yield_variance_input)
+
+        jl_inputs.append(
+            ManufacturingWorkOrderService._static_jl_input(
+                entity_id=entity_id,
+                code=StaticAccountCodes.MANUFACTURING_WIP,
+                drcr=False,
+                amount=total_wip_value,
+                description="Manufacturing WIP cleared to outputs",
+                detail_id=3000,
+            )
+        )
+        return jl_inputs
+
+    @staticmethod
+    def _validate_posting_setup(*, entity_id: int, settings_obj: ManufacturingSettings) -> None:
+        required_codes = ManufacturingWorkOrderService._required_posting_codes(settings_obj=settings_obj)
+        missing_labels = [
+            ManufacturingWorkOrderService.MANUFACTURING_POSTING_LABELS[code]
+            for code in required_codes
+            if not StaticAccountService.get_account_id(entity_id, code, required=False)
+        ]
+        if missing_labels:
+            raise ValidationError(
+                "Manufacturing posting setup is incomplete. Map "
+                + ", ".join(missing_labels)
+                + " in Static Account Settings before posting the work order."
+            )
 
     @staticmethod
     @transaction.atomic
@@ -712,7 +1103,13 @@ class ManufacturingWorkOrderService:
             settings_obj=settings_obj,
         )
         ManufacturingWorkOrderService._replace_lines(work_order=work_order, materials=material_objs, outputs=output_objs, operations=operation_objs, additional_costs=additional_cost_objs)
-        ManufacturingWorkOrderService._persist_cost_snapshot(work_order=work_order, materials=material_objs, outputs=output_objs, additional_costs=additional_cost_objs)
+        ManufacturingWorkOrderService._persist_cost_snapshot(
+            work_order=work_order,
+            materials=material_objs,
+            outputs=output_objs,
+            settings_obj=settings_obj,
+            additional_costs=additional_cost_objs,
+        )
 
         if settings_obj.default_workflow_action == ManufacturingSettings.DefaultWorkflowAction.POST:
             return ManufacturingWorkOrderService.post_work_order(work_order_id=work_order.id, user_id=user_id)
@@ -757,7 +1154,13 @@ class ManufacturingWorkOrderService:
             settings_obj=settings_obj,
         )
         ManufacturingWorkOrderService._replace_lines(work_order=work_order, materials=material_objs, outputs=output_objs, operations=operation_objs, additional_costs=additional_cost_objs)
-        ManufacturingWorkOrderService._persist_cost_snapshot(work_order=work_order, materials=material_objs, outputs=output_objs, additional_costs=additional_cost_objs)
+        ManufacturingWorkOrderService._persist_cost_snapshot(
+            work_order=work_order,
+            materials=material_objs,
+            outputs=output_objs,
+            settings_obj=settings_obj,
+            additional_costs=additional_cost_objs,
+        )
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
 
@@ -771,6 +1174,7 @@ class ManufacturingWorkOrderService:
             return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
 
         settings_obj = _get_settings(entity_id=work_order.entity_id, subentity_id=work_order.subentity_id)
+        ManufacturingWorkOrderService._validate_posting_setup(entity_id=work_order.entity_id, settings_obj=settings_obj)
         reserved_stock: dict[tuple[int, int, str], Decimal] = {}
         im_inputs: list[IMInput] = []
         total_issue_value = Decimal("0.00")
@@ -786,6 +1190,10 @@ class ManufacturingWorkOrderService:
         main_outputs = [line for line in outputs if line.output_type == ManufacturingWorkOrderOutput.OutputType.MAIN]
         if len(main_outputs) != 1:
             raise ValidationError({"outputs": "Exactly one main output line is required."})
+        if work_order.operations.filter(status=ManufacturingOperationStatus.AWAITING_QC).exists():
+            raise ValidationError({"operations": "Approve all QC-pending operations before posting the work order."})
+        if work_order.operations.filter(status=ManufacturingOperationStatus.QC_REJECTED).exists():
+            raise ValidationError({"operations": "Resolve all QC-rejected operations before posting the work order."})
         if open_operations.exists():
             raise ValidationError({"operations": "Complete all manufacturing operations before posting the work order."})
 
@@ -840,15 +1248,24 @@ class ManufacturingWorkOrderService:
             ((_q4(line.actual_qty) * _q4(line.estimated_recovery_unit_value)) for line in secondary_outputs),
             Decimal("0.0000"),
         )
-        total_additional_cost = sum((_q4(line.amount) for line in additional_costs), Decimal("0.0000"))
-        if byproduct_credit_total > (total_issue_value + total_additional_cost):
+        capitalized_additional_costs, expensed_additional_costs = ManufacturingWorkOrderService._split_additional_costs(
+            settings_obj=settings_obj,
+            additional_costs=additional_costs,
+        )
+        capitalized_additional_cost = sum((_q4(line.amount) for line in capitalized_additional_costs), Decimal("0.0000"))
+        if byproduct_credit_total > (total_issue_value + capitalized_additional_cost):
             raise ValidationError({"outputs": "Total byproduct recovery value cannot exceed consumed material plus additional production cost."})
 
         total_main_output_qty = sum((Decimal(line.actual_qty or 0) for line in main_outputs), Decimal("0"))
         if total_main_output_qty <= Decimal("0.0000"):
             raise ValidationError({"outputs": "Main output quantity must be greater than zero."})
 
-        main_output_cost_pool = total_issue_value + total_additional_cost - byproduct_credit_total
+        output_valuation_basis = ManufacturingWorkOrderService._output_valuation_basis(settings_obj)
+        if output_valuation_basis == ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST:
+            standard_main_output_total = _q4(_q4(work_order.standard_unit_cost_snapshot) * _q4(total_main_output_qty))
+            main_output_cost_pool = _q4(standard_main_output_total + capitalized_additional_cost)
+        else:
+            main_output_cost_pool = total_issue_value + capitalized_additional_cost - byproduct_credit_total
         main_output_unit_cost = _q4(main_output_cost_pool / total_main_output_qty) if main_output_cost_pool > Decimal("0.00") else Decimal("0.0000")
 
         for line in outputs:
@@ -883,12 +1300,32 @@ class ManufacturingWorkOrderService:
 
         ManufacturingWorkOrderMaterial.objects.bulk_update(materials, ["unit_cost"])
         ManufacturingWorkOrderOutput.objects.bulk_update(outputs, ["unit_cost"])
-        ManufacturingWorkOrderService._persist_cost_snapshot(work_order=work_order, materials=materials, outputs=outputs, additional_costs=additional_costs)
-        entry = ManufacturingWorkOrderService._post_work_order(work_order=work_order, im_inputs=im_inputs, user_id=user_id)
+        ManufacturingWorkOrderService._persist_cost_snapshot(
+            work_order=work_order,
+            materials=materials,
+            outputs=outputs,
+            settings_obj=settings_obj,
+            additional_costs=additional_costs,
+        )
+        jl_inputs = ManufacturingWorkOrderService._build_posting_journal_inputs(
+            work_order=work_order,
+            materials=materials,
+            outputs=outputs,
+            additional_costs=additional_costs,
+            settings_obj=settings_obj,
+        )
+        entry = ManufacturingWorkOrderService._post_work_order(
+            work_order=work_order,
+            jl_inputs=jl_inputs,
+            im_inputs=im_inputs,
+            user_id=user_id,
+        )
         work_order.status = ManufacturingWorkOrderStatus.POSTED
         work_order.posting_entry_id = entry.id
+        work_order.posted_at = timezone.now()
+        work_order.posted_by_id = user_id
         work_order.updated_by_id = user_id
-        work_order.save(update_fields=["status", "posting_entry_id", "updated_by", "updated_at"])
+        work_order.save(update_fields=["status", "posting_entry_id", "posted_at", "posted_by", "updated_by", "updated_at"])
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=entry.id)
 
@@ -898,12 +1335,47 @@ class ManufacturingWorkOrderService:
         work_order = ManufacturingWorkOrderService._get_work_order_for_update(work_order_id=work_order_id)
         if work_order.status != ManufacturingWorkOrderStatus.POSTED:
             raise ValidationError("Only posted work orders can be unposted.")
+        reason_text = (reason or "").strip()
+        if not reason_text:
+            raise ValidationError({"reason": "Reason is required to unpost a manufacturing work order."})
 
-        entry = ManufacturingWorkOrderService._post_work_order(
-            work_order=work_order,
-            im_inputs=[],
+        old_jls = list(
+            JournalLine.objects.filter(
+                entity_id=work_order.entity_id,
+                entityfin_id=work_order.entityfin_id,
+                subentity_id=work_order.subentity_id,
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=work_order.id,
+            )
+        )
+        reversal_jls = [
+            JLInput(
+                account_id=jl.account_id,
+                accounthead_id=jl.accounthead_id,
+                ledger_id=jl.ledger_id,
+                drcr=(not bool(jl.drcr)),
+                amount=jl.amount,
+                description=f"Reversal: {jl.description or ''}".strip(),
+                detail_id=jl.detail_id,
+            )
+            for jl in old_jls
+        ]
+        posting_service = PostingService(
+            entity_id=work_order.entity_id,
+            entityfin_id=work_order.entityfin_id,
+            subentity_id=work_order.subentity_id,
             user_id=user_id,
-            narration_prefix=f"Reversal for {work_order.work_order_no}: {(reason or '').strip()}".strip(),
+        )
+        entry = posting_service.post(
+            txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+            txn_id=work_order.id,
+            voucher_no=work_order.work_order_no,
+            voucher_date=work_order.production_date,
+            posting_date=work_order.production_date,
+            narration=f"Reversal for {work_order.work_order_no}: {reason_text}".strip(),
+            jl_inputs=reversal_jls,
+            im_inputs=[],
+            mark_posted=True,
         )
         Entry.objects.filter(
             entity_id=work_order.entity_id,
@@ -917,8 +1389,11 @@ class ManufacturingWorkOrderService:
         )
         work_order.status = ManufacturingWorkOrderStatus.DRAFT
         work_order.posting_entry_id = entry.id
+        work_order.last_unposted_at = timezone.now()
+        work_order.last_unposted_by_id = user_id
+        work_order.last_unpost_reason = reason_text
         work_order.updated_by_id = user_id
-        work_order.save(update_fields=["status", "posting_entry_id", "updated_by", "updated_at"])
+        work_order.save(update_fields=["status", "posting_entry_id", "last_unposted_at", "last_unposted_by", "last_unpost_reason", "updated_by", "updated_at"])
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=entry.id)
 
@@ -930,11 +1405,17 @@ class ManufacturingWorkOrderService:
             raise ValidationError("Posted work order must be unposted before cancellation.")
         if work_order.status == ManufacturingWorkOrderStatus.CANCELLED:
             return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
+        reason_text = (reason or "").strip()
+        if not reason_text:
+            raise ValidationError({"reason": "Reason is required to cancel a manufacturing work order."})
         work_order.status = ManufacturingWorkOrderStatus.CANCELLED
-        suffix = f" | Cancelled: {reason.strip()}" if reason and reason.strip() else ""
+        suffix = f" | Cancelled: {reason_text}"
         work_order.narration = f"{work_order.narration or ''}{suffix}".strip(" |")
+        work_order.cancelled_at = timezone.now()
+        work_order.cancelled_by_id = user_id
+        work_order.cancel_reason = reason_text
         work_order.updated_by_id = user_id
-        work_order.save(update_fields=["status", "narration", "updated_by", "updated_at"])
+        work_order.save(update_fields=["status", "narration", "cancelled_at", "cancelled_by", "cancel_reason", "updated_by", "updated_at"])
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
 
@@ -947,12 +1428,17 @@ class ManufacturingWorkOrderService:
         operation = work_order.operations.filter(id=operation_id).first()
         if operation is None:
             raise ValidationError({"operation": "Operation not found for this work order."})
-        if operation.status not in [ManufacturingOperationStatus.READY, ManufacturingOperationStatus.IN_PROGRESS]:
+        if operation.status not in [
+            ManufacturingOperationStatus.READY,
+            ManufacturingOperationStatus.IN_PROGRESS,
+            ManufacturingOperationStatus.QC_REJECTED,
+        ]:
             raise ValidationError({"operation": f"Operation cannot be started from status {operation.status}."})
-        if operation.status == ManufacturingOperationStatus.READY:
+        if operation.status in [ManufacturingOperationStatus.READY, ManufacturingOperationStatus.QC_REJECTED]:
             operation.status = ManufacturingOperationStatus.IN_PROGRESS
             operation.started_at = timezone.now()
-            operation.save(update_fields=["status", "started_at"])
+            operation.started_by_id = user_id
+            operation.save(update_fields=["status", "started_at", "started_by"])
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
 
@@ -965,7 +1451,11 @@ class ManufacturingWorkOrderService:
         operation = work_order.operations.filter(id=operation_id).first()
         if operation is None:
             raise ValidationError({"operation": "Operation not found for this work order."})
-        if operation.status not in [ManufacturingOperationStatus.READY, ManufacturingOperationStatus.IN_PROGRESS]:
+        if operation.status not in [
+            ManufacturingOperationStatus.READY,
+            ManufacturingOperationStatus.IN_PROGRESS,
+            ManufacturingOperationStatus.QC_REJECTED,
+        ]:
             raise ValidationError({"operation": f"Operation cannot be completed from status {operation.status}."})
         operation.input_qty = _q4(payload.get("input_qty") if payload.get("input_qty") is not None else operation.input_qty)
         operation.output_qty = _q4(payload.get("output_qty") if payload.get("output_qty") is not None else operation.output_qty)
@@ -975,10 +1465,58 @@ class ManufacturingWorkOrderService:
         operation.remarks = (payload.get("remarks") or operation.remarks or "").strip()
         if operation.started_at is None:
             operation.started_at = timezone.now()
+        if operation.started_by_id is None:
+            operation.started_by_id = user_id
         operation.completed_at = timezone.now()
+        operation.completed_by_id = user_id
+        operation.status = ManufacturingOperationStatus.AWAITING_QC if operation.requires_qc else ManufacturingOperationStatus.COMPLETED
+        operation.save(update_fields=["input_qty", "output_qty", "scrap_qty", "remarks", "started_at", "started_by", "completed_at", "completed_by", "status"])
+        if operation.status == ManufacturingOperationStatus.COMPLETED:
+            ManufacturingWorkOrderService._advance_next_operation(work_order=work_order)
+        work_order.refresh_from_db()
+        return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
+
+    @staticmethod
+    @transaction.atomic
+    def approve_operation(*, work_order_id: int, operation_id: int, payload: dict, user_id: int | None) -> ManufacturingWorkOrderResult:
+        work_order = ManufacturingWorkOrderService._get_work_order_for_update(work_order_id=work_order_id)
+        if work_order.status != ManufacturingWorkOrderStatus.DRAFT:
+            raise ValidationError("Operations can only be progressed on draft work orders.")
+        operation = work_order.operations.filter(id=operation_id).first()
+        if operation is None:
+            raise ValidationError({"operation": "Operation not found for this work order."})
+        if operation.status != ManufacturingOperationStatus.AWAITING_QC:
+            raise ValidationError({"operation": f"Operation cannot be approved from status {operation.status}."})
+        remarks = (payload.get("remarks") or "").strip()
+        if remarks:
+            operation.remarks = remarks
         operation.status = ManufacturingOperationStatus.COMPLETED
-        operation.save(update_fields=["input_qty", "output_qty", "scrap_qty", "remarks", "started_at", "completed_at", "status"])
+        if operation.completed_at is None:
+            operation.completed_at = timezone.now()
+        operation.qc_decision_at = timezone.now()
+        operation.qc_decision_by_id = user_id
+        operation.save(update_fields=["status", "completed_at", "remarks", "qc_decision_at", "qc_decision_by"])
         ManufacturingWorkOrderService._advance_next_operation(work_order=work_order)
+        work_order.refresh_from_db()
+        return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
+
+    @staticmethod
+    @transaction.atomic
+    def reject_operation(*, work_order_id: int, operation_id: int, payload: dict, user_id: int | None) -> ManufacturingWorkOrderResult:
+        work_order = ManufacturingWorkOrderService._get_work_order_for_update(work_order_id=work_order_id)
+        if work_order.status != ManufacturingWorkOrderStatus.DRAFT:
+            raise ValidationError("Operations can only be progressed on draft work orders.")
+        operation = work_order.operations.filter(id=operation_id).first()
+        if operation is None:
+            raise ValidationError({"operation": "Operation not found for this work order."})
+        if operation.status != ManufacturingOperationStatus.AWAITING_QC:
+            raise ValidationError({"operation": f"Operation cannot be rejected from status {operation.status}."})
+        remarks = (payload.get("remarks") or "").strip()
+        operation.status = ManufacturingOperationStatus.QC_REJECTED
+        operation.remarks = remarks or operation.remarks
+        operation.qc_decision_at = timezone.now()
+        operation.qc_decision_by_id = user_id
+        operation.save(update_fields=["status", "remarks", "qc_decision_at", "qc_decision_by"])
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
 
@@ -997,8 +1535,11 @@ class ManufacturingWorkOrderService:
         operation.remarks = (payload.get("remarks") or operation.remarks or "").strip()
         if operation.started_at is None:
             operation.started_at = timezone.now()
+        if operation.started_by_id is None:
+            operation.started_by_id = user_id
         operation.completed_at = timezone.now()
-        operation.save(update_fields=["status", "remarks", "started_at", "completed_at"])
+        operation.completed_by_id = user_id
+        operation.save(update_fields=["status", "remarks", "started_at", "started_by", "completed_at", "completed_by"])
         ManufacturingWorkOrderService._advance_next_operation(work_order=work_order)
         work_order.refresh_from_db()
         return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)

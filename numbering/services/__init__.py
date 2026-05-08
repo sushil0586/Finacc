@@ -7,6 +7,11 @@ from django.utils import timezone
 
 from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.services.document_number_service import DocNumberResult, DocumentNumberService
+from numbering.services.series_validation import (
+    SeriesPatternConflict,
+    find_series_pattern_conflict,
+    validate_unique_series_pattern,
+)
 
 
 @dataclass(frozen=True)
@@ -96,4 +101,7 @@ __all__ = [
     "SeedSequenceResult",
     "ensure_document_type",
     "ensure_series",
+    "SeriesPatternConflict",
+    "find_series_pattern_conflict",
+    "validate_unique_series_pattern",
 ]

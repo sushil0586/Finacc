@@ -8,8 +8,10 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
+from rest_framework.test import APITestCase
 
 from entity.models import Entity, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
@@ -25,6 +27,7 @@ from posting.services.posting_service import (
     q2,
     q4,
 )
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 
 User = get_user_model()
 
@@ -715,3 +718,72 @@ class PostingLocationResolverTests(TestCase):
                 subentity_id=self.subentity.id,
                 godown_id=foreign.id,
             )
+
+
+@override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
+class StaticAccountSettingsPermissionTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="posting_screen", email="posting_screen@test.com", password="pass123")
+        self.client.force_authenticate(user=self.user)
+        self.entity = Entity.objects.create(entityname="Posting Screen Co", createdby=self.user)
+        self.role = Role.objects.create(
+            entity=self.entity,
+            name="Posting Config User",
+            code="posting_config_user",
+            role_level=Role.LEVEL_ENTITY,
+            is_system_role=False,
+            is_assignable=True,
+            priority=20,
+            createdby=self.user,
+        )
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=self.role,
+            assigned_by=self.user,
+            is_primary=True,
+        )
+        StaticAccount.objects.get_or_create(
+            code="MANUFACTURING_WIP",
+            defaults={
+                "name": "Manufacturing WIP",
+                "group": StaticAccountGroup.MANUFACTURING,
+                "is_required": False,
+                "is_active": True,
+            },
+        )
+
+    def _grant(self, code: str):
+        action = code.rsplit(".", 1)[-1]
+        permission, _ = Permission.objects.get_or_create(
+            code=code,
+            defaults={
+                "name": code,
+                "module": "posting",
+                "resource": "static_account_settings",
+                "action": action,
+                "description": code,
+                "scope_type": Permission.SCOPE_ENTITY,
+                "is_system_defined": True,
+            },
+        )
+        if not permission.isactive:
+            permission.isactive = True
+            permission.save(update_fields=["isactive"])
+        RolePermission.objects.get_or_create(
+            role=self.role,
+            permission=permission,
+            defaults={"effect": RolePermission.EFFECT_ALLOW},
+        )
+
+    def test_settings_view_requires_view_permission(self):
+        url = reverse("posting:static-account-settings", kwargs={"entity_id": self.entity.id})
+
+        forbidden = self.client.get(url)
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertIn("posting.static_account_settings.view", str(forbidden.json()))
+
+        self._grant("posting.static_account_settings.view")
+        allowed = self.client.get(url)
+        self.assertEqual(allowed.status_code, 200)
+        self.assertIn("summary", allowed.json())

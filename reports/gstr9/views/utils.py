@@ -1,6 +1,29 @@
 from __future__ import annotations
 
+from core.entitlements import ScopedEntitlementMixin
 from reports.gstr9.selectors.scope import Gstr9FilterParams
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+
+
+class Gstr9ScopedReportMixin(ScopedEntitlementMixin):
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def enforce_report_scope(self, request, scope: Gstr9FilterParams):
+        self.enforce_scope(
+            request,
+            entity_id=scope.entity_id,
+            entityfinid_id=scope.entityfinid_id,
+            subentity_id=scope.subentity_id,
+        )
+
+    def enforce_entity_scope(self, request, *, entity_id: int, entityfinid_id: int | None = None, subentity_id: int | None = None):
+        self.enforce_scope(
+            request,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+        )
 
 
 def scope_filters(scope: Gstr9FilterParams):

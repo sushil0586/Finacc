@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Q
+from django.db.models import Q, Sum
 
 from assets.models import DepreciationRunLine, FixedAsset
 from posting.models import Entry, JournalLine
@@ -35,6 +35,29 @@ def _paginate(rows, page, page_size):
     return rows[start:end], len(rows)
 
 
+def _build_pagination(page, page_size, total_rows):
+    safe_page = max(int(page or 1), 1)
+    safe_page_size = max(int(page_size or 100), 1)
+    total_pages = max((int(total_rows) + safe_page_size - 1) // safe_page_size, 1)
+    safe_page = min(safe_page, total_pages)
+    return {
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "total_rows": int(total_rows),
+        "total_records": int(total_rows),
+        "total_pages": total_pages,
+        "paginated": True,
+    }
+
+
+def _page_window(page, page_size):
+    safe_page = max(int(page or 1), 1)
+    safe_page_size = max(int(page_size or 100), 1)
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
+    return safe_page, safe_page_size, start, end
+
+
 def build_fixed_asset_register(
     *,
     entity_id,
@@ -62,9 +85,16 @@ def build_fixed_asset_register(
     if as_of:
         qs = qs.filter(acquisition_date__lte=as_of).filter(Q(disposal_date__isnull=True) | Q(disposal_date__gte=as_of))
 
+    total_rows = qs.count()
+    total_values = qs.aggregate(
+        gross_block_total=Sum("gross_block"),
+        accumulated_depreciation_total=Sum("accumulated_depreciation"),
+        impairment_amount_total=Sum("impairment_amount"),
+        net_book_value_total=Sum("net_book_value"),
+    )
+    safe_page, safe_page_size, start, end = _page_window(page, page_size)
     rows = []
-    totals = defaultdict(lambda: ZERO)
-    for asset in qs.order_by("asset_name", "id"):
+    for asset in qs.order_by("asset_name", "id")[start:end]:
         row = {
             "asset_id": asset.id,
             "asset_code": asset.asset_code,
@@ -88,20 +118,19 @@ def build_fixed_asset_register(
             "drilldown_params": {"id": asset.id},
         }
         rows.append(row)
-        totals["gross_block"] += q2(asset.gross_block)
-        totals["accumulated_depreciation"] += q2(asset.accumulated_depreciation)
-        totals["impairment_amount"] += q2(asset.impairment_amount)
-        totals["net_book_value"] += q2(asset.net_book_value)
-
-    paged_rows, total_rows = _paginate(rows, page, page_size)
     return {
         "entity_id": entity_id,
         "entityfin_id": entityfin_id,
         "subentity_id": subentity_id,
         "as_of_date": as_of,
-        "rows": paged_rows,
-        "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
-        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+        "rows": rows,
+        "totals": {
+            "gross_block": f"{q2(total_values.get('gross_block_total')):.2f}",
+            "accumulated_depreciation": f"{q2(total_values.get('accumulated_depreciation_total')):.2f}",
+            "impairment_amount": f"{q2(total_values.get('impairment_amount_total')):.2f}",
+            "net_book_value": f"{q2(total_values.get('net_book_value_total')):.2f}",
+        },
+        "pagination": _build_pagination(safe_page, safe_page_size, total_rows),
         "summary": {"asset_count": total_rows},
     }
 
@@ -134,9 +163,14 @@ def build_depreciation_schedule(
     if asset_id:
         qs = qs.filter(asset_id=asset_id)
 
+    total_rows = qs.count()
+    total_values = qs.aggregate(
+        depreciation_amount_total=Sum("depreciation_amount"),
+        closing_net_book_value_total=Sum("closing_net_book_value"),
+    )
+    safe_page, safe_page_size, start, end = _page_window(page, page_size)
     rows = []
-    totals = defaultdict(lambda: ZERO)
-    for line in qs.order_by("period_to", "asset__asset_name", "id"):
+    for line in qs.order_by("period_to", "asset__asset_name", "id")[start:end]:
         row = {
             "run_id": line.run_id,
             "run_code": line.run.run_code,
@@ -158,19 +192,18 @@ def build_depreciation_schedule(
             "drilldown_params": {"id": line.asset_id},
         }
         rows.append(row)
-        totals["depreciation_amount"] += q2(line.depreciation_amount)
-        totals["closing_net_book_value"] += q2(line.closing_net_book_value)
-
-    paged_rows, total_rows = _paginate(rows, page, page_size)
     return {
         "entity_id": entity_id,
         "entityfin_id": entityfin_id,
         "subentity_id": subentity_id,
         "from_date": frm,
         "to_date": to,
-        "rows": paged_rows,
-        "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
-        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+        "rows": rows,
+        "totals": {
+            "depreciation_amount": f"{q2(total_values.get('depreciation_amount_total')):.2f}",
+            "closing_net_book_value": f"{q2(total_values.get('closing_net_book_value_total')):.2f}",
+        },
+        "pagination": _build_pagination(safe_page, safe_page_size, total_rows),
         "summary": {"line_count": total_rows},
     }
 
@@ -197,13 +230,25 @@ def build_asset_event_report(
     if asset_id:
         qs = qs.filter(id=asset_id)
 
+    assets = list(qs.order_by("asset_name", "id"))
+    asset_ids = [asset.id for asset in assets]
+    depreciation_lines_by_asset = defaultdict(list)
+    if asset_ids and (not event_type or event_type == "depreciation"):
+        depreciation_lines = DepreciationRunLine.objects.select_related("run").filter(
+            asset_id__in=asset_ids,
+            run__posting_batch_id__isnull=False,
+            run__status="POSTED",
+        ).order_by("asset_id", "period_to", "id")
+        for line in depreciation_lines:
+            depreciation_lines_by_asset[line.asset_id].append(line)
+
     rows = []
     totals = defaultdict(lambda: ZERO)
-    for asset in qs.order_by("asset_name", "id"):
+    for asset in assets:
         events = []
         if asset.capitalization_date and asset.capitalization_posting_batch_id:
             events.append(("capitalization", asset.capitalization_date, q2(asset.gross_block), asset.capitalization_posting_batch_id))
-        for line in DepreciationRunLine.objects.select_related("run").filter(asset_id=asset.id, run__posting_batch_id__isnull=False).order_by("period_to", "id"):
+        for line in depreciation_lines_by_asset.get(asset.id, []):
             events.append(("depreciation", line.run.posting_date, q2(line.depreciation_amount), line.run.posting_batch_id))
         if q2(asset.impairment_amount) > ZERO and asset.impairment_posting_batch_id:
             batch_created = getattr(asset.impairment_posting_batch, "created_at", None)
@@ -245,7 +290,7 @@ def build_asset_event_report(
         "event_type": event_type,
         "rows": paged_rows,
         "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
-        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+        "pagination": _build_pagination(page, page_size, total_rows),
         "summary": {"event_count": total_rows},
     }
 
@@ -288,14 +333,18 @@ def build_asset_history(
             }
         )
     for line in DepreciationRunLine.objects.select_related("run").filter(asset_id=asset.id).order_by("period_to", "id"):
+        run_status = getattr(line.run, "status", None)
         history.append(
             {
                 "event_type": "depreciation",
                 "event_date": line.run.posting_date,
-                "description": f"Depreciation run {line.run.run_code}",
+                "description": f"Depreciation run {line.run.run_code}" + (" (cancelled)" if run_status == "CANCELLED" else ""),
                 "amount": f"{q2(line.depreciation_amount):.2f}",
                 "posting_batch_id": line.run.posting_batch_id,
-                "meta": line.calculation_meta,
+                "meta": {
+                    **(line.calculation_meta or {}),
+                    "run_status": run_status,
+                },
             }
         )
     if asset.disposal_date:

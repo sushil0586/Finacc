@@ -63,7 +63,7 @@ class PayableReportAPITests(APITestCase):
             "reports.payables.view",
             "reports.vendoroutstanding.view",
             "reports.accountspayableaging.view",
-            "reports.purchasebook.view",
+            "reports.purchase_register.view",
             "reports.vendorledgerstatement.view",
             "reports.vendorsettlementhistory.view",
             "reports.vendornoteregister.view",

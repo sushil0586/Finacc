@@ -12,12 +12,14 @@ from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.utils.dateparse import parse_date
 from django.http import HttpResponse
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.models import (
     EntityPartyTaxProfile,
     EntityWithholdingSectionPostingMap,
@@ -56,6 +58,50 @@ from withholding.serializers import (
 from withholding.services import compute_withholding_preview, q2, upsert_tcs_computation
 from financial.profile_access import account_pan
 from payments.models.payment_core import PaymentVoucherHeader
+
+
+TCS_FEATURE_CODE = SubscriptionLimitCodes.FEATURE_FINANCIAL
+TCS_REPORTING_FEATURE_CODE = SubscriptionLimitCodes.FEATURE_REPORTING
+TCS_OPERATIONAL_MODE = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+TCS_CONFIG_VIEW_PERMISSIONS = ("compliance.tcs_config.view", "tcs.config.view")
+TCS_CONFIG_MANAGE_PERMISSIONS = ("compliance.tcs_config.update", "tcs.config.update", "tcs.config.edit", "tcs.config.create")
+TCS_CONFIG_DELETE_PERMISSIONS = ("compliance.tcs_config.update", "tcs.config.delete")
+TCS_SECTION_VIEW_PERMISSIONS = ("compliance.tcs_section.view", "tcs.section.view", "tcs.sections.view")
+TCS_SECTION_CREATE_PERMISSIONS = ("compliance.tcs_section.create", "tcs.section.create", "tcs.sections.create")
+TCS_SECTION_UPDATE_PERMISSIONS = ("compliance.tcs_section.update", "tcs.section.update", "tcs.sections.update")
+TCS_SECTION_DELETE_PERMISSIONS = ("compliance.tcs_section.delete", "tcs.section.delete", "tcs.sections.delete")
+TCS_RULE_VIEW_PERMISSIONS = ("compliance.tcs_rule.view", "tcs.rule.view", "tcs.rules.view")
+TCS_RULE_CREATE_PERMISSIONS = ("compliance.tcs_rule.create", "tcs.rule.create", "tcs.rules.create")
+TCS_RULE_UPDATE_PERMISSIONS = ("compliance.tcs_rule.update", "tcs.rule.update", "tcs.rules.update")
+TCS_RULE_DELETE_PERMISSIONS = ("compliance.tcs_rule.delete", "tcs.rule.delete", "tcs.rules.delete")
+TCS_PARTY_PROFILE_VIEW_PERMISSIONS = (
+    "compliance.tcs_party_profile.view",
+    "tcs.party_profile.view",
+    "tcs.partyprofile.view",
+    "tcs.party_profiles.view",
+)
+TCS_PARTY_PROFILE_CREATE_PERMISSIONS = (
+    "compliance.tcs_party_profile.create",
+    "tcs.party_profile.create",
+    "tcs.partyprofile.create",
+)
+TCS_PARTY_PROFILE_UPDATE_PERMISSIONS = (
+    "compliance.tcs_party_profile.update",
+    "tcs.party_profile.update",
+    "tcs.partyprofile.update",
+    "tcs.partyprofile.edit",
+)
+TCS_PARTY_PROFILE_DELETE_PERMISSIONS = (
+    "compliance.tcs_party_profile.delete",
+    "tcs.party_profile.delete",
+    "tcs.partyprofile.delete",
+)
+TCS_WORKSPACE_VIEW_PERMISSIONS = ("compliance.tcs_statutory.view", "tcs.menu.access", "tcs.return_27eq.view")
+TCS_RETURN_VIEW_PERMISSIONS = ("compliance.tcs_return_27eq.view", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
+TCS_RETURN_FILE_PERMISSIONS = ("compliance.tcs_return_27eq.file", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
+TCS_LEDGER_REPORT_VIEW_PERMISSIONS = ("reports.tcsledgerreport.view", "tcs.ledger_report.view")
+TCS_FILING_PACK_VIEW_PERMISSIONS = ("reports.tcsfilingpack.view", "tcs.filing_pack.view")
 
 
 def _safe_int(raw):
@@ -115,6 +161,69 @@ def _safe_decimal(raw) -> Decimal:
         return q2(raw or Decimal("0.00"))
     except Exception:
         return Decimal("0.00")
+
+
+def _request_data(request):
+    data = getattr(request, "data", None)
+    return data if hasattr(data, "get") else {}
+
+
+def _entity_id_from_request(request, *, required: bool = True) -> int | None:
+    for key in ("entity", "entity_id"):
+        raw = request.query_params.get(key)
+        if raw in (None, ""):
+            raw = _request_data(request).get(key)
+        if raw not in (None, ""):
+            return _safe_int(raw)
+    if required:
+        raise ValidationError({"entity": ["entity or entity_id is required."]})
+    return None
+
+
+def _require_tcs_scope_permission(
+    *,
+    request,
+    entity_id: int,
+    permission_codes: tuple[str, ...],
+    message: str,
+    feature_code: str = TCS_FEATURE_CODE,
+    access_mode: str = TCS_OPERATIONAL_MODE,
+):
+    entity = EffectivePermissionService.entity_for_user(request.user, int(entity_id))
+    if entity is None:
+        raise PermissionDenied("You do not have access to this entity.")
+
+    SubscriptionService.assert_entity_access(
+        user=request.user,
+        entity=entity,
+        access_mode=access_mode,
+        feature_code=feature_code,
+    )
+
+    current_codes = set(EffectivePermissionService.permission_codes_for_user(request.user, entity.id))
+    if permission_codes and not any(code in current_codes for code in permission_codes):
+        raise PermissionDenied(message)
+    return entity
+
+
+def _require_tcs_permission_from_request(
+    request,
+    *,
+    permission_codes: tuple[str, ...],
+    message: str,
+    feature_code: str = TCS_FEATURE_CODE,
+    access_mode: str = TCS_OPERATIONAL_MODE,
+) -> int:
+    entity_id = _entity_id_from_request(request, required=True)
+    _require_tcs_scope_permission(
+        request=request,
+        entity_id=entity_id,
+        permission_codes=permission_codes,
+        message=message,
+        feature_code=feature_code,
+        access_mode=access_mode,
+    )
+    return int(entity_id)
 
 
 def _tcs_deposit_status_counts_as_deposited(status_value: str | None) -> bool:
@@ -314,6 +423,13 @@ class TcsSectionListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = WithholdingSectionSerializer
 
     def get_queryset(self):
+        permission_codes = TCS_RULE_VIEW_PERMISSIONS if "rules" in (self.request.path or "") else TCS_SECTION_VIEW_PERMISSIONS
+        message = "Missing permission to view TCS rules." if "rules" in (self.request.path or "") else "Missing permission to view TCS sections."
+        _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=permission_codes,
+            message=message,
+        )
         qs = WithholdingSection.objects.filter(tax_type=2).order_by("section_code", "-effective_from")
         q = (self.request.query_params.get("q") or "").strip()
         if q:
@@ -323,11 +439,35 @@ class TcsSectionListCreateAPIView(generics.ListCreateAPIView):
             qs = qs.filter(law_type=law_type)
         return qs
 
+    def create(self, request, *args, **kwargs):
+        permission_codes = TCS_RULE_CREATE_PERMISSIONS if "rules" in (request.path or "") else TCS_SECTION_CREATE_PERMISSIONS
+        message = "Missing permission to create TCS rules." if "rules" in (request.path or "") else "Missing permission to create TCS sections."
+        _require_tcs_permission_from_request(request, permission_codes=permission_codes, message=message)
+        return super().create(request, *args, **kwargs)
+
 
 class TcsSectionRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = WithholdingSectionSerializer
     queryset = WithholdingSection.objects.filter(tax_type=2)
+
+    def retrieve(self, request, *args, **kwargs):
+        permission_codes = TCS_RULE_VIEW_PERMISSIONS if "rules" in (request.path or "") else TCS_SECTION_VIEW_PERMISSIONS
+        message = "Missing permission to view TCS rules." if "rules" in (request.path or "") else "Missing permission to view TCS sections."
+        _require_tcs_permission_from_request(request, permission_codes=permission_codes, message=message)
+        return super().retrieve(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        permission_codes = TCS_RULE_UPDATE_PERMISSIONS if "rules" in (request.path or "") else TCS_SECTION_UPDATE_PERMISSIONS
+        message = "Missing permission to update TCS rules." if "rules" in (request.path or "") else "Missing permission to update TCS sections."
+        _require_tcs_permission_from_request(request, permission_codes=permission_codes, message=message)
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        permission_codes = TCS_RULE_DELETE_PERMISSIONS if "rules" in (request.path or "") else TCS_SECTION_DELETE_PERMISSIONS
+        message = "Missing permission to delete TCS rules." if "rules" in (request.path or "") else "Missing permission to delete TCS sections."
+        _require_tcs_permission_from_request(request, permission_codes=permission_codes, message=message)
+        return super().destroy(request, *args, **kwargs)
 
     def perform_destroy(self, instance):
         request = self.request
@@ -354,10 +494,13 @@ class TcsEntityConfigListCreateAPIView(generics.ListCreateAPIView):
     def get_queryset(self):
         from withholding.models import EntityWithholdingConfig
 
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_CONFIG_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS configuration.",
+        )
         qs = EntityWithholdingConfig.objects.all().order_by("-effective_from", "-id")
-        entity_id = self.request.query_params.get("entity_id")
-        if entity_id not in (None, ""):
-            qs = qs.filter(entity_id=int(entity_id))
+        qs = qs.filter(entity_id=entity_id)
         entityfin_id = self.request.query_params.get("entityfin_id")
         if entityfin_id not in (None, ""):
             qs = qs.filter(entityfin_id=int(entityfin_id))
@@ -365,6 +508,16 @@ class TcsEntityConfigListCreateAPIView(generics.ListCreateAPIView):
         if subentity_id not in (None, ""):
             qs = qs.filter(subentity_id=int(subentity_id))
         return qs
+
+    def create(self, request, *args, **kwargs):
+        entity_id = _entity_id_from_request(request, required=True)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_CONFIG_MANAGE_PERMISSIONS,
+            message="Missing permission to manage TCS configuration.",
+        )
+        return super().create(request, *args, **kwargs)
 
 
 class TcsEntityConfigRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
@@ -386,11 +539,56 @@ class TcsEntityConfigRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
 
         return EntityWithholdingConfig.objects.all()
 
+    def get_object(self):
+        obj = super().get_object()
+        if self.request.method == "GET":
+            permission_codes = TCS_CONFIG_VIEW_PERMISSIONS
+            message = "Missing permission to view TCS configuration."
+        elif self.request.method == "DELETE":
+            permission_codes = TCS_CONFIG_DELETE_PERMISSIONS
+            message = "Missing permission to delete TCS configuration."
+        else:
+            permission_codes = TCS_CONFIG_MANAGE_PERMISSIONS
+            message = "Missing permission to manage TCS configuration."
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.entity_id,
+            permission_codes=permission_codes,
+            message=message,
+        )
+        return obj
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=obj.entity_id,
+            permission_codes=TCS_CONFIG_DELETE_PERMISSIONS,
+            message="Missing permission to delete TCS configuration.",
+        )
+        return super().destroy(request, *args, **kwargs)
+
 
 class TcsPartyProfileListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = PartyTaxProfileSerializer
     queryset = PartyTaxProfile.objects.all().order_by("-id")
+
+    def get_queryset(self):
+        _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_PARTY_PROFILE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS party profiles.",
+        )
+        return super().get_queryset()
+
+    def create(self, request, *args, **kwargs):
+        _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_PARTY_PROFILE_CREATE_PERMISSIONS,
+            message="Missing permission to create TCS party profiles.",
+        )
+        return super().create(request, *args, **kwargs)
 
 
 class TcsPartyProfileRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
@@ -398,11 +596,51 @@ class TcsPartyProfileRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
     serializer_class = PartyTaxProfileSerializer
     queryset = PartyTaxProfile.objects.all()
 
+    def retrieve(self, request, *args, **kwargs):
+        _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_PARTY_PROFILE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS party profiles.",
+        )
+        return super().retrieve(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_PARTY_PROFILE_UPDATE_PERMISSIONS,
+            message="Missing permission to update TCS party profiles.",
+        )
+        return super().update(request, *args, **kwargs)
+
 
 class TcsPartyProfileRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = PartyTaxProfileSerializer
     queryset = PartyTaxProfile.objects.all()
+
+    def retrieve(self, request, *args, **kwargs):
+        _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_PARTY_PROFILE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS party profiles.",
+        )
+        return super().retrieve(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_PARTY_PROFILE_UPDATE_PERMISSIONS,
+            message="Missing permission to update TCS party profiles.",
+        )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_PARTY_PROFILE_DELETE_PERMISSIONS,
+            message="Missing permission to delete TCS party profiles.",
+        )
+        return super().destroy(request, *args, **kwargs)
 
 
 class WithholdingEntityPartyProfileListCreateAPIView(generics.ListCreateAPIView):
@@ -410,10 +648,13 @@ class WithholdingEntityPartyProfileListCreateAPIView(generics.ListCreateAPIView)
     serializer_class = EntityPartyTaxProfileSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_PARTY_PROFILE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS party profiles.",
+        )
         qs = EntityPartyTaxProfile.objects.all().order_by("-id")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id:
-            qs = qs.filter(entity_id=entity_id)
+        qs = qs.filter(entity_id=entity_id)
         subentity_id = self.request.query_params.get("subentity_id")
         if subentity_id not in (None, ""):
             parsed_sub = _safe_int(subentity_id)
@@ -428,6 +669,16 @@ class WithholdingEntityPartyProfileListCreateAPIView(generics.ListCreateAPIView)
         if is_active not in (None, ""):
             qs = qs.filter(is_active=_safe_bool(is_active))
         return qs
+
+    def create(self, request, *args, **kwargs):
+        entity_id = _entity_id_from_request(request, required=True)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_PARTY_PROFILE_CREATE_PERMISSIONS,
+            message="Missing permission to create TCS party profiles.",
+        )
+        return super().create(request, *args, **kwargs)
 
 
 class WithholdingSectionCatalogListAPIView(generics.ListAPIView):
@@ -476,16 +727,48 @@ class WithholdingEntityPartyProfileRetrieveUpdateDestroyAPIView(generics.Retriev
     serializer_class = EntityPartyTaxProfileSerializer
     queryset = EntityPartyTaxProfile.objects.all()
 
+    def get_object(self):
+        obj = super().get_object()
+        if self.request.method == "GET":
+            permission_codes = TCS_PARTY_PROFILE_VIEW_PERMISSIONS
+            message = "Missing permission to view TCS party profiles."
+        elif self.request.method == "DELETE":
+            permission_codes = TCS_PARTY_PROFILE_DELETE_PERMISSIONS
+            message = "Missing permission to delete TCS party profiles."
+        else:
+            permission_codes = TCS_PARTY_PROFILE_UPDATE_PERMISSIONS
+            message = "Missing permission to update TCS party profiles."
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.entity_id,
+            permission_codes=permission_codes,
+            message=message,
+        )
+        return obj
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=obj.entity_id,
+            permission_codes=TCS_PARTY_PROFILE_DELETE_PERMISSIONS,
+            message="Missing permission to delete TCS party profiles.",
+        )
+        return super().destroy(request, *args, **kwargs)
+
 
 class WithholdingSectionPostingMapListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = EntityWithholdingSectionPostingMapSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_CONFIG_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS posting maps.",
+        )
         qs = EntityWithholdingSectionPostingMap.objects.all().order_by("-effective_from", "-id")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id:
-            qs = qs.filter(entity_id=entity_id)
+        qs = qs.filter(entity_id=entity_id)
         subentity_id = self.request.query_params.get("subentity_id")
         if subentity_id not in (None, ""):
             parsed_sub = _safe_int(subentity_id)
@@ -501,11 +784,50 @@ class WithholdingSectionPostingMapListCreateAPIView(generics.ListCreateAPIView):
             qs = qs.filter(is_active=_safe_bool(is_active))
         return qs
 
+    def create(self, request, *args, **kwargs):
+        entity_id = _entity_id_from_request(request, required=True)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_CONFIG_MANAGE_PERMISSIONS,
+            message="Missing permission to manage TCS posting maps.",
+        )
+        return super().create(request, *args, **kwargs)
+
 
 class WithholdingSectionPostingMapRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = EntityWithholdingSectionPostingMapSerializer
     queryset = EntityWithholdingSectionPostingMap.objects.all()
+
+    def get_object(self):
+        obj = super().get_object()
+        if self.request.method == "GET":
+            permission_codes = TCS_CONFIG_VIEW_PERMISSIONS
+            message = "Missing permission to view TCS posting maps."
+        elif self.request.method == "DELETE":
+            permission_codes = TCS_CONFIG_DELETE_PERMISSIONS
+            message = "Missing permission to delete TCS posting maps."
+        else:
+            permission_codes = TCS_CONFIG_MANAGE_PERMISSIONS
+            message = "Missing permission to manage TCS posting maps."
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.entity_id,
+            permission_codes=permission_codes,
+            message=message,
+        )
+        return obj
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=obj.entity_id,
+            permission_codes=TCS_CONFIG_DELETE_PERMISSIONS,
+            message="Missing permission to delete TCS posting maps.",
+        )
+        return super().destroy(request, *args, **kwargs)
 
 
 class WithholdingTcsThresholdOpeningListCreateAPIView(generics.ListCreateAPIView):
@@ -513,10 +835,13 @@ class WithholdingTcsThresholdOpeningListCreateAPIView(generics.ListCreateAPIView
     serializer_class = EntityTcsThresholdOpeningSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS threshold openings.",
+        )
         qs = EntityTcsThresholdOpening.objects.all().order_by("-effective_from", "-id")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(entity_id=entity_id)
+        qs = qs.filter(entity_id=entity_id)
         entityfin_id = _safe_int(self.request.query_params.get("entityfin_id"))
         if entityfin_id is not None:
             qs = qs.filter(entityfin_id=entityfin_id)
@@ -538,11 +863,31 @@ class WithholdingTcsThresholdOpeningListCreateAPIView(generics.ListCreateAPIView
             qs = qs.filter(is_active=_safe_bool(is_active))
         return qs
 
+    def create(self, request, *args, **kwargs):
+        entity_id = _entity_id_from_request(request, required=True)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to create TCS threshold openings.",
+        )
+        return super().create(request, *args, **kwargs)
+
 
 class WithholdingTcsThresholdOpeningRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = EntityTcsThresholdOpeningSerializer
     queryset = EntityTcsThresholdOpening.objects.all()
+
+    def get_object(self):
+        obj = super().get_object()
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to manage TCS threshold openings.",
+        )
+        return obj
 
 
 class TcsComputePreviewAPIView(APIView):
@@ -552,6 +897,12 @@ class TcsComputePreviewAPIView(APIView):
         s = TcsComputeRequestSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         d = s.validated_data
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=d["entity_id"],
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to access the TCS statutory workspace.",
+        )
 
         req = {
             "entity_id": d["entity_id"],
@@ -574,6 +925,12 @@ class TcsComputeConfirmAPIView(APIView):
         s = TcsComputeConfirmSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         d = s.validated_data
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=d["entity_id"],
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to manage the TCS statutory workspace.",
+        )
 
         req = {
             "entity_id": d["entity_id"],
@@ -629,6 +986,11 @@ class TcsComputationListAPIView(generics.ListAPIView):
     serializer_class = TcsComputationSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to access TCS computations.",
+        )
         qs = TcsComputation.objects.all().order_by("-doc_date", "-id")
         module = (self.request.query_params.get("module") or "").strip()
         if module:
@@ -639,9 +1001,7 @@ class TcsComputationListAPIView(generics.ListAPIView):
         doc_id = self.request.query_params.get("doc_id")
         if doc_id not in (None, ""):
             qs = qs.filter(document_id=int(doc_id))
-        entity_id = self.request.query_params.get("entity_id")
-        if entity_id not in (None, ""):
-            qs = qs.filter(entity_id=int(entity_id))
+        qs = qs.filter(entity_id=entity_id)
         fy = (self.request.query_params.get("fy") or "").strip()
         if fy:
             qs = qs.filter(fiscal_year__in=_expand_fy_values(fy))
@@ -656,10 +1016,13 @@ class TcsCollectionListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = TcsCollectionSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS collections.",
+        )
         qs = TcsCollection.objects.select_related("computation").all().order_by("-collection_date", "-id")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(computation__entity_id=entity_id)
+        qs = qs.filter(computation__entity_id=entity_id)
         fy = (self.request.query_params.get("fy") or "").strip()
         if fy:
             qs = qs.filter(computation__fiscal_year__in=_expand_fy_values(fy))
@@ -670,9 +1033,12 @@ class TcsCollectionListCreateAPIView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         row = serializer.save()
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None and int(row.computation.entity_id) != int(entity_id):
-            raise ValidationError({"detail": "collection computation does not belong to the requested entity scope."})
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=row.computation.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to create TCS collections.",
+        )
 
 
 class TcsCollectionRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -681,10 +1047,17 @@ class TcsCollectionRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
 
     def get_queryset(self):
         qs = TcsCollection.objects.select_related("computation").all()
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(computation__entity_id=entity_id)
         return qs
+
+    def get_object(self):
+        obj = super().get_object()
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.computation.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to manage TCS collections.",
+        )
+        return obj
 
 
 class TcsDepositListCreateAPIView(generics.ListCreateAPIView):
@@ -692,10 +1065,13 @@ class TcsDepositListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = TcsDepositSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS deposits.",
+        )
         qs = TcsDeposit.objects.all().order_by("-challan_date", "-id")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(entity_id=entity_id)
+        qs = qs.filter(entity_id=entity_id)
         fy = (self.request.query_params.get("fy") or "").strip()
         if fy:
             qs = qs.filter(financial_year__in=_expand_fy_values(fy))
@@ -704,6 +1080,15 @@ class TcsDepositListCreateAPIView(generics.ListCreateAPIView):
             qs = qs.filter(month=month)
         return qs
 
+    def perform_create(self, serializer):
+        row = serializer.save(deposited_by=self.request.user)
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=row.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to create TCS deposits.",
+        )
+
 
 class TcsDepositRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
@@ -711,10 +1096,20 @@ class TcsDepositRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVi
 
     def get_queryset(self):
         qs = TcsDeposit.objects.all()
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(entity_id=entity_id)
         return qs
+
+    def get_object(self):
+        obj = super().get_object()
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to manage TCS deposits.",
+        )
+        return obj
+
+    def perform_update(self, serializer):
+        serializer.save(deposited_by=self.request.user)
 
 
 class TcsDepositAllocateAPIView(APIView):
@@ -725,6 +1120,12 @@ class TcsDepositAllocateAPIView(APIView):
             deposit = TcsDeposit.objects.get(pk=pk)
         except TcsDeposit.DoesNotExist:
             return Response({"detail": "Deposit not found."}, status=status.HTTP_404_NOT_FOUND)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=deposit.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to allocate TCS deposits.",
+        )
 
         collection_id = request.data.get("collection_id")
         allocated_amount = request.data.get("allocated_amount")
@@ -786,7 +1187,16 @@ class TcsDepositAllocationListAPIView(generics.ListAPIView):
     serializer_class = TcsDepositAllocationSerializer
 
     def get_queryset(self):
-        return TcsDepositAllocation.objects.filter(deposit_id=self.kwargs["pk"]).order_by("-id")
+        deposit = TcsDeposit.objects.filter(pk=self.kwargs["pk"]).only("id", "entity_id").first()
+        if deposit is None:
+            return TcsDepositAllocation.objects.none()
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=deposit.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS deposit allocations.",
+        )
+        return TcsDepositAllocation.objects.filter(deposit_id=deposit.id).order_by("-id")
 
 
 class TcsReturn27EqListCreateAPIView(generics.ListCreateAPIView):
@@ -794,10 +1204,13 @@ class TcsReturn27EqListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = TcsQuarterlyReturnSerializer
 
     def get_queryset(self):
+        entity_id = _require_tcs_permission_from_request(
+            self.request,
+            permission_codes=TCS_RETURN_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS Return 27EQ data.",
+        )
         qs = TcsQuarterlyReturn.objects.filter(form_name="27EQ").order_by("-id")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(entity_id=entity_id)
+        qs = qs.filter(entity_id=entity_id)
         fy = (self.request.query_params.get("fy") or "").strip()
         if fy:
             qs = qs.filter(fy__in=_expand_fy_values(fy))
@@ -808,6 +1221,12 @@ class TcsReturn27EqListCreateAPIView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         entity = serializer.validated_data.get("entity")
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=entity.id,
+            permission_codes=TCS_RETURN_FILE_PERMISSIONS,
+            message="Missing permission to create or file TCS Return 27EQ.",
+        )
         fy = (serializer.validated_data.get("fy") or "").strip()
         quarter = (serializer.validated_data.get("quarter") or "").strip().upper()
         status_value = serializer.validated_data.get("status") or TcsQuarterlyReturn.Status.DRAFT
@@ -826,11 +1245,19 @@ class TcsReturn27EqRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
     serializer_class = TcsQuarterlyReturnSerializer
 
     def get_queryset(self):
-        qs = TcsQuarterlyReturn.objects.filter(form_name="27EQ")
-        entity_id = _safe_int(self.request.query_params.get("entity_id"))
-        if entity_id is not None:
-            qs = qs.filter(entity_id=entity_id)
-        return qs
+        return TcsQuarterlyReturn.objects.filter(form_name="27EQ")
+
+    def get_object(self):
+        obj = super().get_object()
+        permission_codes = TCS_RETURN_VIEW_PERMISSIONS if self.request.method == "GET" else TCS_RETURN_FILE_PERMISSIONS
+        message = "Missing permission to view TCS Return 27EQ data." if self.request.method == "GET" else "Missing permission to update or file TCS Return 27EQ."
+        _require_tcs_scope_permission(
+            request=self.request,
+            entity_id=obj.entity_id,
+            permission_codes=permission_codes,
+            message=message,
+        )
+        return obj
 
     def perform_update(self, serializer):
         if serializer.instance.status == TcsQuarterlyReturn.Status.FILED:
@@ -867,6 +1294,12 @@ class TcsReturn27EqPrefillAPIView(APIView):
             raise ValidationError({"fy": ["This query param is required."]})
         if quarter not in {"Q1", "Q2", "Q3", "Q4"}:
             raise ValidationError({"quarter": ["quarter must be one of Q1/Q2/Q3/Q4."]})
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_RETURN_VIEW_PERMISSIONS,
+            message="Missing permission to view TCS Return 27EQ prefill data.",
+        )
 
         snapshot = _build_tcs_27eq_snapshot(entity_id=entity_id, fy=fy, quarter=quarter)
         existing = (
@@ -889,10 +1322,14 @@ class TcsReportLedgerAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        entity_id = _require_tcs_permission_from_request(
+            request,
+            permission_codes=TCS_LEDGER_REPORT_VIEW_PERMISSIONS,
+            message="Missing permission to view the TCS ledger report.",
+            feature_code=TCS_REPORTING_FEATURE_CODE,
+        )
         qs = TcsComputation.objects.all()
-        entity_id = request.query_params.get("entity_id")
-        if entity_id not in (None, ""):
-            qs = qs.filter(entity_id=int(entity_id))
+        qs = qs.filter(entity_id=entity_id)
         fy = (request.query_params.get("fy") or "").strip()
         if fy:
             qs = qs.filter(fiscal_year__in=_expand_fy_values(fy))
@@ -923,6 +1360,13 @@ class TcsReportLedgerDetailAPIView(APIView):
         entity_id = _safe_int(request.query_params.get("entity_id"))
         if entity_id is None:
             raise ValidationError({"entity_id": ["This query param is required."]})
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_LEDGER_REPORT_VIEW_PERMISSIONS,
+            message="Missing permission to view the TCS ledger report.",
+            feature_code=TCS_REPORTING_FEATURE_CODE,
+        )
 
         section_code = (request.query_params.get("section") or "").strip().upper()
         fy = (request.query_params.get("fy") or "").strip()
@@ -1053,6 +1497,12 @@ class TcsWorkspaceTransactionsAPIView(APIView):
         entity_id = _safe_int(request.query_params.get("entity_id"))
         if entity_id is None:
             raise ValidationError({"entity_id": ["This query param is required."]})
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to access the TCS statutory workspace.",
+        )
 
         fy = (request.query_params.get("fy") or "").strip()
         quarter = (request.query_params.get("quarter") or "").strip().upper()
@@ -1398,6 +1848,13 @@ class TcsReportFilingPackAPIView(APIView):
             raise ValidationError({"quarter": ["quarter must be one of Q1/Q2/Q3/Q4."]})
 
         entity_id = int(entity_id)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_FILING_PACK_VIEW_PERMISSIONS,
+            message="Missing permission to view the TCS filing pack.",
+            feature_code=TCS_REPORTING_FEATURE_CODE,
+        )
         months = self._quarter_months(quarter)
         exceptions_only = _safe_bool(request.query_params.get("exceptions_only"))
         pending_only = _safe_bool(request.query_params.get("pending_only"))

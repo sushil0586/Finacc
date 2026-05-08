@@ -49,6 +49,13 @@ STATIC_ACCOUNT_MASTER_DEFS: Tuple[StaticAccountSeedDef, ...] = (
     StaticAccountSeedDef("TDS_PAYABLE", "TDS Payable", StaticAccountGroup.TDS, "Liability ledger for income-tax TDS payable.", False),
     StaticAccountSeedDef("GST_TDS_PAYABLE", "GST TDS Payable", StaticAccountGroup.TDS, "Liability ledger for GST-TDS payable.", False),
     StaticAccountSeedDef("TCS_PAYABLE", "TCS Payable", StaticAccountGroup.TCS, "Liability ledger for TCS payable.", False),
+    StaticAccountSeedDef("MANUFACTURING_WIP", "Manufacturing WIP", StaticAccountGroup.MANUFACTURING, "Work-in-progress clearing ledger for manufacturing posting.", False),
+    StaticAccountSeedDef("MANUFACTURING_CONSUMPTION", "Manufacturing Consumption", StaticAccountGroup.MANUFACTURING, "Consumption/issue ledger for manufacturing material usage.", False),
+    StaticAccountSeedDef("MANUFACTURING_OVERHEAD_ABSORPTION", "Manufacturing Overhead Absorption", StaticAccountGroup.MANUFACTURING, "Offset ledger for additional production cost absorption.", False),
+    StaticAccountSeedDef("MANUFACTURING_FINISHED_GOODS", "Manufacturing Finished Goods", StaticAccountGroup.MANUFACTURING, "Finished goods / byproduct inventory capitalization ledger for manufacturing posting.", False),
+    StaticAccountSeedDef("MANUFACTURING_MATERIAL_VARIANCE", "Manufacturing Material Variance", StaticAccountGroup.MANUFACTURING, "Variance ledger for material over/under-consumption against standard manufacturing cost.", False),
+    StaticAccountSeedDef("MANUFACTURING_YIELD_VARIANCE", "Manufacturing Yield Variance", StaticAccountGroup.MANUFACTURING, "Variance ledger for manufacturing output/yield differences against standard cost expectation.", False),
+    StaticAccountSeedDef("MANUFACTURING_ADDITIONAL_COST_EXPENSE", "Manufacturing Additional Cost Expense", StaticAccountGroup.MANUFACTURING, "Expense ledger for manufacturing additional costs that should not be capitalized into finished goods.", False),
     StaticAccountSeedDef("OPENING_EQUITY_TRANSFER", "Opening Equity Transfer", StaticAccountGroup.EQUITY, "Destination equity/capital/retained earnings ledger for year opening.", False),
     StaticAccountSeedDef("OPENING_INVENTORY_CARRY_FORWARD", "Opening Inventory Carry Forward", StaticAccountGroup.EQUITY, "Destination inventory/stock ledger for year opening.", False),
 )

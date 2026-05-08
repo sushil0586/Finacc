@@ -77,6 +77,20 @@ class FixedAssetListSerializer(serializers.ModelSerializer):
 
 
 class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSerializer):
+    MANUALLY_SETTABLE_STATUSES = {
+        FixedAsset.AssetStatus.DRAFT,
+        FixedAsset.AssetStatus.CAPITAL_WIP,
+        FixedAsset.AssetStatus.HELD_FOR_SALE,
+    }
+    SYSTEM_MANAGED_INPUT_FIELDS = (
+        "accumulated_depreciation",
+        "impairment_amount",
+        "net_book_value",
+        "impairment_posting_batch",
+        "disposal_proceeds",
+        "disposal_gain_loss",
+    )
+
     class Meta:
         model = FixedAsset
         exclude = (
@@ -88,6 +102,23 @@ class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSeri
             "capitalization_posting_batch",
             "disposal_posting_batch",
         )
+        read_only_fields = (
+            "accumulated_depreciation",
+            "impairment_amount",
+            "net_book_value",
+            "impairment_posting_batch",
+            "disposal_proceeds",
+            "disposal_gain_loss",
+        )
+
+    def to_internal_value(self, data):
+        system_managed_errors = {}
+        for field_name in self.SYSTEM_MANAGED_INPUT_FIELDS:
+            if field_name in data:
+                system_managed_errors[field_name] = ["This field is system managed and cannot be set directly."]
+        if system_managed_errors:
+            raise serializers.ValidationError(system_managed_errors)
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         entity = self._resolve_entity(attrs)
@@ -109,6 +140,12 @@ class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSeri
                 raise serializers.ValidationError({"subentity": "This category is scoped to a subentity and requires the same subentity on the asset."})
             if category.subentity_id != subentity.id:
                 raise serializers.ValidationError({"category": "Selected category belongs to a different subentity."})
+
+        status_value = attrs.get("status")
+        if status_value and status_value not in self.MANUALLY_SETTABLE_STATUSES:
+            raise serializers.ValidationError(
+                {"status": "Status can only be set manually to Draft, Capital WIP, or Held for Sale. Use asset lifecycle actions for active or disposed states."}
+            )
 
         return attrs
 

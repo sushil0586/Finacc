@@ -1,16 +1,19 @@
 from decimal import Decimal
 from datetime import date
+from datetime import datetime
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.test import APITestCase, APIClient, APIRequestFactory, force_authenticate
 
+from entity.models import Entity, EntityFinancialYear, SubEntity
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.serializers.purchase_statutory import (
@@ -158,6 +161,27 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
         self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    def _make_header(self, **overrides):
+        defaults = {
+            "withholding_enabled": True,
+            "tds_is_manual": False,
+            "tds_section_id": None,
+            "tds_section": None,
+            "tds_rate": Decimal("0.0000"),
+            "tds_base_amount": Decimal("0.00"),
+            "tds_amount": Decimal("0.00"),
+            "tds_reason": None,
+            "entity_id": 1,
+            "entityfinid_id": 1,
+            "subentity_id": None,
+            "vendor_id": 1,
+            "bill_date": None,
+            "total_taxable": Decimal("1000.00"),
+            "grand_total": Decimal("1180.00"),
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
 
     @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
     def test_list_queryset_uses_exists_for_line_mode_filter(self, mocked_require_permission):
@@ -805,7 +829,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         self.assertTrue(gst_tds_cr, "Expected CR GST-TDS Payable entry.")
 
 
-class PurchaseStatutoryServiceTests(SimpleTestCase):
+class PurchaseStatutoryServiceTests(TestCase):
     def test_validate_it_tds_amount_raises_on_excess(self):
         header = SimpleNamespace(id=1, tds_amount=Decimal("10.00"), gst_tds_amount=Decimal("0.00"))
         with self.assertRaisesMessage(ValueError, "exceeds IT-TDS"):
@@ -1058,7 +1082,11 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
         mock_header_objects,
         mock_challan_objects,
     ):
-        mock_return_objects.filter.return_value.exclude.return_value.exists.return_value = False
+        original_return_qs = MagicMock()
+        original_return_qs.exclude.return_value = original_return_qs
+        original_return_qs.filter.return_value = original_return_qs
+        original_return_qs.exists.return_value = False
+        mock_return_objects.filter.return_value = original_return_qs
         mock_return_objects.create.return_value = SimpleNamespace(id=1, amount=Decimal("0.00"), save=MagicMock())
         mock_header_objects.filter.return_value.first.return_value = SimpleNamespace(
             id=10,
@@ -1110,8 +1138,11 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
 
         consumed_qs = MagicMock()
         consumed_qs.exclude.return_value = consumed_qs
-        consumed_qs.filter.return_value = consumed_qs
-        consumed_qs.values.return_value.annotate.return_value = []
+        consumed_values_qs = MagicMock()
+        consumed_values_qs.annotate.return_value = consumed_values_qs
+        consumed_values_qs.filter.return_value = []
+        consumed_values_qs.__iter__.return_value = iter([])
+        consumed_qs.values.return_value = consumed_values_qs
         mock_return_line_objects.filter.return_value = consumed_qs
 
         mock_snapshot.side_effect = [
@@ -1242,12 +1273,16 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._approval_state")
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._enforcement_level")
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._require_maker_checker")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._auto_compute_statutory_charges")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._due_date_for_return")
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._validate_it_tds_return_code")
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._append_audit_event")
     def test_file_return_marks_revision_as_revised(
         self,
         mock_append_audit,
         mock_validate_code,
+        mock_due_date,
+        mock_auto_charges,
         mock_require_maker_checker,
         mock_enforcement_level,
         mock_approval_state,
@@ -1273,6 +1308,12 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
         mock_return_objects.prefetch_related.return_value.get.return_value = filing
         mock_approval_state.return_value = {"status": "DRAFT"}
         mock_enforcement_level.return_value = "off"
+        mock_due_date.return_value = date(2026, 7, 31)
+        mock_auto_charges.return_value = {
+            "interest_amount": Decimal("0.00"),
+            "late_fee_amount": Decimal("0.00"),
+            "penalty_amount": Decimal("0.00"),
+        }
         mock_append_audit.side_effect = lambda payload, event: {"audit": event}
 
         PurchaseStatutoryService.file_return(filing_id=1, filed_by_id=9, filed_on="2026-07-10")
@@ -1305,6 +1346,284 @@ class PurchaseStatutoryServiceTests(SimpleTestCase):
         result = PurchaseStatutoryService.file_return(filing_id=1, filed_by_id=9, filed_on="2026-07-10")
 
         self.assertEqual(result.message, "Already filed.")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
+    def test_submit_challan_for_approval_sets_submitted_status(self, mock_challan_objects):
+        challan = SimpleNamespace(
+            status=PurchaseStatutoryChallan.Status.DRAFT,
+            payment_payload_json={},
+            save=MagicMock(),
+        )
+        mock_challan_objects.select_for_update.return_value.get.return_value = challan
+
+        result = PurchaseStatutoryService.submit_challan_for_approval(challan_id=1, user_id=9, remarks="please approve")
+
+        approval = result.obj.payment_payload_json["_approval_state"]
+        self.assertEqual(result.message, "Challan submitted for approval.")
+        self.assertEqual(approval["status"], "SUBMITTED")
+        self.assertEqual(approval["submitted_by"], 9)
+        self.assertEqual(approval["remarks"], "please approve")
+        self.assertEqual(result.obj.payment_payload_json["_audit_log"][-1]["action"], "SUBMITTED_FOR_APPROVAL")
+        challan.save.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._require_maker_checker")
+    def test_approve_challan_sets_approved_status(self, mock_require_maker_checker, mock_challan_objects):
+        challan = SimpleNamespace(
+            entity_id=1,
+            subentity_id=5,
+            created_by_id=7,
+            status=PurchaseStatutoryChallan.Status.DRAFT,
+            payment_payload_json={"_approval_state": {"status": "SUBMITTED", "submitted_by": 8}},
+            save=MagicMock(),
+        )
+        mock_challan_objects.select_for_update.return_value.get.return_value = challan
+
+        result = PurchaseStatutoryService.approve_challan(challan_id=1, user_id=9, remarks="approved")
+
+        approval = result.obj.payment_payload_json["_approval_state"]
+        self.assertEqual(result.message, "Challan approved.")
+        self.assertEqual(approval["status"], "APPROVED")
+        self.assertEqual(approval["approved_by"], 9)
+        self.assertEqual(approval["remarks"], "approved")
+        self.assertEqual(result.obj.payment_payload_json["_audit_log"][-1]["action"], "APPROVED")
+        challan.save.assert_called_once()
+        mock_require_maker_checker.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._auto_compute_statutory_charges")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._due_date_for_challan")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._require_maker_checker")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._enforcement_level")
+    def test_deposit_challan_marks_challan_deposited(
+        self,
+        mock_enforcement_level,
+        mock_require_maker_checker,
+        mock_due_date,
+        mock_auto_compute,
+        mock_challan_objects,
+    ):
+        mock_enforcement_level.return_value = "off"
+        mock_due_date.return_value = date(2026, 4, 7)
+        mock_auto_compute.return_value = {
+            "interest_amount": Decimal("1.00"),
+            "late_fee_amount": Decimal("2.00"),
+            "penalty_amount": Decimal("3.00"),
+        }
+        challan = SimpleNamespace(
+            entity_id=1,
+            subentity_id=5,
+            created_by_id=7,
+            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS,
+            status=PurchaseStatutoryChallan.Status.DRAFT,
+            amount=Decimal("100.00"),
+            interest_amount=Decimal("0.00"),
+            late_fee_amount=Decimal("0.00"),
+            penalty_amount=Decimal("0.00"),
+            period_to=date(2026, 4, 30),
+            challan_date=date(2026, 4, 10),
+            payment_payload_json={},
+            lines=SimpleNamespace(all=lambda: []),
+            save=MagicMock(),
+        )
+        mock_challan_objects.prefetch_related.return_value.get.return_value = challan
+
+        result = PurchaseStatutoryService.deposit_challan(
+            challan_id=1,
+            deposited_by_id=9,
+            deposited_on="2026-05-10",
+            cin_no="CIN-1",
+        )
+
+        self.assertEqual(result.message, "Challan deposited.")
+        self.assertEqual(result.obj.status, PurchaseStatutoryChallan.Status.DEPOSITED)
+        self.assertEqual(result.obj.cin_no, "CIN-1")
+        self.assertEqual(result.obj.interest_amount, Decimal("1.00"))
+        self.assertEqual(result.obj.late_fee_amount, Decimal("2.00"))
+        self.assertEqual(result.obj.penalty_amount, Decimal("3.00"))
+        self.assertEqual(result.obj.payment_payload_json["_audit_log"][-1]["action"], "DEPOSITED")
+        challan.save.assert_called_once()
+        mock_require_maker_checker.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._validate_it_tds_return_code")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._auto_compute_statutory_charges")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._due_date_for_return")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._require_maker_checker")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._enforcement_level")
+    def test_file_return_marks_original_return_filed(
+        self,
+        mock_enforcement_level,
+        mock_require_maker_checker,
+        mock_due_date,
+        mock_auto_compute,
+        mock_validate_code,
+        mock_return_objects,
+    ):
+        mock_enforcement_level.return_value = "off"
+        mock_due_date.return_value = date(2026, 7, 31)
+        mock_auto_compute.return_value = {
+            "interest_amount": Decimal("1.50"),
+            "late_fee_amount": Decimal("0.00"),
+            "penalty_amount": Decimal("0.00"),
+        }
+        filing = SimpleNamespace(
+            entity_id=1,
+            subentity_id=5,
+            created_by_id=7,
+            original_return_id=None,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="26Q",
+            status=PurchaseStatutoryReturn.Status.DRAFT,
+            amount=Decimal("250.00"),
+            interest_amount=Decimal("0.00"),
+            late_fee_amount=Decimal("0.00"),
+            penalty_amount=Decimal("0.00"),
+            period_to=date(2026, 6, 30),
+            filed_payload_json={},
+            lines=SimpleNamespace(all=lambda: [SimpleNamespace(header_id=10)]),
+            save=MagicMock(),
+        )
+        mock_return_objects.prefetch_related.return_value.get.return_value = filing
+
+        result = PurchaseStatutoryService.file_return(
+            filing_id=1,
+            filed_by_id=9,
+            filed_on="2026-07-20",
+            ack_no="ACK-1",
+        )
+
+        self.assertEqual(result.message, "Return filed.")
+        self.assertEqual(result.obj.status, PurchaseStatutoryReturn.Status.FILED)
+        self.assertEqual(result.obj.ack_no, "ACK-1")
+        self.assertEqual(result.obj.interest_amount, Decimal("1.50"))
+        self.assertEqual(result.obj.filed_payload_json["_audit_log"][-1]["action"], "FILED")
+        filing.save.assert_called_once()
+        mock_require_maker_checker.assert_called_once()
+        mock_validate_code.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    def test_issue_form16a_appends_new_issue_to_payload(self, mock_return_objects):
+        filing = SimpleNamespace(
+            id=12,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="26Q",
+            status=PurchaseStatutoryReturn.Status.FILED,
+            filed_payload_json={},
+            lines=SimpleNamespace(count=lambda: 3),
+            save=MagicMock(),
+        )
+        mock_return_objects.select_for_update.return_value.prefetch_related.return_value.get.return_value = filing
+
+        payload = PurchaseStatutoryService.issue_form16a(
+            filing_id=12,
+            issued_by_id=9,
+            issue_date="2026-08-01",
+            remarks="First issue",
+        )
+
+        self.assertEqual(payload["filing_id"], 12)
+        self.assertEqual(payload["issue"]["issue_no"], 1)
+        self.assertEqual(payload["issue"]["issued_by"], 9)
+        self.assertEqual(payload["issue"]["line_count"], 3)
+        self.assertEqual(payload["issue"]["remarks"], "First issue")
+        self.assertEqual(filing.filed_payload_json["form16a_issues"][0]["issue_no"], 1)
+        self.assertEqual(filing.filed_payload_json["_audit_log"][-1]["action"], "FORM16A_ISSUED")
+        filing.save.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturnLine.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
+    def test_cancel_challan_rejects_when_linked_to_active_return(self, mock_challan_objects, mock_return_line_objects):
+        challan = SimpleNamespace(
+            id=15,
+            status=PurchaseStatutoryChallan.Status.DEPOSITED,
+            remarks=None,
+            payment_payload_json={},
+            save=MagicMock(),
+        )
+        mock_challan_objects.select_for_update.return_value.get.return_value = challan
+        mock_return_line_objects.filter.return_value.exclude.return_value.exists.return_value = True
+
+        with self.assertRaisesMessage(ValueError, "linked to active statutory returns"):
+            PurchaseStatutoryService.cancel_challan(challan_id=15, cancelled_by_id=9, reason="bad upload")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    def test_cancel_return_rejects_when_active_revision_exists(self, mock_return_objects):
+        filing = SimpleNamespace(
+            id=18,
+            status=PurchaseStatutoryReturn.Status.FILED,
+            remarks=None,
+            filed_payload_json={},
+            save=MagicMock(),
+        )
+        select_for_update_qs = MagicMock()
+        select_for_update_qs.get.return_value = filing
+        filter_qs = MagicMock()
+        filter_qs.exclude.return_value.exists.return_value = True
+        mock_return_objects.select_for_update.return_value = select_for_update_qs
+        mock_return_objects.filter.return_value = filter_qs
+
+        with self.assertRaisesMessage(ValueError, "active revisions exist"):
+            PurchaseStatutoryService.cancel_return(filing_id=18, cancelled_by_id=9, reason="wrong revision")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
+    def test_cancel_challan_marks_status_and_audit_when_allowed(self, mock_challan_objects):
+        challan = SimpleNamespace(
+            id=16,
+            status=PurchaseStatutoryChallan.Status.DEPOSITED,
+            remarks=None,
+            payment_payload_json={},
+            save=MagicMock(),
+        )
+        mock_challan_objects.select_for_update.return_value.get.return_value = challan
+        with patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturnLine.objects") as mock_return_line_objects:
+            mock_return_line_objects.filter.return_value.exclude.return_value.exists.return_value = False
+            result = PurchaseStatutoryService.cancel_challan(challan_id=16, cancelled_by_id=9, reason="voided")
+
+        self.assertEqual(result.message, "Challan cancelled.")
+        self.assertEqual(result.obj.status, PurchaseStatutoryChallan.Status.CANCELLED)
+        self.assertEqual(result.obj.remarks, "voided")
+        self.assertEqual(result.obj.payment_payload_json["_audit_log"][-1]["action"], "CANCELLED")
+        challan.save.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    def test_cancel_return_marks_status_and_audit_when_allowed(self, mock_return_objects):
+        filing = SimpleNamespace(
+            id=19,
+            status=PurchaseStatutoryReturn.Status.FILED,
+            remarks=None,
+            filed_payload_json={},
+            save=MagicMock(),
+        )
+        select_for_update_qs = MagicMock()
+        select_for_update_qs.get.return_value = filing
+        filter_qs = MagicMock()
+        filter_qs.exclude.return_value.exists.return_value = False
+        mock_return_objects.select_for_update.return_value = select_for_update_qs
+        mock_return_objects.filter.return_value = filter_qs
+
+        result = PurchaseStatutoryService.cancel_return(filing_id=19, cancelled_by_id=9, reason="superseded")
+
+        self.assertEqual(result.message, "Return cancelled.")
+        self.assertEqual(result.obj.status, PurchaseStatutoryReturn.Status.CANCELLED)
+        self.assertEqual(result.obj.remarks, "superseded")
+        self.assertEqual(result.obj.filed_payload_json["_audit_log"][-1]["action"], "CANCELLED")
+        filing.save.assert_called_once()
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    def test_issue_form16a_rejects_ineligible_return(self, mock_return_objects):
+        filing = SimpleNamespace(
+            id=13,
+            tax_type=PurchaseStatutoryReturn.TaxType.GST_TDS,
+            return_code="GSTR7",
+            status=PurchaseStatutoryReturn.Status.FILED,
+            filed_payload_json={},
+            lines=SimpleNamespace(count=lambda: 0),
+        )
+        mock_return_objects.select_for_update.return_value.prefetch_related.return_value.get.return_value = filing
+
+        with self.assertRaisesMessage(ValueError, "Form16A is allowed only"):
+            PurchaseStatutoryService.issue_form16a(filing_id=13, issued_by_id=9)
 
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._policy_controls")
     def test_due_date_for_gst_tds_uses_configurable_day(self, mock_controls):
@@ -1407,6 +1726,23 @@ class PurchaseStatutorySerializerValidationTests(SimpleTestCase):
         self.assertIn("detail", serializer.errors)
 
     @patch("purchase.serializers.purchase_statutory.assert_document_date_within_financial_year")
+    def test_challan_create_serializer_accepts_consistent_period(self, mock_assert_fy):
+        mock_assert_fy.return_value = None
+        serializer = PurchaseStatutoryChallanCreateInputSerializer(
+            data={
+                "entity": 1,
+                "entityfinid": 1,
+                "tax_type": "IT_TDS",
+                "challan_no": "CH1",
+                "challan_date": "2026-04-10",
+                "period_from": "2026-04-01",
+                "period_to": "2026-04-30",
+                "amount": "100.00",
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    @patch("purchase.serializers.purchase_statutory.assert_document_date_within_financial_year")
     def test_return_create_serializer_rejects_inverted_period(self, mock_assert_fy):
         mock_assert_fy.return_value = None
         serializer = PurchaseStatutoryReturnCreateInputSerializer(
@@ -1421,6 +1757,21 @@ class PurchaseStatutorySerializerValidationTests(SimpleTestCase):
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn("detail", serializer.errors)
+
+    @patch("purchase.serializers.purchase_statutory.assert_document_date_within_financial_year")
+    def test_return_create_serializer_accepts_valid_period(self, mock_assert_fy):
+        mock_assert_fy.return_value = None
+        serializer = PurchaseStatutoryReturnCreateInputSerializer(
+            data={
+                "entity": 1,
+                "entityfinid": 1,
+                "tax_type": "IT_TDS",
+                "return_code": "26Q",
+                "period_from": "2026-04-01",
+                "period_to": "2026-06-30",
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
 
 class PurchaseApiExtendedSmokeTests(APITestCase):
@@ -1469,7 +1820,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_summary")
     def test_statutory_summary_endpoint_returns_200(self, mock_summary, mock_perm_codes):
-        mock_perm_codes.return_value = {"purchase.invoice.view"}
+        mock_perm_codes.return_value = {"purchase.statutory.view"}
         mock_summary.return_value = {
             "deducted": "10.00",
             "deposited": "8.00",
@@ -1486,7 +1837,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_exceptions")
     def test_statutory_reconciliation_exceptions_endpoint_returns_200(self, mock_fn, mock_perm_codes):
-        mock_perm_codes.return_value = {"purchase.invoice.view"}
+        mock_perm_codes.return_value = {"purchase.statutory.view"}
         mock_fn.return_value = {"exceptions": {}}
         resp = self.client.get(
             "/api/purchase/statutory/reconciliation-exceptions/?entity=1&entityfinid=1&tax_type=IT_TDS&period_from=2026-04-01&period_to=2026-04-30"
@@ -1498,7 +1849,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.get_review_note")
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_review_note_get_returns_200(self, mock_perm_codes, mock_get_note, mock_serializer):
-        mock_perm_codes.return_value = {"purchase.invoice.view"}
+        mock_perm_codes.return_value = {"purchase.statutory.view"}
         mock_get_note.return_value = SimpleNamespace(id=1)
         mock_serializer.return_value.data = {
             "reviewer_name": "CA Reviewer",
@@ -1516,8 +1867,10 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryReviewNoteSerializer")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.save_review_note")
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
-    def test_statutory_review_note_post_returns_200(self, mock_perm_codes, mock_save_note, mock_serializer):
-        mock_perm_codes.return_value = {"purchase.invoice.update"}
+    @patch("purchase.serializers.purchase_statutory.assert_document_date_within_financial_year")
+    def test_statutory_review_note_post_returns_200(self, mock_date_guard, mock_perm_codes, mock_save_note, mock_serializer):
+        mock_date_guard.return_value = None
+        mock_perm_codes.return_value = {"purchase.statutory.manage"}
         mock_save_note.return_value = SimpleNamespace(message="Review note updated.", obj=SimpleNamespace(id=1))
         mock_serializer.return_value.data = {
             "reviewer_name": "CA Reviewer",
@@ -1545,7 +1898,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.delete_review_note")
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_review_note_delete_returns_200(self, mock_perm_codes, mock_delete_note):
-        mock_perm_codes.return_value = {"purchase.invoice.update"}
+        mock_perm_codes.return_value = {"purchase.statutory.manage"}
 
         resp = self.client.delete(
             "/api/purchase/statutory/review-note/?entity=1&entityfinid=1&period_from=2026-04-01&period_to=2026-04-30"
@@ -1558,7 +1911,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.itc_status_register")
     def test_statutory_itc_status_register_endpoint_returns_200(self, mock_fn, mock_perm_codes):
-        mock_perm_codes.return_value = {"purchase.invoice.view"}
+        mock_perm_codes.return_value = {"purchase.statutory.view"}
         mock_fn.return_value = {
             "count": 1,
             "rows": [
@@ -1687,9 +2040,11 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         # Alias route should at least resolve (it may reject request params with 400).
         self.assertNotEqual(resp.status_code, 404)
 
+    @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_gstr2b.PurchaseGstr2bService.create_batch")
     @patch("purchase.views.purchase_gstr2b.Gstr2bImportBatchSerializer")
-    def test_gstr2b_import_batch_create_returns_201(self, mock_ser, mock_create):
+    def test_gstr2b_import_batch_create_returns_201(self, mock_ser, mock_create, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.statutory.manage"}
         mock_create.return_value = SimpleNamespace(id=12)
         mock_ser.return_value.data = {"id": 12, "period": "2026-04"}
         resp = self.client.post(
@@ -1712,8 +2067,17 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["data"]["id"], 12)
 
+    @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.purchase_gstr2b.Gstr2bImportBatch.objects")
     @patch("purchase.views.purchase_gstr2b.PurchaseGstr2bService.auto_match_batch")
-    def test_gstr2b_import_batch_match_returns_200(self, mock_match):
+    def test_gstr2b_import_batch_match_returns_200(self, mock_match, mock_batch_objects, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.statutory.manage"}
+        mock_batch_objects.filter.return_value.first.return_value = SimpleNamespace(
+            id=15,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+        )
         mock_match.return_value = SimpleNamespace(
             batch=SimpleNamespace(id=15),
             total_rows=10,
@@ -1722,7 +2086,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
             multiple=1,
             not_matched=0,
         )
-        resp = self.client.post("/api/purchase/gstr2b/import-batches/15/match/")
+        resp = self.client.post("/api/purchase/gstr2b/import-batches/15/match/?entity=1&entityfinid=1")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["summary"]["matched"], 7)
 
@@ -1750,7 +2114,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_recon_exceptions,
         mock_get_review_note,
     ):
-        mock_perm_codes.return_value = {"purchase.invoice.update"}
+        mock_perm_codes.return_value = {"purchase.statutory.manage"}
 
         invoice_it = SimpleNamespace(
             id=11,
@@ -2110,6 +2474,66 @@ class PurchaseApiPermissionTests(APITestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+        self.allowed_entity = Entity.objects.create(
+            entityname="Allowed Entity",
+            legalname="Allowed Entity Pvt Ltd",
+            business_type=Entity.BusinessType.MIXED,
+            createdby=self.user,
+        )
+        self.allowed_subentity = SubEntity.objects.create(
+            entity=self.allowed_entity,
+            subentityname="Allowed HO",
+            branch_type=SubEntity.BranchType.HEAD_OFFICE,
+        )
+        self.allowed_fy = EntityFinancialYear.objects.create(
+            entity=self.allowed_entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            createdby=self.user,
+        )
+        self.foreign_entity = Entity.objects.create(
+            entityname="Foreign Entity",
+            legalname="Foreign Entity Pvt Ltd",
+            business_type=Entity.BusinessType.MIXED,
+            createdby=self.user,
+        )
+        self.foreign_subentity = SubEntity.objects.create(
+            entity=self.foreign_entity,
+            subentityname="Foreign HO",
+            branch_type=SubEntity.BranchType.HEAD_OFFICE,
+        )
+        self.foreign_fy = EntityFinancialYear.objects.create(
+            entity=self.foreign_entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            createdby=self.user,
+        )
+        self.foreign_challan = PurchaseStatutoryChallan.objects.create(
+            entity=self.foreign_entity,
+            entityfinid=self.foreign_fy,
+            subentity=self.foreign_subentity,
+            tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS,
+            challan_no="CH-FOREIGN-1",
+            challan_date=date(2026, 4, 10),
+            amount=Decimal("100.00"),
+            created_by=self.user,
+        )
+        self.foreign_return = PurchaseStatutoryReturn.objects.create(
+            entity=self.foreign_entity,
+            entityfinid=self.foreign_fy,
+            subentity=self.foreign_subentity,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="26Q",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 6, 30),
+            amount=Decimal("100.00"),
+            created_by=self.user,
+        )
+
+    def _pk_scope_obj(self, entity_id=1):
+        return SimpleNamespace(entity_id=entity_id)
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_review_note_get_requires_view_permission(self, mock_codes):
@@ -2122,8 +2546,16 @@ class PurchaseApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
-    def test_statutory_review_note_post_requires_manage_permission(self, mock_codes):
+    def test_statutory_summary_rejects_purchase_invoice_view_without_statutory_permission(self, mock_codes):
         mock_codes.return_value = {"purchase.invoice.view"}
+
+        response = self.client.get("/api/purchase/statutory/summary/?entity=1&entityfinid=1")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_review_note_post_requires_manage_permission(self, mock_codes):
+        mock_codes.return_value = {"purchase.statutory.view"}
 
         response = self.client.post(
             "/api/purchase/statutory/review-note/",
@@ -2142,7 +2574,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_ca_pack_export_requires_manage_permission(self, mock_codes):
-        mock_codes.return_value = {"purchase.invoice.view"}
+        mock_codes.return_value = {"purchase.statutory.view"}
 
         response = self.client.get(
             "/api/purchase/statutory/export/ca-pack/?entity=1&entityfinid=1&period_from=2026-04-01&period_to=2026-04-30"
@@ -2152,7 +2584,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_review_note_get_requires_period_params(self, mock_codes):
-        mock_codes.return_value = {"purchase.invoice.view"}
+        mock_codes.return_value = {"purchase.statutory.view"}
 
         response = self.client.get("/api/purchase/statutory/review-note/?entity=1&entityfinid=1")
 
@@ -2161,7 +2593,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_review_note_get_rejects_inverted_period(self, mock_codes):
-        mock_codes.return_value = {"purchase.invoice.view"}
+        mock_codes.return_value = {"purchase.statutory.view"}
 
         response = self.client.get(
             "/api/purchase/statutory/review-note/?entity=1&entityfinid=1&period_from=2026-04-30&period_to=2026-04-01"
@@ -2172,7 +2604,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_ca_pack_export_requires_period_params(self, mock_codes):
-        mock_codes.return_value = {"purchase.invoice.update"}
+        mock_codes.return_value = {"purchase.statutory.manage"}
 
         response = self.client.get("/api/purchase/statutory/export/ca-pack/?entity=1&entityfinid=1")
 
@@ -2181,7 +2613,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_ca_pack_export_rejects_inverted_period(self, mock_codes):
-        mock_codes.return_value = {"purchase.invoice.update"}
+        mock_codes.return_value = {"purchase.statutory.manage"}
 
         response = self.client.get(
             "/api/purchase/statutory/export/ca-pack/?entity=1&entityfinid=1&period_from=2026-04-30&period_to=2026-04-01"
@@ -2189,6 +2621,187 @@ class PurchaseApiPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("period_from cannot be greater than period_to", str(response.data))
+
+    @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
+    def test_gstr2b_batch_list_requires_statutory_view_permission(self, mock_codes):
+        mock_codes.return_value = {"purchase.invoice.view"}
+
+        response = self.client.get("/api/purchase/gstr2b/import-batches/?entity=1&entityfinid=1")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_gstr2b.Gstr2bImportBatch.objects")
+    @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
+    def test_gstr2b_auto_match_requires_statutory_manage_permission(self, mock_codes, mock_batch_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
+        mock_batch_objects.filter.return_value.first.return_value = SimpleNamespace(
+            id=15,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+        )
+
+        response = self.client.post("/api/purchase/gstr2b/import-batches/15/match/?entity=1&entityfinid=1", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryChallan.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_challan_deposit_requires_manage_permission(self, mock_codes, mock_challan_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
+        mock_challan_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.post(
+            "/api/purchase/statutory/challans/15/deposit/",
+            {"deposited_on": "2026-04-30"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryChallan.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_challan_approval_requires_approve_permission(self, mock_codes, mock_challan_objects):
+        mock_codes.return_value = {"purchase.statutory.manage"}
+        mock_challan_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.post(
+            "/api/purchase/statutory/challans/15/approval/",
+            {"action": "submit"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_return_file_requires_manage_permission(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
+        mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.post(
+            "/api/purchase/statutory/returns/21/file/",
+            {"filed_on": "2026-07-31"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_return_approval_requires_approve_permission(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = {"purchase.statutory.manage"}
+        mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.post(
+            "/api/purchase/statutory/returns/21/approval/",
+            {"action": "submit"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_form16a_issue_requires_manage_permission(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
+        mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.post(
+            "/api/purchase/statutory/returns/21/form16a/",
+            {"remarks": "issue"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_form16a_download_requires_view_permission(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = set()
+        mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.get("/api/purchase/statutory/returns/21/form16a/1/download/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_nsdl_export_requires_view_permission(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = set()
+        mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.get("/api/purchase/statutory/returns/21/nsdl-export/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_gstr2b.Gstr2bImportBatch.objects")
+    @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
+    def test_gstr2b_batch_rows_rejects_subentity_mismatch(self, mock_codes, mock_batch_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
+        mock_batch_objects.filter.return_value.first.return_value = SimpleNamespace(
+            id=15,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=99,
+        )
+
+        response = self.client.get("/api/purchase/gstr2b/import-batches/15/rows/?entity=1&entityfinid=1&subentity=5")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("subentity mismatch", str(response.data).lower())
+
+    @patch("purchase.views.purchase_gstr2b.Gstr2bImportRow.objects")
+    @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
+    def test_gstr2b_row_review_rejects_subentity_mismatch(self, mock_codes, mock_row_objects):
+        mock_codes.return_value = {"purchase.statutory.manage"}
+        mock_row_objects.select_related.return_value.filter.return_value.first.return_value = SimpleNamespace(
+            id=33,
+            batch=SimpleNamespace(subentity_id=99),
+        )
+
+        response = self.client.post(
+            "/api/purchase/gstr2b/import-rows/33/review/?entity=1&entityfinid=1&subentity=5",
+            {"match_status": "MATCHED"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("subentity mismatch", str(response.data).lower())
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_challan_approval_uses_object_entity_scope_for_permission_check(self, mock_codes):
+        mock_codes.side_effect = lambda user, entity_id: {"purchase.statutory.approve"} if entity_id == self.allowed_entity.id else set()
+
+        response = self.client.post(
+            f"/api/purchase/statutory/challans/{self.foreign_challan.id}/approval/",
+            {"action": "submit"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_return_file_uses_object_entity_scope_for_permission_check(self, mock_codes):
+        mock_codes.side_effect = lambda user, entity_id: {"purchase.statutory.manage"} if entity_id == self.allowed_entity.id else set()
+
+        response = self.client.post(
+            f"/api/purchase/statutory/returns/{self.foreign_return.id}/file/",
+            {"filed_on": "2026-07-20"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_form16a_download_uses_object_entity_scope_for_permission_check(self, mock_codes):
+        mock_codes.side_effect = lambda user, entity_id: {"purchase.statutory.view"} if entity_id == self.allowed_entity.id else set()
+
+        response = self.client.get(
+            f"/api/purchase/statutory/returns/{self.foreign_return.id}/form16a/1/download/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")

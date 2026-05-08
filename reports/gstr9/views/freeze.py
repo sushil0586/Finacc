@@ -6,9 +6,10 @@ from rest_framework.views import APIView
 
 from reports.gstr9.services.freeze import Gstr9FreezeService
 from reports.gstr9.services.report import Gstr9ReportService
+from reports.gstr9.views.utils import Gstr9ScopedReportMixin
 
 
-class Gstr9FreezeAPIView(APIView):
+class Gstr9FreezeAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -18,6 +19,7 @@ class Gstr9FreezeAPIView(APIView):
         freeze_service = self.freeze_service_class(report_service=service)
         try:
             scope = service.build_scope(request.query_params)
+            self.enforce_report_scope(request, scope)
             snapshot = freeze_service.latest(scope)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -36,13 +38,14 @@ class Gstr9FreezeAPIView(APIView):
         freeze_service = self.freeze_service_class(report_service=service)
         try:
             scope = service.build_scope(request.data or request.query_params)
+            self.enforce_report_scope(request, scope)
             snapshot = freeze_service.freeze(scope, user=request.user)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(snapshot, status=status.HTTP_201_CREATED)
 
 
-class Gstr9FreezeHistoryAPIView(APIView):
+class Gstr9FreezeHistoryAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -52,6 +55,7 @@ class Gstr9FreezeHistoryAPIView(APIView):
         freeze_service = self.freeze_service_class(report_service=service)
         try:
             scope = service.build_scope(request.query_params)
+            self.enforce_report_scope(request, scope)
             limit = _parse_limit(request.query_params.get("limit"))
             include_payload = _parse_include_payload(request.query_params.get("include_payload"))
             snapshots = freeze_service.history(scope, limit=limit, include_payload=include_payload)

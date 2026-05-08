@@ -62,8 +62,8 @@ class PurchaseRegisterAPITests(APITestCase):
         self.mock_permission_codes = patch(
             "reports.api.purchase_register_view.EffectivePermissionService.permission_codes_for_user",
             return_value=[
-                "reports.purchasebook.view",
-                "reports.purchasebook.export",
+                "reports.purchase_register.view",
+                "reports.purchase_register.export",
                 "reports.vendoroutstanding.view",
                 "reports.accountspayableaging.view",
                 "reports.vendorledgerstatement.view",

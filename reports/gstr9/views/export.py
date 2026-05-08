@@ -11,10 +11,10 @@ from rest_framework.views import APIView
 
 from reports.gstr9.services.freeze import Gstr9FreezeService
 from reports.gstr9.services.report import Gstr9ReportService
-from reports.gstr9.views.utils import parse_freeze_version
+from reports.gstr9.views.utils import Gstr9ScopedReportMixin, parse_freeze_version
 
 
-class Gstr9ExportAPIView(APIView):
+class Gstr9ExportAPIView(Gstr9ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr9ReportService
     freeze_service_class = Gstr9FreezeService
@@ -32,6 +32,7 @@ class Gstr9ExportAPIView(APIView):
         export_format = (getattr(request, "_gstr9_export_format", None) or request.query_params.get("format") or "json").lower()
         service = self.service_class()
         scope = service.build_scope(request.query_params)
+        self.enforce_report_scope(request, scope)
         freeze_service = self.freeze_service_class(report_service=service)
         try:
             freeze_version = parse_freeze_version(request.query_params)

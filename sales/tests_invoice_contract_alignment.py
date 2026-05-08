@@ -383,3 +383,30 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         )
         SalesInvoiceService.compute_line_amounts(header, manual_line)
         self.assertEqual(manual_line.cess_amount, Decimal("7.50"))
+
+    def test_sales_compute_line_amounts_uses_taxable_base_for_inclusive_cess(self):
+        header = SalesInvoiceHeader(is_igst=True)
+
+        inclusive_line = SalesInvoiceLine(
+            line_no=3,
+            product=self.product,
+            uom=self.uom,
+            qty=Decimal("20.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("20.0000"),
+            is_rate_inclusive_of_tax=True,
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.0000"),
+            cess_percent=Decimal("1.0000"),
+            cess_amount=Decimal("0.00"),
+            hsn_sac_code="8471",
+        )
+
+        SalesInvoiceService.compute_line_amounts(header, inclusive_line)
+
+        self.assertEqual(inclusive_line.taxable_value, Decimal("338.98"))
+        self.assertEqual(inclusive_line.igst_amount, Decimal("61.02"))
+        self.assertEqual(inclusive_line.cess_amount, Decimal("3.39"))
+        self.assertEqual(inclusive_line.line_total, Decimal("403.39"))

@@ -170,6 +170,8 @@ class AssetBulkJob(TrackingModel):
 
     validation_token = models.CharField(max_length=64, null=True, blank=True, db_index=True)
     input_filename = models.CharField(max_length=255, null=True, blank=True)
+    committed_at = models.DateTimeField(null=True, blank=True)
+    committed_import_job = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="validated_jobs")
 
     summary = models.JSONField(default=dict, blank=True)
     errors = models.JSONField(default=list, blank=True)

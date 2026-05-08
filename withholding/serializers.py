@@ -4,7 +4,6 @@ from decimal import Decimal
 import re
 
 from django.db.models import Sum
-from django.utils import timezone
 from rest_framework import serializers
 
 from withholding.models import (
@@ -41,6 +40,21 @@ APPLICABILITY_ALLOWED_KEYS = {
 }
 APPLICABILITY_RESIDENT_STATUSES = {"resident", "non_resident"}
 APPLICABILITY_THRESHOLD_MODES = {"single_txn", "cumulative"}
+
+
+class RejectWorkflowManagedFieldsMixin:
+    workflow_managed_write_errors: dict[str, str] = {}
+
+    def validate(self, attrs):
+        errors = {}
+        initial_data = getattr(self, "initial_data", None)
+        if isinstance(initial_data, dict):
+            for field_name, message in self.workflow_managed_write_errors.items():
+                if field_name in initial_data:
+                    errors[field_name] = message
+        if errors:
+            raise serializers.ValidationError(errors)
+        return super().validate(attrs)
 
 
 def _normalize_text_list(value):
@@ -634,17 +648,10 @@ class TcsComputationSerializer(serializers.ModelSerializer):
         ]
 
 
-class TcsCollectionSerializer(serializers.ModelSerializer):
-    status = serializers.ChoiceField(
-        choices=list(TcsCollection.Status.choices) + [("CLOSED", "Closed")],
-        required=False,
-    )
-
-    def validate_status(self, value):
-        v = (value or "").strip().upper()
-        if v == "CLOSED":
-            return TcsCollection.Status.ALLOCATED
-        return v
+class TcsCollectionSerializer(RejectWorkflowManagedFieldsMixin, serializers.ModelSerializer):
+    workflow_managed_write_errors = {
+        "status": "status is managed by the TCS workflow and cannot be set directly.",
+    }
 
     def validate(self, attrs):
         data = super().validate(attrs)
@@ -701,10 +708,15 @@ class TcsCollectionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["status", "created_at", "updated_at"]
 
 
-class TcsDepositSerializer(serializers.ModelSerializer):
+class TcsDepositSerializer(RejectWorkflowManagedFieldsMixin, serializers.ModelSerializer):
+    workflow_managed_write_errors = {
+        "deposited_by": "deposited_by is managed by the TCS workflow and cannot be set directly.",
+        "status": "status is managed by the TCS workflow and cannot be set directly.",
+    }
+
     def validate(self, attrs):
         data = super().validate(attrs)
         instance = getattr(self, "instance", None)
@@ -759,7 +771,7 @@ class TcsDepositSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["deposited_by", "status", "created_at", "updated_at"]
 
 
 class TcsDepositAllocationSerializer(serializers.ModelSerializer):
@@ -769,7 +781,15 @@ class TcsDepositAllocationSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at"]
 
 
-class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
+class TcsQuarterlyReturnSerializer(RejectWorkflowManagedFieldsMixin, serializers.ModelSerializer):
+    workflow_managed_write_errors = {
+        "status": "status is managed by the TCS workflow and cannot be set directly.",
+        "ack_no": "ack_no is managed by the TCS workflow and cannot be set directly.",
+        "filed_on": "filed_on is managed by the TCS workflow and cannot be set directly.",
+        "json_snapshot": "json_snapshot is managed by the TCS workflow and cannot be set directly.",
+        "file_path": "file_path is managed by the TCS workflow and cannot be set directly.",
+    }
+
     def validate(self, attrs):
         data = super().validate(attrs)
         instance = getattr(self, "instance", None)
@@ -789,18 +809,6 @@ class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"fy": "FY must be like 2025-26 (single-year span)."})
         if form_name and form_name != "27EQ":
             raise serializers.ValidationError({"form_name": "Only form 27EQ is supported in this endpoint."})
-        status_value = data.get("status") or getattr(instance, "status", None)
-        ack_no = (data.get("ack_no") if "ack_no" in data else getattr(instance, "ack_no", "")) or ""
-        filed_on = data.get("filed_on") if "filed_on" in data else getattr(instance, "filed_on", None)
-        if status_value == TcsQuarterlyReturn.Status.FILED:
-            if not str(ack_no).strip():
-                raise serializers.ValidationError({"ack_no": "ack_no is required when return status is FILED."})
-            if filed_on is None:
-                # Keep FILED rows writable for legacy data and UX flows where date is omitted.
-                # If caller does not send filed_on, default to current local date.
-                filed_on = timezone.localdate()
-            data["ack_no"] = str(ack_no).strip()
-            data["filed_on"] = filed_on
         if return_type == TcsQuarterlyReturn.ReturnType.ORIGINAL and entity and fy and quarter:
             clash_qs = TcsQuarterlyReturn.objects.filter(
                 entity=entity,
@@ -850,7 +858,15 @@ class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = [
+            "status",
+            "ack_no",
+            "filed_on",
+            "json_snapshot",
+            "file_path",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class GstTcsEcoProfileSerializer(serializers.ModelSerializer):

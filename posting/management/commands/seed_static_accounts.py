@@ -58,6 +58,15 @@ STATIC_MASTER: List[StaticDef] = [
     StaticDef("GST_TDS_PAYABLE", "GST TDS Payable", "TDS_TCS", "GST-TDS payable"),
     StaticDef("TCS_PAYABLE", "TCS Payable", "TDS_TCS", "TCS payable"),
 
+    # Manufacturing
+    StaticDef("MANUFACTURING_WIP", "Manufacturing WIP", "MANUFACTURING", "Work-in-progress clearing ledger for manufacturing posting"),
+    StaticDef("MANUFACTURING_CONSUMPTION", "Manufacturing Consumption", "MANUFACTURING", "Consumption/issue ledger for manufacturing material usage"),
+    StaticDef("MANUFACTURING_OVERHEAD_ABSORPTION", "Manufacturing Overhead Absorption", "MANUFACTURING", "Offset ledger for additional production cost absorption"),
+    StaticDef("MANUFACTURING_FINISHED_GOODS", "Manufacturing Finished Goods", "MANUFACTURING", "Finished goods / byproduct inventory capitalization ledger for manufacturing posting"),
+    StaticDef("MANUFACTURING_MATERIAL_VARIANCE", "Manufacturing Material Variance", "MANUFACTURING", "Variance ledger for material over/under-consumption against standard manufacturing cost"),
+    StaticDef("MANUFACTURING_YIELD_VARIANCE", "Manufacturing Yield Variance", "MANUFACTURING", "Variance ledger for manufacturing output/yield differences against standard cost expectation"),
+    StaticDef("MANUFACTURING_ADDITIONAL_COST_EXPENSE", "Manufacturing Additional Cost Expense", "MANUFACTURING", "Expense ledger for manufacturing additional costs that should not be capitalized into finished goods"),
+
     # Bank charges
     StaticDef("BANK_CHARGES", "Bank Charges", "CASH_BANK", "Bank charges expense"),
 
@@ -95,6 +104,14 @@ AUTO_KEYWORDS: Dict[str, List[str]] = {
     "TDS_PAYABLE": ["tds payable", "tds pay", "tds liability"],
     "GST_TDS_PAYABLE": ["gst tds payable", "gst-tds payable", "gst tds liability"],
     "TCS_PAYABLE": ["tcs payable", "tcs liability"],
+
+    "MANUFACTURING_WIP": ["work in progress", "wip", "production wip", "manufacturing wip"],
+    "MANUFACTURING_CONSUMPTION": ["consumption", "material consumption", "production consumption", "raw material consumed"],
+    "MANUFACTURING_OVERHEAD_ABSORPTION": ["overhead absorption", "production absorption", "manufacturing overhead"],
+    "MANUFACTURING_FINISHED_GOODS": ["finished goods", "manufactured stock", "production inventory", "fg inventory"],
+    "MANUFACTURING_MATERIAL_VARIANCE": ["material variance", "consumption variance", "usage variance", "manufacturing material variance"],
+    "MANUFACTURING_YIELD_VARIANCE": ["yield variance", "production variance", "process variance", "manufacturing yield variance"],
+    "MANUFACTURING_ADDITIONAL_COST_EXPENSE": ["production expense", "manufacturing expense", "shop floor expense", "factory expense", "manufacturing additional cost expense"],
 
     "BANK_CHARGES": ["bank charges", "bank charge", "charges bank", "neft charges", "rtgs charges"],
     "OPENING_EQUITY_TRANSFER": ["retained earnings", "capital", "partner capital", "owner capital", "equity"],

@@ -18,7 +18,7 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        role_codes = options.get("role_codes") or ["entity.super_admin", "admin"]
+        role_codes = options.get("role_codes") or ["entity.super_admin", "admin", "entity.admin"]
         roles = Role.objects.filter(code__in=role_codes, isactive=True)
         if options.get("entity"):
             roles = roles.filter(entity_id=options["entity"])

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Any
 
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
@@ -16,9 +16,10 @@ class CleanupSpec:
     label: str
     app_label: str
     model_name: str
-    entity_field: str = "entity_id"
-    entityfin_field: str = "entityfinid_id"
-    subentity_field: str = "subentity_id"
+    entity_field: str | None = "entity_id"
+    entityfin_field: str | None = "entityfinid_id"
+    subentity_field: str | None = "subentity_id"
+    entityfin_filter_mode: str = "id"
     cleanup_files: bool = False
 
 
@@ -54,7 +55,11 @@ class Command(BaseCommand):
         if not entity:
             raise CommandError(f"Entity {entity_id} does not exist.")
 
-        entity_fin = EntityFinancialYear.objects.filter(pk=entityfinid_id, entity_id=entity_id).only("id").first()
+        entity_fin = (
+            EntityFinancialYear.objects.filter(pk=entityfinid_id, entity_id=entity_id)
+            .only("id", "finstartyear", "finendyear")
+            .first()
+        )
         if not entity_fin:
             raise CommandError(
                 f"EntityFinancialYear {entityfinid_id} does not belong to entity {entity_id}."
@@ -65,11 +70,12 @@ class Command(BaseCommand):
             if not subentity:
                 raise CommandError(f"SubEntity {subentity_id} does not belong to entity {entity_id}.")
 
+        fy_tokens = self._build_financial_year_tokens(entity_fin)
         specs = self._build_specs()
         previews: list[tuple[CleanupSpec, int]] = []
 
         for spec in specs:
-            qs = self._scoped_queryset(spec, entity_id, entityfinid_id, subentity_id)
+            qs = self._scoped_queryset(spec, entity_id, entityfinid_id, subentity_id, fy_tokens)
             previews.append((spec, qs.count()))
 
         total_rows = sum(count for _, count in previews)
@@ -95,7 +101,7 @@ class Command(BaseCommand):
             for spec, count in previews:
                 if count == 0:
                     continue
-                qs = self._scoped_queryset(spec, entity_id, entityfinid_id, subentity_id)
+                qs = self._scoped_queryset(spec, entity_id, entityfinid_id, subentity_id, fy_tokens)
                 deleted = self._delete_queryset(
                     qs,
                     cleanup_files=spec.cleanup_files,
@@ -108,6 +114,57 @@ class Command(BaseCommand):
 
     def _build_specs(self) -> list[CleanupSpec]:
         return [
+            CleanupSpec(
+                "TCS deposit allocations",
+                "withholding",
+                "TcsDepositAllocation",
+                entity_field="deposit__entity_id",
+                entityfin_field="deposit__financial_year",
+                subentity_field=None,
+                entityfin_filter_mode="fy_tokens",
+            ),
+            CleanupSpec(
+                "TCS collections",
+                "withholding",
+                "TcsCollection",
+                entity_field="computation__entity_id",
+                entityfin_field="computation__entityfin_id",
+                subentity_field="computation__subentity_id",
+            ),
+            CleanupSpec("TCS computations", "withholding", "TcsComputation", entityfin_field="entityfin_id"),
+            CleanupSpec(
+                "TCS deposits",
+                "withholding",
+                "TcsDeposit",
+                entity_field="entity_id",
+                entityfin_field="financial_year",
+                subentity_field=None,
+                entityfin_filter_mode="fy_tokens",
+            ),
+            CleanupSpec(
+                "TCS quarterly returns",
+                "withholding",
+                "TcsQuarterlyReturn",
+                entity_field="entity_id",
+                entityfin_field="fy",
+                subentity_field=None,
+                entityfin_filter_mode="fy_tokens",
+            ),
+            CleanupSpec(
+                "TCS threshold openings",
+                "withholding",
+                "EntityTcsThresholdOpening",
+                entityfin_field="entityfin_id",
+            ),
+            CleanupSpec(
+                "GST TCS computations",
+                "withholding",
+                "GstTcsComputation",
+                entity_field="entity_id",
+                entityfin_field="fy",
+                subentity_field=None,
+                entityfin_filter_mode="fy_tokens",
+            ),
             CleanupSpec(
                 "Purchase attachments",
                 "purchase",
@@ -210,14 +267,39 @@ class Command(BaseCommand):
         entity_id: int,
         entityfinid_id: int,
         subentity_id: int | None,
+        fy_tokens: list[str],
     ) -> QuerySet:
         model = apps.get_model(spec.app_label, spec.model_name)
-        filters = {
-            spec.entity_field: entity_id,
-            spec.entityfin_field: entityfinid_id,
-            spec.subentity_field: subentity_id,
-        }
+        filters: dict[str, Any] = {}
+
+        if spec.entity_field:
+            filters[spec.entity_field] = entity_id
+
+        if spec.entityfin_field:
+            if spec.entityfin_filter_mode == "fy_tokens":
+                filters[f"{spec.entityfin_field}__in"] = fy_tokens
+            else:
+                filters[spec.entityfin_field] = entityfinid_id
+
+        if spec.subentity_field:
+            filters[spec.subentity_field] = subentity_id
+
         return model.objects.filter(**filters)
+
+    def _build_financial_year_tokens(self, entity_fin: EntityFinancialYear) -> list[str]:
+        start_value = getattr(entity_fin, "finstartyear", None)
+        end_value = getattr(entity_fin, "finendyear", None)
+        start_date = start_value.date() if start_value else None
+        end_date = end_value.date() if end_value else None
+
+        if not start_date or not end_date:
+            raise CommandError(
+                "Selected EntityFinancialYear is missing start/end dates required to scope FY-based transactional records."
+            )
+
+        short_token = f"{start_date.year}-{str(end_date.year)[-2:]}"
+        full_token = f"{start_date.year}-{end_date.year}"
+        return [short_token, full_token]
 
     def _delete_queryset(self, queryset: QuerySet, *, cleanup_files: bool, spec: CleanupSpec) -> int:
         model: type[Model] = queryset.model

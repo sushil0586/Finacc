@@ -6,7 +6,9 @@ from decimal import Decimal
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient, APITestCase
+from unittest.mock import patch
 
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
@@ -164,6 +166,11 @@ class Gstr9ScaffoldAPITests(APITestCase):
         self.assertEqual(table_status["TABLE_8"], "implemented")
         self.assertEqual(table_status["TABLE_10_14"], "implemented")
         self.assertEqual(table_status["TABLE_15_19"], "implemented")
+
+    @patch("reports.gstr9.views.summary.Gstr9SummaryAPIView.enforce_report_scope", side_effect=PermissionDenied("forbidden"))
+    def test_summary_denies_when_scope_enforcement_fails(self, _enforce_scope):
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 403)
 
     def test_table_4_contract_and_values(self):
         self._create_sales_doc(

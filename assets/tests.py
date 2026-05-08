@@ -9,10 +9,11 @@ from rest_framework.test import APITestCase
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import Ledger, accountHead
+from posting.models import Entry, EntryStatus, JournalLine
 from subscriptions.models import PlanLimit
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
-from .models import AssetCategory, DepreciationRun, FixedAsset
+from .models import AssetBulkJob, AssetCategory, DepreciationRun, FixedAsset
 from .services.settings import AssetSettingsService
 
 
@@ -44,6 +45,15 @@ class AssetApiScopeTests(APITestCase):
                 "bool_value": True,
             },
         )
+        PlanLimit.objects.update_or_create(
+            plan=subscription.plan,
+            key=SubscriptionLimitCodes.FEATURE_REPORTING,
+            defaults={
+                "label": "Reporting",
+                "limit_type": PlanLimit.LimitType.BOOLEAN,
+                "bool_value": True,
+            },
+        )
 
         foreign_subscription = SubscriptionService.ensure_active_subscription(customer_account=self.foreign_account)
         PlanLimit.objects.update_or_create(
@@ -51,6 +61,15 @@ class AssetApiScopeTests(APITestCase):
             key=SubscriptionLimitCodes.FEATURE_ASSETS,
             defaults={
                 "label": "Assets Module",
+                "limit_type": PlanLimit.LimitType.BOOLEAN,
+                "bool_value": True,
+            },
+        )
+        PlanLimit.objects.update_or_create(
+            plan=foreign_subscription.plan,
+            key=SubscriptionLimitCodes.FEATURE_REPORTING,
+            defaults={
+                "label": "Reporting",
                 "limit_type": PlanLimit.LimitType.BOOLEAN,
                 "bool_value": True,
             },
@@ -147,6 +166,22 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_report_register_blocks_foreign_entity_scope(self):
+        response = self.client.get(
+            reverse("reports:fixed-asset-register"),
+            {"entity": self.foreign_entity.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_report_history_blocks_foreign_asset_scope(self):
+        response = self.client.get(
+            reverse("reports:fixed-asset-history"),
+            {"entity": self.foreign_entity.id, "asset": self.foreign_asset.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_create_rejects_foreign_entity_ledger(self):
         payload = {
             "entity": self.entity.id,
@@ -163,6 +198,47 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(FixedAsset.objects.filter(asset_name="Invalid Asset").exists())
+
+    def test_create_rejects_system_managed_asset_fields(self):
+        payload = {
+            "entity": self.entity.id,
+            "subentity": self.subentity.id,
+            "category": self.category.id,
+            "asset_name": "Unsafe Asset",
+            "asset_code": "FA-UNSAFE",
+            "acquisition_date": "2026-04-01",
+            "gross_block": "1000.00",
+            "residual_value": "0.00",
+            "accumulated_depreciation": "10.00",
+            "net_book_value": "990.00",
+        }
+
+        response = self.client.post(reverse("assets_api:fixed-asset-list-create"), payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("accumulated_depreciation", response.data)
+        self.assertIn("net_book_value", response.data)
+
+    def test_update_rejects_manual_active_status_change(self):
+        response = self.client.put(
+            reverse("assets_api:fixed-asset-detail", args=[self.asset.id]),
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "entityfinid": self.entityfin.id,
+                "category": self.category.id,
+                "asset_code": self.asset.asset_code,
+                "asset_name": self.asset.asset_name,
+                "acquisition_date": "2026-04-01",
+                "gross_block": "5000.00",
+                "residual_value": "0.00",
+                "status": "ACTIVE",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", response.data)
 
     def test_capitalize_rejects_foreign_counter_ledger(self):
         response = self.client.post(
@@ -296,3 +372,292 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("locked books period", response.data["detail"].lower())
+
+    def test_cancel_posted_depreciation_run_preserves_audit_lines_and_marks_entry_reversed(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        create_response = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-0002",
+                "period_from": "2026-04-01",
+                "period_to": "2026-04-30",
+                "posting_date": "2026-04-30",
+                "depreciation_method": "SLM",
+                "note": "April depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        run_id = create_response.data["id"]
+
+        calculate_response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[run_id]),
+            {},
+            format="json",
+        )
+        self.assertEqual(calculate_response.status_code, status.HTTP_200_OK)
+
+        post_response = self.client.post(
+            reverse("assets_api:depreciation-run-post", args=[run_id]),
+            {},
+            format="json",
+        )
+        self.assertEqual(post_response.status_code, status.HTTP_200_OK)
+
+        run = DepreciationRun.objects.get(pk=run_id)
+        self.assertEqual(run.status, DepreciationRun.RunStatus.POSTED)
+        self.assertIsNotNone(run.posting_batch_id)
+        original_batch_id = run.posting_batch_id
+        original_line_count = JournalLine.objects.filter(posting_batch_id=original_batch_id).count()
+        self.assertGreater(original_line_count, 0)
+
+        entry = Entry.objects.get(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            txn_type="FADP",
+            txn_id=run_id,
+        )
+        self.assertEqual(entry.status, EntryStatus.POSTED)
+
+        asset_before_cancel = FixedAsset.objects.get(pk=self.asset.id)
+        self.assertGreater(float(asset_before_cancel.accumulated_depreciation), 0.0)
+
+        cancel_response = self.client.post(
+            reverse("assets_api:depreciation-run-cancel", args=[run_id]),
+            {},
+            format="json",
+        )
+        self.assertEqual(cancel_response.status_code, status.HTTP_200_OK)
+
+        run.refresh_from_db()
+        entry.refresh_from_db()
+        self.asset.refresh_from_db()
+
+        self.assertEqual(run.status, DepreciationRun.RunStatus.CANCELLED)
+        self.assertEqual(run.posting_batch_id, original_batch_id)
+        self.assertEqual(entry.status, EntryStatus.REVERSED)
+        self.assertEqual(JournalLine.objects.filter(posting_batch_id=original_batch_id).count(), original_line_count)
+        self.assertFalse(run.posting_batch.is_active)
+        self.assertEqual(str(self.asset.accumulated_depreciation), "0.00")
+        self.assertEqual(str(self.asset.net_book_value), "5000.00")
+
+    def test_cancelled_depreciation_run_is_excluded_from_asset_event_report(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        run = DepreciationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            run_code="DEP-0003",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            posting_date=date(2026, 4, 30),
+            depreciation_method="SLM",
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+
+        calculate_response = self.client.post(reverse("assets_api:depreciation-run-calculate", args=[run.id]), {}, format="json")
+        self.assertEqual(calculate_response.status_code, status.HTTP_200_OK)
+        post_response = self.client.post(reverse("assets_api:depreciation-run-post", args=[run.id]), {}, format="json")
+        self.assertEqual(post_response.status_code, status.HTTP_200_OK)
+        cancel_response = self.client.post(reverse("assets_api:depreciation-run-cancel", args=[run.id]), {}, format="json")
+        self.assertEqual(cancel_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(
+            reverse("reports:fixed-asset-events"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "asset": self.asset.id,
+                "event_type": "depreciation",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["rows"], [])
+
+    def test_auto_numbered_assets_generate_unique_sequential_codes(self):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"auto_number_assets": True, "default_doc_code_asset": "FA"},
+            user_id=self.owner.id,
+        )
+
+        asset_one = self.client.post(
+            reverse("assets_api:fixed-asset-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "category": self.category.id,
+                "ledger": self.asset_ledger.id,
+                "asset_name": "Auto Asset One",
+                "acquisition_date": "2026-04-10",
+                "gross_block": "1000.00",
+                "residual_value": "0.00",
+                "depreciation_method": "SLM",
+                "useful_life_months": 12,
+            },
+            format="json",
+        )
+        asset_two = self.client.post(
+            reverse("assets_api:fixed-asset-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "category": self.category.id,
+                "ledger": self.asset_ledger.id,
+                "asset_name": "Auto Asset Two",
+                "acquisition_date": "2026-04-11",
+                "gross_block": "1200.00",
+                "residual_value": "0.00",
+                "depreciation_method": "SLM",
+                "useful_life_months": 12,
+            },
+            format="json",
+        )
+
+        self.assertEqual(asset_one.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(asset_two.status_code, status.HTTP_201_CREATED)
+        self.assertNotEqual(asset_one.data["asset_code"], asset_two.data["asset_code"])
+
+    def test_bulk_commit_is_idempotent_for_validation_token(self):
+        validate_response = self.client.post(
+            reverse("assets_api:fixed-asset-bulk-import-validate"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "format": "xlsx",
+                "file": self._build_fixed_asset_bulk_upload(
+                    [
+                        {
+                            "asset_code": "FA-BULK-100",
+                            "asset_name": "Bulk Asset 100",
+                            "category": self.category.code,
+                            "ledger": str(self.asset_ledger.ledger_code),
+                            "entityfinid": str(self.entityfin.id),
+                            "subentity": str(self.subentity.id),
+                            "status": "DRAFT",
+                            "acquisition_date": "2026-04-15",
+                            "gross_block": "3500.00",
+                            "residual_value": "0.00",
+                            "useful_life_months": "24",
+                            "depreciation_method": "SLM",
+                        }
+                    ]
+                ),
+            },
+        )
+        self.assertEqual(validate_response.status_code, status.HTTP_200_OK)
+        token = validate_response.data["validation_token"]
+
+        first_commit = self.client.post(
+            reverse("assets_api:fixed-asset-bulk-import-commit"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "validation_token": token,
+            },
+        )
+        second_commit = self.client.post(
+            reverse("assets_api:fixed-asset-bulk-import-commit"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "validation_token": token,
+            },
+        )
+
+        self.assertEqual(first_commit.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_commit.status_code, status.HTTP_200_OK)
+        self.assertEqual(FixedAsset.objects.filter(entity=self.entity, asset_code="FA-BULK-100").count(), 1)
+        self.assertEqual(first_commit.data["job_id"], second_commit.data["job_id"])
+        self.assertTrue(second_commit.data.get("idempotent_replay"))
+
+        vjob = AssetBulkJob.objects.get(validation_token=token, job_type=AssetBulkJob.JobType.VALIDATE)
+        self.assertIsNotNone(vjob.committed_at)
+        self.assertIsNotNone(vjob.committed_import_job_id)
+
+    def _build_fixed_asset_bulk_upload(self, rows):
+        from io import BytesIO
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from openpyxl import Workbook
+
+        headers = [
+            "asset_code",
+            "asset_name",
+            "category",
+            "ledger",
+            "entityfinid",
+            "subentity",
+            "asset_tag",
+            "serial_number",
+            "manufacturer",
+            "model_number",
+            "status",
+            "acquisition_date",
+            "capitalization_date",
+            "put_to_use_date",
+            "depreciation_start_date",
+            "disposal_date",
+            "quantity",
+            "gross_block",
+            "residual_value",
+            "useful_life_months",
+            "depreciation_method",
+            "depreciation_rate",
+            "location_name",
+            "department_name",
+            "custodian_name",
+            "vendor_account",
+            "purchase_document_no",
+            "external_reference",
+            "notes",
+        ]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "fixed_assets"
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(header, "") for header in headers])
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return SimpleUploadedFile(
+            "fixed_assets_bulk.xlsx",
+            buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )

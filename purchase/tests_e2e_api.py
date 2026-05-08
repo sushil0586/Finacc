@@ -225,12 +225,34 @@ class PurchaseApiEndToEndTests(APITestCase):
                 "purchase.statutory.approve",
             },
         )
+        self._gstr2b_codes_patch = patch(
+            "purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user",
+            return_value={
+                "purchase.statutory.view",
+                "purchase.statutory.manage",
+                "purchase.statutory.approve",
+            },
+        )
+        self._invoice_request_permission_patch = patch(
+            "purchase.views.purchase_invoice.require_purchase_request_permission",
+            side_effect=lambda **kwargs: int(kwargs.get("doc_type") or PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
+        self._invoice_actions_request_permission_patch = patch(
+            "purchase.views.purchase_invoice_actions.require_purchase_request_permission",
+            side_effect=lambda **kwargs: int(kwargs.get("doc_type") or PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
         self._entity_scope_patch.start()
         self._codes_patch.start()
         self._statutory_codes_patch.start()
+        self._gstr2b_codes_patch.start()
+        self._invoice_request_permission_patch.start()
+        self._invoice_actions_request_permission_patch.start()
         self.addCleanup(self._entity_scope_patch.stop)
         self.addCleanup(self._codes_patch.stop)
         self.addCleanup(self._statutory_codes_patch.stop)
+        self.addCleanup(self._gstr2b_codes_patch.stop)
+        self.addCleanup(self._invoice_request_permission_patch.stop)
+        self.addCleanup(self._invoice_actions_request_permission_patch.stop)
 
     def _scope_qs(self) -> str:
         return f"?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}"
@@ -600,7 +622,12 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(rows_resp.json()["count"], 1)
         row_id = rows_resp.json()["results"][0]["id"]
 
-        match_resp = self.client.post(f"/api/purchase/gstr2b/import-batches/{batch_id}/match/", {}, format="json")
+        match_resp = self.client.post(
+            f"/api/purchase/gstr2b/import-batches/{batch_id}/match/",
+            {},
+            format="json",
+            QUERY_STRING=f"entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}",
+        )
         self.assertEqual(match_resp.status_code, status.HTTP_200_OK, match_resp.json())
         self.assertEqual(match_resp.json()["summary"]["total_rows"], 1)
 
