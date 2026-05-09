@@ -615,6 +615,54 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('attachment', csv_response.headers.get('Content-Disposition', '').lower())
         self.assertIn('inline', print_response.headers.get('Content-Disposition', '').lower())
 
+    def test_inventory_slow_moving_dead_stock_returns_rows_and_exports(self):
+        self._create_purchase_stock(
+            productname='Slow Mouse',
+            sku='SM-001',
+            qty=Decimal('6.0000'),
+            unit_cost=Decimal('500.00'),
+            reorder_level=Decimal('2.00'),
+            min_stock=Decimal('1.00'),
+            max_stock=Decimal('10.00'),
+            posting_date='2025-03-15',
+            txn_id=3010,
+        )
+        self._create_purchase_stock(
+            productname='Dead Camera',
+            sku='DC-001',
+            qty=Decimal('3.0000'),
+            unit_cost=Decimal('1500.00'),
+            reorder_level=Decimal('1.00'),
+            min_stock=Decimal('1.00'),
+            max_stock=Decimal('5.00'),
+            posting_date='2024-12-15',
+            txn_id=3011,
+        )
+
+        response = self.client.get(
+            reverse('reports_api:inventory-slow-moving-dead-stock'),
+            self._scope(as_of_date='2025-08-01', non_moving_days=90, dead_stock_days=180, sort_by='age_days', sort_order='desc'),
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['report_code'], 'inventory_slow_moving_dead_stock')
+        self.assertEqual(data['summary']['product_count'], 2)
+        self.assertEqual(data['summary']['slow_moving_count'], 1)
+        self.assertEqual(data['summary']['dead_stock_count'], 1)
+        classes = {row['product_name']: row['movement_class'] for row in data['rows']}
+        self.assertEqual(classes['Dead Camera'], 'dead_stock')
+        self.assertEqual(classes['Slow Mouse'], 'slow_moving')
+        self.assertEqual(data['available_exports'], ['excel', 'pdf', 'csv', 'print'])
+        self.assertIn('inventory_stock_summary', [item['code'] for item in data['available_drilldowns']])
+        self.assertIn('inventory_stock_ledger', [item['code'] for item in data['available_drilldowns']])
+
+        excel = self.client.get(reverse('reports_api:inventory-slow-moving-dead-stock-excel'), self._scope(as_of_date='2025-08-01', non_moving_days=90, dead_stock_days=180))
+        print_response = self.client.get(reverse('reports_api:inventory-slow-moving-dead-stock-print'), self._scope(as_of_date='2025-08-01', non_moving_days=90, dead_stock_days=180))
+        self.assertEqual(excel.status_code, 200)
+        self.assertEqual(print_response.status_code, 200)
+        self.assertIn('attachment', excel.headers.get('Content-Disposition', '').lower())
+        self.assertIn('inline', print_response.headers.get('Content-Disposition', '').lower())
+
     def test_inventory_stock_ledger_uses_valuation_method_for_mixed_cost_layers(self):
         valuation_product = Product.objects.create(
             entity=self.entity,

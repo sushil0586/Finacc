@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from datetime import date
 
 from django.test import SimpleTestCase
+from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.exceptions import ValidationError
 
@@ -1310,6 +1311,135 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(transport["vehicle"], "MH02BB2222")
         self.assertEqual(transport["grno"], "EWB-DOC-9")
 
+    def test_print_qr_normalizer_generates_png_base64_from_signed_text(self):
+        view = SalesInvoicePrintAPIView()
+
+        png_base64 = view._normalize_qr_image_base64("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.sample")
+
+        self.assertTrue(png_base64.startswith("iVBOR"))
+
+    def test_print_qr_normalizer_preserves_existing_png_base64(self):
+        view = SalesInvoicePrintAPIView()
+        existing = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sWwWJ0AAAAASUVORK5CYII="
+
+        png_base64 = view._normalize_qr_image_base64(existing)
+
+        self.assertEqual(png_base64, existing)
+
+    @patch("sales.views.sales_invoice_views.account_primary_bank_detail", return_value=None)
+    @patch("sales.views.sales_invoice_views.State.objects.filter")
+    @patch("sales.views.sales_invoice_views.Entity.objects.filter")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceLine.objects.filter")
+    @patch("sales.views.sales_invoice_views.SalesSettingsService.get_seller_profile")
+    def test_build_payload_derives_gst_summary_from_live_lines(
+        self,
+        mocked_seller_profile,
+        mocked_line_filter,
+        mocked_entity_filter,
+        mocked_state_filter,
+        _mocked_bank_detail,
+    ):
+        mocked_seller_profile.return_value = {
+            "entityname": "Arnika G",
+            "legalname": "Arnika",
+            "address": "4368 GT Road",
+            "address2": "sirhind",
+            "city_name": "sirhind",
+            "statecode": "29",
+            "statename": "Karnataka",
+            "pincode": "560001",
+            "gstno": "29AAGCB1286Q000",
+            "phoneoffice": "9855966534",
+        }
+        mocked_entity_filter.return_value.select_related.return_value.first.return_value = SimpleNamespace(
+            tax_profile=SimpleNamespace(pan="APXPB6767F")
+        )
+        mocked_state_filter.return_value.first.return_value = SimpleNamespace(statename="Karnataka")
+
+        line_one = SimpleNamespace(
+            line_no=1,
+            product=None,
+            sales_account=None,
+            uom=SimpleNamespace(code="Kgs"),
+            qty=Decimal("100"),
+            rate=Decimal("1000.00"),
+            discount_percent=Decimal("0.00"),
+            taxable_value=Decimal("100000.00"),
+            cgst_amount=Decimal("9000.00"),
+            sgst_amount=Decimal("9000.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.00"),
+            hsn_sac_code="7203",
+        )
+        line_two = SimpleNamespace(
+            line_no=2,
+            product=None,
+            sales_account=None,
+            uom=SimpleNamespace(code="Kgs"),
+            qty=Decimal("100"),
+            rate=Decimal("10000.00"),
+            discount_percent=Decimal("0.00"),
+            taxable_value=Decimal("1000000.00"),
+            cgst_amount=Decimal("90000.00"),
+            sgst_amount=Decimal("90000.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.00"),
+            hsn_sac_code="7203",
+        )
+        mocked_line_filter.return_value.select_related.return_value.order_by.return_value = [line_one, line_two]
+
+        header = SimpleNamespace(
+            id=54,
+            entity_id=10,
+            subentity_id=8,
+            customer_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 5, 9),
+            due_date=None,
+            customer=None,
+            customer_name="Customer-A",
+            customer_gstin="29AWGPV7107B1Z1",
+            place_of_supply_state_code="29",
+            bill_to_state_code="29",
+            shipping_detail=None,
+            shipto_snapshot=None,
+            einvoice_artifact=None,
+            eway_artifact=None,
+            transport_snapshot=None,
+            total_discount=Decimal("0.00"),
+            total_other_charges=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("118000.00"),
+            tcs_amount=Decimal("0.00"),
+            credit_days=0,
+            is_eway_applicable=False,
+            is_einvoice_applicable=False,
+            is_reverse_charge=False,
+            doc_no=10,
+            invoice_number="SI-SINV-10",
+            remarks="",
+            get_doc_type_display=lambda: "Tax Invoice",
+        )
+
+        view = SalesInvoicePrintAPIView()
+        view.request = SimpleNamespace(query_params={})
+
+        payload = view._build_payload(header)
+
+        self.assertEqual(payload["subtotal"], 1100000.0)
+        self.assertEqual(payload["cgst"], 99000.0)
+        self.assertEqual(payload["sgst"], 99000.0)
+        self.assertEqual(payload["totalgst"], 198000.0)
+        self.assertEqual(payload["gtotal"], 1298000.0)
+        self.assertEqual(len(payload["gst_summary"]), 1)
+        self.assertEqual(payload["gst_summary"][0]["taxable_amount"], 1100000.0)
+        self.assertEqual(payload["gst_summary"][0]["total_cgst_amount"], 99000.0)
+        self.assertEqual(payload["gst_summary"][0]["total_sgst_amount"], 99000.0)
+
 
 class IRPPayloadBuilderUnitTests(SimpleTestCase):
     @staticmethod
@@ -1398,6 +1528,16 @@ class IRPPayloadBuilderUnitTests(SimpleTestCase):
         inv = self._make_invoice(lines=SimpleNamespace(all=lambda: [line]))
         with self.assertRaisesMessage(ValueError, "notified GST slab"):
             IRPPayloadBuilder(inv).build()
+
+    def test_build_omits_ecm_gstin_when_blank(self):
+        inv = self._make_invoice(ecm_gstin="")
+        payload = IRPPayloadBuilder(inv).build()
+        self.assertNotIn("EcmGstin", payload["TranDtls"])
+
+    def test_build_includes_ecm_gstin_when_present(self):
+        inv = self._make_invoice(ecm_gstin="29abcde1234f1z5")
+        payload = IRPPayloadBuilder(inv).build()
+        self.assertEqual(payload["TranDtls"]["EcmGstin"], "29ABCDE1234F1Z5")
 
     def test_build_includes_eway_and_dispatch_blocks_when_available(self):
         line = self._make_line()
@@ -1506,6 +1646,39 @@ class SalesComplianceDateParseUnitTests(SimpleTestCase):
     def test_parse_mastergst_datetime_with_ampm(self):
         dt = SalesComplianceService._parse_dt("05/03/2026 10:22:00 PM")
         self.assertIsNotNone(dt)
+
+    def test_parse_mastergst_iso_like_datetime_returns_aware_value(self):
+        dt = SalesComplianceService._parse_dt("2026-05-09 12:56:00")
+        self.assertIsNotNone(dt)
+        self.assertTrue(timezone.is_aware(dt))
+
+
+class SalesComplianceCredentialValidationUnitTests(SimpleTestCase):
+    def test_get_mastergst_cred_for_entity_rejects_gstin_mismatch(self):
+        entity = SimpleNamespace(
+            gst_registrations=SimpleNamespace(
+                filter=lambda **kwargs: SimpleNamespace(
+                    only=lambda *args, **kw: SimpleNamespace(
+                        first=lambda: SimpleNamespace(gstin="29AAGCB1286Q1Z3")
+                    )
+                )
+            )
+        )
+        cred = SimpleNamespace(
+            gstin="29AAGCB1286Q000",
+            client_id="cid",
+            client_secret="secret",
+            email="ops@example.com",
+            gst_username="gst-user",
+            gst_password="pwd",
+        )
+
+        with patch(
+            "sales.services.sales_compliance_service.SalesMasterGSTCredential.objects.filter"
+        ) as mocked_filter:
+            mocked_filter.return_value.first.return_value = cred
+            with self.assertRaisesMessage(ValidationError, "does not match the entity primary GSTIN"):
+                SalesComplianceService._get_mastergst_cred_for_entity(entity, provider_name="mastergst")
 
 
 class MasterGSTErrorExtractUnitTests(SimpleTestCase):

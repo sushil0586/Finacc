@@ -10,11 +10,15 @@ from entity.models import (
     EntityFinancialYear,
     GstRegistrationType,
     SubEntity,
+    _relaxed_gstin_enabled,
 )
 from geography.models import City, Country, District, State
 
 
 def _gst_state_code_mismatch_message(*, gstno, state, label="GSTIN"):
+    if _relaxed_gstin_enabled():
+        return None
+
     gst_value = str(gstno or "").strip().upper()
     if not gst_value or not state:
         return None
@@ -80,7 +84,6 @@ class OnboardingEntityPayloadSerializer(serializers.Serializer):
     gstintype = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
     gst_effective_from = serializers.DateField(required=False, allow_null=True)
     gst_cancelled_from = serializers.DateField(required=False, allow_null=True)
-    gst_username = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     nature_of_business = serializers.CharField(max_length=150, required=False, allow_blank=True, allow_null=True)
     incorporation_date = serializers.DateField(required=False, allow_null=True)
     business_commencement_date = serializers.DateField(required=False, allow_null=True)
@@ -378,6 +381,39 @@ class OnboardingSeedOptionsSerializer(serializers.Serializer):
     seed_numbering = serializers.BooleanField(required=False, default=True)
 
 
+class OnboardingComplianceCredentialSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False)
+    environment = serializers.ChoiceField(choices=((1, "Sandbox"), (2, "Production")))
+    service_scope = serializers.ChoiceField(choices=((1, "E-Invoice"), (2, "E-Way")), required=False)
+    gstin = serializers.CharField(max_length=15, required=False, allow_blank=True, allow_null=True, read_only=True)
+    client_id = serializers.CharField(max_length=128)
+    client_secret = serializers.CharField(max_length=256, required=False, allow_blank=True, allow_null=True)
+    email = serializers.EmailField()
+    gst_username = serializers.CharField(max_length=128)
+    gst_password = serializers.CharField(max_length=256, required=False, allow_blank=True, allow_null=True)
+    allow_all_ips = serializers.BooleanField(required=False)
+    ip_address = serializers.IPAddressField(required=False, allow_null=True)
+    is_active = serializers.BooleanField(required=False)
+    has_client_secret = serializers.BooleanField(required=False, read_only=True)
+    has_gst_password = serializers.BooleanField(required=False, read_only=True)
+
+    def to_internal_value(self, data):
+        mutable = dict(data)
+        if mutable.get("service_scope") in (None, ""):
+            mutable["service_scope"] = 1
+        if mutable.get("email") not in (None, ""):
+            mutable["email"] = str(mutable["email"]).strip().lower()
+        if mutable.get("gst_username") not in (None, ""):
+            mutable["gst_username"] = str(mutable["gst_username"]).strip()
+        if mutable.get("client_id") not in (None, ""):
+            mutable["client_id"] = str(mutable["client_id"]).strip()
+        if mutable.get("client_secret") not in (None, ""):
+            mutable["client_secret"] = str(mutable["client_secret"]).strip()
+        if mutable.get("gst_password") not in (None, ""):
+            mutable["gst_password"] = str(mutable["gst_password"]).strip()
+        return super().to_internal_value(mutable)
+
+
 class EntityPolicySerializer(serializers.Serializer):
     gstin_state_match_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
     require_subentity_mode = serializers.ChoiceField(choices=("hard", "soft", "off"), required=False)
@@ -395,6 +431,7 @@ class EntityOnboardingCreateSerializer(serializers.Serializer):
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
     constitution_details = OnboardingConstitutionSerializer(many=True, required=False)
     ownership_details = OnboardingOwnershipSerializer(many=True, required=False)
+    compliance_credentials = OnboardingComplianceCredentialSerializer(many=True, required=False)
     seed_options = OnboardingSeedOptionsSerializer(required=False)
 
     def validate_financial_years(self, value):
@@ -414,6 +451,7 @@ class EntityOnboardingUpdateSerializer(serializers.Serializer):
     subentities = OnboardingSubEntitySerializer(many=True, required=False)
     constitution_details = OnboardingConstitutionSerializer(many=True, required=False)
     ownership_details = OnboardingOwnershipSerializer(many=True, required=False)
+    compliance_credentials = OnboardingComplianceCredentialSerializer(many=True, required=False)
 
     def validate_financial_years(self, value):
         if value == []:
@@ -434,6 +472,7 @@ class EntityOnboardingDetailResponseSerializer(serializers.Serializer):
     subentities = serializers.ListField(child=serializers.DictField())
     constitution_details = OnboardingConstitutionSerializer(many=True)
     ownership_details = OnboardingOwnershipSerializer(many=True)
+    compliance_credentials = OnboardingComplianceCredentialSerializer(many=True, required=False)
 
 
 class OnboardingUserPayloadSerializer(serializers.Serializer):

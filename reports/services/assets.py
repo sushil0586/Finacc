@@ -135,6 +135,98 @@ def build_fixed_asset_register(
     }
 
 
+def build_asset_location_custodian_report(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    as_of_date=None,
+    category_id=None,
+    status=None,
+    search=None,
+    page=1,
+    page_size=100,
+):
+    as_of = _coerce_date(as_of_date)
+    qs = FixedAsset.objects.select_related("category", "subentity").filter(entity_id=entity_id)
+    if entityfin_id:
+        qs = qs.filter(entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        qs = qs.filter(subentity_id=subentity_id)
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+    if status:
+        qs = qs.filter(status=status)
+    if search:
+        qs = qs.filter(
+            Q(asset_code__icontains=search)
+            | Q(asset_name__icontains=search)
+            | Q(location_name__icontains=search)
+            | Q(custodian_name__icontains=search)
+            | Q(department_name__icontains=search)
+        )
+    if as_of:
+        qs = qs.filter(acquisition_date__lte=as_of).filter(Q(disposal_date__isnull=True) | Q(disposal_date__gte=as_of))
+
+    total_rows = qs.count()
+    total_values = qs.aggregate(
+        gross_block_total=Sum("gross_block"),
+        net_book_value_total=Sum("net_book_value"),
+    )
+    safe_page, safe_page_size, start, end = _page_window(page, page_size)
+    rows = []
+    distinct_locations = set()
+    distinct_custodians = set()
+    for asset in qs.order_by("location_name", "custodian_name", "asset_name", "id")[start:end]:
+        location_name = asset.location_name or None
+        custodian_name = asset.custodian_name or None
+        if location_name:
+            distinct_locations.add(location_name.strip())
+        if custodian_name:
+            distinct_custodians.add(custodian_name.strip())
+        rows.append(
+            {
+                "asset_id": asset.id,
+                "asset_code": asset.asset_code,
+                "asset_name": asset.asset_name,
+                "category_name": asset.category.name,
+                "status": asset.status,
+                "acquisition_date": asset.acquisition_date,
+                "put_to_use_date": asset.put_to_use_date,
+                "location_name": location_name,
+                "department_name": asset.department_name,
+                "custodian_name": custodian_name,
+                "subentity_name": getattr(asset.subentity, "subentityname", None),
+                "gross_block": f"{q2(asset.gross_block):.2f}",
+                "net_book_value": f"{q2(asset.net_book_value):.2f}",
+                "can_drilldown": True,
+                "drilldown_target": "fixed_asset",
+                "drilldown_params": {"id": asset.id},
+            }
+        )
+    if total_rows > len(rows):
+        distinct_values_qs = qs.values_list("location_name", "custodian_name")
+        distinct_locations = {location.strip() for location, _ in distinct_values_qs if location}
+        distinct_custodians = {custodian.strip() for _, custodian in distinct_values_qs if custodian}
+    return {
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "as_of_date": as_of,
+        "rows": rows,
+        "totals": {
+            "gross_block": f"{q2(total_values.get('gross_block_total')):.2f}",
+            "net_book_value": f"{q2(total_values.get('net_book_value_total')):.2f}",
+        },
+        "pagination": _build_pagination(safe_page, safe_page_size, total_rows),
+        "summary": {
+            "asset_count": total_rows,
+            "location_count": len(distinct_locations),
+            "custodian_count": len(distinct_custodians),
+        },
+    }
+
+
 def build_depreciation_schedule(
     *,
     entity_id,

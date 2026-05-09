@@ -243,11 +243,14 @@ class IRPPayloadBuilder:
             "TaxSch": "GST",
             "SupTyp": sup_typ,
             "RegRev": "Y" if bool(getattr(inv, "is_reverse_charge", False)) else "N",
-            # Keep key explicit to match NIC schema across providers.
-            "EcmGstin": ecm or None,
             # Default to "N" unless explicitly set true on invoice.
             "IgstOnIntra": "Y" if bool(igst_on_intra) else "N",
         }
+        # Only send E-Commerce Operator GSTIN when the invoice is actually tagged
+        # with one. Some IRP providers treat an empty/null key as an e-commerce
+        # invoice path and reject the payload with ECO GSTIN validation errors.
+        if ecm:
+            out["EcmGstin"] = ecm
         return out
 
     def _ref_dtls(self, inv) -> Optional[Dict[str, Any]]:

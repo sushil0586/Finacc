@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.core.exceptions import ValidationError
+from django.forms.models import BaseInlineFormSet
 from import_export.admin import ImportExportMixin
 
 from entity.models import (
@@ -40,9 +42,74 @@ class EntityContactInline(admin.TabularInline):
     extra = 0
 
 
+class EntityGstRegistrationInlineFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+
+        active_count = 0
+        primary_count = 0
+        active_primary_count = 0
+        active_gstins = []
+        for form in self.forms:
+            if not hasattr(form, "cleaned_data"):
+                continue
+            if form.cleaned_data.get("DELETE"):
+                continue
+            is_active = bool(form.cleaned_data.get("isactive"))
+            is_primary = bool(form.cleaned_data.get("is_primary"))
+            gstin = str(form.cleaned_data.get("gstin") or "").strip().upper()
+
+            if is_active:
+                active_count += 1
+                if gstin:
+                    active_gstins.append(gstin)
+            if is_primary:
+                primary_count += 1
+            if is_active and is_primary:
+                active_primary_count += 1
+
+        if active_count > 1:
+            raise ValidationError(
+                "Only one active GST registration is allowed per entity. "
+                "Uncheck Inactive on the old GST row before saving the new one."
+            )
+
+        if primary_count > 1:
+            raise ValidationError(
+                "Only one GST row should remain marked Primary. "
+                "If you are keeping a new GSTIN, uncheck Primary on the old row first."
+            )
+
+        if active_count == 1 and active_primary_count == 0:
+            kept = active_gstins[0] if active_gstins else "the active GST row"
+            raise ValidationError(
+                f"{kept} is the only active GST registration, so it must also be marked Primary. "
+                "Uncheck Primary on the old row and mark the kept active row as Primary."
+            )
+
+
 class EntityGstRegistrationInline(admin.TabularInline):
     model = EntityGstRegistration
+    formset = EntityGstRegistrationInlineFormSet
     extra = 0
+    verbose_name = "Entity GST registration"
+    verbose_name_plural = "Entity GST registration"
+    fields = (
+        "isactive",
+        "is_primary",
+        "gstin",
+        "registration_type",
+        "gst_status",
+        "state",
+        "nature_of_business",
+        "gst_effective_from",
+        "gst_cancelled_from",
+    )
+
+    def has_add_permission(self, request, obj=None):
+        if not obj:
+            return True
+        return not obj.gst_registrations.filter(isactive=True).exists()
 
 
 class EntityBankAccountV2Inline(admin.TabularInline):

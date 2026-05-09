@@ -13,6 +13,8 @@ class EntityContextSerializer(serializers.Serializer):
     entityid = serializers.IntegerField()
     entityname = serializers.CharField()
     gstno = serializers.CharField(allow_null=True, allow_blank=True)
+    seller_gstin = serializers.CharField(allow_null=True, allow_blank=True, required=False)
+    gst_selection_mode = serializers.CharField(allow_blank=True, required=False)
     email = serializers.EmailField()
     role = serializers.CharField(allow_blank=True)
     roleid = serializers.IntegerField(allow_null=True)

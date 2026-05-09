@@ -395,6 +395,8 @@ class SalesComplianceService:
 
         dt = parse_datetime(s.replace(" ", "T")) or parse_datetime(s)
         if dt:
+            if timezone.is_naive(dt):
+                return timezone.make_aware(dt)
             return dt
 
         for fmt in (
@@ -530,6 +532,15 @@ class SalesComplianceService:
 
         if missing:
             raise ValidationError(f"{provider_label.title()} credential incomplete: {', '.join(missing)}")
+
+        gst_row = entity.gst_registrations.filter(isactive=True, is_primary=True).only("gstin").first()
+        entity_gstin = str(getattr(gst_row, "gstin", "") or "").strip().upper()
+        credential_gstin = str(getattr(cred, "gstin", "") or "").strip().upper()
+        if entity_gstin and credential_gstin and entity_gstin != credential_gstin:
+            raise ValidationError(
+                f"{provider_label.title()} credential GSTIN ({credential_gstin}) does not match the entity primary GSTIN ({entity_gstin}). "
+                "Update the e-invoice credential or the entity GST registration before generating IRN/E-Way."
+            )
 
         return cred
 
@@ -1636,5 +1647,3 @@ class SalesComplianceService:
             "invoice_status": invoice.status,
             "eway": self._ewb_state(ewb),
         }
-
-

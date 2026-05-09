@@ -753,6 +753,9 @@ class SalesSettingsService:
         seller_state = (se_addr.state if se_addr and se_addr.state else (entity_addr.state if entity_addr else None))
         seller_state_id = seller_state.id if seller_state else None
         seller_statecode = seller_state.statecode if seller_state else None
+        seller_statename = seller_state.statename if seller_state else None
+        seller_city = (se_addr.city if se_addr and getattr(se_addr, "city", None) else (entity_addr.city if entity_addr else None))
+        seller_cityname = seller_city.cityname if seller_city else None
 
         return {
             "entity_id": entity.id,
@@ -763,6 +766,8 @@ class SalesSettingsService:
 
             "state_id": seller_state_id,
             "statecode": seller_statecode,  # ✅ ADDED
+            "statename": seller_statename,
+            "city_name": seller_cityname,
 
             # optional info for print/einvoice payloads
             "entityname": entity.entityname,

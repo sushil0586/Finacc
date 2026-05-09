@@ -24,6 +24,7 @@ from reports.services.inventory.meta import INVENTORY_REPORT_DEFAULTS, build_inv
 from reports.services.inventory.control import (
     build_inventory_non_moving_stock,
     build_inventory_reorder_status,
+    build_inventory_slow_moving_dead_stock,
 )
 from reports.services.inventory.location_stock import build_inventory_location_stock
 from reports.services.inventory.operational import (
@@ -1184,6 +1185,164 @@ class InventoryReorderStatusPrintAPIView(InventoryReorderStatusPDFAPIView):
     export_mode = "inline"
 
 
+class InventorySlowMovingDeadStockAPIView(_BaseInventoryReportAPIView):
+    export_base_path = "/api/reports/inventory/slow-moving-dead-stock/"
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "reports.inventory.slow_moving_dead_stock.view")
+        data = build_inventory_slow_moving_dead_stock(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            valuation_method=scope.get("valuation_method", INVENTORY_REPORT_DEFAULTS["default_valuation_method"]),
+            non_moving_days=scope.get("non_moving_days"),
+            dead_stock_days=scope.get("dead_stock_days"),
+            product_ids=scope.get("product_ids") or None,
+            category_ids=scope.get("category_ids") or None,
+            hsn_ids=scope.get("hsn_ids") or None,
+            location_ids=scope.get("location_ids") or None,
+            search=scope.get("search"),
+            include_zero=scope.get("include_zero", False),
+            include_negative=scope.get("include_negative", True),
+            sort_by=scope.get("sort_by") or "age_days",
+            sort_order=scope.get("sort_order", "desc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", INVENTORY_REPORT_DEFAULTS["default_page_size"]),
+        )
+        response = build_report_envelope(
+            report_code="inventory_slow_moving_dead_stock",
+            report_name="Slow Moving vs Dead Stock",
+            payload=data,
+            filters=self.build_filters(scope),
+            defaults=INVENTORY_REPORT_DEFAULTS,
+        )
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        return Response(_attach_control_drilldowns(payload, "inventory_slow_moving_dead_stock"))
+
+
+class _BaseInventorySlowMovingDeadStockExportAPIView(_BaseInventoryReportAPIView):
+    export_mode = "attachment"
+
+    def export_response(self, *, filename, content, content_type):
+        response = HttpResponse(content=content, content_type=content_type)
+        disposition = "inline" if self.export_mode == "inline" else "attachment"
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+        return response
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "reports.inventory.slow_moving_dead_stock.view")
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        data = build_inventory_slow_moving_dead_stock(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            valuation_method=scope.get("valuation_method", INVENTORY_REPORT_DEFAULTS["default_valuation_method"]),
+            non_moving_days=scope.get("non_moving_days"),
+            dead_stock_days=scope.get("dead_stock_days"),
+            product_ids=scope.get("product_ids") or None,
+            category_ids=scope.get("category_ids") or None,
+            hsn_ids=scope.get("hsn_ids") or None,
+            location_ids=scope.get("location_ids") or None,
+            search=scope.get("search"),
+            include_zero=scope.get("include_zero", False),
+            include_negative=scope.get("include_negative", True),
+            sort_by=scope.get("sort_by") or "age_days",
+            sort_order=scope.get("sort_order", "desc"),
+            page=1,
+            page_size=100000,
+            paginate=False,
+        )
+        headers = [
+            "Product",
+            "SKU",
+            "Category",
+            "Location",
+            "Closing Qty",
+            "Closing Value",
+            "Rate",
+            "Last Movement Date",
+            "Age Days",
+            "Slow Days",
+            "Dead Days",
+            "Class",
+            "Status",
+        ]
+        rows = [
+            [
+                row.get("product_name"),
+                row.get("sku"),
+                row.get("category_name"),
+                row.get("location_name"),
+                row.get("closing_qty"),
+                row.get("closing_value"),
+                row.get("rate"),
+                _format_scope_date(row.get("last_movement_date")),
+                row.get("age_days"),
+                row.get("non_moving_days"),
+                row.get("dead_stock_days"),
+                row.get("movement_class_label"),
+                row.get("stock_status"),
+            ]
+            for row in data["rows"]
+        ]
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"As of: {_format_scope_date(scope.get('as_of_date') or scope.get('to_date') or scope.get('as_on_date'))} | "
+            f"Slow Days: {scope.get('non_moving_days') or 90} | "
+            f"Dead Days: {scope.get('dead_stock_days') or 180} | "
+            f"Valuation: {scope.get('valuation_method') or INVENTORY_REPORT_DEFAULTS['default_valuation_method']}"
+        )
+        return headers, rows, subtitle
+
+
+class InventorySlowMovingDeadStockExcelAPIView(_BaseInventorySlowMovingDeadStockExportAPIView):
+    def get(self, request):
+        headers, rows, subtitle = self.report_data(request)
+        content = _write_excel("Slow Moving vs Dead Stock", subtitle, headers, rows, numeric_columns={4, 5, 6, 8, 9, 10})
+        return self.export_response(
+            filename=f"SlowMovingDeadStock_{_safe_filename(subtitle)}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class InventorySlowMovingDeadStockCSVAPIView(_BaseInventorySlowMovingDeadStockExportAPIView):
+    def get(self, request):
+        headers, rows, subtitle = self.report_data(request)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"SlowMovingDeadStock_{_safe_filename(subtitle)}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class InventorySlowMovingDeadStockPDFAPIView(_BaseInventorySlowMovingDeadStockExportAPIView):
+    def get(self, request):
+        headers, rows, subtitle = self.report_data(request)
+        col_widths = [140, 70, 110, 90, 60, 74, 60, 84, 56, 56, 56, 74, 64]
+        content = _write_pdf("Slow Moving vs Dead Stock", subtitle, headers, rows, col_widths=col_widths)
+        return self.export_response(
+            filename=f"SlowMovingDeadStock_{_safe_filename(subtitle)}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class InventorySlowMovingDeadStockPrintAPIView(InventorySlowMovingDeadStockPDFAPIView):
+    export_mode = "inline"
+
+
 def _inventory_operational_base_kwargs(scope, *, paginate: bool, page: int, page_size: int, group_by_location: bool, sort_by: str, sort_order: str):
     return {
         "entity_id": scope["entity"],
@@ -1393,6 +1552,10 @@ def _attach_inventory_drilldowns(payload, report_code: str):
 
 _CONTROL_DRILLDOWNS = {
     "inventory_non_moving_stock": [
+        {"code": "inventory_stock_summary", "label": "Stock Summary"},
+        {"code": "inventory_stock_ledger", "label": "Stock Ledger"},
+    ],
+    "inventory_slow_moving_dead_stock": [
         {"code": "inventory_stock_summary", "label": "Stock Summary"},
         {"code": "inventory_stock_ledger", "label": "Stock Ledger"},
     ],

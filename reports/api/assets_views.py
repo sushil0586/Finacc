@@ -15,13 +15,20 @@ from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
 from reports.schemas.assets_reports import (
+    AssetLocationCustodianScopeSerializer,
     AssetEventReportScopeSerializer,
     AssetHistoryScopeSerializer,
     DepreciationScheduleScopeSerializer,
     FixedAssetRegisterScopeSerializer,
 )
 from reports.schemas.common import build_report_envelope
-from reports.services.assets import build_asset_event_report, build_asset_history, build_depreciation_schedule, build_fixed_asset_register
+from reports.services.assets import (
+    build_asset_event_report,
+    build_asset_history,
+    build_asset_location_custodian_report,
+    build_depreciation_schedule,
+    build_fixed_asset_register,
+)
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 ASSET_REPORT_DEFAULTS = {
@@ -194,6 +201,33 @@ class DepreciationScheduleAPIView(_BaseAssetReportAPIView):
         return Response(self.build_envelope(report_code="depreciation_schedule", report_name="Depreciation Schedule", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/depreciation-schedule/"))
 
 
+class AssetLocationCustodianAPIView(_BaseAssetReportAPIView):
+
+    def get(self, request):
+        scope = self.get_scope(request, AssetLocationCustodianScopeSerializer)
+        payload = build_asset_location_custodian_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            as_of_date=scope.get("as_of_date"),
+            category_id=scope.get("category"),
+            status=scope.get("status"),
+            search=scope.get("search"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", 100),
+        )
+        return Response(
+            self.build_envelope(
+                report_code="asset_location_custodian",
+                report_name="Asset Location / Custodian Report",
+                payload=payload,
+                scope=scope,
+                request=request,
+                export_base_path="/api/reports/fixed-assets/location-custodian/",
+            )
+        )
+
+
 class AssetEventReportAPIView(_BaseAssetReportAPIView):
     def get(self, request):
         scope = self.get_scope(request, AssetEventReportScopeSerializer)
@@ -358,6 +392,107 @@ class DepreciationSchedulePDFAPIView(_DepreciationScheduleExportMixin):
 
 
 class DepreciationSchedulePrintAPIView(DepreciationSchedulePDFAPIView):
+    inline = True
+
+
+class _AssetLocationCustodianExportMixin(_BaseAssetExportAPIView):
+    def get_payload(self, request):
+        scope = self.get_scope(request, AssetLocationCustodianScopeSerializer)
+        payload = build_asset_location_custodian_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            as_of_date=scope.get("as_of_date"),
+            category_id=scope.get("category"),
+            status=scope.get("status"),
+            search=scope.get("search"),
+            page=1,
+            page_size=100000,
+        )
+        return scope, payload
+
+
+class AssetLocationCustodianExcelAPIView(_AssetLocationCustodianExportMixin):
+    filename_prefix = "asset-location-custodian"
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    extension = "xlsx"
+
+    def get(self, request):
+        scope, payload = self.get_payload(request)
+        headers = ["Asset Code", "Asset Name", "Category", "Status", "Acquisition", "Put to Use", "Location", "Department", "Custodian", "Subentity", "Gross Block", "NBV"]
+        rows = [
+            [
+                r["asset_code"],
+                r["asset_name"],
+                r["category_name"],
+                r["status"],
+                r["acquisition_date"],
+                r["put_to_use_date"],
+                r["location_name"],
+                r["department_name"],
+                r["custodian_name"],
+                r["subentity_name"],
+                r["gross_block"],
+                r["net_book_value"],
+            ]
+            for r in payload["rows"]
+        ]
+        subtitle = f"Entity {scope['entity']} | As Of {scope.get('as_of_date') or ''}"
+        return self.response(_write_excel("Asset Location / Custodian", subtitle, headers, rows, numeric_columns={11, 12}))
+
+
+class AssetLocationCustodianCSVAPIView(_AssetLocationCustodianExportMixin):
+    filename_prefix = "asset-location-custodian"
+    media_type = "text/csv"
+    extension = "csv"
+
+    def get(self, request):
+        _scope, payload = self.get_payload(request)
+        headers = ["Asset Code", "Asset Name", "Category", "Status", "Acquisition", "Put to Use", "Location", "Department", "Custodian", "Subentity", "Gross Block", "NBV"]
+        rows = [
+            [
+                r["asset_code"],
+                r["asset_name"],
+                r["category_name"],
+                r["status"],
+                r["acquisition_date"],
+                r["put_to_use_date"],
+                r["location_name"],
+                r["department_name"],
+                r["custodian_name"],
+                r["subentity_name"],
+                r["gross_block"],
+                r["net_book_value"],
+            ]
+            for r in payload["rows"]
+        ]
+        return self.response(_write_csv(headers, rows))
+
+
+class AssetLocationCustodianPDFAPIView(_AssetLocationCustodianExportMixin):
+    filename_prefix = "asset-location-custodian"
+    media_type = "application/pdf"
+    extension = "pdf"
+
+    def get(self, request):
+        scope, payload = self.get_payload(request)
+        headers = ["Asset", "Category", "Status", "Location", "Custodian", "NBV"]
+        rows = [
+            [
+                r["asset_code"],
+                r["category_name"],
+                r["status"],
+                r["location_name"],
+                r["custodian_name"],
+                r["net_book_value"],
+            ]
+            for r in payload["rows"]
+        ]
+        subtitle = f"Entity {scope['entity']} | As Of {scope.get('as_of_date') or ''}"
+        return self.response(_write_pdf("Asset Location / Custodian", subtitle, headers, rows))
+
+
+class AssetLocationCustodianPrintAPIView(AssetLocationCustodianPDFAPIView):
     inline = True
 
 

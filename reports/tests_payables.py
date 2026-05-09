@@ -67,6 +67,7 @@ class PayableReportAPITests(APITestCase):
             "reports.vendorledgerstatement.view",
             "reports.vendorsettlementhistory.view",
             "reports.vendornoteregister.view",
+            "reports.payables.upcoming_payments_calendar.view",
             "reports.apglreconciliation.view",
             "reports.payablesclosepack.view",
             "reports.vendorbalanceexceptions.view",
@@ -697,6 +698,30 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("vendor_outstanding", report_codes)
         self.assertIn("ap_aging", report_codes)
         self.assertIn("payables_dashboard_summary", report_codes)
+        self.assertIn("upcoming_payments_calendar", report_codes)
+
+    def test_upcoming_payments_calendar_returns_due_window_rows_and_exports(self):
+        response = self.client.get(
+            reverse("reports_api:upcoming-payments-calendar"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "upcoming_payments_calendar")
+        self.assertEqual(payload["summary"]["bill_count"], 1)
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertEqual(payload["rows"][0]["payment_status"], "Due in 30 Days")
+        self.assertEqual(payload["rows"][0]["balance"], "650.00")
+        self.assertEqual(payload["actions"]["export_urls"]["excel"].split("?")[0], "/api/reports/payables/upcoming-payments-calendar/excel/")
+
+        export_response = self.client.get(
+            reverse("reports_api:upcoming-payments-calendar-csv"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(export_response.status_code, 200)
+        self.assertTrue(export_response["Content-Type"].startswith("text/csv"))
+        header_line = export_response.content.decode("utf-8-sig").splitlines()[0]
+        self.assertIn("Vendor", header_line)
 
     def test_payables_meta_filters_reports_and_report_endpoints_enforce_permissions(self):
         limited_user = self._create_limited_report_user("reports.vendoroutstanding.view")
@@ -831,6 +856,9 @@ class PayableReportAPITests(APITestCase):
             ("reports_api:ap-aging-report-excel", ap_summary_scope, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", b"PK"),
             ("reports_api:ap-aging-report-pdf", ap_summary_scope, "application/pdf", b"%PDF"),
             ("reports_api:ap-aging-report-print", ap_invoice_scope, "application/pdf", b"%PDF"),
+            ("reports_api:upcoming-payments-calendar-excel", vendor_scope, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", b"PK"),
+            ("reports_api:upcoming-payments-calendar-pdf", vendor_scope, "application/pdf", b"%PDF"),
+            ("reports_api:upcoming-payments-calendar-print", vendor_scope, "application/pdf", b"%PDF"),
         ]
         for route_name, params, content_type, prefix in export_checks:
             with self.subTest(route_name=route_name):
@@ -1040,12 +1068,13 @@ class PayableReportAPITests(APITestCase):
         self.assertNotIn("reports.payables.payables_dashboard_summary", codes)
         self.assertNotIn("reports.payables.payables_close_validation", codes)
         self.assertNotIn("reports.payables.payables_close_readiness_summary", codes)
-        self.assertNotIn("reports.payables.purchase_register", codes)
+        self.assertIn("reports.payables.upcoming_payments_calendar", codes)
         payables_menu = find_node(tree, "reports.reports.payables")
         self.assertIsNotNone(payables_menu)
         self.assertEqual(payables_menu["route_path"], "/reports/payables")
         child_codes = {child["menu_code"] for child in payables_menu["children"]}
-        self.assertEqual(child_codes, {"reports.accountspayableaging"})
+        self.assertIn("reports.accountspayableaging", child_codes)
+        self.assertIn("reports.payables.upcoming_payments_calendar", child_codes)
 
     def test_new_payables_control_export_endpoints_return_expected_formats(self):
         self._post_vendor_gl_balance(Decimal("650.00"), posting_date=date(2025, 4, 30), txn_id=9003, voucher_no="GL-AP-3")
@@ -1600,7 +1629,7 @@ class PayableReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
         self.assertEqual(response.status_code, 200)
         definitions = {row["code"]: row for row in response.json()["report_definitions"]}
-        for code in ["vendor_outstanding", "ap_aging", "vendor_settlement_history", "vendor_note_register", "vendor_ledger_statement", "payables_close_pack"]:
+        for code in ["vendor_outstanding", "ap_aging", "vendor_settlement_history", "vendor_note_register", "vendor_ledger_statement", "payables_close_pack", "upcoming_payments_calendar"]:
             with self.subTest(code=code):
                 definition = definitions[code]
                 self.assertIn("supported_filters", definition)

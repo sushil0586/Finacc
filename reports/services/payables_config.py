@@ -154,6 +154,14 @@ PAYABLE_DRILLDOWN_TARGETS = OrderedDict(
             "path": "/api/reports/payables/close-pack/",
             "kind": "report",
         },
+        "upcoming_payments_calendar": {
+            "code": "upcoming_payments_calendar",
+            "label": "Upcoming Payments Calendar",
+            "target": "upcoming_payments_calendar",
+            "report_code": "upcoming_payments_calendar",
+            "path": "/api/reports/payables/upcoming-payments-calendar/",
+            "kind": "report",
+        },
         "purchase_ap_vendor_statement": {
             "code": "purchase_ap_vendor_statement",
             "label": "Vendor Statement",
@@ -650,6 +658,57 @@ PAYABLE_REPORTS.update(
             "related_reports": ["vendor_outstanding", "ap_aging_summary", "vendor_ledger_statement", "payables_close_pack"],
             "print_sections": ["rows", "totals", "posting_summary"],
         },
+        "upcoming_payments_calendar": {
+            "code": "upcoming_payments_calendar",
+            "name": "Upcoming Payments Calendar",
+            "path": "/api/reports/payables/upcoming-payments-calendar/",
+            "menu_code": "reports.payables.upcoming_payments_calendar",
+            "route_name": "reports-payables-upcoming-payments-calendar",
+            "required_permission": "reports.payables.upcoming_payments_calendar.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "due_date", "sort_order": "asc", "overdue_only": False},
+            "feature_flags": OrderedDict(
+                {
+                    "include_trace": {"label": "Traceability", "type": "boolean", "default": True},
+                    "overdue_only": {"label": "Overdue Only", "type": "boolean", "default": False},
+                }
+            ),
+            "columns": _ordered_columns(
+                {"key": "vendor_name", "label": "Vendor", "default": True},
+                {"key": "vendor_code", "label": "Vendor Code", "default": True},
+                {"key": "bill_number", "label": "Bill Number", "default": True},
+                {"key": "bill_date", "label": "Bill Date", "default": True},
+                {"key": "due_date", "label": "Due Date", "default": True},
+                {"key": "days_to_due", "label": "Days To Due", "default": True},
+                {"key": "payment_status", "label": "Payment Status", "default": True},
+                {"key": "balance", "label": "Outstanding Amount", "default": True},
+                {"key": "currency", "label": "Currency", "default": True},
+                {"key": "branch", "label": "Branch", "default": True},
+                {"key": "reference", "label": "Reference", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {
+                    "totals": {"code": "totals", "label": "Totals", "default": True},
+                    "window_summary": {"code": "window_summary", "label": "Window Summary", "default": True},
+                }
+            ),
+            "drilldown_targets": ["vendor_outstanding", "ap_aging", "vendor_ledger_statement", "purchase_document_detail", "payment_allocation"],
+            "export_columns": [
+                "vendor_name",
+                "vendor_code",
+                "bill_number",
+                "bill_date",
+                "due_date",
+                "days_to_due",
+                "payment_status",
+                "balance",
+                "currency",
+                "branch",
+                "reference",
+            ],
+            "related_reports": ["vendor_outstanding", "ap_aging_invoice", "vendor_ledger_statement", "purchase_register"],
+            "print_sections": ["rows", "totals", "window_summary"],
+        },
         "vendor_settlement_history": {
             "code": "vendor_settlement_history",
             "name": "Vendor Settlement History",
@@ -1115,6 +1174,7 @@ def _report_filter_codes(report_code, *, view=None):
         "payables_close_validation": ["entity", "entityfinid", "subentity", "as_of_date"],
         "payables_close_readiness_summary": ["entity", "entityfinid", "subentity", "as_of_date"],
         "purchase_register": ["entity", "entityfinid", "subentity", "from_date", "to_date", "vendor", "search", "page", "page_size"],
+        "upcoming_payments_calendar": ["entity", "entityfinid", "subentity", "from_date", "to_date", "as_of_date", "vendor", "vendor_group", "region", "currency", "search", "outstanding_gt", "overdue_only", "include_trace", "sort_by", "sort_order", "page", "page_size"],
         "vendor_ledger_statement": ["entity", "entityfinid", "subentity", "vendor", "from_date", "to_date", "include_opening", "include_running_balance", "include_settlement_drilldowns", "include_related_reports", "include_trace"],
         "payables_close_pack": ["entity", "entityfinid", "subentity", "as_of_date", "include_overview", "include_aging", "include_reconciliation", "include_validation", "include_exceptions", "include_top_vendors", "expanded_validation"],
         "vendor_settlement_history": ["entity", "entityfinid", "subentity", "vendor", "from_date", "to_date", "settlement_type", "include_unapplied", "include_trace", "sort_by", "sort_order", "page", "page_size"],
@@ -1233,6 +1293,3 @@ def resolve_close_pack_sections(section_codes=None):
 
 def get_close_pack_section_codes(section_codes=None):
     return [section["code"] for section in resolve_close_pack_sections(section_codes)]
-
-
-

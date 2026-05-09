@@ -21,6 +21,7 @@ from entity.models import (
     SubEntityCapability,
     SubEntityContact,
     SubEntityGstRegistration,
+    _relaxed_gstin_enabled,
 )
 from entity.policy import EntityPolicyService
 
@@ -67,7 +68,7 @@ class EntityOnboardingService:
             "ownername", "contact_person_name", "contact_person_designation",
             "phoneoffice", "phoneresidence", "mobile_primary", "mobile_secondary",
             "email", "email_primary", "email_secondary", "support_email", "accounts_email",
-            "gstno", "gstintype", "gst_effective_from", "gst_cancelled_from", "gst_username", "nature_of_business",
+            "gstno", "gstintype", "gst_effective_from", "gst_cancelled_from", "nature_of_business",
             "GstRegitrationType",
             "panno", "tds", "tan_no", "tdscircle", "cin_no", "llpin_no", "udyam_no", "iec_code",
             "incorporation_date", "business_commencement_date",
@@ -194,14 +195,12 @@ class EntityOnboardingService:
 
         gstno = (profile.get("gstno") or "").strip().upper()
         if gstno:
-            # Keep only one active primary GST registration per entity.
-            # If GSTIN changed during onboarding update, demote old primary first
-            # to avoid hitting uq_entity_gst_registration_primary.
+            # Current operating model keeps one active GST registration per entity.
+            # When onboarding changes the GSTIN, retire any previous active row first.
             EntityGstRegistration.objects.filter(
                 entity=entity,
                 isactive=True,
-                is_primary=True,
-            ).exclude(gstin=gstno).update(is_primary=False)
+            ).exclude(gstin=gstno).update(is_primary=False, isactive=False)
 
             EntityGstRegistration.objects.update_or_create(
                 entity=entity,
@@ -213,7 +212,6 @@ class EntityOnboardingService:
                     "nature_of_business": profile.get("nature_of_business"),
                     "gst_effective_from": profile.get("gst_effective_from"),
                     "gst_cancelled_from": profile.get("gst_cancelled_from"),
-                    "credential_ref": profile.get("gst_username"),
                     "is_primary": True,
                     "createdby": actor,
                     "isactive": True,
@@ -297,6 +295,84 @@ class EntityOnboardingService:
                 "isactive": True,
             },
         )
+
+    @staticmethod
+    def _entity_primary_gstin(entity) -> str | None:
+        gst_row = entity.gst_registrations.filter(isactive=True, is_primary=True).only("gstin").first()
+        gstin = str(getattr(gst_row, "gstin", "") or "").strip().upper()
+        return gstin or None
+
+    @classmethod
+    def _sync_compliance_credentials(cls, *, entity, rows=None):
+        from sales.models.mastergst_models import SalesMasterGSTCredential, MasterGSTServiceScope
+
+        entity_gstin = cls._entity_primary_gstin(entity)
+        existing = {
+            (int(obj.environment), int(obj.service_scope)): obj
+            for obj in SalesMasterGSTCredential.objects.filter(entity=entity)
+        }
+
+        if rows is None:
+            if entity_gstin:
+                for obj in existing.values():
+                    if obj.gstin != entity_gstin:
+                        obj.gstin = entity_gstin
+                        obj.save(update_fields=["gstin", "updated_at"])
+            return
+
+        if rows and not entity_gstin:
+            raise ValidationError({"compliance_credentials": "Primary entity GSTIN is required before saving compliance credentials."})
+
+        keep_keys = set()
+        for row in rows:
+            data = dict(row)
+            env = int(data.get("environment") or 0)
+            scope = int(data.get("service_scope") or int(MasterGSTServiceScope.EINVOICE))
+            key = (env, scope)
+            keep_keys.add(key)
+            obj = existing.get(key)
+            secret_in = data.get("client_secret")
+            password_in = data.get("gst_password")
+            defaults = {
+                "gstin": entity_gstin or "",
+                "client_id": data.get("client_id") or "",
+                "email": data.get("email") or "",
+                "gst_username": data.get("gst_username") or "",
+                "allow_all_ips": bool(data.get("allow_all_ips", True)),
+                "ip_address": data.get("ip_address"),
+                "is_active": bool(data.get("is_active", True)),
+            }
+            if obj:
+                for field, value in defaults.items():
+                    setattr(obj, field, value)
+                if secret_in not in (None, ""):
+                    obj.client_secret = secret_in
+                if password_in not in (None, ""):
+                    obj.gst_password = password_in
+                obj.save()
+                continue
+
+            if secret_in in (None, "") or password_in in (None, ""):
+                raise ValidationError(
+                    {
+                        "compliance_credentials": (
+                            f"client_secret and gst_password are required for new credential "
+                            f"(environment={env}, service_scope={scope})."
+                        )
+                    }
+                )
+            SalesMasterGSTCredential.objects.create(
+                entity=entity,
+                environment=env,
+                service_scope=scope,
+                client_secret=secret_in,
+                gst_password=password_in,
+                **defaults,
+            )
+
+        for key, obj in existing.items():
+            if key not in keep_keys:
+                obj.delete()
 
     @staticmethod
     def _normalize_bank_row(row):
@@ -431,6 +507,14 @@ class EntityOnboardingService:
         warnings = []
 
         active_gst_rows = list(entity.gst_registrations.filter(isactive=True).select_related("state"))
+        if len(active_gst_rows) > 1:
+            EntityPolicyService.enforce(
+                mode=EntityPolicy.ValidationMode.HARD,
+                field="entity.gst",
+                code="entity.single_active_gstin_required",
+                message="Only one active GST registration is allowed per entity.",
+                warnings=warnings,
+            )
         primary_rows = [row for row in active_gst_rows if row.is_primary]
         if active_gst_rows and not primary_rows:
             EntityPolicyService.enforce(
@@ -441,18 +525,19 @@ class EntityOnboardingService:
                 warnings=warnings,
             )
 
-        for row in active_gst_rows:
-            if row.gstin and row.state_id:
-                gst_state_code = str(row.gstin[:2]).strip()
-                state_code = str(getattr(row.state, "statecode", "") or "").strip().zfill(2)
-                if state_code and gst_state_code != state_code:
-                    EntityPolicyService.enforce(
-                        mode=policy.gstin_state_match_mode,
-                        field="entity.gst.state",
-                        code="entity.gstin_state_mismatch",
-                        message=f"GSTIN {row.gstin} must match state code {state_code}.",
-                        warnings=warnings,
-                    )
+        if not _relaxed_gstin_enabled():
+            for row in active_gst_rows:
+                if row.gstin and row.state_id:
+                    gst_state_code = str(row.gstin[:2]).strip()
+                    state_code = str(getattr(row.state, "statecode", "") or "").strip().zfill(2)
+                    if state_code and gst_state_code != state_code:
+                        EntityPolicyService.enforce(
+                            mode=policy.gstin_state_match_mode,
+                            field="entity.gst.state",
+                            code="entity.gstin_state_mismatch",
+                            message=f"GSTIN {row.gstin} must match state code {state_code}.",
+                            warnings=warnings,
+                        )
         return warnings
 
     @classmethod
@@ -462,15 +547,8 @@ class EntityOnboardingService:
 
         for subentity in entity.subentity.filter(isactive=True).prefetch_related("gst_registrations__state"):
             active_gst_rows = [row for row in subentity.gst_registrations.all() if row.isactive]
-            primary_rows = [row for row in active_gst_rows if row.is_primary]
-            if active_gst_rows and not primary_rows:
-                EntityPolicyService.enforce(
-                    mode=policy.subentity_gstin_state_match_mode,
-                    field="subentity.gst",
-                    code="subentity.primary_gstin_required",
-                    message=f"At least one active primary GST registration is required for subentity '{subentity.subentityname}'.",
-                    warnings=warnings,
-                )
+            if _relaxed_gstin_enabled():
+                continue
             for row in active_gst_rows:
                 if row.gstin and row.state_id:
                     gst_state_code = str(row.gstin[:2]).strip()
@@ -506,6 +584,7 @@ class EntityOnboardingService:
         ownership_rows = cls._normalize_ownership_rows(
             ownership_rows=payload.get("ownership_details", []) or payload.get("constitution_details", [])
         )
+        compliance_credential_rows = [dict(row) for row in payload.get("compliance_credentials", [])]
         if not constitution_rows and ownership_rows:
             constitution_rows = [
                 cls._normalize_constitution_row(cls._ownership_to_constitution_row(row))
@@ -610,6 +689,8 @@ class EntityOnboardingService:
             )
             ownership_ids.append(ownership.id)
 
+        cls._sync_compliance_credentials(entity=entity, rows=compliance_credential_rows or [])
+
         financial_summary = {}
         if seed_options.get("seed_financial", True):
             financial_summary = FinancialSeedService.seed_entity(
@@ -653,6 +734,7 @@ class EntityOnboardingService:
             "subentity_ids": subentity_ids,
             "constitution_ids": constitution_ids,
             "ownership_ids": ownership_ids,
+            "compliance_credential_ids": [row["id"] for row in cls.build_entity_payload(entity=entity).get("compliance_credentials", []) if row.get("id")],
             "posting_static_accounts": posting_static_accounts_summary,
             "financial": financial_summary,
             "rbac": rbac_summary,
@@ -684,6 +766,7 @@ class EntityOnboardingService:
         gst_row = entity.gst_registrations.filter(isactive=True, is_primary=True).first()
         tax_profile = getattr(entity, "tax_profile", None)
         compliance = getattr(entity, "compliance_profile", None)
+        from sales.models.mastergst_models import SalesMasterGSTCredential
 
         entity_payload = {
             "id": entity.id,
@@ -739,7 +822,6 @@ class EntityOnboardingService:
             "gstintype": entity.gst_registration_status,
             "gst_effective_from": getattr(gst_row, "gst_effective_from", None),
             "gst_cancelled_from": getattr(gst_row, "gst_cancelled_from", None),
-            "gst_username": getattr(gst_row, "credential_ref", None),
             "nature_of_business": getattr(gst_row, "nature_of_business", None),
             "incorporation_date": getattr(tax_profile, "incorporation_date", None),
             "business_commencement_date": getattr(tax_profile, "business_commencement_date", None),
@@ -794,6 +876,27 @@ class EntityOnboardingService:
                 }
             )
 
+        compliance_credentials = []
+        for cred in SalesMasterGSTCredential.objects.filter(entity=entity).order_by("environment", "service_scope", "id"):
+            compliance_credentials.append(
+                {
+                    "id": cred.id,
+                    "environment": int(cred.environment),
+                    "service_scope": int(cred.service_scope),
+                    "client_id": cred.client_id,
+                    "client_secret": "",
+                    "email": cred.email,
+                    "gst_username": cred.gst_username,
+                    "gst_password": "",
+                    "allow_all_ips": cred.allow_all_ips,
+                    "ip_address": cred.ip_address,
+                    "is_active": cred.is_active,
+                    "gstin": cred.gstin,
+                    "has_client_secret": bool(cred.get_client_secret()),
+                    "has_gst_password": bool(cred.get_gst_password()),
+                }
+            )
+
         return {
             "entity_id": entity.id,
             "entity": entity_payload,
@@ -804,6 +907,7 @@ class EntityOnboardingService:
             "subentities": subentity_rows,
             "constitution_details": entity.constitutions_v2.all().order_by("id"),
             "ownership_details": entity.ownerships_v2.all().order_by("id"),
+            "compliance_credentials": compliance_credentials,
         }
 
     @classmethod
@@ -920,6 +1024,7 @@ class EntityOnboardingService:
 
         constitution_payload = payload.get("constitution_details")
         ownership_payload = payload.get("ownership_details")
+        compliance_credential_payload = payload.get("compliance_credentials")
         if (constitution_payload is None or not constitution_payload) and ownership_payload:
             constitution_payload = [
                 cls._normalize_constitution_row(cls._ownership_to_constitution_row(item))
@@ -952,6 +1057,11 @@ class EntityOnboardingService:
                 )
             ),
             actor=actor,
+        )
+
+        cls._sync_compliance_credentials(
+            entity=entity,
+            rows=([dict(row) for row in compliance_credential_payload] if compliance_credential_payload is not None else None),
         )
 
         entity.refresh_from_db()
@@ -995,5 +1105,3 @@ class EntityOnboardingService:
             },
             "subscription": SubscriptionService.build_subscription_snapshot(entity=onboarding_result["entity"]),
         }
-
-

@@ -110,6 +110,9 @@ class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSeri
             "disposal_proceeds",
             "disposal_gain_loss",
         )
+        extra_kwargs = {
+            "asset_code": {"required": False, "allow_blank": True},
+        }
 
     def to_internal_value(self, data):
         system_managed_errors = {}

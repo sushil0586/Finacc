@@ -50,6 +50,7 @@ class InventoryReportScopeSerializer(serializers.Serializer):
     group_by_location = serializers.BooleanField(required=False)
     bucket_ends = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     non_moving_days = serializers.IntegerField(required=False, min_value=1, allow_null=True)
+    dead_stock_days = serializers.IntegerField(required=False, min_value=1, allow_null=True)
 
     valuation_method = serializers.ChoiceField(
         choices=('fifo', 'lifo', 'mwa', 'wac', 'latest'),
@@ -110,6 +111,8 @@ class InventoryReportScopeSerializer(serializers.Serializer):
             attrs['bucket_ends'] = [30, 60, 90, 120, 150]
         if 'non_moving_days' not in attrs or attrs.get('non_moving_days') in (None, ''):
             attrs['non_moving_days'] = 90
+        if 'dead_stock_days' not in attrs or attrs.get('dead_stock_days') in (None, ''):
+            attrs['dead_stock_days'] = 180
 
         attrs['product_ids'] = _parse_int_list(attrs.get('product_ids'))
         attrs['category_ids'] = _parse_int_list(attrs.get('category_ids'))

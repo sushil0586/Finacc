@@ -11,7 +11,12 @@ from rest_framework.views import APIView
 from reports.api.receivables_views import _write_csv, _write_excel, _write_pdf
 from reports.schemas.common import build_report_envelope
 from reports.schemas.payables_reports import PayableAgingScopeSerializer, PayableReportScopeSerializer
-from reports.services.payables import build_ap_aging_report, build_payables_dashboard_summary, build_vendor_outstanding_report
+from reports.services.payables import (
+    build_ap_aging_report,
+    build_payables_dashboard_summary,
+    build_upcoming_payments_calendar_report,
+    build_vendor_outstanding_report,
+)
 from reports.services.payables_config import PAYABLE_REPORT_DEFAULTS, get_payables_report_config, resolve_report_columns
 from reports.services.payables_meta import build_payables_report_meta
 from reports.services.report_preferences import list_user_report_preferences
@@ -310,6 +315,45 @@ class PayablesDashboardSummaryAPIView(_BasePayableAPIView):
         return Response(response)
 
 
+class UpcomingPaymentsCalendarAPIView(_BasePayableAPIView):
+    serializer_class = PayableReportScopeSerializer
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "upcoming_payments_calendar")
+        payload = build_upcoming_payments_calendar_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            vendor_id=scope.get("vendor"),
+            vendor_ids=scope.get("vendor_ids"),
+            vendor_group=scope.get("vendor_group"),
+            region_id=scope.get("region"),
+            currency=scope.get("currency"),
+            outstanding_gt=scope.get("outstanding_gt"),
+            overdue_only=scope.get("overdue_only", False),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "asc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
+            include_trace=scope.get("include_trace", True),
+        )
+        return Response(
+            self.build_envelope(
+                report_code="upcoming_payments_calendar",
+                report_name="Upcoming Payments Calendar",
+                payload=payload,
+                scope=scope,
+                request=request,
+                export_base_path="/api/reports/payables/upcoming-payments-calendar/",
+            )
+        )
+
+
 class _BasePayableExportAPIView(_BasePayableAPIView):
     file_type = None
     export_mode = "attachment"
@@ -533,4 +577,101 @@ class ApAgingPDFAPIView(_ApAgingExportMixin):
 
 
 class ApAgingPrintAPIView(ApAgingPDFAPIView):
+    export_mode = "inline"
+
+
+class _UpcomingPaymentsCalendarExportMixin(_BasePayableExportAPIView):
+    serializer_class = PayableReportScopeSerializer
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "upcoming_payments_calendar")
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        data = build_upcoming_payments_calendar_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            vendor_id=scope.get("vendor"),
+            vendor_ids=scope.get("vendor_ids"),
+            vendor_group=scope.get("vendor_group"),
+            region_id=scope.get("region"),
+            currency=scope.get("currency"),
+            outstanding_gt=scope.get("outstanding_gt"),
+            overdue_only=scope.get("overdue_only", False),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "asc"),
+            page=1,
+            page_size=100000,
+            include_trace=scope.get("include_trace", True),
+        )
+        headers = _export_headers("upcoming_payments_calendar")
+        rows = [
+            [
+                row["vendor_name"],
+                row["vendor_code"],
+                row["bill_number"],
+                row["bill_date"],
+                row["due_date"],
+                row["days_to_due"],
+                row["payment_status"],
+                row["balance"],
+                row["currency"],
+                row["branch"],
+                row["reference"],
+            ]
+            for row in data["rows"]
+        ]
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"Window: {data.get('from_date') or scope.get('from_date') or scope.get('as_of_date') or ''} to "
+            f"{data.get('to_date') or scope.get('to_date') or ''}"
+        )
+        return scope, headers, rows, subtitle
+
+
+class UpcomingPaymentsCalendarExcelAPIView(_UpcomingPaymentsCalendarExportMixin):
+    def get(self, request):
+        scope, headers, rows, subtitle = self.report_data(request)
+        content = _write_excel(
+            "Upcoming Payments Calendar",
+            subtitle,
+            headers,
+            rows,
+            numeric_columns={5, 7},
+        )
+        return self.export_response(
+            filename=f"UpcomingPaymentsCalendar_{scope.get('to_date') or scope.get('as_of_date') or 'report'}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class UpcomingPaymentsCalendarCSVAPIView(_UpcomingPaymentsCalendarExportMixin):
+    def get(self, request):
+        scope, headers, rows, _subtitle = self.report_data(request)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"UpcomingPaymentsCalendar_{scope.get('to_date') or scope.get('as_of_date') or 'report'}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class UpcomingPaymentsCalendarPDFAPIView(_UpcomingPaymentsCalendarExportMixin):
+    def get(self, request):
+        scope, headers, rows, subtitle = self.report_data(request)
+        content = _write_pdf("Upcoming Payments Calendar", subtitle, headers, rows)
+        return self.export_response(
+            filename=f"UpcomingPaymentsCalendar_{scope.get('to_date') or scope.get('as_of_date') or 'report'}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class UpcomingPaymentsCalendarPrintAPIView(UpcomingPaymentsCalendarPDFAPIView):
     export_mode = "inline"

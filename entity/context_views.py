@@ -23,6 +23,10 @@ def _primary_gst(entity):
     return row.gstin if row else None
 
 
+def _gst_selection_mode():
+    return "entity_primary"
+
+
 def _default_financial_year_id(entity):
     active = entity.fy.filter(isactive=True).order_by("finstartyear", "id").first()
     if active:
@@ -142,6 +146,8 @@ class UserEntitiesV2View(APIView):
                     "entityid": entity.id,
                     "entityname": entity.entityname,
                     "gstno": _primary_gst(entity),
+                    "seller_gstin": _primary_gst(entity),
+                    "gst_selection_mode": _gst_selection_mode(),
                     "email": user.email,
                     "role": "Development Full Access",
                     "roleid": 0,
@@ -187,6 +193,8 @@ class UserEntitiesV2View(APIView):
                 "entityid": assignment.entity_id,
                 "entityname": assignment.entity.entityname,
                 "gstno": _primary_gst(assignment.entity),
+                "seller_gstin": _primary_gst(assignment.entity),
+                "gst_selection_mode": _gst_selection_mode(),
                 "email": user.email,
                 "role": primary_role["name"] if primary_role else assignment.role.name,
                 "roleid": primary_role["id"] if primary_role else assignment.role_id,
@@ -220,6 +228,8 @@ class UserEntitiesV2View(APIView):
                 "entityid": entity.id,
                 "entityname": entity.entityname,
                 "gstno": _primary_gst(entity),
+                "seller_gstin": _primary_gst(entity),
+                "gst_selection_mode": _gst_selection_mode(),
                 "email": user.email,
                 "role": primary_role["name"] if primary_role else "Owner",
                 "roleid": primary_role["id"] if primary_role else 0,

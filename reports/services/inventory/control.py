@@ -354,3 +354,138 @@ def build_inventory_reorder_status(
             "end_date": end_date.isoformat() if hasattr(end_date, "isoformat") else str(end_date),
         },
     }
+
+
+def build_inventory_slow_moving_dead_stock(
+    *,
+    entity_id: int,
+    entityfin_id: int | None = None,
+    subentity_id: int | None = None,
+    from_date=None,
+    to_date=None,
+    as_of_date=None,
+    valuation_method: str = "fifo",
+    non_moving_days: int | None = None,
+    dead_stock_days: int | None = None,
+    product_ids: list[int] | None = None,
+    category_ids: list[int] | None = None,
+    hsn_ids: list[int] | None = None,
+    location_ids: list[int] | None = None,
+    search: str | None = None,
+    include_zero: bool = False,
+    include_negative: bool = True,
+    sort_by: str = "age_days",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 100,
+    paginate: bool = True,
+):
+    slow_days = _parse_non_moving_days(non_moving_days)
+    dead_days = _parse_non_moving_days(dead_stock_days)
+    if dead_days <= slow_days:
+        dead_days = slow_days + 30
+    end_date = _resolve_end_date(from_date=from_date, to_date=to_date, as_of_date=as_of_date)
+    scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
+    base = _base_summary_rows(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        from_date=from_date,
+        to_date=to_date,
+        as_of_date=as_of_date,
+        valuation_method=valuation_method,
+        product_ids=product_ids,
+        category_ids=category_ids,
+        hsn_ids=hsn_ids,
+        location_ids=location_ids,
+        search=search,
+    )
+
+    rows = []
+    total_qty = ZERO
+    total_value = ZERO
+    slow_moving_qty = ZERO
+    dead_stock_qty = ZERO
+    slow_moving_count = 0
+    dead_stock_count = 0
+    oldest_age_days = 0
+
+    for row in base["rows"]:
+        payload = _base_row_payload(row, end_date=end_date, report_variant="slow_dead_stock")
+        closing_qty = Decimal(str(payload["closing_qty"] or "0"))
+        closing_value = Decimal(str(payload["closing_value"] or "0"))
+        age_days = payload["age_days"]
+        if age_days is None:
+            age_days = dead_days
+            payload["age_days"] = age_days
+            payload["age_days_sort"] = age_days
+        if age_days < slow_days:
+            continue
+        if not include_negative and closing_qty < 0:
+            continue
+        if not include_zero and closing_qty == 0:
+            continue
+
+        movement_class = "dead_stock" if age_days >= dead_days else "slow_moving"
+        payload["non_moving_days"] = slow_days
+        payload["dead_stock_days"] = dead_days
+        payload["movement_class"] = movement_class
+        payload["movement_class_label"] = "Dead Stock" if movement_class == "dead_stock" else "Slow Moving"
+        rows.append(payload)
+        total_qty += closing_qty
+        total_value += closing_value
+        oldest_age_days = max(oldest_age_days, age_days)
+        if movement_class == "dead_stock":
+            dead_stock_count += 1
+            dead_stock_qty += closing_qty
+        else:
+            slow_moving_count += 1
+            slow_moving_qty += closing_qty
+
+    rows = _sort_rows(rows, sort_by=(sort_by or "age_days").lower(), sort_order=sort_order)
+    count = len(rows)
+    if paginate:
+        page = max(1, page)
+        page_size = max(1, page_size)
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+        pages = ceil(count / page_size) if count else 0
+    else:
+        page_rows = rows
+        pages = 1 if count else 0
+        page = 1
+        page_size = count or page_size
+
+    summary = {
+        "product_count": count,
+        "total_qty": str(_q4(total_qty)),
+        "total_value": str(total_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "slow_moving_count": slow_moving_count,
+        "slow_moving_qty": str(_q4(slow_moving_qty)),
+        "dead_stock_count": dead_stock_count,
+        "dead_stock_qty": str(_q4(dead_stock_qty)),
+        "slow_moving_days": slow_days,
+        "dead_stock_days": dead_days,
+        "oldest_age_days": oldest_age_days,
+    }
+    totals = {
+        "closing_qty": summary["total_qty"],
+        "closing_value": summary["total_value"],
+        "slow_moving_qty": summary["slow_moving_qty"],
+        "dead_stock_qty": summary["dead_stock_qty"],
+    }
+    return {
+        "summary": summary,
+        "totals": totals,
+        "rows": page_rows,
+        "pagination": {"count": count, "page": page, "pages": pages, "page_size": page_size},
+        "entity_name": scope_names["entity_name"],
+        "entityfin_name": scope_names["entityfin_name"],
+        "subentity_name": scope_names["subentity_name"],
+        "_meta": {
+            "report_kind": "inventory_slow_moving_dead_stock",
+            "available_exports": [],
+            "available_drilldowns": [],
+            "end_date": end_date.isoformat() if hasattr(end_date, "isoformat") else str(end_date),
+        },
+    }

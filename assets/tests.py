@@ -116,6 +116,9 @@ class AssetApiScopeTests(APITestCase):
             gross_block="5000.00",
             residual_value="0.00",
             net_book_value="5000.00",
+            location_name="Head Office",
+            department_name="Admin",
+            custodian_name="A. Kumar",
             created_by=self.owner,
             updated_by=self.owner,
         )
@@ -181,6 +184,28 @@ class AssetApiScopeTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_report_location_custodian_blocks_foreign_entity_scope(self):
+        response = self.client.get(
+            reverse("reports:asset-location-custodian"),
+            {"entity": self.foreign_entity.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_report_location_custodian_returns_asset_assignment_fields(self):
+        response = self.client.get(
+            reverse("reports:asset-location-custodian"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["report_name"], "Asset Location / Custodian Report")
+        self.assertEqual(response.data["summary"]["asset_count"], 1)
+        self.assertEqual(response.data["summary"]["location_count"], 1)
+        self.assertEqual(response.data["summary"]["custodian_count"], 1)
+        self.assertEqual(response.data["rows"][0]["location_name"], "Head Office")
+        self.assertEqual(response.data["rows"][0]["custodian_name"], "A. Kumar")
 
     def test_create_rejects_foreign_entity_ledger(self):
         payload = {

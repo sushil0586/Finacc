@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.exceptions import ValidationError
 
 from Authentication.models import User
-from entity.models import Constitution, Entity, EntityPolicy, GstRegistrationType
+from entity.models import Constitution, Entity, EntityGstRegistration, EntityPolicy, GstRegistrationType, SubEntityGstRegistration
 from entity.onboarding_services import EntityOnboardingService
 from geography.models import City, Country, District, State
 
@@ -219,6 +219,71 @@ class EntityPolicyTests(TestCase):
                 warning["code"] == "subentity.gstin_state_mismatch"
                 for warning in result["validation_warnings"]
             )
+        )
+
+    def test_entity_allows_only_one_active_gst_registration(self):
+        result = EntityOnboardingService.create_entity(actor=self.user, payload=self._payload())
+        entity = result["entity"]
+        other_state = State.objects.create(statename="Karnataka", statecode="29", country=self.country)
+
+        with self.assertRaises(DjangoValidationError) as exc:
+            EntityGstRegistration.objects.create(
+                entity=entity,
+                gstin="29AAGCB1286Q1Z3",
+                registration_type=self.gst_type,
+                gst_status=Entity.GstStatus.REGISTERED,
+                state=other_state,
+                is_primary=False,
+            )
+
+        self.assertIn("Only one active GST registration is allowed per entity.", str(exc.exception))
+
+    def test_update_entity_replaces_old_active_gst_registration(self):
+        result = EntityOnboardingService.create_entity(actor=self.user, payload=self._payload())
+        entity = result["entity"]
+        other_state = State.objects.create(statename="Karnataka", statecode="29", country=self.country)
+
+        EntityOnboardingService.update_entity(
+            actor=self.user,
+            entity=entity,
+            payload={
+                "entity": {
+                    "gstno": "29AAGCB1286Q1Z3",
+                    "state": other_state,
+                    "GstRegitrationType": self.gst_type,
+                }
+            },
+        )
+
+        active_rows = list(entity.gst_registrations.filter(isactive=True))
+        self.assertEqual(len(active_rows), 1)
+        self.assertEqual(active_rows[0].gstin, "29AAGCB1286Q1Z3")
+        self.assertTrue(active_rows[0].is_primary)
+        self.assertTrue(
+            entity.gst_registrations.filter(gstin="03APXPB5894F1Z3", isactive=False).exists()
+        )
+
+    def test_update_entity_allows_subentity_gst_without_primary_flag(self):
+        result = EntityOnboardingService.create_entity(actor=self.user, payload=self._payload())
+        entity = result["entity"]
+        subentity = entity.subentity.get()
+        sub_gst = subentity.gst_registrations.get(isactive=True)
+        sub_gst.is_primary = False
+        sub_gst.save(update_fields=["is_primary"])
+
+        detail = EntityOnboardingService.update_entity(
+            actor=self.user,
+            entity=entity,
+            payload={
+                "entity": {
+                    "entityname": "Policy Entity Updated",
+                }
+            },
+        )
+
+        self.assertEqual(detail["entity"]["entityname"], "Policy Entity Updated")
+        self.assertTrue(
+            SubEntityGstRegistration.objects.filter(subentity=subentity, gstin="03APXPB5894F1Z3", isactive=True).exists()
         )
 
     def test_off_policy_suppresses_subentity_gstin_state_warning(self):

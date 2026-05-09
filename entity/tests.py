@@ -1,17 +1,19 @@
 from django.core import mail
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from Authentication.models import User
-from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity
+from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity, gstin_validator
 from entity.models import EntityBankAccountV2 as BankAccount
-from entity.onboarding_serializers import EntityOnboardingCreateSerializer
+from entity.onboarding_serializers import EntityOnboardingCreateSerializer, EntityOnboardingUpdateSerializer
 from entity.onboarding_services import EntityOnboardingService
 from entity.seeding import EntitySeedService
 from financial.models import FinancialSettings, Ledger, account, accountHead
 from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
+from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope, SalesMasterGSTCredential
 from subscriptions.models import CustomerAccount, CustomerSubscription, UserEntityAccess
 
 
@@ -73,6 +75,55 @@ class EntityContextV2Tests(TestCase):
         self.assertEqual(response.data[0]["roles"][0]["name"], "Sales User")
 
 
+class EntityGstinValidationTests(TestCase):
+    def test_strict_gstin_validator_rejects_sandbox_suffix_in_normal_mode(self):
+        with self.assertRaises(ValidationError):
+            gstin_validator("29AAGCB1286Q000")
+
+    @override_settings(SALES_MASTERGST_ENV="SANDBOX")
+    def test_sandbox_gstin_validator_allows_provider_pseudo_gstin(self):
+        gstin_validator("29AAGCB1286Q000")
+
+    @override_settings(SALES_MASTERGST_ENV="SANDBOX")
+    def test_sandbox_onboarding_subentity_serializer_allows_gstin_state_mismatch(self):
+        country = Country.objects.create(countryname="India", countrycode="IN")
+        punjab = State.objects.create(statename="Punjab", statecode="03", country=country)
+        district = District.objects.create(districtname="Fatehgarh", districtcode="FGS", state=punjab)
+        city = City.objects.create(cityname="Sirhind", citycode="SRH", pincode="140406", distt=district)
+        gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+
+        serializer = EntityOnboardingCreateSerializer(
+            data={
+                "entity": {
+                    "entityname": "Sandbox Entity",
+                    "legalname": "Sandbox Entity",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "address": "GT Road",
+                    "country": country.id,
+                    "state": punjab.id,
+                    "district": district.id,
+                    "city": city.id,
+                    "gstno": "29AAGCB1286Q000",
+                },
+                "subentities": [
+                    {
+                        "subentityname": "Head Office",
+                        "branch_type": "head_office",
+                        "gstno": "29AAGCB1286Q000",
+                        "GstRegitrationType": gst_type.id,
+                        "country": country.id,
+                        "state": punjab.id,
+                        "district": district.id,
+                        "city": city.id,
+                    }
+                ],
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+
 class EntityOnboardingTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -93,6 +144,16 @@ class EntityOnboardingTests(TestCase):
             createdby=self.user,
         )
         self.client.force_authenticate(user=self.user)
+
+    def test_onboarding_meta_includes_compliance_credentials_contract(self):
+        response = self.client.get("/api/entity/onboarding/meta/")
+
+        self.assertEqual(response.status_code, 200)
+        root_keys = response.data["payload_contract"]["root_keys"]
+        self.assertIn("compliance_credentials", root_keys)
+        self.assertIn("compliance_credentials", response.data["payload_contract"]["arrays_allow_empty"])
+        self.assertTrue(any(row["label"] == "Sandbox" for row in response.data["dropdowns"]["mastergst_environments"]))
+        self.assertTrue(any(row["label"] == "E-Invoice" for row in response.data["dropdowns"]["mastergst_service_scopes"]))
 
     def test_new_onboarding_creates_entity_financial_and_rbac_defaults(self):
         payload = {
@@ -157,6 +218,19 @@ class EntityOnboardingTests(TestCase):
                     "is_primary": True,
                 }
             ],
+            "compliance_credentials": [
+                {
+                    "environment": int(MasterGSTEnvironment.SANDBOX),
+                    "service_scope": int(MasterGSTServiceScope.EINVOICE),
+                    "client_id": "sandbox-client",
+                    "client_secret": "sandbox-secret",
+                    "email": "compliance@example.com",
+                    "gst_username": "sandbox-user",
+                    "gst_password": "sandbox-password",
+                    "allow_all_ips": True,
+                    "is_active": True,
+                }
+            ],
             "seed_options": {
                 "template_code": "indian_accounting_final",
                 "seed_financial": True,
@@ -170,6 +244,7 @@ class EntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         entity = Entity.objects.get(id=response.data["entity_id"])
+        self.assertNotIn("gst_username", response.data["entity"])
         self.assertEqual(entity.entityname, "ABC Enterprises")
         self.assertEqual(EntityFinancialYear.objects.filter(entity=entity).count(), 1)
         self.assertEqual(BankAccount.objects.filter(entity=entity).count(), 1)
@@ -182,6 +257,17 @@ class EntityOnboardingTests(TestCase):
         self.assertIsNotNone(entity.customer_account_id)
         self.assertTrue(CustomerSubscription.objects.filter(customer_account=entity.customer_account).exists())
         self.assertTrue(UserEntityAccess.objects.filter(entity=entity, user=self.user, is_owner=True).exists())
+        credential = SalesMasterGSTCredential.objects.get(
+            entity=entity,
+            environment=MasterGSTEnvironment.SANDBOX,
+            service_scope=MasterGSTServiceScope.EINVOICE,
+        )
+        self.assertEqual(credential.gstin, "03APXPB5894F1Z3")
+        self.assertEqual(credential.client_id, "sandbox-client")
+        self.assertEqual(credential.email, "compliance@example.com")
+        self.assertEqual(credential.gst_username, "sandbox-user")
+        self.assertEqual(credential.get_client_secret(), "sandbox-secret")
+        self.assertEqual(credential.get_gst_password(), "sandbox-password")
         constitution = entity.constitutions_v2.first()
         self.assertIsNotNone(constitution)
         self.assertEqual(constitution.account_preference, "capital")
@@ -252,6 +338,63 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(entity.constitutions_v2.first().agreement_reference, "Deed-010")
         self.assertEqual(entity.ownerships_v2.first().agreement_reference, "Deed-010")
         self.assertTrue(entity.ownerships_v2.first().is_primary)
+
+    def test_update_entity_syncs_compliance_credential_gstin_from_primary_entity_gstin(self):
+        payload = {
+            "entity": {
+                "entityname": "Sync GST Entity",
+                "legalname": "Sync GST Entity",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "sync@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "compliance_credentials": [
+                {
+                    "environment": int(MasterGSTEnvironment.SANDBOX),
+                    "service_scope": int(MasterGSTServiceScope.EINVOICE),
+                    "client_id": "sandbox-client",
+                    "client_secret": "sandbox-secret",
+                    "email": "compliance@example.com",
+                    "gst_username": "sandbox-user",
+                    "gst_password": "sandbox-password",
+                    "allow_all_ips": True,
+                    "is_active": True,
+                }
+            ],
+        }
+
+        serializer = EntityOnboardingCreateSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        result = EntityOnboardingService.create_entity(actor=self.user, payload=serializer.validated_data)
+        entity = result["entity"]
+
+        patch_serializer = EntityOnboardingUpdateSerializer(
+            data={"entity": {"gstno": "29AAGCB1286Q000", "state": self.state.id}},
+            partial=True,
+        )
+        self.assertTrue(patch_serializer.is_valid(), patch_serializer.errors)
+        EntityOnboardingService.update_entity(actor=self.user, entity=entity, payload=patch_serializer.validated_data)
+
+        credential = SalesMasterGSTCredential.objects.get(entity=entity)
+        self.assertEqual(credential.gstin, "29AAGCB1286Q000")
 
     def test_new_onboarding_rejects_gst_state_code_mismatch(self):
         other_state = State.objects.create(statename="Haryana", statecode="06", country=self.country)

@@ -21,6 +21,7 @@ from entity.onboarding_serializers import (
 from entity.onboarding_services import EntityOnboardingService
 from geography.models import City, Country, District, State
 from helpers.utils.gst_api import get_gst_details
+from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope
 from subscriptions.services import SubscriptionService
 
 
@@ -202,6 +203,14 @@ class EntityOnboardingMetaAPIView(APIView):
                     {"value": "current", "label": "Current"},
                     {"value": "savings", "label": "Savings"},
                 ],
+                "mastergst_environments": [
+                    {"value": value, "label": label}
+                    for value, label in MasterGSTEnvironment.choices
+                ],
+                "mastergst_service_scopes": [
+                    {"value": value, "label": label}
+                    for value, label in MasterGSTServiceScope.choices
+                ],
             },
             "required_fields": {
                 "entity": ["entityname", "address", "phoneoffice"],
@@ -213,6 +222,7 @@ class EntityOnboardingMetaAPIView(APIView):
                     "policy",
                     "financial_years",
                     "bank_accounts",
+                    "compliance_credentials",
                     "subentities",
                     "constitution_details",
                     "ownership_details",
@@ -220,6 +230,7 @@ class EntityOnboardingMetaAPIView(APIView):
                 ],
                 "arrays_allow_empty": [
                     "bank_accounts",
+                    "compliance_credentials",
                     "subentities",
                     "constitution_details",
                     "ownership_details",
@@ -251,6 +262,14 @@ class EntityOnboardingMetaAPIView(APIView):
                         "description": row.constitutiondesc,
                     }
                     for row in Constitution.objects.all().order_by("constitutionname")
+                ],
+                "mastergst_environments": [
+                    {"value": value, "label": label}
+                    for value, label in MasterGSTEnvironment.choices
+                ],
+                "mastergst_service_scopes": [
+                    {"value": value, "label": label}
+                    for value, label in MasterGSTServiceScope.choices
                 ],
                 "countries": CountryOptionSerializer(Country.objects.all().order_by("countryname"), many=True).data,
             },

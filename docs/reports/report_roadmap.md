@@ -10,6 +10,25 @@ The goal is to help product, finance, implementation, and engineering teams deci
 - which missing reports are highest value
 - which ones should be planned first
 
+## Wave 1 Status
+
+Current execution status:
+- `Done`: Asset Location / Custodian Report
+- `Done`: Slow Moving vs Dead Stock Summary
+- `Done`: Upcoming Payments Calendar
+- `Done`: GSTR-1 vs GSTR-3B Reconciliation
+
+## Wave 2 Status
+
+Current execution status:
+- `Done`: GST Exception Dashboard
+- `Pending`: Planned vs Actual Consumption
+- `Pending`: Scrap / Rejection Analysis
+- `Pending`: Collection Forecast
+
+Implementation note:
+- `Slow Moving vs Dead Stock Summary` should be built as a business-friendly summary on top of the existing `Stock Aging` and `Non-Moving Stock` stack, not as a disconnected new inventory report family.
+
 ## Planning Principles
 
 When deciding whether a new report should be built, use these rules:

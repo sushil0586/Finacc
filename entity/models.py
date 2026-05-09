@@ -8,19 +8,31 @@ from Authentication.models import User
 from geography.models import Country,State,District,City
 from geography.validators import validate_geography_hierarchy
 from django.utils.dateformat import DateFormat
+import re
 #from Authentication.models import User 
 
 # Create your models here.
 
-_RELAXED_GSTIN = bool(getattr(settings, "ALLOW_RELAXED_GSTIN_FOR_SANDBOX", False))
-gstin_validator = RegexValidator(
-    regex=(
-        r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$"
-        if _RELAXED_GSTIN
-        else r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"
-    ),
-    message="Enter a valid GSTIN.",
-)
+STRICT_GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+RELAXED_GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$")
+
+
+def _relaxed_gstin_enabled() -> bool:
+    if bool(getattr(settings, "ALLOW_RELAXED_GSTIN_FOR_SANDBOX", False)):
+        return True
+    raw = getattr(settings, "SALES_MASTERGST_ENV", None)
+    if raw is None:
+        raw = getattr(settings, "MASTERGST_ENV", None)
+    if isinstance(raw, str):
+        return raw.strip().upper() == "SANDBOX"
+    return False
+
+
+def gstin_validator(value):
+    gstin = str(value or "").strip().upper()
+    regex = RELAXED_GSTIN_RE if _relaxed_gstin_enabled() else STRICT_GSTIN_RE
+    if not regex.fullmatch(gstin):
+        raise ValidationError("Enter a valid GSTIN.")
 pan_validator = RegexValidator(
     regex=r"^[A-Z]{5}[0-9]{4}[A-Z]$",
     message="Enter a valid PAN.",
@@ -342,7 +354,6 @@ class EntityGstRegistration(TrackingModel):
     nature_of_business = models.CharField(max_length=150, null=True, blank=True)
     gst_effective_from = models.DateField(null=True, blank=True)
     gst_cancelled_from = models.DateField(null=True, blank=True)
-    credential_ref = models.CharField(max_length=255, null=True, blank=True)
     is_primary = models.BooleanField(default=False)
     createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
@@ -351,29 +362,24 @@ class EntityGstRegistration(TrackingModel):
             models.UniqueConstraint(fields=["gstin"], condition=Q(isactive=True), name="uq_entity_gst_registration_active_gstin"),
             models.UniqueConstraint(fields=["entity"], condition=Q(isactive=True, is_primary=True), name="uq_entity_gst_registration_primary"),
             models.UniqueConstraint(
-                fields=["entity", "state"],
-                condition=Q(isactive=True, state__isnull=False),
-                name="uq_entity_gst_registration_entity_state_active",
+                fields=["entity"],
+                condition=Q(isactive=True),
+                name="uq_entity_gst_registration_entity_active",
             ),
         ]
         indexes = [models.Index(fields=["entity", "is_primary", "isactive"])]
 
     def clean(self):
-        gstin = (self.gstin or "").strip().upper()
-
-        # Prevent multiple active GST rows for same entity+state.
-        if self.isactive and self.entity_id and self.state_id:
-            exists_same_state = EntityGstRegistration.objects.filter(
+        if self.isactive and self.entity_id:
+            exists_other_active = EntityGstRegistration.objects.filter(
                 entity_id=self.entity_id,
-                state_id=self.state_id,
                 isactive=True,
             ).exclude(pk=self.pk).exists()
-            if exists_same_state:
-                raise ValidationError({"state": "Only one active GST registration is allowed per entity per state."})
+            if exists_other_active:
+                raise ValidationError({"entity": "Only one active GST registration is allowed per entity."})
 
     def save(self, *args, **kwargs):
         self.gstin = (self.gstin or "").strip().upper()
-        self.credential_ref = (self.credential_ref or "").strip() or None
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -803,8 +809,5 @@ class Godown(models.Model):
             else:
                 qs = qs.filter(subentity__isnull=True)
             qs.exclude(pk=self.pk).update(is_default=False)
-
-
-
 
 

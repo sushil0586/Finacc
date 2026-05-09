@@ -3,7 +3,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from Authentication.models import User
-from entity.models import Entity
+from entity.models import Entity, EntityGstRegistration, GstRegistrationType
+from geography.models import Country, State
 from rbac.models import Role, UserRoleAssignment
 from subscriptions.models import UserEntityAccess
 
@@ -24,6 +25,17 @@ class EntityContextAccessTests(TestCase):
             email_verified=True,
         )
         self.entity = Entity.objects.create(entityname="Scoped Entity", createdby=self.owner)
+        self.country = Country.objects.create(countryname="India", countrycode="IN")
+        self.state = State.objects.create(statename="Punjab", statecode="03", country=self.country)
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="03APXPB5894F1Z3",
+            registration_type=self.gst_type,
+            gst_status=Entity.GstStatus.REGISTERED,
+            state=self.state,
+            is_primary=True,
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
@@ -89,3 +101,14 @@ class EntityContextAccessTests(TestCase):
                 is_active=True,
             ).exists()
         )
+
+    def test_entities_list_exposes_current_gst_selection_mode(self):
+        owner_client = APIClient()
+        owner_client.force_authenticate(user=self.owner)
+
+        response = owner_client.get("/api/entity/me/entities")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["gstno"], "03APXPB5894F1Z3")
+        self.assertEqual(response.data[0]["seller_gstin"], "03APXPB5894F1Z3")
+        self.assertEqual(response.data[0]["gst_selection_mode"], "entity_primary")

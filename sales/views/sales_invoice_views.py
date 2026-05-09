@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 from decimal import Decimal
 from typing import Any
 from django.db.models import Exists, OuterRef, Prefetch
@@ -13,12 +15,14 @@ from rest_framework.views import APIView
 
 from entity.models import Entity
 from financial.profile_access import account_pan, account_primary_bank_detail
+from geography.models import State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary, SalesInvoiceTransportSnapshot
 from rbac.services import EffectivePermissionService
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceListSerializer
 from sales.serializers.sales_transport_serializers import SalesInvoiceTransportSnapshotSerializer
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_settings_service import SalesSettingsService
+import qrcode
 
 
 def _resolve_sales_doc_type(raw_doc_type) -> int:
@@ -541,6 +545,50 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
     def _text(value: Any) -> str:
         return str(value or "").strip()
 
+    @staticmethod
+    def _first_non_blank(*values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _state_name_from_code(code: Any) -> str:
+        normalized = str(code or "").strip()
+        if not normalized:
+            return ""
+        state = State.objects.filter(statecode=normalized, isactive=True).first()
+        return state.statename if state else ""
+
+    def _state_display(self, *, code: Any = None, name: Any = None, fallback_code: Any = None, fallback_name: Any = None) -> str:
+        final_code = self._first_non_blank(code, fallback_code)
+        final_name = self._first_non_blank(name, fallback_name)
+        if not final_name and final_code:
+            final_name = self._state_name_from_code(final_code)
+        if final_name and final_code:
+            return f"{final_name} ({final_code})"
+        return final_name or final_code
+
+    @staticmethod
+    def _normalize_qr_image_base64(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith("data:image"):
+            _, _, payload = raw.partition(",")
+            return payload.strip()
+        if raw.startswith("iVBOR"):
+            return raw
+
+        qr = qrcode.QRCode(border=2, box_size=8)
+        qr.add_data(raw)
+        qr.make(fit=True)
+        image = qr.make_image(fill_color="black", back_color="white")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+
     def _resolve_transport_for_print(self, header: SalesInvoiceHeader) -> dict[str, str]:
         transport_snapshot = getattr(header, "transport_snapshot", None)
         eway_artifact = getattr(header, "eway_artifact", None)
@@ -587,11 +635,24 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
 
         sale_invoice_details = []
         total_qty = Decimal("0.000")
+        total_cgst = Decimal("0.00")
+        total_sgst = Decimal("0.00")
+        total_igst = Decimal("0.00")
+        total_cess = Decimal("0.00")
+        subtotal = Decimal("0.00")
+        total_discount = Decimal("0.00")
+        gst_buckets: dict[Decimal, dict[str, Decimal]] = {}
         for row in all_lines:
             qty = self._dec(getattr(row, "qty", 0))
             rate = self._dec(getattr(row, "rate", 0))
             discount_percent = self._dec(getattr(row, "discount_percent", 0))
             taxable_value = self._dec(getattr(row, "taxable_value", 0))
+            line_cgst = self._dec(getattr(row, "cgst_amount", 0))
+            line_sgst = self._dec(getattr(row, "sgst_amount", 0))
+            line_igst = self._dec(getattr(row, "igst_amount", 0))
+            line_cess = self._dec(getattr(row, "cess_amount", 0))
+            line_discount = self._dec(getattr(row, "discount_amount", 0))
+            gst_rate = self._dec(getattr(row, "gst_rate", 0))
             effective_rate = (taxable_value / qty) if qty > 0 else rate
             product_obj = getattr(row, "product", None)
             sales_account = getattr(row, "sales_account", None)
@@ -613,17 +674,37 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
                 }
             )
             total_qty += qty
+            subtotal += taxable_value
+            total_cgst += line_cgst
+            total_sgst += line_sgst
+            total_igst += line_igst
+            total_cess += line_cess
+            total_discount += line_discount
+            bucket = gst_buckets.setdefault(
+                gst_rate,
+                {
+                    "taxable_amount": Decimal("0.00"),
+                    "total_cgst_amount": Decimal("0.00"),
+                    "total_sgst_amount": Decimal("0.00"),
+                    "total_igst_amount": Decimal("0.00"),
+                },
+            )
+            bucket["taxable_amount"] += taxable_value
+            bucket["total_cgst_amount"] += line_cgst
+            bucket["total_sgst_amount"] += line_sgst
+            bucket["total_igst_amount"] += line_igst
 
-        tax_rows = list(SalesTaxSummary.objects.filter(header_id=header.id))
+        # Always derive GST summary from the current invoice lines. Stored tax summary
+        # rows can go stale after line edits and should not drive print output.
         gst_summary = [
             {
-                "taxPercent": float(self._dec(getattr(row, "gst_rate", 0))),
-                "taxable_amount": float(self._dec(getattr(row, "taxable_value", 0))),
-                "total_cgst_amount": float(self._dec(getattr(row, "cgst_amount", 0))),
-                "total_sgst_amount": float(self._dec(getattr(row, "sgst_amount", 0))),
-                "total_igst_amount": float(self._dec(getattr(row, "igst_amount", 0))),
+                "taxPercent": float(rate),
+                "taxable_amount": float(self._dec(bucket["taxable_amount"])),
+                "total_cgst_amount": float(self._dec(bucket["total_cgst_amount"])),
+                "total_sgst_amount": float(self._dec(bucket["total_sgst_amount"])),
+                "total_igst_amount": float(self._dec(bucket["total_igst_amount"])),
             }
-            for row in tax_rows
+            for rate, bucket in sorted(gst_buckets.items(), key=lambda item: item[0])
         ]
 
         customer = getattr(header, "customer", None)
@@ -632,6 +713,24 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
         einvoice_artifact = getattr(header, "einvoice_artifact", None)
         eway_artifact = getattr(header, "eway_artifact", None)
         transport_fields = self._resolve_transport_for_print(header)
+
+        seller_state_display = self._state_display(
+            code=seller.get("statecode"),
+            name=seller.get("statename"),
+        )
+        bill_state_display = self._state_display(
+            code=getattr(header, "bill_to_state_code", None),
+            fallback_code=getattr(shipto_snapshot, "state_code", None),
+        )
+        ship_state_display = self._state_display(
+            code=getattr(getattr(ship, "state", None), "statecode", None) or getattr(shipto_snapshot, "state_code", None),
+            name=getattr(getattr(ship, "state", None), "statename", None),
+            fallback_code=getattr(header, "bill_to_state_code", None),
+        )
+        place_of_supply_display = self._state_display(
+            code=getattr(header, "place_of_supply_state_code", None),
+            fallback_code=getattr(header, "bill_to_state_code", None),
+        )
 
         bank_obj = account_primary_bank_detail(customer) if customer is not None else None
         doctype_label = header.get_doc_type_display()
@@ -642,20 +741,28 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
         if seller.get("address2"):
             entity_address = f"{entity_address}, {seller.get('address2')}" if entity_address else str(seller.get("address2"))
 
-        total_cgst = self._dec(getattr(header, "total_cgst", 0))
-        total_sgst = self._dec(getattr(header, "total_sgst", 0))
-        total_igst = self._dec(getattr(header, "total_igst", 0))
-        total_cess = self._dec(getattr(header, "total_cess", 0))
-        subtotal = self._dec(getattr(header, "total_taxable_value", 0))
-        total_discount = self._dec(getattr(header, "total_discount", 0))
+        total_other_charges = self._dec(getattr(header, "total_other_charges", 0))
+        round_off = self._dec(getattr(header, "round_off", 0))
+        if not all_lines:
+            total_cgst = self._dec(getattr(header, "total_cgst", 0))
+            total_sgst = self._dec(getattr(header, "total_sgst", 0))
+            total_igst = self._dec(getattr(header, "total_igst", 0))
+            total_cess = self._dec(getattr(header, "total_cess", 0))
+            subtotal = self._dec(getattr(header, "total_taxable_value", 0))
+            total_discount = self._dec(getattr(header, "total_discount", 0))
         grand_total = self._dec(getattr(header, "grand_total", 0))
+        tcs_amount = self._dec(getattr(header, "tcs_amount", 0))
+        if all_lines:
+            grand_total = subtotal + total_cgst + total_sgst + total_igst + total_cess + total_other_charges + round_off
+        net_payable = grand_total + tcs_amount
 
         return {
             "id": header.id,
             "sorderdate": self._date_str(getattr(header, "bill_date", None)),
             "billno": getattr(header, "doc_no", None) or 0,
+            "invoice_number": getattr(header, "invoice_number", "") or "",
             "accountid": getattr(header, "customer_id", None) or 0,
-            "billtostate": getattr(header, "bill_to_state_code", "") or "",
+            "billtostate": bill_state_display,
             "billtoname": getattr(header, "customer_name", "") or "",
             "billtoaddress1": getattr(header, "bill_to_address1", "") or "",
             "billtoaddress2": getattr(header, "bill_to_address2", "") or "",
@@ -669,11 +776,7 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
             "billcash": 1 if int(getattr(header, "credit_days", 0) or 0) > 0 else 0,
             "totalquanity": float(total_qty),
             "totalpieces": float(total_qty),
-            "shiptostate": (
-                getattr(getattr(ship, "state", None), "statecode", None)
-                or getattr(shipto_snapshot, "state_code", None)
-                or ""
-            ),
+            "shiptostate": ship_state_display,
             "shiptoname": (
                 getattr(ship, "full_name", None)
                 or getattr(shipto_snapshot, "full_name", None)
@@ -693,7 +796,7 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
             "tcs206c1ch3": 0,
             "tcs206C1": 0,
             "tcs206C2": 0,
-            "addless": float(self._dec(getattr(header, "round_off", 0))),
+            "addless": float(round_off),
             "duedate": self._date_str(getattr(header, "due_date", None)),
             "subtotal": float(subtotal),
             "cgst": float(total_cgst),
@@ -701,17 +804,20 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
             "igst": float(total_igst),
             "cess": float(total_cess),
             "totalgst": float(total_cgst + total_sgst + total_igst),
-            "expenses": float(self._dec(getattr(header, "total_other_charges", 0))),
+            "expenses": float(total_other_charges),
             "gtotal": float(grand_total),
+            "tcs_amount": float(tcs_amount),
+            "net_payable": float(net_payable),
             "amountinwords": "",
             "subentity": getattr(header, "subentity_id", None),
             "entity": getattr(header, "entity_id", None),
             "entityname": seller.get("entityname") or "",
             "entityaddress": entity_address,
-            "entitycityname": "",
-            "entitystate": seller.get("statecode") or "",
+            "entitycityname": seller.get("city_name") or "",
+            "entitystate": seller_state_display,
             "entitypincode": str(seller.get("pincode") or ""),
             "entitygst": seller.get("gstno") or "",
+            "placeofsupply": place_of_supply_display,
             "eway": bool(getattr(header, "is_eway_applicable", False)),
             "einvoice": bool(getattr(header, "is_einvoice_applicable", False)),
             "einvoicepluseway": bool(getattr(header, "is_einvoice_applicable", False) and getattr(header, "is_eway_applicable", False)),
@@ -731,7 +837,7 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
                 "ewb_no": getattr(eway_artifact, "ewb_no", None) or getattr(einvoice_artifact, "ewb_no", None),
                 "ewb_date": self._date_str(getattr(eway_artifact, "ewb_date", None) or getattr(einvoice_artifact, "ewb_date", None)),
                 "ewb_valid_till": self._date_str(getattr(eway_artifact, "valid_upto", None) or getattr(einvoice_artifact, "ewb_valid_upto", None)),
-                "qr_image_base64": getattr(einvoice_artifact, "signed_qr_code", None) or "",
+                "qr_image_base64": self._normalize_qr_image_base64(getattr(einvoice_artifact, "signed_qr_code", None)),
             },
             "saleInvoiceDetails": sale_invoice_details,
             "gst_summary": gst_summary,
