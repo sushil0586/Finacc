@@ -12,6 +12,8 @@ from posting.services.posting_service import PostingService, JLInput, IMInput
 from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
+from catalog.models import Product
+from catalog.uom_helpers import resolve_product_uom
 
 
 # =========================
@@ -203,6 +205,14 @@ class SalesInvoicePostingAdapter:
         # per-product account resolver (no N+1)
         product_ids = [int(ln.product_id) for ln in lines_list if getattr(ln, "product_id", None)]
         prod_resolver = ProductAccountResolver(product_ids)
+        products_by_id = {}
+        if product_ids:
+            products_by_id = {
+                product.id: product
+                for product in Product.objects.filter(id__in=product_ids)
+                .select_related("base_uom")
+                .prefetch_related("uom_conversions__from_uom", "uom_conversions__to_uom")
+            }
 
         # =========================
         # 1) Build Journal Lines
@@ -432,6 +442,15 @@ class SalesInvoicePostingAdapter:
                 qty_for_cost = q4(qty + free_qty) if cfg.spread_cost_across_free_qty else qty
                 if qty_for_cost == ZERO4:
                     continue
+                product = products_by_id.get(int(getattr(ln, "product_id")))
+                if product is None:
+                    raise ValueError(f"Product {getattr(ln, 'product_id')} not found for sales posting.")
+                _, factor_to_base = resolve_product_uom(
+                    product=product,
+                    raw_uom_id=getattr(ln, "uom_id", None),
+                )
+                factor_to_base = q4(factor_to_base)
+                base_qty = q4(qty_for_cost * factor_to_base)
 
                 base = q2(getattr(ln, "taxable_value", None) or ZERO2)
                 unit_cost = q4(base / qty_for_cost)
@@ -446,7 +465,9 @@ class SalesInvoicePostingAdapter:
                     product_id=int(getattr(ln, "product_id")),
                     qty=qty_for_cost,  # qty positive; move_type controls IN vs OUT
                     uom_id=int(getattr(ln, "uom_id")) if getattr(ln, "uom_id", None) else None,
-                    uom_factor=Decimal("1"),
+                    base_uom_id=getattr(product, "base_uom_id", None),
+                    uom_factor=factor_to_base,
+                    base_qty=base_qty,
                     unit_cost=unit_cost,
                     move_type=inventory_move_type,  # OUT for invoice, IN for CN return
                     cost_source="SALES",
@@ -461,6 +482,8 @@ class SalesInvoicePostingAdapter:
                         "qty": str(qty),
                         "free_qty": str(free_qty),
                         "qty_for_cost": str(qty_for_cost),
+                        "factor_to_base": str(factor_to_base),
+                        "base_qty": str(base_qty),
                         "taxable_value": str(base),
                         "spread_cost_across_free_qty": cfg.spread_cost_across_free_qty,
                         "affects_inventory": affects_inventory,

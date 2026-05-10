@@ -30,6 +30,8 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceRetrieveUpdateAPIView,
 )
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
+from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
+from posting.common.static_accounts import StaticAccountCodes
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
@@ -200,7 +202,7 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
             {(1, "B1", 5): Decimal("1.0000")},
             {},
         )
-        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs = mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value
         mocked_product_qs.__iter__.return_value = iter([
             SimpleNamespace(
                 id=1,
@@ -208,6 +210,9 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
                 is_service=False,
                 is_batch_managed=True,
                 is_expiry_tracked=False,
+                base_uom_id=None,
+                base_uom=None,
+                uom_conversions=[],
             )
         ])
 
@@ -240,6 +245,183 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
     @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_validate_stock_policy_uses_base_qty_for_alternate_uom(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="STRICT",
+            allow_negative_stock=False,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        mocked_build_maps.return_value = (
+            {(1, "", 5): Decimal("500.0000")},
+            {},
+        )
+        kg_uom = SimpleNamespace(id=2, code="KG")
+        gms_uom = SimpleNamespace(id=1, code="GMS")
+        product = SimpleNamespace(
+            id=1,
+            productname="Flour",
+            is_service=False,
+            is_batch_managed=False,
+            is_expiry_tracked=False,
+            base_uom_id=1,
+            base_uom=gms_uom,
+            uom_conversions=[
+                SimpleNamespace(
+                    from_uom_id=2,
+                    from_uom=kg_uom,
+                    to_uom_id=1,
+                    to_uom=gms_uom,
+                    factor=Decimal("1000"),
+                )
+            ],
+        )
+        mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value = [product]
+
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=5,
+            godown_id=None,
+        )
+        lines = [
+            SimpleNamespace(
+                product_id=1,
+                qty=Decimal("1.000"),
+                free_qty=Decimal("0.000"),
+                uom_id=2,
+                batch_number="",
+                expiry_date=None,
+                line_no=1,
+            )
+        ]
+
+        with self.assertRaisesMessage(ValidationError, "Required 1000.0000, available 500.0000"):
+            SalesInvoiceService._validate_stock_policy_on_post(header=header, lines=lines)
+
+        self.assertTrue(mocked_resolve_location.called)
+
+
+class SalesPostingAdapterUnitTests(SimpleTestCase):
+    def _base_header(self, **overrides):
+        defaults = {
+            "id": 201,
+            "entity_id": 1,
+            "entityfinid_id": 1,
+            "subentity_id": None,
+            "bill_date": date(2026, 3, 3),
+            "posting_date": date(2026, 3, 3),
+            "customer_id": 7001,
+            "customer_ledger_id": 7001,
+            "doc_type": 1,
+            "sales_number": "SINV-201",
+            "grand_total": Decimal("250.00"),
+            "roundoff": Decimal("0.00"),
+            "affects_inventory": False,
+            "charges": [],
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _line(self, **overrides):
+        defaults = {
+            "id": 301,
+            "line_no": 1,
+            "product_id": 1,
+            "is_service": False,
+            "taxable_value": Decimal("250.00"),
+            "cgst_amount": Decimal("0.00"),
+            "sgst_amount": Decimal("0.00"),
+            "igst_amount": Decimal("0.00"),
+            "cess_amount": Decimal("0.00"),
+            "qty": Decimal("250.0000"),
+            "free_qty": Decimal("0.0000"),
+            "uom_id": 1,
+            "sales_account_id": 5000,
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    @patch("posting.adapters.sales_invoice.resolve_posting_location_id", return_value=5)
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_inventory_move_uses_uom_conversion_for_base_qty(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        mocked_resolve_location,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = 5000
+
+        kg_uom = SimpleNamespace(id=2, code="KG")
+        gms_uom = SimpleNamespace(id=1, code="GMS")
+        product = SimpleNamespace(
+            id=1,
+            base_uom_id=1,
+            base_uom=gms_uom,
+            uom_conversions=[
+                SimpleNamespace(
+                    from_uom_id=2,
+                    from_uom=kg_uom,
+                    to_uom_id=1,
+                    to_uom=gms_uom,
+                    factor=Decimal("1000"),
+                )
+            ],
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=999)
+
+        header = self._base_header(affects_inventory=True)
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=header,
+            lines=[self._line(qty=Decimal("1.0000"), taxable_value=Decimal("250.00"), uom_id=2)],
+            user_id=1,
+            config=SalesInvoicePostingConfig(),
+        )
+
+        kwargs = posting_instance.post.call_args.kwargs
+        move = kwargs["im_inputs"][0]
+        self.assertEqual(move.qty, Decimal("1.0000"))
+        self.assertEqual(move.uom_factor, Decimal("1000.0000"))
+        self.assertEqual(move.base_qty, Decimal("1000.0000"))
+        self.assertEqual(move.base_uom_id, 1)
+        self.assertTrue(mocked_resolve_location.called)
+
+class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
     def test_validate_stock_policy_allows_numeric_batch_aliases(
         self,
         mocked_product_objects,
@@ -258,7 +440,7 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
             {(1, "1", 5): Decimal("2.0000")},
             {},
         )
-        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs = mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value
         mocked_product_qs.__iter__.return_value = iter([
             SimpleNamespace(
                 id=1,
@@ -266,6 +448,9 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
                 is_service=False,
                 is_batch_managed=True,
                 is_expiry_tracked=False,
+                base_uom_id=None,
+                base_uom=None,
+                uom_conversions=[],
             )
         ])
 
@@ -318,7 +503,7 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
                 (1, "B-A", 5, date(2026, 5, 1)): Decimal("3.0000"),
             },
         )
-        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs = mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value
         mocked_product_qs.__iter__.return_value = iter([
             SimpleNamespace(
                 id=1,
@@ -326,6 +511,9 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
                 is_service=False,
                 is_batch_managed=True,
                 is_expiry_tracked=True,
+                base_uom_id=None,
+                base_uom=None,
+                uom_conversions=[],
             )
         ])
 
@@ -384,7 +572,7 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
             {(1, "1", 1): Decimal("3.0000")},
             {(1, "1", 1, date(2026, 5, 1)): Decimal("3.0000")},
         )
-        mocked_product_qs = mocked_product_objects.filter.return_value.only.return_value
+        mocked_product_qs = mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value
         mocked_product_qs.__iter__.return_value = iter([
             SimpleNamespace(
                 id=1,
@@ -392,6 +580,9 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
                 is_service=False,
                 is_batch_managed=True,
                 is_expiry_tracked=False,
+                base_uom_id=None,
+                base_uom=None,
+                uom_conversions=[],
             )
         ])
 

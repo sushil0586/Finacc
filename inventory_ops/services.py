@@ -11,6 +11,7 @@ from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 
 from catalog.models import Product, ProductUomConversion, UnitOfMeasure
+from catalog.uom_helpers import resolve_product_uom
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.models import Entry, EntryStatus, InventoryMove, TxnType
@@ -123,36 +124,18 @@ def _load_product_for_line(*, entity_id: int, product_id: int, line_kind: str, l
 
 
 def resolve_inventory_uom(*, product: Product, raw_uom_id: int | str | None, line_kind: str, line_no: int) -> tuple[UnitOfMeasure | None, Decimal]:
-    base_uom = getattr(product, "base_uom", None)
-    base_uom_id = getattr(product, "base_uom_id", None)
-    if not base_uom_id or base_uom is None:
-        return None, Decimal("1")
-
-    selected_uom_id = int(raw_uom_id or 0) or int(base_uom_id)
-    if selected_uom_id == int(base_uom_id):
-        return base_uom, Decimal("1")
-
-    conversions = list(getattr(product, "uom_conversions", []).all()) if hasattr(getattr(product, "uom_conversions", None), "all") else list(getattr(product, "uom_conversions", []) or [])
-    for conv in conversions:
-        factor = Decimal(str(conv.factor or 0))
-        if factor <= 0:
-            continue
-        if conv.from_uom_id == int(base_uom_id) and conv.to_uom_id == selected_uom_id:
-            return conv.to_uom, _q8(Decimal("1") / factor)
-        if conv.to_uom_id == int(base_uom_id) and conv.from_uom_id == selected_uom_id:
-            return conv.from_uom, _q8(factor)
-
-    linked_uom_ids = {int(base_uom_id)}
-    for conv in conversions:
-        linked_uom_ids.add(int(conv.from_uom_id))
-        linked_uom_ids.add(int(conv.to_uom_id))
-    if selected_uom_id not in linked_uom_ids:
-        raise ValidationError({"lines": [f"Selected UOM is not valid for {line_kind} line {line_no}."]})
-
-    fallback_uom = UnitOfMeasure.objects.filter(id=selected_uom_id, entity_id=product.entity_id, isactive=True).first()
-    if fallback_uom is None:
-        raise ValidationError({"lines": [f"Selected UOM is not available for {line_kind} line {line_no}."]})
-    raise ValidationError({"lines": [f"Missing UOM conversion for {line_kind} line {line_no}."]})
+    try:
+        selected_uom, factor_to_base = resolve_product_uom(product=product, raw_uom_id=raw_uom_id)
+        return selected_uom, factor_to_base
+    except ValueError as exc:
+        message = str(exc or "")
+        if "not valid" in message.lower():
+            selected_uom_id = int(raw_uom_id or 0)
+            fallback_uom = UnitOfMeasure.objects.filter(id=selected_uom_id, entity_id=product.entity_id, isactive=True).first()
+            if fallback_uom is None:
+                raise ValidationError({"lines": [f"Selected UOM is not available for {line_kind} line {line_no}."]}) from exc
+            raise ValidationError({"lines": [f"Selected UOM is not valid for {line_kind} line {line_no}."]}) from exc
+        raise ValidationError({"lines": [f"Missing UOM conversion for {line_kind} line {line_no}."]}) from exc
 
 
 def _resolve_unit_cost_for_line(*, product: Product, raw_line: dict, line_kind: str, line_no: int, require_mode: str) -> Decimal:

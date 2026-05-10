@@ -723,12 +723,14 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         return SimpleNamespace(**defaults)
 
     @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
     @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
     @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
     def test_posts_charge_line_to_misc_expense(
         self,
         mock_static_resolver_cls,
         mock_product_resolver_cls,
+        mock_product_objects,
         mock_posting_service_cls,
     ):
         code_map = {
@@ -747,6 +749,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         resolver = mock_static_resolver_cls.return_value
         resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
         mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
 
         posting_instance = mock_posting_service_cls.return_value
         posting_instance.post.return_value = SimpleNamespace(id=999)
@@ -780,12 +783,14 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         self.assertEqual(charge_entries[0].amount, Decimal("10.00"))
 
     @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
     @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
     @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
     def test_posts_gst_tds_when_config_enabled(
         self,
         mock_static_resolver_cls,
         mock_product_resolver_cls,
+        mock_product_objects,
         mock_posting_service_cls,
     ):
         code_map = {
@@ -804,6 +809,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         resolver = mock_static_resolver_cls.return_value
         resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
         mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
 
         posting_instance = mock_posting_service_cls.return_value
         posting_instance.post.return_value = SimpleNamespace(id=1001)
@@ -835,12 +841,14 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         self.assertTrue(gst_tds_cr, "Expected CR GST-TDS Payable entry.")
 
     @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
     @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
     @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
     def test_asset_purchase_behavior_skips_inventory_move(
         self,
         mock_static_resolver_cls,
         mock_product_resolver_cls,
+        mock_product_objects,
         mock_posting_service_cls,
     ):
         code_map = {
@@ -857,6 +865,13 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         resolver = mock_static_resolver_cls.return_value
         resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
         mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        product = SimpleNamespace(
+            id=99,
+            base_uom_id=1,
+            base_uom=SimpleNamespace(id=1, code="GMS"),
+            uom_conversions=[],
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
 
         posting_instance = mock_posting_service_cls.return_value
         posting_instance.post.return_value = SimpleNamespace(id=1002)
@@ -880,6 +895,81 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         kwargs = posting_instance.post.call_args.kwargs
         self.assertEqual(kwargs["im_inputs"], [])
+
+    @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=5)
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_inventory_move_uses_uom_conversion_for_base_qty(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        mocked_resolve_location,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+
+        kg_uom = SimpleNamespace(id=2, code="KG")
+        gms_uom = SimpleNamespace(id=1, code="GMS")
+        product = SimpleNamespace(
+            id=99,
+            base_uom_id=1,
+            base_uom=gms_uom,
+            uom_conversions=[
+                SimpleNamespace(
+                    from_uom_id=2,
+                    from_uom=kg_uom,
+                    to_uom_id=1,
+                    to_uom=gms_uom,
+                    factor=Decimal("1000"),
+                )
+            ],
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=1003)
+
+        header = self._base_header(grand_total=Decimal("500.00"), affects_inventory=True)
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[
+                self._line(
+                    product_id=99,
+                    is_service=False,
+                    purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+                    qty=Decimal("2.0000"),
+                    free_qty=Decimal("0.0000"),
+                    taxable_value=Decimal("500.00"),
+                    uom_id=2,
+                )
+            ],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        kwargs = posting_instance.post.call_args.kwargs
+        move = kwargs["im_inputs"][0]
+        self.assertEqual(move.qty, Decimal("2.0000"))
+        self.assertEqual(move.uom_factor, Decimal("1000.0000"))
+        self.assertEqual(move.base_qty, Decimal("2000.0000"))
+        self.assertEqual(move.base_uom_id, 1)
+        self.assertTrue(mocked_resolve_location.called)
 
 
 class PurchasePhase1ClassificationTests(SimpleTestCase):

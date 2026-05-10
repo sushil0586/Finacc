@@ -22,6 +22,7 @@ from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails, account
 from financial.profile_access import account_gstno, account_partytype, account_region_state
 from catalog.models import Product
+from catalog.uom_helpers import resolve_product_uom
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from sales.services.profile_resolvers import entity_primary_gstin, entity_primary_state
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
@@ -172,10 +173,17 @@ class SalesInvoiceService:
         return InventoryMove.MoveType.OUT
 
     @staticmethod
-    def _stock_issue_qty(line: SalesInvoiceLine) -> Decimal:
+    def _stock_issue_qty(line: SalesInvoiceLine, *, product=None) -> Decimal:
         qty = q4(getattr(line, "qty", None) or ZERO4)
         free_qty = q4(getattr(line, "free_qty", None) or ZERO4)
-        return q4(qty + free_qty)
+        entered_qty = q4(qty + free_qty)
+        if entered_qty <= ZERO4 or product is None:
+            return entered_qty
+        _, factor_to_base = resolve_product_uom(
+            product=product,
+            raw_uom_id=getattr(line, "uom_id", None),
+        )
+        return q4(entered_qty * q4(factor_to_base))
 
     @staticmethod
     def _normalize_batch_number(value: object) -> str:
@@ -270,7 +278,10 @@ class SalesInvoiceService:
 
         products = {
             product.id: product
-            for product in Product.objects.filter(id__in=product_ids).only("id", "productname", "is_batch_managed", "is_expiry_tracked")
+            for product in Product.objects.filter(id__in=product_ids)
+            .select_related("base_uom")
+            .prefetch_related("uom_conversions__from_uom", "uom_conversions__to_uom")
+            .only("id", "productname", "is_batch_managed", "is_expiry_tracked", "is_service", "base_uom")
         }
         available_by_key, available_by_expiry = cls._build_stock_balance_maps(
             header=header,
@@ -326,7 +337,7 @@ class SalesInvoiceService:
             if not (is_batch_managed or require_batch_for_sales):
                 continue
 
-            issue_qty = cls._stock_issue_qty(line)
+            issue_qty = cls._stock_issue_qty(line, product=product)
             if issue_qty <= ZERO4:
                 continue
 
@@ -442,7 +453,10 @@ class SalesInvoiceService:
 
         products = {
             product.id: product
-            for product in Product.objects.filter(id__in=product_ids).only("id", "productname", "is_batch_managed", "is_expiry_tracked")
+            for product in Product.objects.filter(id__in=product_ids)
+            .select_related("base_uom")
+            .prefetch_related("uom_conversions__from_uom", "uom_conversions__to_uom")
+            .only("id", "productname", "is_batch_managed", "is_expiry_tracked", "is_service", "base_uom")
         }
         available_by_key, available_by_expiry = cls._build_stock_balance_maps(
             header=header,
@@ -462,7 +476,7 @@ class SalesInvoiceService:
             if not product or bool(getattr(product, "is_service", False)):
                 continue
 
-            issue_qty = cls._stock_issue_qty(line)
+            issue_qty = cls._stock_issue_qty(line, product=product)
             if issue_qty <= ZERO4:
                 continue
 

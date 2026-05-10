@@ -339,6 +339,150 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('export_urls', data['actions'])
         self.assertIn('print', data['actions']['export_urls'])
 
+    def test_inventory_stock_summary_normalizes_mixed_uom_movements(self):
+        gms_uom = UnitOfMeasure.objects.create(
+            entity=self.entity,
+            code='GMS',
+            description='Grams',
+            uqc='GMS',
+        )
+        kg_uom = UnitOfMeasure.objects.create(
+            entity=self.entity,
+            code='KG',
+            description='Kilogram',
+            uqc='KGS',
+        )
+        flour = Product.objects.create(
+            entity=self.entity,
+            productname='Flour',
+            sku='FL-001',
+            productdesc='Wheat flour',
+            productcategory=self.category,
+            base_uom=gms_uom,
+            is_service=False,
+            is_batch_managed=False,
+            is_serialized=False,
+        )
+
+        purchase_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=2001,
+            voucher_no='PUR-2001',
+            created_by=self.user,
+            is_active=True,
+        )
+        purchase_entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=2001,
+            voucher_no='PUR-2001',
+            voucher_date='2025-04-12',
+            posting_date='2025-04-12',
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=purchase_batch,
+            narration='Purchase of flour',
+            created_by=self.user,
+        )
+        InventoryMove.objects.create(
+            entry=purchase_entry,
+            posting_batch=purchase_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=2001,
+            detail_id=1,
+            voucher_no='PUR-2001',
+            product=flour,
+            location=self.godown,
+            uom=kg_uom,
+            base_uom=gms_uom,
+            qty=Decimal('1.0000'),
+            uom_factor=Decimal('1000'),
+            base_qty=Decimal('1000.0000'),
+            unit_cost=Decimal('0.0400'),
+            ext_cost=Decimal('40.00'),
+            cost_source=InventoryMove.CostSource.PURCHASE,
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            destination_location=self.godown,
+            movement_reason='purchase',
+            posting_date='2025-04-12',
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        sales_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=2002,
+            voucher_no='SAL-2002',
+            created_by=self.user,
+            is_active=True,
+        )
+        sales_entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=2002,
+            voucher_no='SAL-2002',
+            voucher_date='2025-04-15',
+            posting_date='2025-04-15',
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=sales_batch,
+            narration='Sale of flour',
+            created_by=self.user,
+        )
+        InventoryMove.objects.create(
+            entry=sales_entry,
+            posting_batch=sales_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=2002,
+            detail_id=1,
+            voucher_no='SAL-2002',
+            product=flour,
+            location=self.godown,
+            uom=gms_uom,
+            base_uom=gms_uom,
+            qty=Decimal('250.0000'),
+            uom_factor=Decimal('1'),
+            base_qty=Decimal('250.0000'),
+            unit_cost=Decimal('0.0400'),
+            ext_cost=Decimal('10.00'),
+            cost_source=InventoryMove.CostSource.FIFO,
+            move_type=InventoryMove.MoveType.OUT,
+            movement_nature=InventoryMove.MovementNature.SALE,
+            source_location=self.godown,
+            movement_reason='sale',
+            posting_date='2025-04-15',
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        report = build_inventory_stock_summary(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date='2025-04-30',
+        )
+        flour_row = next(row for row in report['rows'] if row['product_name'] == 'Flour')
+        self.assertEqual(flour_row['closing_qty'], '750.0000')
+
     def test_inventory_stock_summary_export_routes_return_files(self):
         excel = self.client.get(reverse('reports_api:inventory-stock-summary-excel'), self._scope())
         csv_response = self.client.get(reverse('reports_api:inventory-stock-summary-csv'), self._scope())
