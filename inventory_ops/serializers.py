@@ -45,6 +45,39 @@ class GodownLookupSerializer(serializers.ModelSerializer):
         ]
 
 
+class InventoryEntryMetaProductSerializer(serializers.ModelSerializer):
+    productcategory_name = serializers.CharField(source="productcategory.pcategoryname", read_only=True, allow_null=True)
+    brand_name = serializers.CharField(source="brand.brandname", read_only=True, allow_null=True)
+    base_uom_code = serializers.CharField(source="base_uom.code", read_only=True, allow_null=True)
+    uom = serializers.CharField(source="base_uom.code", read_only=True, allow_null=True)
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "productname",
+            "productdesc",
+            "sku",
+            "uom",
+            "base_uom_id",
+            "base_uom_code",
+            "purchase_rate",
+            "selling_price",
+            "productcategory_name",
+            "brand_name",
+            "product_status",
+            "item_classification",
+            "is_service",
+            "is_batch_managed",
+            "is_serialized",
+            "is_expiry_tracked",
+            "shelf_life_days",
+            "expiry_warning_days",
+            "purchase_behavior",
+            "default_asset_category",
+        ]
+
+
 class GodownMasterSerializer(serializers.ModelSerializer):
     entity_name = serializers.CharField(source="entity.entityname", read_only=True)
     subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True, allow_null=True)
@@ -138,6 +171,7 @@ class GodownWriteSerializer(serializers.Serializer):
 
 class InventoryTransferLineSerializer(serializers.Serializer):
     product = serializers.IntegerField()
+    uom_id = serializers.IntegerField(required=False, allow_null=True)
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
     batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -179,6 +213,7 @@ class InventoryTransferCreateSerializer(serializers.Serializer):
 
 class InventoryTransferLineResponseSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField()
+    uom_id = serializers.IntegerField(read_only=True, allow_null=True)
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
     uom_name = serializers.CharField(source="uom.code", read_only=True, allow_null=True)
@@ -189,6 +224,7 @@ class InventoryTransferLineResponseSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "product_id",
+            "uom_id",
             "product_name",
             "sku",
             "uom_name",
@@ -217,6 +253,7 @@ class InventoryTransferResponseSerializer(serializers.ModelSerializer):
     lines = InventoryTransferLineResponseSerializer(many=True, read_only=True)
     total_qty = serializers.SerializerMethodField()
     total_value = serializers.SerializerMethodField()
+    action_flags = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryTransfer
@@ -238,6 +275,7 @@ class InventoryTransferResponseSerializer(serializers.ModelSerializer):
             "destination_location_display_name",
             "total_qty",
             "total_value",
+            "action_flags",
             "lines",
         ]
 
@@ -249,6 +287,10 @@ class InventoryTransferResponseSerializer(serializers.ModelSerializer):
         total = sum((Decimal(line.qty or 0) * Decimal(line.unit_cost or 0) for line in obj.lines.all()), Decimal("0"))
         return total.quantize(Decimal("0.01"))
 
+    def get_action_flags(self, obj):
+        action_flags_by_id = self.context.get("action_flags_by_id") or {}
+        return action_flags_by_id.get(getattr(obj, "id", None), {})
+
 
 class InventoryTransferListSerializer(serializers.ModelSerializer):
     source_location_name = serializers.CharField(source="source_location.name", read_only=True)
@@ -257,6 +299,7 @@ class InventoryTransferListSerializer(serializers.ModelSerializer):
     destination_location_display_name = serializers.CharField(source="destination_location.display_name", read_only=True, allow_null=True)
     total_qty = serializers.SerializerMethodField()
     total_value = serializers.SerializerMethodField()
+    action_flags = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryTransfer
@@ -274,6 +317,7 @@ class InventoryTransferListSerializer(serializers.ModelSerializer):
             "destination_location_display_name",
             "total_qty",
             "total_value",
+            "action_flags",
         ]
 
     def get_total_qty(self, obj):
@@ -284,9 +328,14 @@ class InventoryTransferListSerializer(serializers.ModelSerializer):
         total = sum((Decimal(line.qty or 0) * Decimal(line.unit_cost or 0) for line in obj.lines.all()), Decimal("0"))
         return float(total.quantize(Decimal("0.01")))
 
+    def get_action_flags(self, obj):
+        action_flags_by_id = self.context.get("action_flags_by_id") or {}
+        return action_flags_by_id.get(getattr(obj, "id", None), {})
+
 
 class InventoryAdjustmentLineSerializer(serializers.Serializer):
     product = serializers.IntegerField()
+    uom_id = serializers.IntegerField(required=False, allow_null=True)
     direction = serializers.ChoiceField(choices=[choice[0] for choice in InventoryAdjustmentLine.Direction.choices])
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
@@ -326,6 +375,7 @@ class InventoryAdjustmentCreateSerializer(serializers.Serializer):
 
 class InventoryAdjustmentLineResponseSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField()
+    uom_id = serializers.IntegerField(read_only=True, allow_null=True)
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
     uom_name = serializers.CharField(source="uom.code", read_only=True, allow_null=True)
@@ -336,6 +386,7 @@ class InventoryAdjustmentLineResponseSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "product_id",
+            "uom_id",
             "product_name",
             "sku",
             "uom_name",
@@ -354,12 +405,14 @@ class InventoryAdjustmentLineResponseSerializer(serializers.ModelSerializer):
 
 
 class InventoryAdjustmentResponseSerializer(serializers.ModelSerializer):
+    location_id = serializers.IntegerField(read_only=True, allow_null=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
     location_code = serializers.CharField(source="location.code", read_only=True)
     location_display_name = serializers.CharField(source="location.display_name", read_only=True, allow_null=True)
     lines = InventoryAdjustmentLineResponseSerializer(many=True, read_only=True)
     total_qty = serializers.SerializerMethodField()
     total_value = serializers.SerializerMethodField()
+    action_flags = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryAdjustment
@@ -371,11 +424,13 @@ class InventoryAdjustmentResponseSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "location_id",
             "location_name",
             "location_code",
             "location_display_name",
             "total_qty",
             "total_value",
+            "action_flags",
             "lines",
         ]
 
@@ -387,12 +442,18 @@ class InventoryAdjustmentResponseSerializer(serializers.ModelSerializer):
         total = sum((Decimal(line.qty or 0) * Decimal(line.unit_cost or 0) for line in obj.lines.all()), Decimal("0"))
         return float(total.quantize(Decimal("0.01")))
 
+    def get_action_flags(self, obj):
+        action_flags_by_id = self.context.get("action_flags_by_id") or {}
+        return action_flags_by_id.get(getattr(obj, "id", None), {})
+
 
 class InventoryAdjustmentListSerializer(serializers.ModelSerializer):
+    location_id = serializers.IntegerField(read_only=True, allow_null=True)
     location_name = serializers.CharField(source="location.name", read_only=True, allow_null=True)
     location_display_name = serializers.CharField(source="location.display_name", read_only=True, allow_null=True)
     total_qty = serializers.SerializerMethodField()
     total_value = serializers.SerializerMethodField()
+    action_flags = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryAdjustment
@@ -404,10 +465,12 @@ class InventoryAdjustmentListSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "location_id",
             "location_name",
             "location_display_name",
             "total_qty",
             "total_value",
+            "action_flags",
         ]
 
     def get_total_qty(self, obj):
@@ -417,3 +480,7 @@ class InventoryAdjustmentListSerializer(serializers.ModelSerializer):
     def get_total_value(self, obj):
         total = sum((Decimal(line.qty or 0) * Decimal(line.unit_cost or 0) for line in obj.lines.all()), Decimal("0"))
         return float(total.quantize(Decimal("0.01")))
+
+    def get_action_flags(self, obj):
+        action_flags_by_id = self.context.get("action_flags_by_id") or {}
+        return action_flags_by_id.get(getattr(obj, "id", None), {})

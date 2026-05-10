@@ -8,7 +8,8 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 
-from catalog.models import BarcodeLabelTemplate, HsnSac, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPrice, UnitOfMeasure
+from assets.models import AssetCategory
+from catalog.models import BarcodeLabelTemplate, HsnSac, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
 from catalog.serializers import ProductBarcodeManageSerializer, ProductSerializer
 from catalog.transaction_products import TransactionProductCatalogService
 from catalog.views import ProductBarcodeDownloadPDFAPIView
@@ -61,6 +62,11 @@ class CatalogPhase1Tests(TestCase):
             code="BOX",
             description="Boxes",
         )
+        self.asset_category = AssetCategory.objects.create(
+            entity=self.entity,
+            code="CWIP-COMP",
+            name="Computer CWIP",
+        )
 
     def _valid_payload(self, **overrides):
         payload = {
@@ -75,6 +81,7 @@ class CatalogPhase1Tests(TestCase):
             "purchase_account": None,
             "is_service": False,
             "item_classification": ProductClassification.TRADING,
+            "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
             "is_batch_managed": False,
             "is_serialized": False,
             "is_expiry_tracked": True,
@@ -104,6 +111,7 @@ class CatalogPhase1Tests(TestCase):
             "purchase_account": None,
             "is_service": False,
             "item_classification": ProductClassification.TRADING,
+            "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
             "is_batch_managed": False,
             "is_serialized": False,
             "is_expiry_tracked": True,
@@ -151,11 +159,41 @@ class CatalogPhase1Tests(TestCase):
 
         self.assertTrue(product.is_service)
         self.assertEqual(product.item_classification, ProductClassification.SERVICE)
+        self.assertEqual(product.purchase_behavior, ProductPurchaseBehavior.EXPENSE)
         self.assertFalse(product.is_batch_managed)
         self.assertFalse(product.is_serialized)
         self.assertFalse(product.is_expiry_tracked)
         self.assertIsNone(product.shelf_life_days)
         self.assertEqual(product.expiry_warning_days, 0)
+
+    def test_goods_product_can_be_marked_as_asset_purchase_behavior(self):
+        serializer = ProductSerializer(
+            data=self._valid_payload(
+                sku="AST-001",
+                purchase_behavior=ProductPurchaseBehavior.ASSET,
+                default_asset_category=self.asset_category.id,
+            ),
+            context={"entity": self.entity},
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        product = serializer.save(entity=self.entity)
+
+        self.assertFalse(product.is_service)
+        self.assertEqual(product.purchase_behavior, ProductPurchaseBehavior.ASSET)
+        self.assertEqual(product.default_asset_category, self.asset_category)
+
+    def test_asset_purchase_behavior_requires_default_asset_category(self):
+        serializer = ProductSerializer(
+            data=self._valid_payload(
+                sku="AST-002",
+                purchase_behavior=ProductPurchaseBehavior.ASSET,
+            ),
+            context={"entity": self.entity},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("default_asset_category", serializer.errors)
 
     def test_ecomm_95_requires_service_item(self):
         serializer = ProductSerializer(

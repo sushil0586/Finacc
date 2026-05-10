@@ -1,15 +1,22 @@
+from datetime import date, datetime, timezone as dt_timezone
+from io import StringIO
+
+from django.core.management import call_command
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from Authentication.models import User
+from assets.models import AssetCategory, DepreciationRun, DepreciationRunLine, FixedAsset
+from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity, gstin_validator
 from entity.models import EntityBankAccountV2 as BankAccount
 from entity.onboarding_serializers import EntityOnboardingCreateSerializer, EntityOnboardingUpdateSerializer
 from entity.onboarding_services import EntityOnboardingService
 from entity.seeding import EntitySeedService
 from financial.models import FinancialSettings, Ledger, account, accountHead
+from purchase.models.purchase_core import PurchaseInvoiceHeader
 from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
@@ -921,3 +928,191 @@ class RegisterAndEntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["user"]["email"], "flatfounder@example.com")
+
+
+class ResetTransactionalDataCommandTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="reset-assets",
+            email="reset-assets@example.com",
+            password="Password@123",
+        )
+        self.country = Country.objects.create(countryname="India", countrycode="IN")
+        self.state = State.objects.create(statename="Karnataka", statecode="KA", country=self.country)
+        self.district = District.objects.create(districtname="Bangalore", districtcode="BLR", state=self.state)
+        self.city = City.objects.create(cityname="Bangalore", citycode="BLR", pincode="560001", distt=self.district)
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        self.constitution = Constitution.objects.create(
+            constitutionname="Private Limited",
+            constitutiondesc="Private Limited",
+            constcode="PVT",
+            createdby=self.user,
+        )
+        self.bank = BankDetail.objects.create(bankname="ABC", bankcode="ABC", ifsccode="ABC0001")
+
+        self.entity = Entity.objects.create(
+            entityname="Reset Entity",
+            entitydesc="Reset Entity",
+            legalname="Reset Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+        self.foreign_entity = Entity.objects.create(
+            entityname="Foreign Reset Entity",
+            entitydesc="Foreign Reset Entity",
+            legalname="Foreign Reset Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main Branch", is_head_office=True)
+        self.foreign_subentity = SubEntity.objects.create(entity=self.foreign_entity, subentityname="Foreign Branch", is_head_office=True)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=datetime(2026, 4, 1, tzinfo=dt_timezone.utc),
+            finendyear=datetime(2027, 3, 31, tzinfo=dt_timezone.utc),
+            createdby=self.user,
+        )
+        self.foreign_entityfin = EntityFinancialYear.objects.create(
+            entity=self.foreign_entity,
+            desc="FY 2026-27",
+            finstartyear=datetime(2026, 4, 1, tzinfo=dt_timezone.utc),
+            finendyear=datetime(2027, 3, 31, tzinfo=dt_timezone.utc),
+            createdby=self.user,
+        )
+
+        self.asset_head = accountHead.objects.create(entity=self.entity, name="Asset Head", code=1001, drcreffect="Debit")
+        self.foreign_asset_head = accountHead.objects.create(entity=self.foreign_entity, name="Foreign Asset Head", code=2001, drcreffect="Debit")
+        self.asset_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1010, name="Asset Ledger", accounthead=self.asset_head, createdby=self.user)
+        self.foreign_asset_ledger = Ledger.objects.create(entity=self.foreign_entity, ledger_code=2010, name="Foreign Asset Ledger", accounthead=self.foreign_asset_head, createdby=self.user)
+
+        self.category = AssetCategory.objects.create(
+            entity=self.entity,
+            code="CAT-001",
+            name="Office Equipment",
+            asset_ledger=self.asset_ledger,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        self.foreign_category = AssetCategory.objects.create(
+            entity=self.foreign_entity,
+            code="CAT-002",
+            name="Foreign Equipment",
+            asset_ledger=self.foreign_asset_ledger,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+    def test_reset_transactional_data_deletes_scoped_asset_data(self):
+        vendor = account.objects.create(entity=self.entity, accountname="Vendor One")
+        product_category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Equipment")
+        uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="Laptop",
+            sku="LAP-001",
+            productcategory=product_category,
+            base_uom=uom,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            default_asset_category=self.category,
+        )
+
+        purchase_header = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=vendor,
+            bill_date=date(2026, 4, 10),
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            doc_code="PINV",
+            doc_no=1001,
+            purchase_number="PI/PINV/2026/1001",
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA,
+        )
+        scoped_asset = FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.category,
+            asset_code="FA-000001",
+            asset_name="Scoped Asset",
+            acquisition_date=date(2026, 4, 10),
+            gross_block="50000.00",
+            residual_value="0.00",
+            net_book_value="50000.00",
+            status=FixedAsset.AssetStatus.CAPITAL_WIP,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        purchase_header.lines.create(
+            line_no=1,
+            product=product,
+            product_desc="Scoped Asset",
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            uom=uom,
+            qty="1.0000",
+            rate="50000.00",
+            taxable_value="50000.00",
+            line_total="59000.00",
+            asset_record=scoped_asset,
+        )
+
+        run = DepreciationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            run_code="DEP-001",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            posting_date=date(2026, 4, 30),
+            status=DepreciationRun.RunStatus.CALCULATED,
+            depreciation_method="SLM",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        run_line = DepreciationRunLine.objects.create(
+            run=run,
+            asset=scoped_asset,
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            depreciation_amount="1000.00",
+            closing_accumulated_depreciation="1000.00",
+            closing_net_book_value="49000.00",
+        )
+
+        foreign_asset = FixedAsset.objects.create(
+            entity=self.foreign_entity,
+            entityfinid=self.foreign_entityfin,
+            subentity=self.foreign_subentity,
+            category=self.foreign_category,
+            asset_code="FA-FOREIGN-1",
+            asset_name="Foreign Asset",
+            acquisition_date=date(2026, 4, 1),
+            gross_block="25000.00",
+            residual_value="0.00",
+            net_book_value="25000.00",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+        out = StringIO()
+        call_command(
+            "reset_transactional_data",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            subentity=self.subentity.id,
+            stdout=out,
+        )
+
+        self.assertFalse(PurchaseInvoiceHeader.objects.filter(id=purchase_header.id).exists())
+        self.assertFalse(DepreciationRunLine.objects.filter(id=run_line.id).exists())
+        self.assertFalse(DepreciationRun.objects.filter(id=run.id).exists())
+        self.assertFalse(FixedAsset.objects.filter(id=scoped_asset.id).exists())
+        self.assertTrue(FixedAsset.objects.filter(id=foreign_asset.id).exists())
+        self.assertIn("Asset depreciation run lines: 1", out.getvalue())
+        self.assertIn("Asset depreciation runs: 1", out.getvalue())
+        self.assertIn("Fixed assets: 1", out.getvalue())

@@ -19,6 +19,7 @@ from purchase.models.purchase_core import (
     TaxRegime,
     Status,
 )
+from catalog.models import ProductPurchaseBehavior
 from purchase.serializers.purchase_charge import PurchaseChargeLineSerializer
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
@@ -58,6 +59,9 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     product_name = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
+    asset_record_id = serializers.IntegerField(source="asset_record.id", read_only=True)
+    asset_record_code = serializers.CharField(source="asset_record.asset_code", read_only=True)
+    asset_record_status = serializers.CharField(source="asset_record.status", read_only=True)
 
     class Meta:
         model = PurchaseInvoiceLine
@@ -68,6 +72,7 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "purchase_account",
             "product_desc",
             "is_service",
+            "purchase_behavior",
             "hsn_sac",
             "batch_number",
             "manufacture_date",
@@ -78,6 +83,9 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "product_name",
             "uom_code",
             "taxability_name",
+            "asset_record_id",
+            "asset_record_code",
+            "asset_record_status",
 
             "qty",
             "free_qty",
@@ -152,7 +160,12 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
 
         # Service-style line support:
         # allow no product, but require purchase_account + description.
+        requested_behavior = attrs.get("purchase_behavior")
         if product is None:
+            if requested_behavior and requested_behavior != ProductPurchaseBehavior.EXPENSE:
+                raise serializers.ValidationError(
+                    {"purchase_behavior": "Non-product purchase lines can only use expense behavior."}
+                )
             if purchase_account is None:
                 raise serializers.ValidationError(
                     {"purchase_account": "purchase_account is required when product is not provided."}
@@ -161,8 +174,17 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"product_desc": "Description is required when product is not provided."}
                 )
-            attrs["is_service"] = True
+            attrs["is_service"] = bool(attrs.get("is_service", True))
+            attrs["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
         else:
+            attrs["purchase_behavior"] = (
+                attrs.get("purchase_behavior")
+                or getattr(product, "purchase_behavior", ProductPurchaseBehavior.INVENTORY)
+                or ProductPurchaseBehavior.INVENTORY
+            )
+            if bool(getattr(product, "is_service", False)):
+                attrs["is_service"] = True
+                attrs["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
             batch_number = (attrs.get("batch_number") or "").strip()
             manufacture_date = attrs.get("manufacture_date")
             expiry_date = attrs.get("expiry_date")
@@ -172,6 +194,21 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
             if manufacture_date and expiry_date and manufacture_date > expiry_date:
                 raise serializers.ValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
+
+        if bool(attrs.get("is_service")) and attrs.get("purchase_behavior") != ProductPurchaseBehavior.EXPENSE:
+            attrs["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
+
+        if attrs.get("purchase_behavior") == ProductPurchaseBehavior.EXPENSE:
+            effective_purchase_account = purchase_account or getattr(product, "purchase_account", None)
+            if effective_purchase_account is None:
+                raise serializers.ValidationError(
+                    {"purchase_account": "Expense purchase lines require an expense/purchase account on the line or product."}
+                )
+        elif attrs.get("purchase_behavior") == ProductPurchaseBehavior.ASSET:
+            if product is None or getattr(product, "default_asset_category", None) is None:
+                raise serializers.ValidationError(
+                    {"product": "Asset purchase lines require a product with a default asset category."}
+                )
 
         free_qty = q4(attrs.get("free_qty"))
         if free_qty < 0:

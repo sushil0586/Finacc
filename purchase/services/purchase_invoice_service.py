@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models import Max, Q
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
-from catalog.models import Product
+from catalog.models import Product, ProductPurchaseBehavior
 from financial.gstin import validate_financial_gstin
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from withholding.models import WithholdingBaseRule
@@ -489,12 +489,16 @@ class PurchaseInvoiceService:
             product_id = getattr(product_ref, "pk", product_ref)
             purchase_account_id = ln.get("purchase_account")
             product_desc = (ln.get("product_desc") or "").strip()
+            requested_behavior = ln.get("purchase_behavior")
             if not product_id:
+                if requested_behavior and requested_behavior != ProductPurchaseBehavior.EXPENSE:
+                    raise ValueError(f"Line {i}: non-product purchase lines can only use expense behavior.")
                 if not purchase_account_id:
                     raise ValueError(f"Line {i}: purchase_account is required when product is not provided.")
                 if not product_desc:
                     raise ValueError(f"Line {i}: product_desc is required when product is not provided.")
-                ln["is_service"] = True
+                ln["is_service"] = bool(ln.get("is_service", True))
+                ln["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
 
             # qty sanity
             qty = q4(ln.get("qty"))
@@ -507,9 +511,18 @@ class PurchaseInvoiceService:
 
             if product_id:
                 product = Product.objects.filter(pk=int(product_id)).only(
-                    "id", "is_batch_managed", "is_expiry_tracked"
+                    "id", "is_batch_managed", "is_expiry_tracked", "is_service", "purchase_behavior", "purchase_account_id", "default_asset_category_id"
                 ).first()
                 if product:
+                    if bool(getattr(product, "is_service", False)):
+                        ln["is_service"] = True
+                        ln["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
+                    else:
+                        ln["purchase_behavior"] = (
+                            ln.get("purchase_behavior")
+                            or getattr(product, "purchase_behavior", ProductPurchaseBehavior.INVENTORY)
+                            or ProductPurchaseBehavior.INVENTORY
+                        )
                     batch_number = str(ln.get("batch_number") or "").strip()
                     manufacture_date = ln.get("manufacture_date") or None
                     expiry_date = ln.get("expiry_date") or None
@@ -519,6 +532,25 @@ class PurchaseInvoiceService:
                         raise ValueError(f"Line {i}: expiry_date is required for expiry-tracked products.")
                     if manufacture_date and expiry_date and str(manufacture_date) > str(expiry_date):
                         raise ValueError(f"Line {i}: expiry_date must be on or after manufacture_date.")
+
+            if bool(ln.get("is_service", False)) and ln.get("purchase_behavior") != ProductPurchaseBehavior.EXPENSE:
+                ln["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
+
+            if ln.get("purchase_behavior") == ProductPurchaseBehavior.EXPENSE:
+                effective_purchase_account_id = purchase_account_id
+                if not effective_purchase_account_id and product_id:
+                    effective_purchase_account_id = getattr(product, "purchase_account_id", None) if product else None
+                if not effective_purchase_account_id:
+                    raise ValueError(
+                        f"Line {i}: expense purchase lines require an expense/purchase account on the line or product."
+                    )
+            elif ln.get("purchase_behavior") == ProductPurchaseBehavior.ASSET:
+                if not product_id:
+                    raise ValueError(f"Line {i}: asset purchase lines must use a product with a default asset category.")
+                if not getattr(product, "default_asset_category_id", None):
+                    raise ValueError(
+                        f"Line {i}: asset product is missing a default asset category."
+                    )
 
             # discount sanity (if present)
             dt = (ln.get("discount_type") or "N")
@@ -594,6 +626,11 @@ class PurchaseInvoiceService:
         Keeps all non-monetary fields from input line.
         """
         ln = dict(line)
+        purchase_behavior = (
+            ln.get("purchase_behavior")
+            or (ProductPurchaseBehavior.EXPENSE if bool(ln.get("is_service", False)) else ProductPurchaseBehavior.INVENTORY)
+        )
+        ln["purchase_behavior"] = purchase_behavior
 
         qty = q4(ln.get("qty"))
         rate = q2(ln.get("rate"))

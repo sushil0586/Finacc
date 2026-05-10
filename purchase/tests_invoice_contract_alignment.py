@@ -144,8 +144,11 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.assertTrue(contract["save_reload"]["use_save_response_as_truth"])
         self.assertEqual(contract["header_fields"]["due_date"]["ui_state"], "provisional")
         self.assertEqual(contract["header_fields"]["total_taxable"]["ui_state"], "read_only")
+        self.assertEqual(contract["line_fields"]["purchase_behavior"]["ui_state"], "editable")
         self.assertEqual(contract["line_fields"]["cgst_amount"]["ui_state"], "read_only")
         self.assertEqual(contract["line_fields"]["cess_amount"]["save_behavior"], "recomputed_on_save")
+        self.assertIn("purchase_behaviors", response.data)
+        self.assertTrue(any(row["value"] == "expense" for row in response.data["purchase_behaviors"]))
 
     @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
     def test_purchase_form_meta_uses_cache_on_repeated_requests(self):

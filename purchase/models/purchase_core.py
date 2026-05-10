@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.utils import timezone
 from geography.models import State
 from financial.models import Ledger, account
-from catalog.models import Product,UnitOfMeasure
+from catalog.models import Product, UnitOfMeasure, ProductPurchaseBehavior
 from entity.models import Godown
 
 User = settings.AUTH_USER_MODEL
@@ -335,6 +335,19 @@ class PurchaseInvoiceLine(models.Model):
     )
     product_desc = models.CharField(max_length=500, null=True, blank=True)
     is_service = models.BooleanField(default=False)
+    purchase_behavior = models.CharField(
+        max_length=20,
+        choices=ProductPurchaseBehavior.choices,
+        default=ProductPurchaseBehavior.INVENTORY,
+        db_index=True,
+    )
+    asset_record = models.ForeignKey(
+        "assets.FixedAsset",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="source_purchase_lines",
+    )
     hsn_sac = models.CharField(max_length=10, null=True, blank=True)
     batch_number = models.CharField(max_length=80, blank=True, default="")
     manufacture_date = models.DateField(null=True, blank=True)
@@ -402,6 +415,7 @@ class PurchaseInvoiceLine(models.Model):
             models.Index(fields=["header", "product"], name="ix_pur_line_header_product"),
             models.Index(fields=["header", "hsn_sac"], name="ix_pur_line_header_hsn"),
             models.Index(fields=["header", "is_service"], name="ix_pur_line_hdr_srv"),
+            models.Index(fields=["header", "purchase_behavior"], name="ix_pur_line_hdr_pbeh"),
             models.Index(fields=["product", "batch_number"], name="ix_pur_line_product_batch"),
             models.Index(fields=["product", "expiry_date"], name="ix_pur_line_product_expiry"),
         ]

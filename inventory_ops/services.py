@@ -10,7 +10,7 @@ from django.db import transaction
 from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 
-from catalog.models import Product
+from catalog.models import Product, ProductUomConversion, UnitOfMeasure
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.models import Entry, EntryStatus, InventoryMove, TxnType
@@ -29,6 +29,10 @@ from .models import (
 
 def _q4(value) -> Decimal:
     return Decimal(str(value or 0)).quantize(Decimal("0.0000"))
+
+
+def _q8(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.00000001"))
 
 
 def _q4_or_none(value) -> Decimal | None:
@@ -113,9 +117,42 @@ def _available_value_totals(*, entity_id: int, product_id: int, location_id: int
 
 def _load_product_for_line(*, entity_id: int, product_id: int, line_kind: str, line_no: int) -> Product:
     try:
-        return Product.objects.select_related("base_uom").get(id=product_id, entity_id=entity_id)
+        return Product.objects.select_related("base_uom").prefetch_related("uom_conversions__from_uom", "uom_conversions__to_uom").get(id=product_id, entity_id=entity_id)
     except Product.DoesNotExist as exc:
         raise ValidationError({"lines": [f"Invalid product selected for {line_kind} line {line_no}."]}) from exc
+
+
+def resolve_inventory_uom(*, product: Product, raw_uom_id: int | str | None, line_kind: str, line_no: int) -> tuple[UnitOfMeasure | None, Decimal]:
+    base_uom = getattr(product, "base_uom", None)
+    base_uom_id = getattr(product, "base_uom_id", None)
+    if not base_uom_id or base_uom is None:
+        return None, Decimal("1")
+
+    selected_uom_id = int(raw_uom_id or 0) or int(base_uom_id)
+    if selected_uom_id == int(base_uom_id):
+        return base_uom, Decimal("1")
+
+    conversions = list(getattr(product, "uom_conversions", []).all()) if hasattr(getattr(product, "uom_conversions", None), "all") else list(getattr(product, "uom_conversions", []) or [])
+    for conv in conversions:
+        factor = Decimal(str(conv.factor or 0))
+        if factor <= 0:
+            continue
+        if conv.from_uom_id == int(base_uom_id) and conv.to_uom_id == selected_uom_id:
+            return conv.to_uom, _q8(Decimal("1") / factor)
+        if conv.to_uom_id == int(base_uom_id) and conv.from_uom_id == selected_uom_id:
+            return conv.from_uom, _q8(factor)
+
+    linked_uom_ids = {int(base_uom_id)}
+    for conv in conversions:
+        linked_uom_ids.add(int(conv.from_uom_id))
+        linked_uom_ids.add(int(conv.to_uom_id))
+    if selected_uom_id not in linked_uom_ids:
+        raise ValidationError({"lines": [f"Selected UOM is not valid for {line_kind} line {line_no}."]})
+
+    fallback_uom = UnitOfMeasure.objects.filter(id=selected_uom_id, entity_id=product.entity_id, isactive=True).first()
+    if fallback_uom is None:
+        raise ValidationError({"lines": [f"Selected UOM is not available for {line_kind} line {line_no}."]})
+    raise ValidationError({"lines": [f"Missing UOM conversion for {line_kind} line {line_no}."]})
 
 
 def _resolve_unit_cost_for_line(*, product: Product, raw_line: dict, line_kind: str, line_no: int, require_mode: str) -> Decimal:
@@ -134,6 +171,35 @@ def _resolve_unit_cost_for_line(*, product: Product, raw_line: dict, line_kind: 
             {"lines": [f"Unit cost is required for {line_kind} line {line_no} because stock value is being introduced."]}
         )
     return default_cost
+
+
+def _derive_adjustment_default_unit_cost(
+    *,
+    entity_id: int,
+    product: Product,
+    location_id: int,
+    batch_number: str,
+) -> Decimal:
+    available_qty, available_value = _available_value_totals(
+        entity_id=entity_id,
+        product_id=product.id,
+        location_id=location_id,
+        batch_number=batch_number,
+    )
+    if available_qty > Decimal("0.0000") and available_value > Decimal("0.0000"):
+        return _q4(available_value / available_qty)
+    return _default_unit_cost(product)
+
+
+def _selected_uom_unit_cost(*, base_unit_cost: Decimal, factor_to_base: Decimal) -> Decimal:
+    return _q4(Decimal(base_unit_cost or 0) * Decimal(factor_to_base or 1))
+
+
+def _base_unit_cost_from_selected(*, selected_uom_cost: Decimal, factor_to_base: Decimal) -> Decimal:
+    factor = Decimal(factor_to_base or 1)
+    if factor <= 0:
+        return _q4(selected_uom_cost)
+    return _q4(Decimal(selected_uom_cost or 0) / factor)
 
 
 def _get_inventory_ops_settings(*, entity_id: int, subentity_id: int | None) -> InventoryOpsSettings:
@@ -326,6 +392,13 @@ class InventoryTransferService:
             qty = _q4(raw_line["qty"])
             if qty <= 0:
                 continue
+            selected_uom, factor_to_base = resolve_inventory_uom(
+                product=product,
+                raw_uom_id=raw_line.get("uom_id"),
+                line_kind="transfer",
+                line_no=idx,
+            )
+            base_qty = _q4(qty * factor_to_base)
             batch_number, manufacture_date, expiry_date = _extract_batch_fields(
                 product=product,
                 raw_line=raw_line,
@@ -342,32 +415,34 @@ class InventoryTransferService:
                 entity_id=payload["entity"],
                 product=product,
                 location_id=source_location_id,
-                required_qty=qty,
+                required_qty=base_qty,
                 batch_number=batch_number,
                 reserved_by_key=reserved_stock,
                 line_kind="transfer",
                 line_no=idx,
             )
             if explicit_cost is None or explicit_cost <= Decimal("0.0000") or not allow_manual_cost:
-                unit_cost = _derive_transfer_unit_cost(
+                posting_unit_cost = _derive_transfer_unit_cost(
                     entity_id=payload["entity"],
                     product=product,
                     source_location_id=source_location_id,
                     batch_number=batch_number,
                 )
+                line_unit_cost = _selected_uom_unit_cost(base_unit_cost=posting_unit_cost, factor_to_base=factor_to_base)
             else:
-                unit_cost = explicit_cost
+                line_unit_cost = explicit_cost
+                posting_unit_cost = _base_unit_cost_from_selected(selected_uom_cost=line_unit_cost, factor_to_base=factor_to_base)
 
             line_objs.append(
                 InventoryTransferLine(
                     transfer=transfer,
                     product=product,
-                    uom=getattr(product, "base_uom", None),
+                    uom=selected_uom or getattr(product, "base_uom", None),
                     batch_number=batch_number,
                     manufacture_date=manufacture_date,
                     expiry_date=expiry_date,
                     qty=qty,
-                    unit_cost=unit_cost,
+                    unit_cost=line_unit_cost,
                     note=raw_line.get("note") or "",
                 )
             )
@@ -376,11 +451,11 @@ class InventoryTransferService:
                 IMInput(
                     product_id=product.id,
                     qty=qty,
-                    base_qty=qty,
-                    uom_id=getattr(product, "base_uom_id", None),
+                    base_qty=base_qty,
+                    uom_id=getattr(selected_uom, "id", None) or getattr(product, "base_uom_id", None),
                     base_uom_id=getattr(product, "base_uom_id", None),
-                    uom_factor=Decimal("1"),
-                    unit_cost=unit_cost,
+                    uom_factor=factor_to_base,
+                    unit_cost=posting_unit_cost,
                     batch_number=batch_number,
                     manufacture_date=manufacture_date,
                     expiry_date=expiry_date,
@@ -399,11 +474,11 @@ class InventoryTransferService:
                 IMInput(
                     product_id=product.id,
                     qty=qty,
-                    base_qty=qty,
-                    uom_id=getattr(product, "base_uom_id", None),
+                    base_qty=base_qty,
+                    uom_id=getattr(selected_uom, "id", None) or getattr(product, "base_uom_id", None),
                     base_uom_id=getattr(product, "base_uom_id", None),
-                    uom_factor=Decimal("1"),
-                    unit_cost=unit_cost,
+                    uom_factor=factor_to_base,
+                    unit_cost=posting_unit_cost,
                     batch_number=batch_number,
                     manufacture_date=manufacture_date,
                     expiry_date=expiry_date,
@@ -554,6 +629,7 @@ class InventoryTransferService:
             "lines": [
                 {
                     "product": line.product_id,
+                    "uom_id": line.uom_id,
                     "qty": line.qty,
                     "unit_cost": line.unit_cost,
                     "batch_number": line.batch_number,
@@ -653,6 +729,13 @@ class InventoryAdjustmentService:
             qty = _q4(raw_line["qty"])
             if qty <= 0:
                 continue
+            selected_uom, factor_to_base = resolve_inventory_uom(
+                product=product,
+                raw_uom_id=raw_line.get("uom_id"),
+                line_kind="adjustment",
+                line_no=idx,
+            )
+            base_qty = _q4(qty * factor_to_base)
             direction = raw_line["direction"]
             batch_number, manufacture_date, expiry_date = _extract_batch_fields(
                 product=product,
@@ -667,36 +750,55 @@ class InventoryAdjustmentService:
                     entity_id=payload["entity"],
                     product=product,
                     location_id=location_id,
-                    required_qty=qty,
+                    required_qty=base_qty,
                     batch_number=batch_number,
                     reserved_by_key=reserved_stock,
                     line_kind="adjustment",
                     line_no=idx,
                 )
-            unit_cost = _resolve_unit_cost_for_line(
-                product=product,
-                raw_line=raw_line,
-                line_kind="adjustment",
-                line_no=idx,
-                require_mode=(
-                    str(_policy_value(settings_obj, "positive_adjustment_cost_mode", "required_if_no_default"))
-                    if direction == InventoryAdjustmentLine.Direction.INCREASE
-                    else "auto_if_available"
-                ),
+            require_mode = (
+                str(_policy_value(settings_obj, "positive_adjustment_cost_mode", "required_if_no_default"))
+                if direction == InventoryAdjustmentLine.Direction.INCREASE
+                else "auto_if_available"
             )
+            explicit_cost = _q4_or_none(raw_line.get("unit_cost"))
+            if direction == InventoryAdjustmentLine.Direction.INCREASE and explicit_cost is None:
+                derived_base_cost = _derive_adjustment_default_unit_cost(
+                    entity_id=payload["entity"],
+                    product=product,
+                    location_id=location_id,
+                    batch_number=batch_number,
+                )
+                if require_mode == "always_required":
+                    raise ValidationError({"lines": [f"Unit cost is required for adjustment line {idx}."]})
+                if require_mode == "required_if_no_default" and derived_base_cost <= Decimal("0.0000"):
+                    raise ValidationError(
+                        {"lines": [f"Unit cost is required for adjustment line {idx} because stock value is being introduced."]}
+                    )
+                line_unit_cost = _selected_uom_unit_cost(base_unit_cost=derived_base_cost, factor_to_base=factor_to_base)
+            else:
+                resolved_selected_uom_cost = _resolve_unit_cost_for_line(
+                    product=product,
+                    raw_line=raw_line,
+                    line_kind="adjustment",
+                    line_no=idx,
+                    require_mode=require_mode,
+                )
+                line_unit_cost = resolved_selected_uom_cost
+            posting_unit_cost = _base_unit_cost_from_selected(selected_uom_cost=line_unit_cost, factor_to_base=factor_to_base)
             move_type = InventoryMove.MoveType.IN_ if direction == InventoryAdjustmentLine.Direction.INCREASE else InventoryMove.MoveType.OUT
 
             line_objs.append(
                 InventoryAdjustmentLine(
                     adjustment=adjustment,
                     product=product,
-                    uom=getattr(product, "base_uom", None),
+                    uom=selected_uom or getattr(product, "base_uom", None),
                     batch_number=batch_number,
                     manufacture_date=manufacture_date,
                     expiry_date=expiry_date,
                     direction=direction,
                     qty=qty,
-                    unit_cost=unit_cost,
+                    unit_cost=line_unit_cost,
                     note=raw_line.get("note") or "",
                 )
             )
@@ -704,11 +806,11 @@ class InventoryAdjustmentService:
                 IMInput(
                     product_id=product.id,
                     qty=qty,
-                    base_qty=qty,
-                    uom_id=getattr(product, "base_uom_id", None),
+                    base_qty=base_qty,
+                    uom_id=getattr(selected_uom, "id", None) or getattr(product, "base_uom_id", None),
                     base_uom_id=getattr(product, "base_uom_id", None),
-                    uom_factor=Decimal("1"),
-                    unit_cost=unit_cost,
+                    uom_factor=factor_to_base,
+                    unit_cost=posting_unit_cost,
                     batch_number=batch_number,
                     manufacture_date=manufacture_date,
                     expiry_date=expiry_date,
@@ -883,6 +985,7 @@ class InventoryAdjustmentService:
             "lines": [
                 {
                     "product": line.product_id,
+                    "uom_id": line.uom_id,
                     "direction": line.direction,
                     "qty": line.qty,
                     "unit_cost": line.unit_cost,
@@ -955,4 +1058,4 @@ class InventoryAdjustmentService:
         adjustment.updated_by_id = user_id
         adjustment.save(update_fields=["status", "narration", "updated_by", "updated_at"])
         adjustment.refresh_from_db()
-        return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id or 0)
+        return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id)

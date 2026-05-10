@@ -12,6 +12,7 @@ from posting.services.posting_service import PostingService, JLInput, IMInput
 from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
+from catalog.models import ProductPurchaseBehavior
 
 
 # =========================
@@ -250,6 +251,10 @@ class PurchaseInvoicePostingAdapter:
             base = q2(getattr(ln, "taxable_value", None) or ZERO2)
             if base <= ZERO2:
                 continue
+            purchase_behavior = (
+                getattr(ln, "purchase_behavior", None)
+                or (ProductPurchaseBehavior.EXPENSE if bool(getattr(ln, "is_service", False)) else ProductPurchaseBehavior.INVENTORY)
+            )
 
             pid = getattr(ln, "product_id", None)
             purchase_ac = (
@@ -272,7 +277,10 @@ class PurchaseInvoicePostingAdapter:
                 detail_id=int(getattr(ln, "id", 0) or 0) or None,
             ))
 
-            if not bool(getattr(ln, "is_service", False)):
+            if (
+                not bool(getattr(ln, "is_service", False))
+                and purchase_behavior == ProductPurchaseBehavior.INVENTORY
+            ):
                 total_goods_taxable = q2(total_goods_taxable + base)
 
             t_cgst = q2(getattr(ln, "cgst_amount", None) or ZERO2)
@@ -562,6 +570,12 @@ class PurchaseInvoicePostingAdapter:
                 if bool(getattr(ln, "is_service", False)):
                     continue
                 if not getattr(ln, "product_id", None):
+                    continue
+                purchase_behavior = (
+                    getattr(ln, "purchase_behavior", None)
+                    or ProductPurchaseBehavior.INVENTORY
+                )
+                if purchase_behavior != ProductPurchaseBehavior.INVENTORY:
                     continue
 
                 qty = q4(getattr(ln, "qty", None) or ZERO4)

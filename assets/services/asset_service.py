@@ -109,6 +109,36 @@ def _ensure_backdated_disposal(*, asset: FixedAsset, disposal_date: date, rule: 
         _policy_block(rule, "Disposal date cannot be earlier than the asset capitalization date.")
 
 
+def _ensure_purchase_intake_ready_for_capitalization(*, asset: FixedAsset) -> None:
+    if not (getattr(asset, "purchase_document_no", None) or asset.source_purchase_lines.exists()):
+        return
+
+    missing: list[str] = []
+    if not asset.category_id:
+        missing.append("asset category")
+    if not (asset.ledger_id or getattr(asset.category, "asset_ledger_id", None)):
+        missing.append("asset ledger")
+    if not (asset.asset_name or "").strip():
+        missing.append("asset name")
+    if not asset.acquisition_date:
+        missing.append("acquisition date")
+    if not asset.useful_life_months or int(asset.useful_life_months) <= 0:
+        missing.append("useful life")
+    if not (asset.depreciation_method or "").strip():
+        missing.append("depreciation method")
+    if not (asset.location_name or "").strip():
+        missing.append("location")
+    if not (asset.custodian_name or "").strip():
+        missing.append("custodian")
+
+    if missing:
+        raise ValueError(
+            "Purchase intake asset review is incomplete. Complete these fields before capitalization: "
+            + ", ".join(missing)
+            + "."
+        )
+
+
 def _ensure_capitalization_threshold(*, asset: FixedAsset, settings: AssetSettings, controls: dict) -> None:
     threshold = q2(asset.category.capitalization_threshold or settings.capitalization_threshold)
     if threshold <= ZERO:
@@ -161,7 +191,12 @@ class AssetService:
 
     @staticmethod
     def asset_queryset(*, entity_id: int, subentity_id: int | None = None, search: str | None = None):
-        qs = FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity").filter(entity_id=entity_id, is_active=True)
+        qs = (
+            FixedAsset.objects
+            .select_related("category", "ledger", "vendor_account", "subentity")
+            .prefetch_related("source_purchase_lines__header")
+            .filter(entity_id=entity_id, is_active=True)
+        )
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
         if search:
@@ -170,6 +205,10 @@ class AssetService:
                 | Q(asset_name__icontains=search)
                 | Q(asset_tag__icontains=search)
                 | Q(serial_number__icontains=search)
+                | Q(purchase_document_no__icontains=search)
+                | Q(vendor_account__accountname__icontains=search)
+                | Q(location_name__icontains=search)
+                | Q(custodian_name__icontains=search)
             )
         return qs.order_by("-id")
 
@@ -270,11 +309,23 @@ class AssetService:
         capitalization_date: date,
         user_id: int | None = None,
         narration: str | None = None,
+        location_name: str | None = None,
+        department_name: str | None = None,
+        custodian_name: str | None = None,
+        notes: str | None = None,
     ) -> FixedAsset:
         if asset.status in {FixedAsset.AssetStatus.ACTIVE, FixedAsset.AssetStatus.DISPOSED, FixedAsset.AssetStatus.SCRAPPED}:
             raise ValueError("Only draft or capital-WIP assets can be capitalized.")
         if asset.capitalization_posting_batch_id:
             raise ValueError("This asset is already capitalized.")
+        if location_name is not None:
+            asset.location_name = location_name
+        if department_name is not None:
+            asset.department_name = department_name
+        if custodian_name is not None:
+            asset.custodian_name = custodian_name
+        if notes is not None:
+            asset.notes = notes
         settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
         asset_ledger_id = asset.ledger_id or asset.category.asset_ledger_id
         if not asset_ledger_id:
@@ -284,6 +335,7 @@ class AssetService:
         amount = q2(asset.gross_block)
         if amount <= ZERO:
             raise ValueError("Asset gross block must be greater than zero for capitalization.")
+        _ensure_purchase_intake_ready_for_capitalization(asset=asset)
         _ensure_capitalization_threshold(asset=asset, settings=settings, controls=controls)
         _ensure_tag_for_posting(asset=asset, settings=settings, controls=controls)
         _ensure_backdated_capitalization(asset=asset, capitalization_date=capitalization_date, rule=controls.get("backdated_capitalization_rule", "warn"))

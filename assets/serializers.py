@@ -70,13 +70,43 @@ class FixedAssetListSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     ledger_name = serializers.CharField(source="ledger.name", read_only=True)
     vendor_name = serializers.CharField(source="vendor_account.accountname", read_only=True)
+    is_purchase_intake = serializers.SerializerMethodField()
+    source_purchase_line_ids = serializers.SerializerMethodField()
+    source_purchase_numbers = serializers.SerializerMethodField()
 
     class Meta:
         model = FixedAsset
         fields = "__all__"
 
+    def get_is_purchase_intake(self, obj):
+        return bool(getattr(obj, "purchase_document_no", None) or getattr(obj, "source_purchase_lines", None))
+
+    def get_source_purchase_line_ids(self, obj):
+        lines = getattr(obj, "source_purchase_lines", None)
+        if lines is None:
+            return []
+        return [line.id for line in lines.all()]
+
+    def get_source_purchase_numbers(self, obj):
+        lines = getattr(obj, "source_purchase_lines", None)
+        if lines is None:
+            return [obj.purchase_document_no] if obj.purchase_document_no else []
+        numbers = []
+        seen = set()
+        for line in lines.all():
+            header = getattr(line, "header", None)
+            number = getattr(header, "purchase_number", None) or getattr(obj, "purchase_document_no", None)
+            if not number or number in seen:
+                continue
+            seen.add(number)
+            numbers.append(number)
+        if not numbers and obj.purchase_document_no:
+            numbers.append(obj.purchase_document_no)
+        return numbers
+
 
 class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSerializer):
+    asset_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     MANUALLY_SETTABLE_STATUSES = {
         FixedAsset.AssetStatus.DRAFT,
         FixedAsset.AssetStatus.CAPITAL_WIP,
@@ -123,6 +153,16 @@ class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSeri
             raise serializers.ValidationError(system_managed_errors)
         return super().to_internal_value(data)
 
+    def get_validators(self):
+        validators = super().get_validators()
+        filtered_validators = []
+        for validator in validators:
+            fields = tuple(getattr(validator, "fields", ()))
+            if fields == ("entity", "asset_code"):
+                continue
+            filtered_validators.append(validator)
+        return filtered_validators
+
     def validate(self, attrs):
         entity = self._resolve_entity(attrs)
         instance = getattr(self, "instance", None)
@@ -157,6 +197,10 @@ class AssetCapitalizeSerializer(serializers.Serializer):
     counter_ledger_id = serializers.IntegerField()
     capitalization_date = serializers.DateField()
     narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    location_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    department_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    custodian_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class AssetImpairSerializer(serializers.Serializer):

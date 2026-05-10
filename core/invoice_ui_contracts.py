@@ -73,6 +73,12 @@ def purchase_invoice_ui_contract() -> dict:
             "grand_total": {"ui_state": "read_only", "backend_authoritative": True, "save_behavior": "recomputed_on_save"},
         },
         "line_fields": {
+            "purchase_behavior": {
+                "ui_state": "editable",
+                "backend_authoritative": True,
+                "save_behavior": "normalized_from_product_or_line_context",
+                "helper_text": "Use inventory for stock items, expense for direct-consumption purchases, and asset for capital purchases. Non-product lines can only be expense.",
+            },
             "taxable_value": {
                 "ui_state": "read_only",
                 "backend_authoritative": True,

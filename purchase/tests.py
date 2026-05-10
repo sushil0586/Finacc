@@ -13,7 +13,10 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.test import APITestCase, APIClient, APIRequestFactory, force_authenticate
 
+from assets.models import AssetCategory, FixedAsset
 from entity.models import Entity, EntityFinancialYear, SubEntity
+from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
+from financial.models import Ledger, account
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.serializers.purchase_statutory import (
@@ -21,6 +24,8 @@ from purchase.serializers.purchase_statutory import (
     PurchaseStatutoryReturnCreateInputSerializer,
 )
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
+from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
+from purchase.services.purchase_asset_intake_service import PurchaseAssetIntakeService
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.services.purchase_statutory_service import PurchaseStatutoryService
@@ -703,6 +708,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
             "line_no": 1,
             "product_id": None,
             "is_service": True,
+            "purchase_behavior": ProductPurchaseBehavior.EXPENSE,
             "taxable_value": Decimal("100.00"),
             "cgst_amount": Decimal("0.00"),
             "sgst_amount": Decimal("0.00"),
@@ -827,6 +833,286 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         self.assertTrue(vendor_dr, "Expected DR Vendor entry for GST-TDS deduction.")
         self.assertTrue(gst_tds_cr, "Expected CR GST-TDS Payable entry.")
+
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_asset_purchase_behavior_skips_inventory_move(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=1002)
+
+        header = self._base_header(grand_total=Decimal("100.00"), affects_inventory=True)
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[
+                self._line(
+                    product_id=99,
+                    is_service=False,
+                    purchase_behavior=ProductPurchaseBehavior.ASSET,
+                    qty=Decimal("1.0000"),
+                    uom_id=1,
+                )
+            ],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        kwargs = posting_instance.post.call_args.kwargs
+        self.assertEqual(kwargs["im_inputs"], [])
+
+
+class PurchasePhase1ClassificationTests(SimpleTestCase):
+    def test_validate_lines_structural_defaults_non_product_line_to_expense(self):
+        attrs = {
+            "default_taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+            "is_reverse_charge": False,
+            "is_itc_eligible": True,
+            "itc_claim_status": PurchaseInvoiceHeader.ItcClaimStatus.PENDING,
+        }
+        lines = [
+            {
+                "purchase_account": 5000,
+                "product_desc": "Office lunch",
+                "qty": Decimal("1.0000"),
+                "rate": Decimal("250.00"),
+                "is_service": True,
+            }
+        ]
+        derived = SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA)
+
+        PurchaseInvoiceService.validate_lines_structural(attrs, lines, derived)
+
+        self.assertEqual(lines[0]["purchase_behavior"], ProductPurchaseBehavior.EXPENSE)
+
+    def test_validate_lines_structural_rejects_non_product_inventory_behavior(self):
+        attrs = {
+            "default_taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+            "is_reverse_charge": False,
+            "is_itc_eligible": True,
+            "itc_claim_status": PurchaseInvoiceHeader.ItcClaimStatus.PENDING,
+        }
+        lines = [
+            {
+                "purchase_account": 5000,
+                "product_desc": "Office lunch",
+                "qty": Decimal("1.0000"),
+                "rate": Decimal("250.00"),
+                "is_service": False,
+                "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+            }
+        ]
+        derived = SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA)
+
+        with self.assertRaisesMessage(ValueError, "non-product purchase lines can only use expense behavior"):
+            PurchaseInvoiceService.validate_lines_structural(attrs, lines, derived)
+
+    @patch("purchase.services.purchase_invoice_service.Product.objects")
+    def test_validate_lines_structural_requires_account_for_expense_product(self, mock_product_objects):
+        mock_product_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=10,
+            is_batch_managed=False,
+            is_expiry_tracked=False,
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.EXPENSE,
+            purchase_account_id=None,
+        )
+        attrs = {
+            "default_taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+            "is_reverse_charge": False,
+            "is_itc_eligible": True,
+            "itc_claim_status": PurchaseInvoiceHeader.ItcClaimStatus.PENDING,
+        }
+        lines = [
+            {
+                "product": 10,
+                "qty": Decimal("1.0000"),
+                "rate": Decimal("250.00"),
+                "is_service": False,
+            }
+        ]
+        derived = SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA)
+
+        with self.assertRaisesMessage(ValueError, "expense purchase lines require an expense/purchase account"):
+            PurchaseInvoiceService.validate_lines_structural(attrs, lines, derived)
+
+    @patch("purchase.services.purchase_invoice_service.Product.objects")
+    def test_validate_lines_structural_requires_default_asset_category_for_asset_product(self, mock_product_objects):
+        mock_product_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=10,
+            is_batch_managed=False,
+            is_expiry_tracked=False,
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            purchase_account_id=5000,
+            default_asset_category_id=None,
+        )
+        attrs = {
+            "default_taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+            "is_reverse_charge": False,
+            "is_itc_eligible": True,
+            "itc_claim_status": PurchaseInvoiceHeader.ItcClaimStatus.PENDING,
+        }
+        lines = [
+            {
+                "product": 10,
+                "qty": Decimal("1.0000"),
+                "rate": Decimal("250.00"),
+                "is_service": False,
+            }
+        ]
+        derived = SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA)
+
+        with self.assertRaisesMessage(ValueError, "asset product is missing a default asset category"):
+            PurchaseInvoiceService.validate_lines_structural(attrs, lines, derived)
+
+
+class PurchasePhase3AssetIntakeTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="purchase-phase3",
+            email="purchase-phase3@example.com",
+            password="testpass123",
+        )
+        self.entity = Entity.objects.create(entityname="Purchase Phase3 Entity")
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026-27",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Head Office",
+            branch_type=SubEntity.BranchType.HEAD_OFFICE,
+            is_head_office=True,
+        )
+        self.vendor = account.objects.create(entity=self.entity, accountname="Vendor A")
+        self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Asset Items")
+        self.asset_ledger = Ledger.objects.create(entity=self.entity, name="CWIP Ledger")
+        self.asset_category = AssetCategory.objects.create(
+            entity=self.entity,
+            code="CWIP-COMP",
+            name="Computer CWIP",
+            nature=AssetCategory.AssetNature.CAPITAL_WIP,
+            cwip_ledger=self.asset_ledger,
+        )
+        self.product = Product.objects.create(
+            entity=self.entity,
+            productname="Office Computer",
+            sku="COMP-001",
+            productcategory=self.category,
+            base_uom=self.uom,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            default_asset_category=self.asset_category,
+        )
+        self.header = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            bill_date=timezone.now().date(),
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            doc_code="PINV",
+            doc_no=1001,
+            purchase_number="PI/PINV/2026/1001",
+            status=PurchaseInvoiceHeader.Status.CONFIRMED,
+            default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA,
+            grand_total=Decimal("100000.00"),
+        )
+        self.line = self.header.lines.create(
+            line_no=1,
+            product=self.product,
+            product_desc="Office Computer",
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            uom=self.uom,
+            qty=Decimal("1.0000"),
+            rate=Decimal("84745.76"),
+            taxable_value=Decimal("84745.76"),
+            line_total=Decimal("100000.00"),
+        )
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_post_creates_capital_wip_asset_intake_for_asset_lines(
+        self,
+        mock_post_adapter,
+        mock_sync_ap,
+        mock_sync_gst,
+    ):
+        result = PurchaseInvoiceActions.post(self.header.id, posted_by_id=self.user.id)
+
+        self.assertEqual(result.header.status, PurchaseInvoiceHeader.Status.POSTED)
+        self.line.refresh_from_db()
+        self.assertIsNotNone(self.line.asset_record_id)
+        asset = self.line.asset_record
+        self.assertEqual(asset.status, FixedAsset.AssetStatus.CAPITAL_WIP)
+        self.assertEqual(asset.category_id, self.asset_category.id)
+        self.assertEqual(asset.purchase_document_no, self.header.purchase_number)
+        self.assertEqual(asset.vendor_account_id, self.vendor.id)
+        self.assertEqual(asset.gross_block, Decimal("84745.76"))
+        self.assertEqual(asset.quantity, Decimal("1.0000"))
+        self.assertEqual(asset.external_reference, f"purchase-line:{self.line.id}")
+        mock_post_adapter.assert_called_once()
+        mock_sync_ap.assert_called_once()
+        mock_sync_gst.assert_called_once()
+
+    def test_revert_asset_intakes_for_unpost_deletes_uncapitalized_cwip_asset(self):
+        asset = FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.asset_category,
+            ledger=self.asset_ledger,
+            asset_code="CWIP-001",
+            asset_name="Office Computer",
+            status=FixedAsset.AssetStatus.CAPITAL_WIP,
+            acquisition_date=self.header.bill_date,
+            quantity=Decimal("1.0000"),
+            gross_block=Decimal("84745.76"),
+            residual_value=Decimal("0.00"),
+            useful_life_months=60,
+            depreciation_method=FixedAsset.DepreciationMethod.SLM,
+            net_book_value=Decimal("84745.76"),
+            vendor_account=self.vendor,
+            purchase_document_no=self.header.purchase_number,
+            external_reference=f"purchase-line:{self.line.id}",
+        )
+        self.line.asset_record = asset
+        self.line.save(update_fields=["asset_record"])
+
+        PurchaseAssetIntakeService.revert_asset_intakes_for_unpost(header=self.header)
+
+        self.line.refresh_from_db()
+        self.assertIsNone(self.line.asset_record_id)
+        self.assertFalse(FixedAsset.objects.filter(id=asset.id).exists())
 
 
 class PurchaseStatutoryServiceTests(TestCase):

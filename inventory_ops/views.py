@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Optional
 
 from django.db import IntegrityError, transaction
@@ -12,14 +13,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from catalog.models import Product
+from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import Godown
 from numbering.models import DocumentNumberSeries
 from numbering.services import ensure_document_type, ensure_series
 from posting.models import TxnType
 from rbac.services import EffectivePermissionService
+from sales.services.sales_stock_balance_service import SalesStockBalanceService
 
 from .serializers import (
     InventoryAdjustmentCreateSerializer,
+    InventoryEntryMetaProductSerializer,
     InventoryAdjustmentListSerializer,
     InventoryAdjustmentResponseSerializer,
     InventoryTransferListSerializer,
@@ -30,7 +35,7 @@ from .serializers import (
     InventoryTransferResponseSerializer,
 )
 from .models import InventoryOpsSettings, InventoryTransfer
-from .services import InventoryAdjustmentService, InventoryTransferService
+from .services import InventoryAdjustmentService, InventoryTransferService, resolve_inventory_uom, _q4
 
 
 def _choice_payload(choices) -> list[dict]:
@@ -128,6 +133,67 @@ class _BaseInventoryOpsAPIView(ScopedEntitlementMixin, APIView):
             raise PermissionDenied(f"Missing permission: {permission_code}")
 
     @staticmethod
+    def _settings_controls(entity_id: int, subentity_id: int | None) -> dict[str, Any]:
+        settings_obj, _ = InventoryOpsSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
+        return dict(settings_obj.policy_controls or {})
+
+    def _document_action_flags(
+        self,
+        request,
+        *,
+        entity_id: int,
+        subentity_id: int | None,
+        status_value: str,
+        doc_prefix: str,
+    ) -> dict[str, bool]:
+        permission_codes = set(self.get_permission_codes(request, entity_id))
+        controls = self._settings_controls(entity_id=entity_id, subentity_id=subentity_id)
+        normalized_status = str(status_value or "").upper()
+        is_draft = normalized_status == "DRAFT"
+        is_posted = normalized_status == "POSTED"
+        allow_unpost_posted = controls.get("allow_unpost_posted", True) is not False
+        allow_cancel_draft = controls.get("allow_cancel_draft", True) is not False
+        return {
+            "can_edit": is_draft and f"{doc_prefix}.update" in permission_codes,
+            "can_post": is_draft and f"{doc_prefix}.post" in permission_codes,
+            "can_unpost": is_posted and allow_unpost_posted and f"{doc_prefix}.unpost" in permission_codes,
+            "can_cancel": is_draft and allow_cancel_draft and f"{doc_prefix}.cancel" in permission_codes,
+            "is_read_only": not is_draft,
+        }
+
+    def _build_action_flags_map(
+        self,
+        request,
+        *,
+        objects,
+        doc_prefix: str,
+    ) -> dict[int, dict[str, bool]]:
+        return {
+            int(obj.id): self._document_action_flags(
+                request,
+                entity_id=int(obj.entity_id),
+                subentity_id=getattr(obj, "subentity_id", None),
+                status_value=str(getattr(obj, "status", "") or ""),
+                doc_prefix=doc_prefix,
+            )
+            for obj in objects
+        }
+
+    def _serialize_transfer(self, request, transfer: InventoryTransfer) -> dict[str, Any]:
+        serializer = InventoryTransferResponseSerializer(
+            transfer,
+            context={"action_flags_by_id": self._build_action_flags_map(request, objects=[transfer], doc_prefix="inventory.transfer")},
+        )
+        return serializer.data
+
+    def _serialize_adjustment(self, request, adjustment) -> dict[str, Any]:
+        serializer = InventoryAdjustmentResponseSerializer(
+            adjustment,
+            context={"action_flags_by_id": self._build_action_flags_map(request, objects=[adjustment], doc_prefix="inventory.adjustment")},
+        )
+        return serializer.data
+
+    @staticmethod
     def _parse_int(raw_value: Any, field_name: str, *, required: bool) -> Optional[int]:
         if raw_value in (None, "", "null", "None"):
             if required:
@@ -145,6 +211,24 @@ class _BaseInventoryOpsAPIView(ScopedEntitlementMixin, APIView):
         entityfinid_id = self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=require_entityfinid)
         self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, subentity_id, entityfinid_id
+
+
+class _InventoryHintPolicy:
+    def __init__(
+        self,
+        *,
+        shortage_rule: str,
+        require_batch: bool,
+        require_expiry: bool,
+    ) -> None:
+        normalized_rule = str(shortage_rule or "block").strip().lower()
+        self.mode = "CONTROLLED"
+        self.allow_negative_stock = normalized_rule == "warn"
+        self.batch_required_for_sales = bool(require_batch)
+        self.expiry_validation_required = bool(require_expiry)
+        self.fefo_required = False
+        self.allow_manual_batch_override = True
+        self.allow_oversell = normalized_rule == "warn"
 
 
 class InventoryOpsSettingsAPIView(_BaseInventoryOpsAPIView):
@@ -353,6 +437,133 @@ class InventoryOpsSettingsMetaAPIView(InventoryOpsSettingsAPIView):
         })
 
 
+class InventoryEntryMetaAPIView(_BaseInventoryOpsAPIView):
+    def get(self, request):
+        entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=False)
+        permission_codes = self.get_permission_codes(request, entity_id)
+        if not ({"inventory.transfer.view", "inventory.adjustment.view"} & set(permission_codes)):
+            raise PermissionDenied("Missing inventory entry access.")
+
+        settings_obj, _ = InventoryOpsSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
+        product_payload = [
+            item
+            for item in TransactionProductCatalogService.list_products(entity_id=entity_id, limit=None).get("items", [])
+            if not bool(item.get("is_service"))
+        ]
+        controls = settings_obj.policy_controls or {}
+        return Response({
+            "entity_id": entity_id,
+            "entityfinid_id": entityfinid_id,
+            "subentity_id": subentity_id,
+            "products": product_payload,
+            "policy": {
+                "require_batch_for_batch_managed_items": bool(controls.get("require_batch_for_batch_managed_items", True)),
+                "require_expiry_when_expiry_tracked": bool(controls.get("require_expiry_when_expiry_tracked", True)),
+                "allow_manual_transfer_cost_override": bool(controls.get("allow_manual_transfer_cost_override", False)),
+                "positive_adjustment_cost_mode": str(controls.get("positive_adjustment_cost_mode", "required_if_no_default")),
+                "transfer_shortage_rule": str(controls.get("transfer_shortage_rule", "block")),
+                "adjustment_shortage_rule": str(controls.get("adjustment_shortage_rule", "block")),
+            },
+            "actions": {
+                "can_view_transfer": "inventory.transfer.view" in permission_codes,
+                "can_create_transfer": "inventory.transfer.create" in permission_codes,
+                "can_view_adjustment": "inventory.adjustment.view" in permission_codes,
+                "can_create_adjustment": "inventory.adjustment.create" in permission_codes,
+            },
+        })
+
+
+class InventoryStockHintAPIView(_BaseInventoryOpsAPIView):
+    def get(self, request):
+        entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=False)
+        operation = str(request.query_params.get("operation") or "").strip().lower()
+        if operation not in {"transfer", "adjustment"}:
+            raise ValidationError({"operation": "Use transfer or adjustment."})
+        permission_code = "inventory.transfer.view" if operation == "transfer" else "inventory.adjustment.view"
+        self.assert_permission(request, entity_id, permission_code)
+
+        product_id = self._parse_int(request.query_params.get("product"), "product", required=True)
+        location_id = self._parse_int(request.query_params.get("location"), "location", required=True)
+        qty_raw = request.query_params.get("qty")
+        if isinstance(qty_raw, (list, tuple)):
+            qty_raw = qty_raw[0] if qty_raw else None
+        batch_number = str(request.query_params.get("batch_number") or "").strip() or None
+        expiry_date = request.query_params.get("expiry_date")
+        raw_uom_id = request.query_params.get("uom_id")
+        bill_date = request.query_params.get("doc_date") or request.query_params.get("bill_date")
+        if not bill_date:
+            raise ValidationError({"doc_date": "doc_date is required."})
+        try:
+            requested_qty = Decimal(str(qty_raw or 0).strip())
+        except Exception as exc:
+            raise ValidationError({"qty": "qty must be numeric."}) from exc
+
+        try:
+            product = Product.objects.get(id=product_id, entity_id=entity_id)
+        except Product.DoesNotExist as exc:
+            raise ValidationError({"product": "Invalid product."}) from exc
+        product = Product.objects.select_related("base_uom").prefetch_related("uom_conversions__from_uom", "uom_conversions__to_uom").get(id=product_id, entity_id=entity_id)
+        selected_uom, factor_to_base = resolve_inventory_uom(
+            product=product,
+            raw_uom_id=raw_uom_id,
+            line_kind=f"{operation} stock hint",
+            line_no=1,
+        )
+        requested_base_qty = _q4(requested_qty * factor_to_base)
+
+        settings_obj, _ = InventoryOpsSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
+        controls = settings_obj.policy_controls or {}
+        shortage_key = "transfer_shortage_rule" if operation == "transfer" else "adjustment_shortage_rule"
+        policy = _InventoryHintPolicy(
+            shortage_rule=str(controls.get(shortage_key, "block")),
+            require_batch=bool(getattr(product, "is_batch_managed", False) and controls.get("require_batch_for_batch_managed_items", True)),
+            require_expiry=bool(getattr(product, "is_expiry_tracked", False) and controls.get("require_expiry_when_expiry_tracked", True)),
+        )
+
+        hint = SalesStockBalanceService.build_hint(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            bill_date=bill_date,
+            product=product,
+            requested_qty=requested_base_qty,
+            batch_number=batch_number,
+            expiry_date=expiry_date,
+            location_id=location_id,
+            policy=policy,
+        )
+        selected_uom_code = getattr(selected_uom, "code", None)
+        if selected_uom_code and factor_to_base > 0:
+            available_qty = Decimal(str(hint.get("available_qty") or 0)) if hint.get("available_qty") is not None else None
+            shortage_qty = Decimal(str(hint.get("shortage_qty") or 0)) if hint.get("shortage_qty") is not None else None
+            best_batch_available = Decimal(str(hint.get("best_batch_available_qty") or 0)) if hint.get("best_batch_available_qty") is not None else None
+            display_available = _q4((available_qty / factor_to_base) if available_qty is not None else 0) if available_qty is not None else None
+            display_shortage = _q4((shortage_qty / factor_to_base) if shortage_qty is not None else 0) if shortage_qty is not None else None
+            display_requested = _q4(requested_qty)
+            if available_qty is not None:
+                hint["available_base_qty"] = hint.get("available_qty")
+                hint["available_qty"] = str(display_available)
+            if shortage_qty is not None:
+                hint["shortage_base_qty"] = hint.get("shortage_qty")
+                hint["shortage_qty"] = str(display_shortage)
+            hint["requested_base_qty"] = hint.get("requested_qty")
+            hint["requested_qty"] = str(display_requested)
+            if best_batch_available is not None:
+                hint["best_batch_available_base_qty"] = hint.get("best_batch_available_qty")
+                hint["best_batch_available_qty"] = str(_q4(best_batch_available / factor_to_base))
+            hint["selected_uom_id"] = getattr(selected_uom, "id", None)
+            hint["selected_uom_code"] = selected_uom_code
+            hint["factor_to_base"] = str(factor_to_base)
+            if not (hint.get("batch_required") and not batch_number):
+                if display_available is not None and display_shortage is not None and display_shortage > Decimal("0.0000"):
+                    hint["message"] = f"{display_available} {selected_uom_code} available at the selected location; short by {display_shortage} {selected_uom_code}."
+                elif display_available is not None:
+                    hint["message"] = f"{display_available} {selected_uom_code} available at the selected location."
+        hint["operation"] = operation
+        hint["direction"] = str(request.query_params.get("direction") or "").strip().upper() or None
+        return Response(hint)
+
+
 class InventoryGodownListAPIView(_BaseInventoryOpsAPIView):
     def get(self, request):
         entity_id = int(request.query_params.get("entity") or 0)
@@ -480,11 +691,10 @@ class InventoryTransferCreateAPIView(_BaseInventoryOpsAPIView):
             result = InventoryTransferService.create_transfer(payload=payload, user_id=request.user.id)
         except (ValueError, ValidationError) as exc:
             _raise_inventory_validation(exc)
-        response = InventoryTransferResponseSerializer(result.transfer)
         return Response(
             {
                 "report_code": "inventory_transfer_entry",
-                "transfer": response.data,
+                "transfer": self._serialize_transfer(request, result.transfer),
                 "entry_id": result.entry_id,
             },
             status=status.HTTP_201_CREATED,
@@ -508,7 +718,11 @@ class InventoryTransferListAPIView(_BaseInventoryOpsAPIView):
             .prefetch_related("lines")
             .order_by("-transfer_date", "-id")
         )
-        serializer = InventoryTransferListSerializer(qs, many=True)
+        serializer = InventoryTransferListSerializer(
+            qs,
+            many=True,
+            context={"action_flags_by_id": self._build_action_flags_map(request, objects=qs, doc_prefix="inventory.transfer")},
+        )
         return Response({"rows": serializer.data})
 
 
@@ -526,7 +740,7 @@ class InventoryTransferDetailAPIView(_BaseInventoryOpsAPIView):
         transfer = self.get_object(pk)
         self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id)
         self.assert_permission(request, transfer.entity_id, "inventory.transfer.view")
-        return Response(InventoryTransferResponseSerializer(transfer).data)
+        return Response(self._serialize_transfer(request, transfer))
 
     def patch(self, request, pk: int):
         transfer = self.get_object(pk)
@@ -542,7 +756,7 @@ class InventoryTransferDetailAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Transfer updated successfully.",
-                "transfer": InventoryTransferResponseSerializer(result.transfer).data,
+                "transfer": self._serialize_transfer(request, result.transfer),
                 "entry_id": result.entry_id,
             }
         )
@@ -560,7 +774,7 @@ class InventoryTransferPostAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Transfer posted successfully.",
-                "transfer": InventoryTransferResponseSerializer(result.transfer).data,
+                "transfer": self._serialize_transfer(request, result.transfer),
                 "entry_id": result.entry_id,
             }
         )
@@ -579,7 +793,7 @@ class InventoryTransferUnpostAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Transfer unposted successfully.",
-                "transfer": InventoryTransferResponseSerializer(result.transfer).data,
+                "transfer": self._serialize_transfer(request, result.transfer),
                 "entry_id": result.entry_id,
             }
         )
@@ -598,7 +812,7 @@ class InventoryTransferCancelAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Transfer cancelled successfully.",
-                "transfer": InventoryTransferResponseSerializer(result.transfer).data,
+                "transfer": self._serialize_transfer(request, result.transfer),
                 "entry_id": result.entry_id,
             }
         )
@@ -617,11 +831,10 @@ class InventoryAdjustmentCreateAPIView(_BaseInventoryOpsAPIView):
         )
         self.assert_permission(request, payload["entity"], "inventory.adjustment.create")
         result = InventoryAdjustmentService.create_adjustment(payload=payload, user_id=request.user.id, auto_post=False)
-        response = InventoryAdjustmentResponseSerializer(result.adjustment)
         return Response(
             {
                 "report_code": "inventory_adjustment_entry",
-                "adjustment": response.data,
+                "adjustment": self._serialize_adjustment(request, result.adjustment),
                 "entry_id": result.entry_id,
             },
             status=status.HTTP_201_CREATED,
@@ -645,7 +858,11 @@ class InventoryAdjustmentListAPIView(_BaseInventoryOpsAPIView):
             .prefetch_related("lines")
             .order_by("-adjustment_date", "-id")
         )
-        serializer = InventoryAdjustmentListSerializer(qs, many=True)
+        serializer = InventoryAdjustmentListSerializer(
+            qs,
+            many=True,
+            context={"action_flags_by_id": self._build_action_flags_map(request, objects=qs, doc_prefix="inventory.adjustment")},
+        )
         return Response({"rows": serializer.data})
 
 
@@ -662,7 +879,7 @@ class InventoryAdjustmentDetailAPIView(_BaseInventoryOpsAPIView):
         adjustment = self.get_object(pk)
         self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.view")
-        return Response(InventoryAdjustmentResponseSerializer(adjustment).data)
+        return Response(self._serialize_adjustment(request, adjustment))
 
     def patch(self, request, pk: int):
         adjustment = self.get_object(pk)
@@ -678,7 +895,7 @@ class InventoryAdjustmentDetailAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Adjustment updated successfully.",
-                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "adjustment": self._serialize_adjustment(request, result.adjustment),
                 "entry_id": result.entry_id,
             }
         )
@@ -698,7 +915,7 @@ class InventoryAdjustmentPostAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Adjustment posted successfully.",
-                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "adjustment": self._serialize_adjustment(request, result.adjustment),
                 "entry_id": result.entry_id,
             }
         )
@@ -719,7 +936,7 @@ class InventoryAdjustmentUnpostAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Adjustment unposted successfully.",
-                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "adjustment": self._serialize_adjustment(request, result.adjustment),
                 "entry_id": result.entry_id,
             }
         )
@@ -740,7 +957,7 @@ class InventoryAdjustmentCancelAPIView(_BaseInventoryOpsAPIView):
         return Response(
             {
                 "message": "Adjustment cancelled successfully.",
-                "adjustment": InventoryAdjustmentResponseSerializer(result.adjustment).data,
+                "adjustment": self._serialize_adjustment(request, result.adjustment),
                 "entry_id": result.entry_id,
             }
         )

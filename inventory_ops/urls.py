@@ -7,11 +7,13 @@ from .views import (
     InventoryAdjustmentListAPIView,
     InventoryAdjustmentPostAPIView,
     InventoryAdjustmentUnpostAPIView,
+    InventoryEntryMetaAPIView,
     InventoryGodownListAPIView,
     InventoryGodownMasterAPIView,
     InventoryGodownMasterDetailAPIView,
     InventoryOpsSettingsAPIView,
     InventoryOpsSettingsMetaAPIView,
+    InventoryStockHintAPIView,
     InventoryTransferCreateAPIView,
     InventoryTransferCancelAPIView,
     InventoryTransferDetailAPIView,
@@ -23,6 +25,8 @@ from .views import (
 app_name = "inventory_ops"
 
 urlpatterns = [
+    path("meta/entry/", InventoryEntryMetaAPIView.as_view(), name="inventory-entry-meta"),
+    path("meta/stock-hint/", InventoryStockHintAPIView.as_view(), name="inventory-stock-hint"),
     path("meta/settings/", InventoryOpsSettingsMetaAPIView.as_view(), name="inventory-settings-meta"),
     path("settings/", InventoryOpsSettingsAPIView.as_view(), name="inventory-settings"),
     path("godowns/", InventoryGodownListAPIView.as_view(), name="inventory-godowns"),

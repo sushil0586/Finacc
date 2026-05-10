@@ -10,7 +10,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
-from catalog.models import Product, ProductCategory, UnitOfMeasure
+from catalog.models import Product, ProductCategory, ProductUomConversion, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
 from numbering.models import DocumentNumberSeries, DocumentType
 from posting.models import InventoryMove
@@ -111,6 +111,12 @@ class InventoryOpsTests(APITestCase):
             description='Pieces',
             uqc='NOS',
         )
+        self.box_uom = UnitOfMeasure.objects.create(
+            entity=self.entity,
+            code='BOX',
+            description='Boxes',
+            uqc='BOX',
+        )
         self.product = Product.objects.create(
             entity=self.entity,
             productname='Laptop',
@@ -121,6 +127,12 @@ class InventoryOpsTests(APITestCase):
             is_service=False,
             is_batch_managed=False,
             is_serialized=False,
+        )
+        ProductUomConversion.objects.create(
+            product=self.product,
+            from_uom=self.uom,
+            to_uom=self.box_uom,
+            factor=Decimal('0.1000'),
         )
         self.batch_product = Product.objects.create(
             entity=self.entity,
@@ -302,6 +314,10 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         body = response.json()
         self.assertEqual(body['transfer']['status'], 'DRAFT')
+        self.assertTrue(body['transfer']['action_flags']['can_edit'])
+        self.assertTrue(body['transfer']['action_flags']['can_post'])
+        self.assertTrue(body['transfer']['action_flags']['can_cancel'])
+        self.assertFalse(body['transfer']['action_flags']['can_unpost'])
         self.assertIsNone(body['transfer']['posting_entry_id'])
         self.assertAlmostEqual(float(body['transfer']['total_qty']), 5.0)
         self.assertAlmostEqual(float(body['transfer']['total_value']), 125000.0)
@@ -318,6 +334,8 @@ class InventoryOpsTests(APITestCase):
         post_resp = self.client.post(reverse('inventory_ops:inventory-transfer-post', kwargs={'pk': transfer_id}), {}, format='json')
         self.assertEqual(post_resp.status_code, 200)
         self.assertEqual(post_resp.json()['transfer']['status'], 'POSTED')
+        self.assertTrue(post_resp.json()['transfer']['action_flags']['can_unpost'])
+        self.assertTrue(post_resp.json()['transfer']['action_flags']['is_read_only'])
         self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 2)
 
         moves = list(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').order_by('id'))
@@ -358,6 +376,28 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(transfer['status'], 'DRAFT')
         self.assertAlmostEqual(float(transfer['lines'][0]['unit_cost']), 25000.0)
 
+    def test_transfer_supports_alternate_uom_and_posts_base_qty(self):
+        payload = self._transfer_payload()
+        payload['lines'][0]['uom_id'] = self.box_uom.id
+        payload['lines'][0]['qty'] = '2.0000'
+        payload['lines'][0]['unit_cost'] = '250000.0000'
+        created = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+        self.assertEqual(created.status_code, 201)
+        body = created.json()['transfer']
+        self.assertEqual(body['lines'][0]['uom_id'], self.box_uom.id)
+        self.assertEqual(body['lines'][0]['uom_name'], 'BOX')
+
+        transfer_id = body['id']
+        post_resp = self.client.post(reverse('inventory_ops:inventory-transfer-post', kwargs={'pk': transfer_id}), {}, format='json')
+        self.assertEqual(post_resp.status_code, 200)
+        moves = list(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').order_by('id'))
+        self.assertEqual(len(moves), 2)
+        self.assertEqual(moves[0].uom_id, self.box_uom.id)
+        self.assertEqual(str(moves[0].qty), '2.0000')
+        self.assertEqual(str(moves[0].base_qty), '20.0000')
+        self.assertEqual(str(moves[0].uom_factor), '10.00000000')
+        self.assertEqual(str(moves[0].unit_cost), '25000.0000')
+
     def test_transfer_requires_batch_for_batch_managed_items(self):
         payload = self._transfer_payload()
         payload['lines'] = [
@@ -385,6 +425,7 @@ class InventoryOpsTests(APITestCase):
         response = self.client.get(reverse('inventory_ops:inventory-transfer-detail', kwargs={'pk': transfer_id}))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['transfer_no'], created['transfer']['transfer_no'])
+        self.assertIn('action_flags', response.json())
 
     def test_transfer_list_returns_rows(self):
         self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
@@ -460,6 +501,11 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         body = response.json()
         self.assertEqual(body['adjustment']['status'], 'DRAFT')
+        self.assertTrue(body['adjustment']['action_flags']['can_edit'])
+        self.assertTrue(body['adjustment']['action_flags']['can_post'])
+        self.assertTrue(body['adjustment']['action_flags']['can_cancel'])
+        self.assertFalse(body['adjustment']['action_flags']['can_unpost'])
+        self.assertEqual(body['adjustment']['location_id'], self.source.id)
         self.assertAlmostEqual(float(body['adjustment']['total_qty']), 2.0)
         self.assertAlmostEqual(float(body['adjustment']['total_value']), 50000.0)
         adjustment_id = body['adjustment']['id']
@@ -473,6 +519,8 @@ class InventoryOpsTests(APITestCase):
         post_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json')
         self.assertEqual(post_resp.status_code, 200)
         self.assertEqual(post_resp.json()['adjustment']['status'], 'POSTED')
+        self.assertTrue(post_resp.json()['adjustment']['action_flags']['can_unpost'])
+        self.assertTrue(post_resp.json()['adjustment']['action_flags']['is_read_only'])
         self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 1)
 
         unpost_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-unpost', kwargs={'pk': adjustment_id}), {}, format='json')
@@ -497,6 +545,17 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(response.json()['adjustment']['lines'][0]['note'], 'Updated quantity')
 
     def test_increase_adjustment_requires_cost_when_no_default_exists(self):
+        unstocked_product = Product.objects.create(
+            entity=self.entity,
+            productname='Projector',
+            sku='PRJ-001',
+            productdesc='Unstocked product without default cost',
+            productcategory=self.category,
+            base_uom=self.uom,
+            is_service=False,
+            is_batch_managed=False,
+            is_serialized=False,
+        )
         payload = {
             'entity': self.entity.id,
             'entityfinid': self.entityfin.id,
@@ -507,7 +566,7 @@ class InventoryOpsTests(APITestCase):
             'narration': 'Stock gain',
             'lines': [
                 {
-                    'product': self.product.id,
+                    'product': unstocked_product.id,
                     'direction': 'INCREASE',
                     'qty': '1.0000',
                     'note': 'Count gain',
@@ -517,6 +576,114 @@ class InventoryOpsTests(APITestCase):
         response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertIn('Unit cost is required', str(response.json()))
+
+    def test_increase_adjustment_uses_default_cost_when_explicit_cost_is_omitted(self):
+        payload = self._adjustment_payload()
+        payload['reference_no'] = 'ADJ-1002A'
+        payload['lines'][0].pop('unit_cost', None)
+        payload['lines'][0]['qty'] = '1.0000'
+        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+        self.assertEqual(response.status_code, 201)
+        line = response.json()['adjustment']['lines'][0]
+        self.assertAlmostEqual(float(line['unit_cost']), 25000.0)
+
+    def test_adjustment_supports_alternate_uom_and_posts_base_qty(self):
+        payload = self._adjustment_payload()
+        payload['reference_no'] = 'ADJ-UOM-1'
+        payload['lines'][0]['uom_id'] = self.box_uom.id
+        payload['lines'][0]['qty'] = '2.0000'
+        payload['lines'][0]['unit_cost'] = '250000.0000'
+        created = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+        self.assertEqual(created.status_code, 201)
+        body = created.json()['adjustment']
+        self.assertEqual(body['lines'][0]['uom_id'], self.box_uom.id)
+        self.assertEqual(body['lines'][0]['uom_name'], 'BOX')
+
+        adjustment_id = body['id']
+        post_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(post_resp.status_code, 200)
+        moves = list(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').order_by('id'))
+        self.assertEqual(len(moves), 1)
+        self.assertEqual(moves[0].uom_id, self.box_uom.id)
+        self.assertEqual(str(moves[0].qty), '2.0000')
+        self.assertEqual(str(moves[0].base_qty), '20.0000')
+        self.assertEqual(str(moves[0].uom_factor), '10.00000000')
+        self.assertEqual(str(moves[0].unit_cost), '25000.0000')
+
+    def test_adjustment_detail_returns_location_id(self):
+        created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
+        self.assertEqual(created.status_code, 201)
+        adjustment_id = created.json()['adjustment']['id']
+        response = self.client.get(reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': adjustment_id}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['location_id'], self.source.id)
+        self.assertIn('action_flags', response.json())
+
+    def test_inventory_entry_meta_returns_products_policy_and_actions(self):
+        response = self.client.get(
+            reverse('inventory_ops:inventory-entry-meta'),
+            {
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin.id,
+                'subentity': self.subentity.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['entity_id'], self.entity.id)
+        self.assertEqual(body['entityfinid_id'], self.entityfin.id)
+        self.assertEqual(body['subentity_id'], self.subentity.id)
+        self.assertTrue(any(row['id'] == self.product.id for row in body['products']))
+        self.assertIn('policy', body)
+        self.assertEqual(body['policy']['transfer_shortage_rule'], 'block')
+        self.assertIn('actions', body)
+        self.assertTrue(body['actions']['can_view_transfer'])
+        self.assertTrue(body['actions']['can_create_adjustment'])
+
+    def test_inventory_stock_hint_returns_available_stock_for_transfer(self):
+        response = self.client.get(
+            reverse('inventory_ops:inventory-stock-hint'),
+            {
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin.id,
+                'subentity': self.subentity.id,
+                'operation': 'transfer',
+                'product': self.product.id,
+                'location': self.source.id,
+                'qty': '5.0000',
+                'doc_date': '2025-04-12',
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['operation'], 'transfer')
+        self.assertEqual(body['resolved_location_id'], self.source.id)
+        self.assertEqual(body['available_qty'], '20.0000')
+        self.assertEqual(body['shortage_qty'], '0.0000')
+        self.assertEqual(body['status'], 'info')
+
+    def test_inventory_stock_hint_surfaces_adjustment_shortage(self):
+        response = self.client.get(
+            reverse('inventory_ops:inventory-stock-hint'),
+            {
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin.id,
+                'subentity': self.subentity.id,
+                'operation': 'adjustment',
+                'product': self.product.id,
+                'location': self.source.id,
+                'qty': '25.0000',
+                'doc_date': '2025-04-12',
+                'direction': 'DECREASE',
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['operation'], 'adjustment')
+        self.assertEqual(body['direction'], 'DECREASE')
+        self.assertEqual(body['available_qty'], '20.0000')
+        self.assertEqual(body['shortage_qty'], '5.0000')
+        self.assertEqual(body['status'], 'danger')
 
     def test_decrease_adjustment_requires_batch_and_available_stock_for_batch_item(self):
         missing_batch_payload = {

@@ -23,6 +23,7 @@ from gst_tds.services.gst_tds_service import GstTdsService
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 
+from purchase.services.purchase_asset_intake_service import PurchaseAssetIntakeService
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.models.purchase_ap import VendorBillOpenItem
@@ -319,6 +320,11 @@ class PurchaseInvoiceActions:
             h.save(update_fields=["status", "posted_at"])
 
         # AP open-item sync for payable tracking (invoice/CN/DN).
+        PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header(
+            header=h,
+            lines=lines,
+            user_id=posted_by_id or getattr(getattr(h, "updated_by", None), "id", None) or getattr(getattr(h, "created_by", None), "id", None),
+        )
         PurchaseApService.sync_open_item_for_header(h)
         GstTdsService.sync_contract_ledger_for_header(h)
 
@@ -336,6 +342,8 @@ class PurchaseInvoiceActions:
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
         if str(policy.controls.get("allow_unpost_posted", "on")).lower().strip() == "off":
             raise ValueError("Unpost after posting is disabled by purchase policy.")
+
+        PurchaseAssetIntakeService.revert_asset_intakes_for_unpost(header=h)
 
         open_item = VendorBillOpenItem.objects.select_for_update().filter(header_id=h.id).first()
         if open_item and (open_item.settled_amount or 0) != 0:

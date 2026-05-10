@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
-from catalog.models import Product, ProductGstRate, UnitOfMeasure
+from catalog.models import Product, ProductGstRate, ProductPurchaseBehavior, UnitOfMeasure
 from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress, account
@@ -277,6 +277,7 @@ class PurchaseMetaBaseAPIView(ScopedEntitlementMixin, APIView):
                     else None
                 ),
             },
+            "purchase_behaviors": [{"value": choice.value, "label": choice.label} for choice in ProductPurchaseBehavior],
             "ui_contract": purchase_invoice_ui_contract(),
         }
 
@@ -593,6 +594,7 @@ class PurchaseInvoiceLinesMetaAPIView(PurchaseMetaBaseAPIView):
                     entity_id=entity_id,
                     subentity_id=subentity_id,
                 ).get("Taxability", []),
+                "purchase_behaviors": [{"value": choice.value, "label": choice.label} for choice in ProductPurchaseBehavior],
                 "products": product_payload["items"],
                 "count": product_payload["count"],
             }

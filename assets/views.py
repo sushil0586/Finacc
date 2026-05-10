@@ -187,10 +187,16 @@ class FixedAssetListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIView
         qs = self._asset_queryset(entity_id=entity_id, subentity_id=subentity_id, search=search)
         category_id = self.request.query_params.get("category")
         status_value = self.request.query_params.get("status")
+        review_queue = (self.request.query_params.get("review_queue") or "").strip().lower()
         if category_id:
             qs = qs.filter(category_id=category_id)
         if status_value:
             qs = qs.filter(status=status_value)
+        if review_queue == "purchase":
+            qs = qs.filter(
+                source_purchase_lines__isnull=False,
+                status__in=[FixedAsset.AssetStatus.DRAFT, FixedAsset.AssetStatus.CAPITAL_WIP],
+            ).distinct()
         return qs
 
     def get_serializer_class(self):
@@ -335,6 +341,9 @@ class AssetMetaAPIView(AssetScopedAPIView):
                 "choices": {
                     "asset_statuses": [{"value": code, "label": label} for code, label in FixedAsset.AssetStatus.choices],
                     "depreciation_methods": [{"value": code, "label": label} for code, label in FixedAsset.DepreciationMethod.choices],
+                    "review_queues": [
+                        {"value": "purchase", "label": "Purchase Intake Review"},
+                    ],
                 },
                 "categories": list(categories.values("id", "code", "name", "nature")),
                 "ledgers": list(ledgers),

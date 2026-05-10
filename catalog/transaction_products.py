@@ -78,7 +78,7 @@ class TransactionProductCatalogService:
 
         qs = (
             Product.objects.filter(entity_id=entity_id, isactive=True)
-            .select_related("base_uom")
+            .select_related("base_uom", "default_asset_category")
             .prefetch_related(
                 Prefetch("gst_rates", queryset=gst_qs, to_attr="transaction_gst_rates"),
                 Prefetch("prices", queryset=price_qs, to_attr="transaction_prices"),
@@ -282,6 +282,9 @@ class TransactionProductCatalogService:
             "sku": product.sku,
             "is_service": product.is_service,
             "item_classification": getattr(product, "item_classification", None),
+            "purchase_behavior": getattr(product, "purchase_behavior", None),
+            "default_asset_category_id": getattr(product, "default_asset_category_id", None),
+            "default_asset_category_name": getattr(getattr(product, "default_asset_category", None), "name", None),
             "product_status": getattr(product, "product_status", None),
             "is_pieces": product.is_pieces,
             "is_batch_managed": bool(getattr(product, "is_batch_managed", False)),

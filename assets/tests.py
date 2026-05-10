@@ -7,9 +7,11 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import Ledger, accountHead
 from posting.models import Entry, EntryStatus, JournalLine
+from purchase.models.purchase_core import PurchaseInvoiceHeader
 from subscriptions.models import PlanLimit
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -122,7 +124,6 @@ class AssetApiScopeTests(APITestCase):
             created_by=self.owner,
             updated_by=self.owner,
         )
-
         foreign_category = AssetCategory.objects.create(
             entity=self.foreign_entity,
             code="CAT-FOREIGN",
@@ -144,6 +145,70 @@ class AssetApiScopeTests(APITestCase):
         )
 
         self.client.force_authenticate(self.owner)
+
+    def _create_vendor_account(self, name: str):
+        from financial.models import account
+
+        return account.objects.create(entity=self.entity, accountname=name)
+
+    def _create_purchase_intake_asset_fixture(self):
+        vendor_account = self._create_vendor_account("Vendor One")
+        product_category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Equipment")
+        uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        asset_product = Product.objects.create(
+            entity=self.entity,
+            productname="Laptop",
+            sku="LAP-001",
+            productcategory=product_category,
+            base_uom=uom,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            default_asset_category=self.category,
+        )
+        purchase_header = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=vendor_account,
+            bill_date=date(2026, 4, 10),
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            doc_code="PINV",
+            doc_no=1009,
+            purchase_number="PI/PINV/2026/1009",
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA,
+        )
+        purchase_asset = FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.category,
+            asset_code="CWIP-0001",
+            asset_name="Laptop Intake",
+            acquisition_date=date(2026, 4, 10),
+            gross_block="75000.00",
+            residual_value="0.00",
+            net_book_value="75000.00",
+            status=FixedAsset.AssetStatus.CAPITAL_WIP,
+            vendor_account=vendor_account,
+            purchase_document_no=purchase_header.purchase_number,
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        purchase_line = purchase_header.lines.create(
+            line_no=1,
+            product=asset_product,
+            product_desc="Laptop Intake",
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            uom=uom,
+            qty="1.0000",
+            rate="75000.00",
+            taxable_value="75000.00",
+            line_total="88500.00",
+            asset_record=purchase_asset,
+        )
+        return purchase_asset, purchase_line, purchase_header
 
     def _set_asset_policy(self, *, entity_id, subentity_id=None, **controls):
         AssetSettingsService.upsert_settings(
@@ -223,6 +288,79 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(FixedAsset.objects.filter(asset_name="Invalid Asset").exists())
+
+    def test_list_review_queue_purchase_returns_purchase_intake_assets(self):
+        purchase_asset, _, _ = self._create_purchase_intake_asset_fixture()
+        response = self.client.get(
+            reverse("assets_api:fixed-asset-list-create"),
+            {"entity": self.entity.id, "review_queue": "purchase"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {row["id"] for row in response.data}
+        self.assertIn(purchase_asset.id, returned_ids)
+        self.assertNotIn(self.asset.id, returned_ids)
+
+    def test_list_serializer_includes_purchase_traceability_fields(self):
+        purchase_asset, purchase_line, purchase_header = self._create_purchase_intake_asset_fixture()
+        response = self.client.get(
+            reverse("assets_api:fixed-asset-detail", args=[purchase_asset.id]),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["is_purchase_intake"])
+        self.assertEqual(response.data["source_purchase_line_ids"], [purchase_line.id])
+        self.assertIn(purchase_header.purchase_number, response.data["source_purchase_numbers"])
+
+    def test_capitalize_blocks_purchase_intake_when_review_fields_missing(self):
+        purchase_asset, _, _ = self._create_purchase_intake_asset_fixture()
+        purchase_asset.location_name = ""
+        purchase_asset.custodian_name = ""
+        purchase_asset.save(update_fields=["location_name", "custodian_name", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[purchase_asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-12",
+                "narration": "Capitalize purchase intake",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("purchase intake asset review is incomplete", response.data["detail"].lower())
+        self.assertIn("location", response.data["detail"].lower())
+        self.assertIn("custodian", response.data["detail"].lower())
+
+    def test_capitalize_accepts_inline_purchase_review_fields(self):
+        purchase_asset, _, _ = self._create_purchase_intake_asset_fixture()
+        purchase_asset.location_name = ""
+        purchase_asset.department_name = ""
+        purchase_asset.custodian_name = ""
+        purchase_asset.save(update_fields=["location_name", "department_name", "custodian_name", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[purchase_asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-12",
+                "narration": "Capitalize purchase intake",
+                "location_name": "Head Office",
+                "department_name": "IT",
+                "custodian_name": "A. Kumar",
+                "notes": "Reviewed during capitalization",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        purchase_asset.refresh_from_db()
+        self.assertEqual(purchase_asset.location_name, "Head Office")
+        self.assertEqual(purchase_asset.department_name, "IT")
+        self.assertEqual(purchase_asset.custodian_name, "A. Kumar")
+        self.assertEqual(purchase_asset.notes, "Reviewed during capitalization")
+        self.assertEqual(purchase_asset.status, FixedAsset.AssetStatus.ACTIVE)
 
     def test_create_rejects_system_managed_asset_fields(self):
         payload = {

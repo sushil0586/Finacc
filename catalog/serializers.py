@@ -36,6 +36,7 @@ from .models import (
     CessType,
     ProductStatus,
     ProductClassification,
+    ProductPurchaseBehavior,
 )
 
 # ----------------------------------------------------------------------
@@ -686,9 +687,11 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             "base_uom",
             "sales_account",
             "purchase_account",
+            "default_asset_category",
 
             "is_service",
             "item_classification",
+            "purchase_behavior",
             "is_batch_managed",
             "is_serialized",
             "is_expiry_tracked",
@@ -792,6 +795,12 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             entity=entity,
             label="Purchase account",
         )
+        self._validate_entity_scoped_fk(
+            field_name="default_asset_category",
+            obj=attrs.get("default_asset_category", getattr(self.instance, "default_asset_category", None)),
+            entity=entity,
+            label="Default asset category",
+        )
 
         item_classification = attrs.get(
             "item_classification",
@@ -800,12 +809,25 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
         is_service = bool(
             attrs.get("is_service", getattr(self.instance, "is_service", False))
         )
+        purchase_behavior = attrs.get(
+            "purchase_behavior",
+            getattr(self.instance, "purchase_behavior", ProductPurchaseBehavior.INVENTORY),
+        ) or ProductPurchaseBehavior.INVENTORY
         is_service_item = item_classification == ProductClassification.SERVICE or is_service
 
         attrs["item_classification"] = (
             ProductClassification.SERVICE if is_service_item else item_classification
         )
         attrs["is_service"] = is_service_item
+        attrs["purchase_behavior"] = (
+            ProductPurchaseBehavior.EXPENSE if is_service_item else purchase_behavior
+        )
+        if attrs["purchase_behavior"] == ProductPurchaseBehavior.ASSET and attrs.get("default_asset_category") is None:
+            raise serializers.ValidationError(
+                {"default_asset_category": "Default asset category is required when purchase behavior is Asset."}
+            )
+        if attrs["purchase_behavior"] != ProductPurchaseBehavior.ASSET:
+            attrs["default_asset_category"] = None
 
         if attrs["is_service"]:
             attrs["is_batch_managed"] = False
@@ -1156,8 +1178,10 @@ class ProductListSerializer(serializers.ModelSerializer):
             "brand_name",
             "base_uom",
             "base_uom_code",
+            "default_asset_category",
             "is_service",
             "item_classification",
+            "purchase_behavior",
             "is_batch_managed",
             "is_serialized",
             "is_expiry_tracked",

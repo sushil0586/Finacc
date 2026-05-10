@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from entity.models import Entity, SubEntity
 from financial.models import account
+from assets.models import AssetCategory
 
 try:
     from barcode import Code128
@@ -173,6 +174,12 @@ class ProductClassification(models.TextChoices):
     OTHER = 'other', _('Other')
 
 
+class ProductPurchaseBehavior(models.TextChoices):
+    INVENTORY = "inventory", _("Inventory")
+    EXPENSE = "expense", _("Expense")
+    ASSET = "asset", _("Asset")
+
+
 class Product(EntityScopedModel):
     productname = models.CharField(max_length=200)
     sku = models.CharField(max_length=100)
@@ -227,6 +234,21 @@ class Product(EntityScopedModel):
         choices=ProductClassification.choices,
         default=ProductClassification.TRADING,
         db_index=True,
+    )
+    purchase_behavior = models.CharField(
+        max_length=20,
+        choices=ProductPurchaseBehavior.choices,
+        default=ProductPurchaseBehavior.INVENTORY,
+        db_index=True,
+        help_text="Controls how purchase lines for this product should flow: inventory, expense, or asset.",
+    )
+    default_asset_category = models.ForeignKey(
+        AssetCategory,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="default_products",
+        help_text="Required when purchase behavior is Asset. Used to create asset intake/CWIP records from purchase posting.",
     )
     is_batch_managed = models.BooleanField(default=False)
     is_serialized = models.BooleanField(default=False)

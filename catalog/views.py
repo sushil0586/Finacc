@@ -37,6 +37,7 @@ from reportlab.pdfgen import canvas
 
 from entity.models import Entity, SubEntity
 from financial.models import Ledger
+from assets.models import AssetCategory
 
 from .models import (
     ProductCategory,
@@ -59,6 +60,7 @@ from .models import (
     OpeningStockByLocation,
     ProductPlanning,
     ProductClassification,
+    ProductPurchaseBehavior,
 )
 from .serializers import (
     ProductCategorySerializer,
@@ -177,6 +179,7 @@ def product_queryset_optimized():
             "entity",
             "sales_account",
             "purchase_account",
+            "default_asset_category",
         )
         .prefetch_related(
             "gst_rates",
@@ -205,6 +208,7 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
             "productcategory",
             "brand",
             "base_uom",
+            "default_asset_category",
         )
         if self.request.method.upper() == "GET":
             queryset = self.apply_isactive_filter(queryset)
@@ -224,6 +228,10 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
             item_classification = (self.request.query_params.get("item_classification") or "").strip()
             if item_classification:
                 queryset = queryset.filter(item_classification=item_classification)
+
+            purchase_behavior = (self.request.query_params.get("purchase_behavior") or "").strip()
+            if purchase_behavior:
+                queryset = queryset.filter(purchase_behavior=purchase_behavior)
 
             product_status = (self.request.query_params.get("product_status") or "").strip()
             if product_status:
@@ -480,6 +488,7 @@ class ProductPageBootstrapAPIView(APIView):
             )
         )
         locations = SubEntity.objects.filter(entity_id=entity_id_int).order_by("subentityname", "id")
+        asset_categories = AssetCategory.objects.filter(entity_id=entity_id_int, is_active=True).order_by("name", "id")
 
         data = {
             "product": product,
@@ -487,6 +496,15 @@ class ProductPageBootstrapAPIView(APIView):
             "cess_types": [{"value": choice.value, "label": choice.label} for choice in CessType],
             "product_statuses": [{"value": choice.value, "label": choice.label} for choice in ProductStatus],
             "item_classifications": [{"value": choice.value, "label": choice.label} for choice in ProductClassification],
+            "purchase_behaviors": [{"value": choice.value, "label": choice.label} for choice in ProductPurchaseBehavior],
+            "asset_categories": [
+                {
+                    "id": row.id,
+                    "code": row.code,
+                    "name": row.name,
+                }
+                for row in asset_categories
+            ],
 
             "product_categories": ProductCategorySerializer(categories, many=True).data,
             "brands": BrandSerializer(brands, many=True).data,
