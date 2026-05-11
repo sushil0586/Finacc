@@ -6,6 +6,7 @@ from typing import Any, Iterable, Optional
 
 from django.db import transaction
 
+from posting.common.journal_descriptions import receipt_document_prefix
 from posting.models import TxnType, EntryStatus, Entry
 from posting.services.posting_service import JLInput, PostingService
 
@@ -28,6 +29,7 @@ class ReceiptVoucherPostingConfig:
 class ReceiptVoucherPostingAdapter:
     @staticmethod
     def _build_journal_lines(*, header: Any, adjustments: Iterable[Any], reverse: bool = False) -> list[JLInput]:
+        prefix = receipt_document_prefix(header)
         cash_received = q2(getattr(header, "cash_received_amount", ZERO2))
         received_in_id = int(getattr(header, "received_in_id", 0) or 0)
         received_from_id = int(getattr(header, "received_from_id", 0) or 0)
@@ -69,10 +71,10 @@ class ReceiptVoucherPostingAdapter:
 
             if effect == "PLUS":
                 plus_total = q2(plus_total + amt)
-                rows.append(("DR", account_id, ledger_id or None, amt, f"Receipt adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("DR", account_id, ledger_id or None, amt, f"{prefix} | Adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             elif effect == "MINUS":
                 minus_total = q2(minus_total + amt)
-                rows.append(("CR", account_id, ledger_id or None, amt, f"Receipt adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("CR", account_id, ledger_id or None, amt, f"{prefix} | Adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             else:
                 raise ValueError(f"Unsupported settlement_effect '{effect}'.")
 
@@ -86,14 +88,14 @@ class ReceiptVoucherPostingAdapter:
             ledger_id=received_in_ledger_id or None,
             drcr=True,
             amount=cash_received,
-            description=f"Receipt voucher {getattr(header, 'voucher_code', '')} cash/bank",
+            description=f"{prefix} | Cash/Bank receipt",
         ))
         jl_inputs.append(JLInput(
             account_id=received_from_id,
             ledger_id=received_from_ledger_id or None,
             drcr=False,
             amount=customer_settlement,
-            description=f"Receipt voucher {getattr(header, 'voucher_code', '')} customer settlement",
+            description=f"{prefix} | Customer settlement",
         ))
 
         for side, account_id, ledger_id, amt, desc in rows:
@@ -102,7 +104,7 @@ class ReceiptVoucherPostingAdapter:
                 ledger_id=ledger_id,
                 drcr=(side == "DR"),
                 amount=amt,
-                description=f"{getattr(header, 'voucher_code', '')} {desc}",
+                description=desc,
             ))
 
         if reverse:
@@ -137,7 +139,7 @@ class ReceiptVoucherPostingAdapter:
             voucher_no=str(getattr(header, "voucher_code", "") or ""),
             voucher_date=getattr(header, "voucher_date", None),
             posting_date=getattr(header, "voucher_date", None),
-            narration=f"Receipt Voucher {getattr(header, 'voucher_code', '')}",
+            narration=receipt_document_prefix(header),
             jl_inputs=jl_inputs,
             im_inputs=[],
             use_advisory_lock=True,
@@ -160,7 +162,7 @@ class ReceiptVoucherPostingAdapter:
             voucher_no=str(getattr(header, "voucher_code", "") or ""),
             voucher_date=getattr(header, "voucher_date", None),
             posting_date=getattr(header, "voucher_date", None),
-            narration=f"Receipt Voucher Reversal {getattr(header, 'voucher_code', '')}",
+            narration=f"Reversal | {receipt_document_prefix(header)}",
             jl_inputs=jl_inputs,
             im_inputs=[],
             use_advisory_lock=True,

@@ -11,7 +11,7 @@ from typing import Any
 from django.db import transaction
 from openpyxl import Workbook, load_workbook
 
-from entity.models import Entity, SubEntity
+from entity.models import Entity, Godown, SubEntity
 from financial.models import account
 
 from .models import (
@@ -235,7 +235,8 @@ def template_payload() -> dict[str, list[dict[str, Any]]]:
         "opening_stocks": [
             {
                 "sku": "SKU-001",
-                "location_code": "MAIN",
+                "branch_code": "MAIN",
+                "godown_code": "MAIN-STOCK",
                 "openingqty": "100.00",
                 "openingrate": "100.00",
                 "openingvalue": "10000.00",
@@ -264,7 +265,7 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
     gst_rows = ProductGstRate.objects.filter(product_id__in=product_ids).select_related("hsn")
     price_rows = ProductPrice.objects.filter(product_id__in=product_ids).select_related("pricelist", "uom")
     barcode_rows = ProductBarcode.objects.filter(product_id__in=product_ids).select_related("uom")
-    opening_rows = OpeningStockByLocation.objects.filter(product_id__in=product_ids).select_related("location")
+    opening_rows = OpeningStockByLocation.objects.filter(product_id__in=product_ids).select_related("branch", "godown")
     uom_rows = ProductUomConversion.objects.filter(product_id__in=product_ids).select_related("from_uom", "to_uom")
     categories = ProductCategory.objects.filter(entity=entity).select_related("maincategory").order_by("pcategoryname")
     uoms = UnitOfMeasure.objects.filter(entity=entity).order_by("code")
@@ -362,7 +363,8 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
         "opening_stocks": [
             {
                 "sku": sku_by_id.get(r.product_id, ""),
-                "location_code": r.location.subentity_code if r.location else "",
+                "branch_code": r.branch.subentity_code if r.branch else "",
+                "godown_code": r.godown.code if r.godown else "",
                 "openingqty": str(r.openingqty or ""),
                 "openingrate": str(r.openingrate or ""),
                 "openingvalue": str(r.openingvalue or ""),
@@ -795,20 +797,30 @@ def commit_payload(
             except Exception as exc:
                 errors.append({"sheet": "barcodes", "row": idx, "field": "row", "message": str(exc)})
 
+        godown_map = {str(item.code or "").strip().lower(): item for item in Godown.objects.filter(entity=entity)}
+
         for idx, row in enumerate(payload.get("opening_stocks", []), start=2):
             sku = (row.get("sku") or "").strip()
             product = product_map.get(sku)
             if not product:
                 continue
             try:
-                location = subentity_map.get((row.get("location_code") or "").strip().lower())
-                if not location:
-                    raise ValueError("Invalid location_code (subentity_code)")
+                branch_code = (row.get("branch_code") or row.get("location_code") or "").strip().lower()
+                godown_code = (row.get("godown_code") or "").strip().lower()
+                branch = subentity_map.get(branch_code)
+                godown = godown_map.get(godown_code)
+                if not branch:
+                    raise ValueError("Invalid branch_code (subentity_code)")
+                if not godown:
+                    raise ValueError("Invalid godown_code")
+                if godown.subentity_id not in (None, branch.id):
+                    raise ValueError("Godown must belong to the selected branch or be entity-wide")
                 as_of_date = _parse_date(row.get("as_of_date"))
                 obj, created = OpeningStockByLocation.objects.get_or_create(
                     entity=entity,
                     product=product,
-                    location=location,
+                    branch=branch,
+                    godown=godown,
                     as_of_date=as_of_date,
                     defaults={},
                 )

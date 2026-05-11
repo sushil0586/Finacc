@@ -8,11 +8,17 @@ from typing import Any, Dict, Iterable, List, Optional
 from django.db import transaction
 
 from posting.common.location_resolver import resolve_posting_location_id
+from posting.common.journal_descriptions import (
+    purchase_charge_description,
+    purchase_document_prefix,
+    purchase_line_description,
+)
 from posting.services.posting_service import PostingService, JLInput, IMInput
 from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product, ProductPurchaseBehavior
+from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
 
 
@@ -156,7 +162,7 @@ class PurchaseInvoicePostingAdapter:
         elif is_debit_note:
             doc_label = "Purchase Debit Note"
 
-        narration = f"{doc_label} {voucher_no or txn_id}"
+        narration = purchase_document_prefix(header) or f"{doc_label} {voucher_no or txn_id}"
 
         # ---- header totals ----
         header_grand_total = q2(getattr(header, "grand_total", None) or ZERO2)
@@ -282,7 +288,7 @@ class PurchaseInvoicePostingAdapter:
                 ledger_id=int(getattr(getattr(ln, "product_purchase_account", None), "ledger_id", 0) or 0) or None,
                 drcr=base_is_debit,
                 amount=q2(base.copy_abs()),
-                description=f"{narration} (line {getattr(ln, 'line_no', '-')})",
+                description=purchase_line_description(header, ln),
                 detail_id=int(getattr(ln, "id", 0) or 0) or None,
             ))
 
@@ -335,7 +341,7 @@ class PurchaseInvoicePostingAdapter:
                     ledger_id=misc_exp_ledger,
                     drcr=(sign > 0),  # invoice/DN Dr, CN Cr
                     amount=q2(c_base.copy_abs()),
-                    description=f"{narration} (charge {getattr(ch, 'line_no', '-')})",
+                    description=purchase_charge_description(header, ch),
                     detail_id=int(getattr(ch, "id", 0) or 0) or None,
                 ))
 
@@ -609,13 +615,18 @@ class PurchaseInvoicePostingAdapter:
                 if extra_cap > ZERO2 and total_goods_taxable > ZERO2 and base > ZERO2:
                     cap_share = q2(extra_cap * (base / total_goods_taxable))
 
-                unit_cost = q4((base + cap_share) / qty_for_cost)
+                unit_cost = q4((base + cap_share) / base_qty) if base_qty != ZERO4 else ZERO4
 
                 location_id = resolve_posting_location_id(
                     entity_id=entity_id,
                     subentity_id=int(subentity_id) if subentity_id else None,
                     godown_id=getattr(header, "godown_id", None),
                     location_id=getattr(header, "location_id", None),
+                )
+                resolved_lot_number = resolve_tracked_lot_number(
+                    product=product,
+                    batch_number=getattr(ln, "batch_number", ""),
+                    expiry_date=getattr(ln, "expiry_date", None),
                 )
                 im.append(IMInput(
                     product_id=int(getattr(ln, "product_id")),
@@ -629,7 +640,7 @@ class PurchaseInvoicePostingAdapter:
                     cost_source="PURCHASE",
                     movement_nature=InventoryMove.MovementNature.PURCHASE if inventory_move_type == InventoryMove.MoveType.IN_ else InventoryMove.MovementNature.RETURN,
                     movement_reason=str(doc_type or "purchase"),
-                    batch_number=str(getattr(ln, "batch_number", "") or ""),
+                    batch_number=resolved_lot_number,
                     manufacture_date=getattr(ln, "manufacture_date", None),
                     expiry_date=getattr(ln, "expiry_date", None),
                     cost_meta={
@@ -642,9 +653,11 @@ class PurchaseInvoicePostingAdapter:
                         "base_qty": str(base_qty),
                         "taxable_value": str(base),
                         "cap_share": str(cap_share),
+                        "selected_uom_unit_cost": str(q4((base + cap_share) / qty_for_cost)) if qty_for_cost != ZERO4 else "0.0000",
+                        "base_uom_unit_cost": str(unit_cost),
                         "spread_cost_across_free_qty": cfg.spread_cost_across_free_qty,
                         "affects_inventory": affects_inventory,
-                        "batch_number": str(getattr(ln, "batch_number", "") or ""),
+                        "batch_number": resolved_lot_number,
                         "manufacture_date": getattr(ln, "manufacture_date", None),
                         "expiry_date": getattr(ln, "expiry_date", None),
                     },

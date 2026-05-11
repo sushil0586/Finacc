@@ -15,7 +15,9 @@ from financial.services import apply_normalized_profile_payload, create_account_
 from geography.models import City, Country, District, State
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, PostingBatch, JournalLine, StaticAccount, EntityStaticAccountMap, TxnType
+from purchase.models.purchase_core import PurchaseInvoiceHeader
 from receipts.models.receipt_core import ReceiptVoucherHeader
+from sales.models.sales_core import SalesInvoiceHeader
 from vouchers.models.voucher_core import VoucherHeader
 
 
@@ -497,6 +499,102 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(rows[0]["drilldown_target"], "purchase_invoice_detail")
         self.assertEqual(rows[0]["drilldown_params"]["id"], 46)
         self.assertEqual(rows[0]["txn_id"], 46)
+
+    def test_posting_lookup_resolves_purchase_invoice_entry(self):
+        purchase_document = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 9),
+            posting_date=date(2025, 4, 9),
+            doc_code="PINV",
+            doc_no=101,
+            purchase_number="PI-PINV-101",
+        )
+        purchase_entry = self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=purchase_document.id,
+            voucher_no="PI-PINV-101",
+            posting_date=date(2025, 4, 9),
+            voucher_date=date(2025, 4, 9),
+            status=EntryStatus.POSTED,
+            narration="Purchase invoice posting",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "80.00", "description": "Expense Dr"},
+                {"account": self.ap_account, "drcr": False, "amount": "80.00", "description": "Payable Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-posting-lookup"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "document_type": "purchase_invoice",
+                "document_id": purchase_document.id,
+                "source_module": "purchase",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["entry_id"], purchase_entry.id)
+        self.assertEqual(data["txn_type"], TxnType.PURCHASE)
+        self.assertEqual(data["source_module"], "purchase")
+
+    def test_posting_lookup_resolves_sales_credit_note_entry(self):
+        sales_credit_note = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 10),
+            posting_date=date(2025, 4, 10),
+            doc_code="SCN",
+            doc_no=14,
+            invoice_number="SI-SCN-14",
+        )
+        credit_entry = self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES_CREDIT_NOTE,
+            txn_id=sales_credit_note.id,
+            voucher_no="SI-SCN-14",
+            posting_date=date(2025, 4, 10),
+            voucher_date=date(2025, 4, 10),
+            status=EntryStatus.POSTED,
+            narration="Sales credit note posting",
+            lines=[
+                {"account": self.income_account, "drcr": True, "amount": "30.00", "description": "Revenue reversal"},
+                {"account": self.cash_account, "drcr": False, "amount": "30.00", "description": "Receivable reversal"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-posting-lookup"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "document_type": "credit_note",
+                "document_id": sales_credit_note.id,
+                "source_module": "sales",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["entry_id"], credit_entry.id)
+        self.assertEqual(data["txn_type"], TxnType.SALES_CREDIT_NOTE)
+        self.assertEqual(data["source_module"], "sales")
 
     def test_cashbook_happy_path_running_balance_and_opening(self):
         response = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "cash_account": str(self.cash_account.id), "from_date": "2025-04-01", "to_date": "2025-04-30"})

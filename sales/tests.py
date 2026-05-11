@@ -323,6 +323,8 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
             "posting_date": date(2026, 3, 3),
             "customer_id": 7001,
             "customer_ledger_id": 7001,
+            "customer_name": "Customer-A",
+            "customer": SimpleNamespace(accountname="Customer-A", ledger_id=7001),
             "doc_type": 1,
             "sales_number": "SINV-201",
             "grand_total": Decimal("250.00"),
@@ -338,6 +340,7 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
             "id": 301,
             "line_no": 1,
             "product_id": 1,
+            "productDesc": "Industrial Flour",
             "is_service": False,
             "taxable_value": Decimal("250.00"),
             "cgst_amount": Decimal("0.00"),
@@ -415,6 +418,116 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         self.assertEqual(move.uom_factor, Decimal("1000.0000"))
         self.assertEqual(move.base_qty, Decimal("1000.0000"))
         self.assertEqual(move.base_uom_id, 1)
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("posting.adapters.sales_invoice.resolve_posting_location_id", return_value=5)
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_inventory_move_generates_internal_expiry_lot_for_expiry_tracked_product(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        mocked_resolve_location,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = 5000
+        product = SimpleNamespace(
+            id=1,
+            base_uom_id=1,
+            base_uom=SimpleNamespace(id=1, code="PCS"),
+            uom_conversions=[],
+            is_batch_managed=False,
+            is_expiry_tracked=True,
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=1000)
+
+        header = self._base_header(affects_inventory=True, grand_total=Decimal("200.00"))
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=header,
+            lines=[
+                self._line(
+                    qty=Decimal("2.0000"),
+                    taxable_value=Decimal("200.00"),
+                    uom_id=1,
+                    batch_number="",
+                    expiry_date=date(2026, 5, 1),
+                )
+            ],
+            user_id=1,
+            config=SalesInvoicePostingConfig(),
+        )
+
+        kwargs = posting_instance.post.call_args.kwargs
+        move = kwargs["im_inputs"][0]
+        self.assertEqual(move.batch_number, "EXP-1-20260501")
+        self.assertEqual(move.expiry_date, date(2026, 5, 1))
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("posting.adapters.sales_invoice.resolve_posting_location_id", return_value=5)
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_sales_descriptions_include_customer_and_item_context(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        mocked_resolve_location,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [
+            SimpleNamespace(
+                id=1,
+                base_uom_id=1,
+                base_uom=SimpleNamespace(id=1, code="PCS"),
+                uom_conversions=[],
+            )
+        ]
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=999)
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=self._base_header(),
+            lines=[self._line()],
+            user_id=1,
+            config=SalesInvoicePostingConfig(),
+        )
+
+        jl_inputs = mock_posting_service_cls.return_value.post.call_args.kwargs["jl_inputs"]
+        self.assertIn("Customer Customer-A", jl_inputs[0].description)
+        self.assertIn("Item Industrial Flour", jl_inputs[0].description)
         self.assertTrue(mocked_resolve_location.called)
 
 class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
@@ -917,6 +1030,69 @@ class SalesStockBalanceServiceUnitTests(SimpleTestCase):
 
         self.assertEqual(hint["status"], "warning")
         self.assertIn("Only 3.0000 available", hint["message"])
+        mocked_build_maps.assert_called_once()
+        mocked_best_batch.assert_called_once()
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("sales.services.sales_stock_balance_service.Godown.objects.filter")
+    @patch("sales.services.sales_stock_balance_service.SalesStockBalanceService._best_batch", return_value=None)
+    @patch(
+        "sales.services.sales_stock_balance_service.SalesStockBalanceService._build_balance_maps",
+        return_value=(
+            {
+                ("EXP-10-20260501", 5): Decimal("2.0000"),
+                ("EXP-10-20260601", 5): Decimal("5.0000"),
+            },
+            {
+                ("EXP-10-20260501", 5, date(2026, 5, 1)): Decimal("2.0000"),
+                ("EXP-10-20260601", 5, date(2026, 6, 1)): Decimal("5.0000"),
+            },
+            Decimal("7.0000"),
+        ),
+    )
+    @patch("sales.services.sales_stock_balance_service.resolve_posting_location_id", return_value=5)
+    def test_build_hint_uses_internal_expiry_lot_for_expiry_only_products(
+        self,
+        mocked_resolve_location,
+        mocked_build_maps,
+        mocked_best_batch,
+        mocked_godown_filter,
+    ):
+        mocked_godown_filter.return_value.values_list.return_value.first.return_value = "Main Location"
+        policy = SimpleNamespace(
+            mode="CONTROLLED",
+            allow_negative_stock=False,
+            batch_required_for_sales=False,
+            expiry_validation_required=True,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        product = SimpleNamespace(
+            id=10,
+            productname="Yogurt",
+            is_service=False,
+            is_batch_managed=False,
+            is_expiry_tracked=True,
+        )
+
+        hint = SalesStockBalanceService.build_hint(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            bill_date=date(2026, 4, 16),
+            product=product,
+            requested_qty=Decimal("4.0000"),
+            batch_number="",
+            expiry_date=date(2026, 5, 1),
+            location_id=5,
+            policy=policy,
+        )
+
+        self.assertEqual(hint["batch_number"], "EXP-10-20260501")
+        self.assertEqual(hint["available_qty"], "2.0000")
+        self.assertEqual(hint["shortage_qty"], "2.0000")
+        self.assertEqual(hint["status"], "danger")
+        self.assertIn("expiry lot", hint["message"].lower())
         mocked_build_maps.assert_called_once()
         mocked_best_batch.assert_called_once()
         self.assertTrue(mocked_resolve_location.called)

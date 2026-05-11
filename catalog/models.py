@@ -14,14 +14,14 @@ from django.core.files.base import ContentFile
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from PIL import Image, ImageDraw, ImageFont
 
-from entity.models import Entity, SubEntity
+from entity.models import Entity, Godown, SubEntity
 from financial.models import account
 from assets.models import AssetCategory
 
@@ -1095,10 +1095,17 @@ class OpeningStockByLocation(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name='opening_stocks'
     )
-    location = models.ForeignKey(
+    branch = models.ForeignKey(
         "entity.SubEntity",
         on_delete=models.PROTECT,
         related_name='opening_stocks'
+    )
+    godown = models.ForeignKey(
+        "entity.Godown",
+        on_delete=models.PROTECT,
+        related_name="catalog_opening_stocks",
+        null=True,
+        blank=True,
     )
     openingqty = models.DecimalField(max_digits=18, decimal_places=2,blank=True, null=True)
     openingrate = models.DecimalField(max_digits=18, decimal_places=2,blank=True, null=True)
@@ -1108,17 +1115,42 @@ class OpeningStockByLocation(TimeStampedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['entity', 'product', 'location', 'as_of_date'],
-                name='uq_openingstock_entity_product_location_date'
+                fields=['entity', 'product', 'branch', 'godown', 'as_of_date'],
+                name='uq_openingstock_entity_product_branch_godown_date'
             )
         ]
 
     def __str__(self):
-        return f"Opening {self.product} @ {self.location} ({self.as_of_date})"
+        scope = getattr(self.godown, "display_name", None) or getattr(self.branch, "subentityname", None) or self.branch_id
+        return f"Opening {self.product} @ {scope} ({self.as_of_date})"
+
+    def clean(self):
+        errors = {}
+
+        if self.branch_id and self.entity_id and self.branch.entity_id != self.entity_id:
+            errors["branch"] = "Branch must belong to the same entity as the product."
+
+        if self.godown_id:
+            if self.entity_id and self.godown.entity_id != self.entity_id:
+                errors["godown"] = "Location must belong to the same entity as the product."
+            elif self.branch_id and self.godown.subentity_id not in (None, self.branch_id):
+                errors["godown"] = "Location must belong to the selected branch or be entity-wide."
+
+        if self.openingqty is None or Decimal(self.openingqty) <= Decimal("0"):
+            errors["openingqty"] = "Opening quantity must be greater than zero."
+        if self.openingrate is None or Decimal(self.openingrate) < Decimal("0"):
+            errors["openingrate"] = "Opening rate cannot be negative."
+
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         if self.product_id and self.entity_id is None:
             self.entity_id = self.product.entity_id
+        qty = Decimal(self.openingqty or 0)
+        rate = Decimal(self.openingrate or 0)
+        self.openingvalue = (qty * rate).quantize(Decimal("0.01"))
+        self.full_clean()
         super().save(*args, **kwargs)
 
 
@@ -1255,6 +1287,60 @@ class ProductPlanning(TimeStampedModel):
 
     def __str__(self):
         return f"Planning for {self.product}"
+
+    def clean(self):
+        errors = {}
+
+        def _non_negative(field_name):
+            value = getattr(self, field_name)
+            if value is not None and Decimal(value) < Decimal("0"):
+                errors[field_name] = f"{field_name.replace('_', ' ').capitalize()} cannot be negative."
+
+        for field_name in ("min_stock", "max_stock", "reorder_level", "reorder_qty"):
+            _non_negative(field_name)
+
+        if self.lead_time_days is not None and int(self.lead_time_days) < 0:
+            errors["lead_time_days"] = "Lead time days cannot be negative."
+
+        if self.min_stock is not None and self.max_stock is not None and Decimal(self.max_stock) < Decimal(self.min_stock):
+            errors["max_stock"] = "Max stock must be greater than or equal to min stock."
+
+        if self.reorder_level is not None:
+            reorder_level = Decimal(self.reorder_level)
+            if self.min_stock is not None and reorder_level < Decimal(self.min_stock):
+                errors["reorder_level"] = "Reorder level cannot be below min stock."
+            if self.max_stock is not None and reorder_level > Decimal(self.max_stock):
+                errors["reorder_level"] = "Reorder level cannot exceed max stock."
+
+        if self.reorder_level is not None and Decimal(self.reorder_level) > Decimal("0") and (self.reorder_qty is None or Decimal(self.reorder_qty) <= Decimal("0")):
+            errors["reorder_qty"] = "Reorder quantity must be greater than zero when reorder level is set."
+
+        if self.abc_class:
+            self.abc_class = str(self.abc_class).strip().upper()
+            if self.abc_class not in {"A", "B", "C"}:
+                errors["abc_class"] = "ABC class must be A, B, or C."
+
+        if self.fsn_class:
+            self.fsn_class = str(self.fsn_class).strip().upper()
+            if self.fsn_class not in {"F", "S", "N"}:
+                errors["fsn_class"] = "FSN class must be F, S, or N."
+
+        if errors:
+            raise ValidationError(errors)
+
+
+@receiver(post_save, sender=OpeningStockByLocation)
+def sync_opening_stock_posting(sender, instance, **kwargs):
+    from .services.opening_stock_posting import sync_catalog_opening_stock_posting
+
+    sync_catalog_opening_stock_posting(instance)
+
+
+@receiver(post_delete, sender=OpeningStockByLocation)
+def clear_opening_stock_posting(sender, instance, **kwargs):
+    from .services.opening_stock_posting import clear_catalog_opening_stock_posting
+
+    clear_catalog_opening_stock_posting(instance)
 
 
 class ProductBulkJob(TimeStampedModel):

@@ -31,6 +31,8 @@ class PaymentPostingAdapterTests(SimpleTestCase):
             cash_received_amount=Decimal("100.00"),
             received_in_id=10,
             received_from_id=20,
+            received_in=SimpleNamespace(accountname="Cash In Hand", ledger_id=10),
+            received_from=SimpleNamespace(accountname="Customer-A", ledger_id=20),
         )
 
     def test_build_journal_lines_with_adjustments(self):
@@ -60,6 +62,8 @@ class PaymentPostingAdapterTests(SimpleTestCase):
         self.assertEqual(jl[3].account_id, 102)
         self.assertFalse(jl[3].drcr)
         self.assertEqual(jl[3].amount, Decimal("5.00"))
+        self.assertIn("Customer Customer-A", jl[1].description)
+        self.assertIn("Into Cash In Hand", jl[0].description)
 
 
 class ReceiptVoucherServiceTests(SimpleTestCase):

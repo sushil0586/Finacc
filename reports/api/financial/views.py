@@ -1,23 +1,44 @@
 from __future__ import annotations
 
-import csv
 from decimal import Decimal
-from io import BytesIO, StringIO
-from xml.sax.saxutils import escape
 
 from django.http import HttpResponse
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.pagesizes import A3, A4, landscape
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from reports.api.financial.export_utils import (
+    ExportSection,
+    attach_export_actions as _attach_financial_actions,
+    build_report_filename,
+    filtered_querydict as _filtered_querydict,
+    safe_filename as _safe_filename,
+    truncate_text as _truncate_text,
+    write_csv as _write_csv,
+    write_excel as _write_excel,
+    write_pdf as _write_pdf,
+    write_sectioned_csv,
+    write_sectioned_excel,
+    write_sectioned_pdf,
+)
+from reports.services.financial_hub_settings import (
+    financial_hub_amount_unit_label,
+    get_effective_balance_sheet_settings,
+    get_effective_profit_loss_settings,
+    get_effective_trading_account_settings,
+    format_financial_hub_amount,
+    format_financial_hub_balance,
+    get_effective_ledger_book_settings,
+    get_effective_trial_balance_settings,
+    get_financial_hub_settings_payload,
+    get_visible_balance_sheet_columns,
+    get_visible_ledger_book_columns,
+    get_visible_profit_loss_columns,
+    get_visible_trading_account_columns,
+    get_visible_trial_balance_columns,
+)
 from reports.schemas.common import build_report_envelope
 from reports.schemas.financial_reports import FinancialReportScopeSerializer, LedgerBookScopeSerializer
 from reports.services.financial.meta import REPORT_DEFAULTS, build_financial_report_meta
@@ -59,6 +80,7 @@ class _BaseFinancialReportAPIView(ScopedEntitlementMixin, APIView):
             "to_date": scope.get("to_date"),
             "as_of_date": scope.get("as_of_date"),
             "view_type": scope.get("view_type"),
+            "presentation": scope.get("presentation"),
             "account_group": scope.get("account_group"),
             "ledger_ids": scope.get("ledger_ids"),
             "include_zero_balance": scope.get("include_zero_balance", REPORT_DEFAULTS["show_zero_balances_default"]),
@@ -91,12 +113,6 @@ class _BaseFinancialReportAPIView(ScopedEntitlementMixin, APIView):
         }
 
 
-def _safe_filename(value):
-    text = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or "").strip())
-    text = text.strip("._-")
-    return text or "report"
-
-
 def _format_scope_date(value):
     if not value:
         return "-"
@@ -105,237 +121,19 @@ def _format_scope_date(value):
     return str(value)
 
 
-def _filtered_querydict(request, *, exclude=None):
-    params = request.GET.copy()
-    for key in exclude or []:
-        params.pop(key, None)
-    return params.urlencode()
+def _presentation_mode(scope):
+    return "statement" if (scope.get("presentation") or "standard").strip().lower() == "statement" else "standard"
 
 
-def _attach_financial_actions(payload, request, *, export_base_path):
-    query = _filtered_querydict(request, exclude=["page", "page_size"])
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
-    return payload
+def _effective_period_by(scope):
+    period_by = scope.get("period_by")
+    if period_by:
+        return period_by
+    if _presentation_mode(scope) == "statement":
+        return "year"
+    return None
 
 
-def _workbook_styles():
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="2F5597")
-    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    right = Alignment(horizontal="right", vertical="center", wrap_text=True)
-    thin = Side(style="thin", color="D9D9D9")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    return header_font, header_fill, center, left, right, border
-
-
-def _write_csv(headers, rows):
-    buffer = StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(headers)
-    for row in rows:
-        writer.writerow(row)
-    return buffer.getvalue().encode("utf-8-sig")
-
-
-def _write_excel(title, subtitle, headers, rows, *, numeric_columns=None, orientation="landscape"):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = title[:31]
-    orientation = (orientation or "landscape").strip().lower()
-    if orientation not in {"landscape", "portrait"}:
-        orientation = "landscape"
-    ws.page_setup.orientation = orientation
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0
-    header_font, header_fill, center, left, right, border = _workbook_styles()
-    numeric_columns = set(numeric_columns or [])
-
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-    ws.cell(row=1, column=1, value=title)
-    ws.cell(row=1, column=1).font = Font(bold=True, size=14)
-    ws.cell(row=1, column=1).alignment = left
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
-    ws.cell(row=2, column=1, value=subtitle)
-    ws.cell(row=2, column=1).alignment = left
-
-    header_row = 4
-    for col_index, header in enumerate(headers, start=1):
-        cell = ws.cell(row=header_row, column=col_index, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center
-        cell.border = border
-
-    summary_labels = {"totals", "summary", "balance difference", "debit total", "credit total"}
-    summary_fill = PatternFill("solid", fgColor="E8F1FB")
-    zebra_fill = PatternFill("solid", fgColor="F7FAFE")
-    for row_index, row in enumerate(rows, start=header_row + 1):
-        row_key = str(row[0] if row else "").strip().lower()
-        is_summary_row = row_key in summary_labels or row_key.endswith(" total")
-        for col_index, value in enumerate(row, start=1):
-            cell = ws.cell(row=row_index, column=col_index, value=value)
-            cell.border = border
-            if is_summary_row:
-                cell.fill = summary_fill
-                cell.font = Font(bold=True)
-            elif row_index % 2 == 1:
-                cell.fill = zebra_fill
-            cell.alignment = right if col_index in numeric_columns else left
-
-    for col_index, header in enumerate(headers, start=1):
-        width = max(len(str(header)) + 2, 14)
-        for row in rows[:100]:
-            width = max(width, len(str(row[col_index - 1])) + 2 if col_index - 1 < len(row) else width)
-        ws.column_dimensions[get_column_letter(col_index)].width = min(width, 40)
-
-    buffer = BytesIO()
-    wb.save(buffer)
-    return buffer.getvalue()
-
-
-def _write_pdf(title, subtitle, headers, rows, *, col_widths=None, meta_items=None, numeric_columns=None, pagesize=None):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=pagesize or landscape(A4), rightMargin=18, leftMargin=18, topMargin=24, bottomMargin=18)
-    styles = getSampleStyleSheet()
-    title_style = styles["Title"].clone("FinancialPdfTitle")
-    title_style.textColor = colors.HexColor("#FFFFFF")
-    title_style.alignment = 1
-    title_style.leading = 18
-    title_style.fontSize = 16
-    title_style.spaceAfter = 0
-
-    subtitle_style = styles["BodyText"].clone("FinancialPdfSubtitle")
-    subtitle_style.fontSize = 9
-    subtitle_style.leading = 11
-    subtitle_style.textColor = colors.HexColor("#4A5568")
-    subtitle_style.spaceAfter = 0
-
-    meta_label_style = styles["BodyText"].clone("FinancialPdfMetaLabel")
-    meta_label_style.fontSize = 7.5
-    meta_label_style.leading = 9
-    meta_label_style.textColor = colors.HexColor("#5B6573")
-    meta_label_style.spaceAfter = 0
-
-    meta_value_style = styles["BodyText"].clone("FinancialPdfMetaValue")
-    meta_value_style.fontSize = 9
-    meta_value_style.leading = 11
-    meta_value_style.textColor = colors.HexColor("#1F2937")
-    meta_value_style.spaceAfter = 0
-
-    def _page_decorator(canvas, _doc):
-        canvas.saveState()
-        canvas.setStrokeColor(colors.HexColor("#D7E2F1"))
-        canvas.setLineWidth(0.8)
-        canvas.line(doc.leftMargin, doc.bottomMargin - 8, doc.pagesize[0] - doc.rightMargin, doc.bottomMargin - 8)
-        canvas.setFont("Helvetica", 8)
-        canvas.setFillColor(colors.HexColor("#667085"))
-        canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, doc.bottomMargin - 18, f"Page {_doc.page}")
-        canvas.restoreState()
-
-    header_rows = [
-        [
-            Paragraph(escape(title), title_style)
-        ]
-    ]
-    header_table = Table(header_rows, colWidths=[doc.width])
-    header_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#2F5597")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 14),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#2F5597")),
-            ]
-        )
-    )
-
-    story = [header_table, Spacer(1, 8), Paragraph(escape(subtitle), subtitle_style), Spacer(1, 10)]
-
-    if meta_items:
-        meta_cards = []
-        for label, value in meta_items:
-            meta_cards.append(
-                Paragraph(
-                    f"<font color='#5B6573'><b>{escape(str(label))}:</b></font><br/><font color='#1F2937'>{escape(str(value or '-'))}</font>",
-                    meta_value_style,
-                )
-            )
-        while len(meta_cards) % 3 != 0:
-            meta_cards.append(Paragraph("&nbsp;", meta_label_style))
-
-        meta_rows = [meta_cards[index:index + 3] for index in range(0, len(meta_cards), 3)]
-        meta_table = Table(meta_rows, colWidths=[doc.width / 3.0] * 3)
-        meta_table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F7FB")),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D7E2F1")),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D7E2F1")),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ]
-            )
-        )
-        story.extend([meta_table, Spacer(1, 10)])
-
-    table_data = [headers, *rows]
-    if col_widths:
-        table_data = [
-            [
-                _truncate_text(value, col_widths[index] if index < len(col_widths) else 72)
-                for index, value in enumerate(row)
-            ]
-            for row in table_data
-        ]
-    table = Table(table_data, colWidths=col_widths, repeatRows=1)
-    numeric_columns = set(numeric_columns or [])
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F5597")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 8.5),
-                ("LEADING", (0, 0), (-1, -1), 10),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CFCFCF")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F6F8FC")]),
-            ]
-        )
-    )
-    for col_index in numeric_columns:
-        table.setStyle(TableStyle([("ALIGN", (col_index, 1), (col_index, -1), "RIGHT")]))
-    story.append(table)
-    doc.build(story, onFirstPage=_page_decorator, onLaterPages=_page_decorator)
-    return buffer.getvalue()
-
-
-def _truncate_text(value, width_points, *, min_chars=8):
-    text = "" if value is None else str(value)
-    max_chars = max(min_chars, int((width_points or 72) / 5))
-    if len(text) <= max_chars:
-        return text
-    if max_chars <= 3:
-        return text[:max_chars]
-    return f"{text[: max_chars - 3].rstrip()}..."
 
 
 def _format_balance_amount(value, *, decimals=2):
@@ -365,14 +163,16 @@ def _parse_decimal(value):
 
 def _trial_balance_subtitle(scope_names, scope):
     subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
+    scope_label = _humanize_trial_balance_scope(scope.get("scope_mode") or "financial_year")
+    group_label = _humanize_trial_balance_group(scope.get("account_group") or scope.get("group_by") or "ledger")
+    view_label = _humanize_trial_balance_view(scope.get("view_type") or "summary")
     return (
         f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
         f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
         f"Subentity: {subentity_label} | "
-        f"Scope: {scope.get('scope_mode') or 'financial_year'} | "
-        f"Group by: {scope.get('account_group') or scope.get('group_by') or 'ledger'} | "
-        f"View: {scope.get('view_type') or 'summary'} | "
-        f"Posted only: {scope.get('posted_only', True)}"
+        f"Scope: {scope_label} | "
+        f"Group: {group_label} | "
+        f"View: {view_label}"
     )
 
 
@@ -477,6 +277,168 @@ def _trial_balance_export_table(report):
     return headers, table_rows
 
 
+def _trial_balance_presentation_table(report, *, view_type="summary", group_by="ledger", settings=None):
+    rows = report.get("rows") or []
+    periods = report.get("periods") or []
+    normalized_view = (view_type or "summary").strip().lower()
+    normalized_group = (group_by or "ledger").strip().lower()
+    base_rows = _trial_balance_flatten_rows(rows) if normalized_view == "detailed" else [(row, 0) for row in rows]
+
+    visible_columns = get_visible_trial_balance_columns(settings or {})
+    column_labels = {
+        "code": "Code",
+        "name": "Name",
+        "account_head": "Account Head",
+        "account_type": "Account Type",
+        "opening": "Opening",
+        "debit": "Debit",
+        "credit": "Credit",
+        "closing": "Closing",
+        "abnormal": "Abnormal",
+    }
+    numeric_column_keys = {"opening", "debit", "credit", "closing"}
+    center_column_keys = {"abnormal"}
+
+    headers = [column_labels[key] for key in visible_columns]
+    numeric_columns = {index for index, key in enumerate(visible_columns) if key in numeric_column_keys}
+    center_columns = {index for index, key in enumerate(visible_columns) if key in center_column_keys}
+
+    for period_index, period in enumerate(periods):
+        label = period.get("period_label") or period.get("label") or period.get("name") or period.get("title") or period.get("key")
+        start = len(headers)
+        headers.extend([
+            f"{label} Opening",
+            f"{label} Debit",
+            f"{label} Credit",
+            f"{label} Closing",
+        ])
+        numeric_columns.update({start, start + 1, start + 2, start + 3})
+
+    table_rows = []
+    for row, depth in base_rows:
+        label = row.get("label") or row.get("ledger_name") or row.get("accounthead_name") or row.get("accounttype_name") or "-"
+        prefixed_label = f"{'  ' * depth}{label}"
+        row_periods = {
+            str(item.get("key") or item.get("code") or item.get("label") or item.get("name") or ""): item
+            for item in row.get("periods") or []
+        }
+        code = row.get("ledger_code") or row.get("code") or ""
+        account_head_name = row.get("accounthead_name") or ""
+        account_type_name = row.get("accounttype_name") or ""
+        if normalized_view != "detailed":
+            if normalized_group == "accounthead":
+                code = ""
+                account_head_name = ""
+                account_type_name = ""
+            elif normalized_group == "accounttype":
+                code = ""
+                account_head_name = ""
+                account_type_name = ""
+        base_values = {
+            "code": code,
+            "name": prefixed_label,
+            "account_head": account_head_name,
+            "account_type": account_type_name,
+            "opening": format_financial_hub_balance(row.get("opening", "0.00"), settings=settings or {}),
+            "debit": format_financial_hub_amount(row.get("debit", "0.00"), settings=settings or {}),
+            "credit": format_financial_hub_amount(row.get("credit", "0.00"), settings=settings or {}),
+            "closing": format_financial_hub_balance(row.get("closing", "0.00"), settings=settings or {}),
+            "abnormal": "Yes" if row.get("is_abnormal_balance") else "",
+        }
+        values = [base_values[key] for key in visible_columns]
+        for period in periods:
+            key = str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or period.get("name") or "")
+            period_row = row_periods.get(key) or {}
+            values.extend([
+                format_financial_hub_balance(period_row.get("opening", "0.00"), settings=settings or {}),
+                format_financial_hub_amount(period_row.get("debit", "0.00"), settings=settings or {}),
+                format_financial_hub_amount(period_row.get("credit", "0.00"), settings=settings or {}),
+                format_financial_hub_balance(period_row.get("closing", "0.00"), settings=settings or {}),
+            ])
+        table_rows.append(values)
+
+    totals = report.get("totals") or {}
+    total_base_values = {
+        "code": "",
+        "name": "Totals",
+        "account_head": "",
+        "account_type": "",
+        "opening": format_financial_hub_balance(totals.get("opening", "0.00"), settings=settings or {}),
+        "debit": format_financial_hub_amount(totals.get("debit", "0.00"), settings=settings or {}),
+        "credit": format_financial_hub_amount(totals.get("credit", "0.00"), settings=settings or {}),
+        "closing": format_financial_hub_balance(totals.get("closing", "0.00"), settings=settings or {}),
+        "abnormal": "",
+    }
+    total_row = [total_base_values[key] for key in visible_columns]
+    for _period in periods:
+        total_row.extend(["", "", "", ""])
+    table_rows.append(total_row)
+
+    return headers, table_rows, numeric_columns, center_columns
+
+
+def _humanize_trial_balance_scope(value):
+    labels = {
+        "financial_year": "Financial year",
+        "month": "This month",
+        "quarter": "This quarter",
+        "year": "This year",
+        "custom": "Custom range",
+        "as_of": "As of date",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "Financial year").replace("_", " ").title())
+
+
+def _humanize_trial_balance_group(value):
+    labels = {
+        "ledger": "Ledger",
+        "accounthead": "Account head",
+        "accounttype": "Account type",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "ledger").replace("_", " ").title())
+
+
+def _humanize_trial_balance_view(value):
+    labels = {
+        "summary": "Summary",
+        "detailed": "Detailed",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "summary").replace("_", " ").title())
+
+
+def _trial_balance_export_meta(scope_names, scope, report, settings=None):
+    subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
+    total_rows = len(_trial_balance_flatten_rows(report.get("rows") or []))
+    scope_label = _humanize_trial_balance_scope(scope.get("scope_mode") or "financial_year")
+    group_label = _humanize_trial_balance_group(scope.get("account_group") or scope.get("group_by") or "ledger")
+    view_label = _humanize_trial_balance_view(scope.get("view_type") or "summary")
+    presentation_label = "Posted only" if scope.get("posted_only", True) else "Posted and draft"
+    zero_balance_label = "Zero balances included" if scope.get("include_zero_balances", REPORT_DEFAULTS["show_zero_balances_default"]) else "Zero balances hidden"
+    meta_items = [
+        ("Entity", scope_names["entity_name"] or "Selected entity"),
+        ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
+        ("Subentity", subentity_label),
+        ("Scope", scope_label),
+        ("Presentation", f"{view_label} view • Grouped by {group_label}"),
+        ("Filters", f"{presentation_label} • {zero_balance_label}"),
+        ("Amount Unit", financial_hub_amount_unit_label(settings or {})),
+        ("Rows", total_rows),
+    ]
+    if scope.get("search"):
+        meta_items.append(("Search", scope.get("search")))
+    return meta_items
+
+
+def _trial_balance_scope_filename(scope_names, scope):
+    if scope.get("as_of_date"):
+        return f"AsOf_{scope.get('as_of_date')}"
+    if scope.get("from_date") and scope.get("to_date"):
+        return f"{scope.get('from_date')}_to_{scope.get('to_date')}"
+    if scope_names.get("entityfin_name"):
+        return scope_names["entityfin_name"]
+    return scope.get("scope_mode") or "trial_balance"
+
+
 def _profit_loss_subtitle(scope_names, scope, report):
     subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
     view_type = scope.get("view_type") or "summary"
@@ -504,61 +466,180 @@ def _profit_loss_period_lookup(row):
     return lookup
 
 
-def _profit_loss_export_table(report, *, include_periods=True):
-    headers = ["Section", "Particulars", "Account Head", "Account Type"]
+def _humanize_profit_loss_group(value):
+    labels = {
+        "ledger": "Ledger",
+        "accounthead": "Account head",
+        "accounttype": "Account type",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "ledger").replace("_", " ").title())
+
+
+def _humanize_profit_loss_view(value):
+    labels = {
+        "summary": "Summary",
+        "detailed": "Detailed",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "summary").replace("_", " ").title())
+
+
+def _profit_loss_export_meta(scope_names, scope, report, settings=None):
+    subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
+    view_label = _humanize_profit_loss_view(scope.get("view_type") or report.get("reporting", {}).get("view_type") or "summary")
+    group_label = _humanize_profit_loss_group(scope.get("account_group") or scope.get("group_by") or report.get("reporting", {}).get("group_by") or "ledger")
+    presentation_label = "Posted only" if scope.get("posted_only", True) else "Posted and draft"
+    zero_balance_label = "Zero rows hidden" if scope.get("hide_zero_rows", True) else "Zero rows shown"
+    stock = report.get("stock_valuation") or {}
+    summary = report.get("summary") or {}
+    meta_items = [
+        ("Entity", scope_names["entity_name"] or "Selected entity"),
+        ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
+        ("Subentity", subentity_label),
+        ("Scope", _humanize_trial_balance_scope(scope.get("scope_mode") or "financial_year")),
+        ("Presentation", f"{view_label} view • Grouped by {group_label}"),
+        ("Filters", f"{presentation_label} • {zero_balance_label}"),
+        ("Amount Unit", financial_hub_amount_unit_label(settings or {})),
+        ("Stock", f"{stock.get('effective_mode') or 'auto'} / {stock.get('valuation_method') or 'fifo'}"),
+        ("Gross Result", format_financial_hub_amount(summary.get("gross_result") or "0.00", settings=settings or {})),
+        ("Net Margin", f"{summary.get('net_margin_percent') or '0.00'}%"),
+    ]
+    if scope.get("search"):
+        meta_items.append(("Search", scope.get("search")))
+    return meta_items
+
+
+def _profit_loss_scope_filename(scope_names, scope):
+    if scope.get("as_of_date"):
+        return f"As_Of_{scope.get('as_of_date')}"
+    if scope.get("from_date") and scope.get("to_date"):
+        return f"{scope.get('from_date')}_to_{scope.get('to_date')}"
+    if scope_names.get("entityfin_name"):
+        return scope_names["entityfin_name"]
+    return scope.get("scope_mode") or "profit_loss"
+
+
+def _profit_loss_export_table(report, *, include_periods=True, settings=None):
+    visible_columns = set(get_visible_profit_loss_columns(settings)) if settings else {
+        "section", "particulars", "account_head", "account_type", "amount"
+    }
+    headers = []
+    if "section" in visible_columns:
+        headers.append("Section")
+    if "particulars" in visible_columns:
+        headers.append("Particulars")
+    if "account_head" in visible_columns:
+        headers.append("Account Head")
+    if "account_type" in visible_columns:
+        headers.append("Account Type")
     periods = report.get("periods") or []
     empty_period_cells = [""] * len(periods) if include_periods else []
+    reporting = report.get("reporting") or {}
+    normalized_view = str(reporting.get("view_type") or "summary").strip().lower()
+    include_children = normalized_view == "detailed"
     if include_periods:
         for period in periods:
             label = period.get("period_label") or period.get("label") or period.get("name") or period.get("title") or period.get("key")
             headers.extend([f"{label} Amount"])
-    headers.append("Amount")
+    if "amount" in visible_columns:
+        headers.append("Amount")
 
-    def build_rows(section_name, rows, subtotal):
-        section_rows = []
-        for row in rows:
+    def flatten_rows(items, *, depth=0):
+        flattened = []
+        for row in items or []:
             label = row.get("label") or row.get("name") or row.get("title") or row.get("ledger_name") or row.get("accounthead_name") or row.get("accounttype_name") or "-"
-            value_row = [
-                section_name,
-                label,
-                row.get("accounthead_name") or "",
-                row.get("accounttype_name") or "",
-            ]
-            period_lookup = _profit_loss_period_lookup(row)
+            children = row.get("children") or []
+            flattened.append({
+                "label": f"{'  ' * depth}{label}",
+                "account_head": row.get("accounthead_name") or "",
+                "account_type": row.get("accounttype_name") or "",
+                "amount": row.get("amount", "0.00"),
+                "period_lookup": _profit_loss_period_lookup(row),
+                "row_kind": "group" if children else "detail",
+            })
+            if include_children and children:
+                flattened.extend(flatten_rows(children, depth=depth + 1))
+        return flattened
+
+    def build_rows(section_name, items, subtotal):
+        section_rows = []
+        row_kinds = []
+        header_row = []
+        if "section" in visible_columns:
+            header_row.append(section_name)
+        if "particulars" in visible_columns:
+            header_row.append(section_name)
+        if "account_head" in visible_columns:
+            header_row.append("")
+        if "account_type" in visible_columns:
+            header_row.append("")
+        header_row.extend(empty_period_cells)
+        if "amount" in visible_columns:
+            header_row.append("")
+        section_rows.append(header_row)
+        row_kinds.append("group")
+
+        for row in flatten_rows(items):
+            value_row = []
+            if "section" in visible_columns:
+                value_row.append("")
+            if "particulars" in visible_columns:
+                value_row.append(row["label"])
+            if "account_head" in visible_columns:
+                value_row.append(row["account_head"])
+            if "account_type" in visible_columns:
+                value_row.append(row["account_type"])
+            period_lookup = row["period_lookup"]
             if include_periods:
                 for period in periods:
                     key = str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or period.get("name") or period.get("title") or "")
                     period_item = period_lookup.get(key) or {}
                     amount = period_item.get("amount", period_item.get("value", "0.00"))
-                    value_row.append(amount)
-            value_row.append(row.get("amount", "0.00"))
+                    value_row.append(format_financial_hub_amount(amount, settings=settings) if settings else amount)
+            if "amount" in visible_columns:
+                value_row.append(format_financial_hub_amount(row["amount"], settings=settings) if settings else row["amount"])
             section_rows.append(value_row)
+            row_kinds.append(row["row_kind"])
 
-        section_rows.append([
-            section_name,
-            f"{section_name} subtotal",
-            "",
-            "",
-            *empty_period_cells,
-            subtotal,
-        ])
-        return section_rows
+        subtotal_row = []
+        if "section" in visible_columns:
+            subtotal_row.append("")
+        if "particulars" in visible_columns:
+            subtotal_row.append(f"{section_name} subtotal")
+        if "account_head" in visible_columns:
+            subtotal_row.append("")
+        if "account_type" in visible_columns:
+            subtotal_row.append("")
+        subtotal_row.extend(empty_period_cells)
+        if "amount" in visible_columns:
+            subtotal_row.append(format_financial_hub_amount(subtotal, settings=settings) if settings else subtotal)
+        section_rows.append(subtotal_row)
+        row_kinds.append("subtotal")
+        return section_rows, row_kinds
 
     rows = []
-    rows.extend(build_rows("Income", report.get("income") or [], report.get("totals", {}).get("income", "0.00")))
-    rows.append(["", "", "", "", *empty_period_cells, ""])
-    rows.extend(build_rows("Expense", report.get("expenses") or [], report.get("totals", {}).get("expense", "0.00")))
-    rows.append(["", "", "", "", *empty_period_cells, ""])
-    rows.append([
-        "Summary",
-        "Net Profit",
-        "",
-        "",
-        *empty_period_cells,
-        report.get("totals", {}).get("net_profit", "0.00"),
-    ])
+    row_kinds = []
+    income_rows, income_kinds = build_rows("Income", report.get("income") or [], report.get("totals", {}).get("income", "0.00"))
+    rows.extend(income_rows)
+    row_kinds.extend(income_kinds)
+    expense_rows, expense_kinds = build_rows("Expense", report.get("expenses") or [], report.get("totals", {}).get("expense", "0.00"))
+    rows.extend(expense_rows)
+    row_kinds.extend(expense_kinds)
+    summary_row = []
+    if "section" in visible_columns:
+        summary_row.append("Summary")
+    if "particulars" in visible_columns:
+        summary_row.append("Net Profit")
+    if "account_head" in visible_columns:
+        summary_row.append("")
+    if "account_type" in visible_columns:
+        summary_row.append("")
+    summary_row.extend(empty_period_cells)
+    if "amount" in visible_columns:
+        summary_row.append(format_financial_hub_amount(report.get("totals", {}).get("net_profit", "0.00"), settings=settings) if settings else report.get("totals", {}).get("net_profit", "0.00"))
+    rows.append(summary_row)
+    row_kinds.append("final_total")
 
-    return headers, rows
+    return headers, rows, row_kinds
 
 
 def _trading_account_subtitle(scope_names, scope, report):
@@ -574,6 +655,51 @@ def _trading_account_subtitle(scope_names, scope, report):
     )
 
 
+def _humanize_trading_group(value):
+    labels = {
+        "ledger": "Ledger",
+        "accounthead": "Account head",
+        "accounttype": "Account type",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "accounthead").replace("_", " ").title())
+
+
+def _humanize_trading_view(value):
+    labels = {
+        "summary": "Summary",
+        "detailed": "Detailed",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "summary").replace("_", " ").title())
+
+
+def _trading_account_export_meta(scope_names, scope, report, settings=None):
+    subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
+    reporting = report.get("params") or {}
+    meta_items = [
+        ("Entity", scope_names["entity_name"] or "Selected entity"),
+        ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
+        ("Subentity", subentity_label),
+        ("Scope", _humanize_trial_balance_scope(scope.get("scope_mode") or "financial_year")),
+        ("Presentation", f"{_humanize_trading_view(scope.get('view_type') or reporting.get('view_type') or 'summary')} view • Grouped by {_humanize_trading_group(scope.get('account_group') or scope.get('group_by') or reporting.get('account_group') or 'accounthead')}"),
+        ("Filters", f"{'Posted only' if scope.get('posted_only', True) else 'Posted and draft'} • {'Zero rows hidden' if scope.get('hide_zero_rows', True) else 'Zero rows shown'}"),
+        ("Amount Unit", financial_hub_amount_unit_label(settings or {})),
+        ("Valuation", str(scope.get("valuation_method") or report.get("params", {}).get("valuation_method") or "fifo").upper()),
+        ("Gross Profit", format_financial_hub_amount(report.get("gross_profit", "0.00") or "0.00", settings=settings or {})),
+        ("Gross Loss", format_financial_hub_amount(report.get("gross_loss", "0.00") or "0.00", settings=settings or {})),
+    ]
+    return meta_items
+
+
+def _trading_account_scope_filename(scope_names, scope):
+    if scope.get("as_of_date"):
+        return f"As_Of_{scope.get('as_of_date')}"
+    if scope.get("from_date") and scope.get("to_date"):
+        return f"{scope.get('from_date')}_to_{scope.get('to_date')}"
+    if scope_names.get("entityfin_name"):
+        return scope_names["entityfin_name"]
+    return scope.get("scope_mode") or "trading_account"
+
+
 def _trading_account_row_label(row):
     return row.get("label") or row.get("name") or row.get("title") or "-"
 
@@ -582,11 +708,12 @@ def _trading_account_row_identity(side, path):
     return f"{side}|{' / '.join(path)}"
 
 
-def _trading_account_flatten_rows(rows, side, out, depth=0, path=None):
+def _trading_account_flatten_rows(rows, side, out, depth=0, path=None, include_children=True):
     path = list(path or [])
     for row in rows or []:
         label = _trading_account_row_label(row)
         current_path = [*path, label]
+        children = row.get("children") or []
         out.append(
             {
                 "identity": _trading_account_row_identity(side, current_path),
@@ -594,10 +721,11 @@ def _trading_account_flatten_rows(rows, side, out, depth=0, path=None):
                 "particulars": "  " * depth + str(label),
                 "qty": row.get("qty", ""),
                 "amount": row.get("amount", "0.00"),
+                "row_kind": "group" if children else "detail",
             }
         )
-        if row.get("children"):
-            _trading_account_flatten_rows(row["children"], side, out, depth + 1, current_path)
+        if include_children and children:
+            _trading_account_flatten_rows(row["children"], side, out, depth + 1, current_path, include_children=include_children)
 
 
 def _trading_account_row_lookup(rows, side, lookup=None, path=None):
@@ -612,20 +740,34 @@ def _trading_account_row_lookup(rows, side, lookup=None, path=None):
     return lookup
 
 
-def _trading_account_export_table(report, *, include_periods=True):
+def _trading_account_export_table(report, *, include_periods=True, settings=None):
     periods = report.get("periods") or []
-    headers = ["Side", "Particulars", "Qty"]
+    visible_columns = set(get_visible_trading_account_columns(settings)) if settings else {
+        "side", "particulars", "qty", "amount"
+    }
+    headers = []
+    if "side" in visible_columns:
+        headers.append("Side")
+    if "particulars" in visible_columns:
+        headers.append("Particulars")
+    if "qty" in visible_columns:
+        headers.append("Qty")
     if include_periods:
         for period in periods:
             label = period.get("period_label") or period.get("label") or period.get("name") or period.get("title") or period.get("key")
             headers.append(str(label or "Period"))
-    headers.append("Amount")
+    if "amount" in visible_columns:
+        headers.append("Amount")
 
     rows = []
+    row_kinds = []
     debit_rows = []
     credit_rows = []
-    _trading_account_flatten_rows(report.get("debit_rows") or [], "Debit", debit_rows)
-    _trading_account_flatten_rows(report.get("credit_rows") or [], "Credit", credit_rows)
+    params = report.get("params") or {}
+    normalized_view = str(params.get("view_type") or "summary").strip().lower()
+    include_children = normalized_view == "detailed"
+    _trading_account_flatten_rows(report.get("debit_rows") or [], "Debit", debit_rows, include_children=include_children)
+    _trading_account_flatten_rows(report.get("credit_rows") or [], "Credit", credit_rows, include_children=include_children)
 
     period_lookups = []
     if include_periods:
@@ -642,44 +784,120 @@ def _trading_account_export_table(report, *, include_periods=True):
             )
 
     def append_row(row, amount=None):
-        value_row = [row["side"], row["particulars"], row["qty"]]
+        value_row = []
+        if "side" in visible_columns:
+            value_row.append(row["side"])
+        if "particulars" in visible_columns:
+            value_row.append(row["particulars"])
+        if "qty" in visible_columns:
+            value_row.append(row["qty"])
         if include_periods:
             for period in period_lookups:
                 side_lookup = period["debit"] if row["side"] == "Debit" else period["credit"]
-                value_row.append(side_lookup.get(row["identity"], ""))
-        value_row.append(amount if amount is not None else row["amount"])
+                period_amount = side_lookup.get(row["identity"], "")
+                value_row.append(format_financial_hub_amount(period_amount, settings=settings) if settings and period_amount not in {"", None} else period_amount)
+        if "amount" in visible_columns:
+            final_amount = amount if amount is not None else row["amount"]
+            value_row.append(format_financial_hub_amount(final_amount, settings=settings) if settings else final_amount)
         rows.append(value_row)
+        row_kinds.append(row.get("row_kind", "detail"))
 
+    section_row = []
+    if "side" in visible_columns:
+        section_row.append("Debit")
+    if "particulars" in visible_columns:
+        section_row.append("Debit Side")
+    if "qty" in visible_columns:
+        section_row.append("")
+    if include_periods:
+        section_row.extend(["" for _ in period_lookups])
+    if "amount" in visible_columns:
+        section_row.append("")
+    rows.append(section_row)
+    row_kinds.append("group")
     for row in debit_rows:
         append_row(row)
-    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
-    debit_total_row = ["Debit Total", "", ""]
+    debit_total_row = []
+    if "side" in visible_columns:
+        debit_total_row.append("Debit Total")
+    if "particulars" in visible_columns:
+        debit_total_row.append("")
+    if "qty" in visible_columns:
+        debit_total_row.append("")
     if include_periods:
-        debit_total_row.extend([period["debit_total"] for period in period_lookups])
-    debit_total_row.append(report.get("debit_total", "0.00"))
+        debit_total_row.extend([
+            format_financial_hub_amount(period["debit_total"], settings=settings) if settings else period["debit_total"]
+            for period in period_lookups
+        ])
+    if "amount" in visible_columns:
+        debit_total_row.append(format_financial_hub_amount(report.get("debit_total", "0.00"), settings=settings) if settings else report.get("debit_total", "0.00"))
     rows.append(debit_total_row)
-    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
+    row_kinds.append("subtotal")
 
+    section_row = []
+    if "side" in visible_columns:
+        section_row.append("Credit")
+    if "particulars" in visible_columns:
+        section_row.append("Credit Side")
+    if "qty" in visible_columns:
+        section_row.append("")
+    if include_periods:
+        section_row.extend(["" for _ in period_lookups])
+    if "amount" in visible_columns:
+        section_row.append("")
+    rows.append(section_row)
+    row_kinds.append("group")
     for row in credit_rows:
         append_row(row)
-    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
-    credit_total_row = ["Credit Total", "", ""]
+    credit_total_row = []
+    if "side" in visible_columns:
+        credit_total_row.append("Credit Total")
+    if "particulars" in visible_columns:
+        credit_total_row.append("")
+    if "qty" in visible_columns:
+        credit_total_row.append("")
     if include_periods:
-        credit_total_row.extend([period["credit_total"] for period in period_lookups])
-    credit_total_row.append(report.get("credit_total", "0.00"))
+        credit_total_row.extend([
+            format_financial_hub_amount(period["credit_total"], settings=settings) if settings else period["credit_total"]
+            for period in period_lookups
+        ])
+    if "amount" in visible_columns:
+        credit_total_row.append(format_financial_hub_amount(report.get("credit_total", "0.00"), settings=settings) if settings else report.get("credit_total", "0.00"))
     rows.append(credit_total_row)
-    rows.append(["", "", *["" for _ in range(len(periods) if include_periods else 0)], ""])
-    gross_profit_row = ["Gross Profit", "", ""]
+    row_kinds.append("subtotal")
+    gross_profit_row = []
+    if "side" in visible_columns:
+        gross_profit_row.append("Gross Profit")
+    if "particulars" in visible_columns:
+        gross_profit_row.append("")
+    if "qty" in visible_columns:
+        gross_profit_row.append("")
     if include_periods:
-        gross_profit_row.extend([period["gross_profit"] for period in period_lookups])
-    gross_profit_row.append(report.get("gross_profit", "0.00") or "0.00")
+        gross_profit_row.extend([
+            format_financial_hub_amount(period["gross_profit"], settings=settings) if settings else period["gross_profit"]
+            for period in period_lookups
+        ])
+    if "amount" in visible_columns:
+        gross_profit_row.append(format_financial_hub_amount(report.get("gross_profit", "0.00") or "0.00", settings=settings) if settings else (report.get("gross_profit", "0.00") or "0.00"))
     rows.append(gross_profit_row)
-    gross_loss_row = ["Gross Loss", "", ""]
+    row_kinds.append("final_total")
+    gross_loss_row = []
+    if "side" in visible_columns:
+        gross_loss_row.append("Gross Loss")
+    if "particulars" in visible_columns:
+        gross_loss_row.append("")
+    if "qty" in visible_columns:
+        gross_loss_row.append("")
     if include_periods:
-        gross_loss_row.extend([period["gross_loss"] for period in period_lookups])
-    gross_loss_row.append(report.get("gross_loss", "0.00") or "0.00")
+        gross_loss_row.extend([
+            format_financial_hub_amount(period["gross_loss"], settings=settings) if settings else period["gross_loss"]
+            for period in period_lookups
+        ])
+    if "amount" in visible_columns:
+        gross_loss_row.append(format_financial_hub_amount(report.get("gross_loss", "0.00") or "0.00", settings=settings) if settings else (report.get("gross_loss", "0.00") or "0.00"))
     rows.append(gross_loss_row)
-    return headers, rows
+    row_kinds.append("final_total")
+    return headers, rows, row_kinds
 
 
 def _balance_sheet_row_label(row, depth=0):
@@ -716,9 +934,10 @@ def _balance_sheet_row_period_value(row, period):
     return None
 
 
-def _balance_sheet_flatten_rows(rows, *, section_label, periods, depth=0):
+def _balance_sheet_flatten_rows(rows, *, section_label, periods, include_children=True, depth=0):
     flattened = []
     for row in rows or []:
+        children = row.get("children") or []
         flattened.append(
             {
                 "section": section_label if depth == 0 else "",
@@ -727,143 +946,424 @@ def _balance_sheet_flatten_rows(rows, *, section_label, periods, depth=0):
                 "account_type": row.get("accounttype_name") or "-",
                 "period_values": [_balance_sheet_row_period_value(row, period) for period in periods],
                 "amount": row.get("amount"),
+                "row_kind": "group" if children else "detail",
             }
         )
-        children = row.get("children") or []
-        if children:
+        if include_children and children:
             flattened.extend(
                 _balance_sheet_flatten_rows(
                     children,
                     section_label=section_label,
                     periods=periods,
+                    include_children=include_children,
                     depth=depth + 1,
                 )
             )
     return flattened
 
 
-def _balance_sheet_export_table(report, *, landscape_mode=False):
+def _balance_sheet_export_table(report, *, settings=None):
     periods = report.get("periods") or []
-    if landscape_mode:
-        period_labels = [
-            str(
-                period.get("period_label")
-                or period.get("label")
-                or period.get("name")
-                or period.get("code")
-                or period.get("period_key")
-                or f"Period {index}"
-            )
-            for index, period in enumerate(periods, start=1)
-        ]
-        asset_rows = _balance_sheet_flatten_rows(report.get("assets") or [], section_label="Assets", periods=periods)
-        liability_rows = _balance_sheet_flatten_rows(report.get("liabilities_and_equity") or [], section_label="Liabilities & Equity", periods=periods)
-        headers = [
-            "Assets Particulars",
-            "Assets Account Head",
-            "Assets Account Type",
-            *[f"Assets {label}" for label in period_labels],
-            "Assets Amount",
-            "Liabilities Particulars",
-            "Liabilities Account Head",
-            "Liabilities Account Type",
-            *[f"Liabilities {label}" for label in period_labels],
-            "Liabilities Amount",
-        ]
-        rows = []
-        max_rows = max(len(asset_rows), len(liability_rows))
-        for index in range(max_rows):
-            asset = asset_rows[index] if index < len(asset_rows) else None
-            liability = liability_rows[index] if index < len(liability_rows) else None
-            rows.append([
-                asset["particulars"] if asset else "",
-                asset["account_head"] if asset else "",
-                asset["account_type"] if asset else "",
-                *(asset["period_values"] if asset else [""] * len(periods)),
-                asset["amount"] if asset else "",
-                liability["particulars"] if liability else "",
-                liability["account_head"] if liability else "",
-                liability["account_type"] if liability else "",
-                *(liability["period_values"] if liability else [""] * len(periods)),
-                liability["amount"] if liability else "",
-            ])
-        asset_period_totals = [
-            "N/A" if period.get("unavailable") else (period.get("totals", {}) or {}).get("assets") or "0.00"
-            for period in periods
-        ]
-        liability_period_totals = [
-            "N/A" if period.get("unavailable") else (period.get("totals", {}) or {}).get("liabilities_and_equity") or "0.00"
-            for period in periods
-        ]
-        rows.append([
-            "Assets Total",
-            "",
-            "",
-            *asset_period_totals,
-            report.get("totals", {}).get("assets") or "0.00",
-            "Liabilities & Equity Total",
-            "",
-            "",
-            *liability_period_totals,
-            report.get("totals", {}).get("liabilities_and_equity") or "0.00",
-        ])
-        assets_total = _parse_decimal(report.get("totals", {}).get("assets"))
-        liabilities_total = _parse_decimal(report.get("totals", {}).get("liabilities_and_equity"))
-        rows.append([
-            "Balance Difference",
-            "",
-            "",
-            *[
-                "N/A" if period.get("unavailable") else f"{(_parse_decimal((period.get('totals', {}) or {}).get('assets')) - _parse_decimal((period.get('totals', {}) or {}).get('liabilities_and_equity'))):.2f}"
-                for period in periods
-            ],
-            f"{(assets_total - liabilities_total):.2f}",
-            "",
-            "",
-            "",
-            *["" for _ in periods],
-            "",
-        ])
-        return headers, rows
-
-    period_keys = [
-        str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or f"period_{index}")
+    period_labels = [
+        str(
+            period.get("period_label")
+            or period.get("label")
+            or period.get("name")
+            or period.get("code")
+            or period.get("period_key")
+            or f"Period {index}"
+        )
         for index, period in enumerate(periods, start=1)
     ]
-    headers = ["Section", "Particulars", "Account Head", "Account Type", *period_labels, "Amount"]
+    visible_columns = set(get_visible_balance_sheet_columns(settings)) if settings else {
+        "section", "particulars", "account_head", "account_type", "amount"
+    }
+    headers = []
+    if "section" in visible_columns:
+        headers.append("Section")
+    if "particulars" in visible_columns:
+        headers.append("Particulars")
+    if "account_head" in visible_columns:
+        headers.append("Account Head")
+    if "account_type" in visible_columns:
+        headers.append("Account Type")
+    headers.extend(period_labels)
+    if "amount" in visible_columns:
+        headers.append("Amount")
     rows = []
+    row_kinds = []
+    reporting = report.get("reporting") or {}
+    normalized_view = str(reporting.get("view_type") or "summary").strip().lower()
+    include_children = normalized_view == "detailed"
 
     for section_label, section_rows in (
         ("Assets", report.get("assets") or []),
         ("Liabilities & Equity", report.get("liabilities_and_equity") or []),
     ):
-        for item in _balance_sheet_flatten_rows(section_rows, section_label=section_label, periods=periods):
-            rows.append(
-                [
-                    item["section"],
-                    item["particulars"],
-                    item["account_head"],
-                    item["account_type"],
-                    *item["period_values"],
-                    item["amount"],
-                ]
+        for item in _balance_sheet_flatten_rows(
+            section_rows,
+            section_label=section_label,
+            periods=periods,
+            include_children=include_children,
+        ):
+            row_values = []
+            if "section" in visible_columns:
+                row_values.append(item["section"])
+            if "particulars" in visible_columns:
+                row_values.append(item["particulars"])
+            if "account_head" in visible_columns:
+                row_values.append(item["account_head"])
+            if "account_type" in visible_columns:
+                row_values.append(item["account_type"])
+            row_values.extend([
+                format_financial_hub_amount(period_value, settings=settings) if settings and period_value not in {None, "", "N/A"} else (period_value or "")
+                for period_value in item["period_values"]
+            ])
+            if "amount" in visible_columns:
+                row_values.append(format_financial_hub_amount(item["amount"], settings=settings) if settings else item["amount"])
+            rows.append(row_values)
+            row_kinds.append(item["row_kind"])
+        total_row = []
+        if "section" in visible_columns:
+            total_row.append(section_label)
+        if "particulars" in visible_columns:
+            total_row.append(f"{section_label} Total")
+        if "account_head" in visible_columns:
+            total_row.append("")
+        if "account_type" in visible_columns:
+            total_row.append("")
+        total_row.extend(["" for _ in periods])
+        if "amount" in visible_columns:
+            total_row.append(
+                format_financial_hub_amount(
+                    report.get("totals", {}).get("assets" if section_label == "Assets" else "liabilities_and_equity") or "0.00",
+                    settings=settings,
+                ) if settings else report.get("totals", {}).get("assets" if section_label == "Assets" else "liabilities_and_equity") or "0.00"
             )
-        rows.append(
-            [
-                section_label,
-                f"{section_label} Total",
-                "",
-                "",
-                *["" for _ in period_keys],
-                report.get("totals", {}).get("assets" if section_label == "Assets" else "liabilities_and_equity") or "0.00",
-            ]
-        )
+        rows.append(total_row)
+        row_kinds.append("subtotal")
 
     assets_total = _parse_decimal(report.get("totals", {}).get("assets"))
     liabilities_total = _parse_decimal(report.get("totals", {}).get("liabilities_and_equity"))
     balance_diff = assets_total - liabilities_total
-    rows.append(["", "Balance Difference", "", "", *["" for _ in period_keys], f"{balance_diff:.2f}"])
+    diff_row = []
+    if "section" in visible_columns:
+        diff_row.append("")
+    if "particulars" in visible_columns:
+        diff_row.append("Balance Difference")
+    if "account_head" in visible_columns:
+        diff_row.append("")
+    if "account_type" in visible_columns:
+        diff_row.append("")
+    diff_row.extend(["" for _ in periods])
+    if "amount" in visible_columns:
+        diff_row.append(format_financial_hub_amount(f"{balance_diff:.2f}", settings=settings) if settings else f"{balance_diff:.2f}")
+    rows.append(diff_row)
+    row_kinds.append("difference")
 
+    return headers, rows, row_kinds
+
+
+def _statement_period_columns(report):
+    periods = report.get("periods") or []
+    period_defs = []
+    for period in periods:
+        label = (
+            period.get("period_label")
+            or period.get("label")
+            or period.get("name")
+            or period.get("title")
+            or period.get("period_key")
+            or period.get("key")
+        )
+        period_defs.append({"label": str(label or "Period"), "period": period})
+    if not period_defs:
+        period_defs.append({"label": "N/A", "period": None})
+    return "Current Year", period_defs
+
+
+def _statement_period_amount(row, period):
+    if not period:
+        return "N/A"
+    if period.get("unavailable"):
+        return "N/A"
+    key = str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or period.get("name") or "")
+    if not key:
+        return ""
+    period_values = row.get("period_values") or {}
+    if key in period_values:
+        return period_values.get(key) or "0.00"
+    amounts_by_period = row.get("amounts_by_period") or {}
+    if key in amounts_by_period:
+        return amounts_by_period.get(key) or "0.00"
+    for item in row.get("periods") or []:
+        item_key = str(item.get("key") or item.get("period_key") or item.get("code") or item.get("label") or item.get("name") or "")
+        if item_key == key:
+            return item.get("amount") or item.get("value") or item.get("closing") or "0.00"
+    return ""
+
+
+def _statement_indent(label, depth):
+    return f"{'  ' * depth}{label}"
+
+
+def _statement_pdf_layout(headers):
+    total_columns = len(headers)
+    comparison_count = max(0, total_columns - 4)
+
+    if total_columns <= 10:
+        pagesize = landscape(A4)
+        base_widths = [180, 44, 74, 74] + [74] * comparison_count
+        min_widths = [120, 32, 52, 52] + [52] * comparison_count
+    elif total_columns <= 16:
+        pagesize = landscape(A3)
+        base_widths = [160, 40, 64, 64] + [64] * comparison_count
+        min_widths = [110, 28, 44, 44] + [44] * comparison_count
+    else:
+        pagesize = landscape(A3)
+        base_widths = [140, 34, 56, 56] + [56] * comparison_count
+        min_widths = [82, 24, 34, 34] + [34] * comparison_count
+
+    available_width = pagesize[0] - 36  # matches left/right margins used by write_sectioned_pdf
+    current_total = sum(base_widths)
+    if current_total <= available_width:
+        return pagesize, base_widths
+
+    shrink_capacity = [max(0, base - minimum) for base, minimum in zip(base_widths, min_widths)]
+    total_capacity = sum(shrink_capacity)
+    if total_capacity <= 0:
+        return pagesize, min_widths
+
+    reduction_ratio = min(1, (current_total - available_width) / total_capacity)
+    fitted_widths = [
+        round(base - (capacity * reduction_ratio), 2)
+        for base, capacity in zip(base_widths, shrink_capacity)
+    ]
+    return pagesize, fitted_widths
+
+
+def _statement_balance_sheet_rows(report, *, settings=None):
+    _current_label, period_defs = _statement_period_columns(report)
+    headers = ["Particulars", "Note", "Current Detail", "Current Total"]
+    for item in period_defs:
+        headers.extend([f"{item['label']} Detail", f"{item['label']} Total"])
+    rows = []
+    note_number = 1
+
+    def _fmt(value):
+        if value in {None, ""}:
+            return ""
+        if value == "N/A":
+            return "N/A"
+        return format_financial_hub_amount(value, settings=settings or {}) if settings else value
+
+    def append_tree(items, section_title, total_value, *, total_key):
+        nonlocal note_number
+        rows.append([section_title, "", *["" for _ in range(2 + (len(period_defs) * 2))]])
+
+        def walk(tree_rows, depth=0):
+            nonlocal note_number
+            for row in tree_rows or []:
+                label = (
+                    row.get("label")
+                    or row.get("name")
+                    or row.get("title")
+                    or row.get("ledger_name")
+                    or row.get("accounthead_name")
+                    or row.get("accounttype_name")
+                    or "-"
+                )
+                note = str(note_number) if depth == 0 else ""
+                if depth == 0:
+                    note_number += 1
+                is_major = bool(row.get("children")) or depth == 0
+                current_value = row.get("amount") or "0.00"
+                row_values = ["" if is_major else _fmt(current_value), _fmt(current_value) if is_major else ""]
+                for item in period_defs:
+                    period_value = _statement_period_amount(row, item["period"])
+                    row_values.extend(["" if is_major else _fmt(period_value), _fmt(period_value) if is_major else ""])
+                rows.append([
+                    _statement_indent(str(label), depth),
+                    note,
+                    *row_values,
+                ])
+                walk(row.get("children") or [], depth + 1)
+
+        walk(items)
+        total_row = [f"Total {section_title}", "", "-", _fmt(total_value or "0.00")]
+        for item in period_defs:
+            period = item["period"]
+            if period and not period.get("unavailable"):
+                period_total = ((period.get("totals") or {}).get(total_key)) or "0.00"
+            else:
+                period_total = "N/A"
+            total_row.extend(["-", _fmt(period_total)])
+        rows.append(total_row)
+        rows.append(["", "", *["" for _ in range(2 + (len(period_defs) * 2))]])
+
+    append_tree(report.get("liabilities_and_equity") or [], "Equity and Liabilities", (report.get("totals") or {}).get("liabilities_and_equity"), total_key="liabilities_and_equity")
+    append_tree(report.get("assets") or [], "Assets", (report.get("totals") or {}).get("assets"), total_key="assets")
+    return headers, rows
+
+
+def _statement_profit_loss_rows(report, *, settings=None):
+    _current_label, period_defs = _statement_period_columns(report)
+    headers = ["Particulars", "Note", "Current Detail", "Current Total"]
+    for item in period_defs:
+        headers.extend([f"{item['label']} Detail", f"{item['label']} Total"])
+    rows = []
+    note_number = 1
+
+    def _fmt(value):
+        if value in {None, ""}:
+            return ""
+        if value == "N/A":
+            return "N/A"
+        return format_financial_hub_amount(value, settings=settings or {}) if settings else value
+
+    def append_tree(items, section_title, total_value, total_key):
+        nonlocal note_number
+        rows.append([section_title, "", *["" for _ in range(2 + (len(period_defs) * 2))]])
+
+        def walk(tree_rows, depth=0):
+            nonlocal note_number
+            for row in tree_rows or []:
+                label = row.get("label") or row.get("name") or row.get("title") or row.get("ledger_name") or row.get("accounthead_name") or row.get("accounttype_name") or "-"
+                note = str(note_number) if depth == 0 else ""
+                if depth == 0:
+                    note_number += 1
+                is_major = bool(row.get("children")) or depth == 0
+                current_value = row.get("amount") or "0.00"
+                row_values = ["" if is_major else _fmt(current_value), _fmt(current_value) if is_major else ""]
+                for item in period_defs:
+                    period_value = _statement_period_amount(row, item["period"])
+                    row_values.extend(["" if is_major else _fmt(period_value), _fmt(period_value) if is_major else ""])
+                rows.append([
+                    _statement_indent(str(label), depth),
+                    note,
+                    *row_values,
+                ])
+                walk(row.get("children") or [], depth + 1)
+
+        walk(items)
+        total_row = [f"Total {section_title}", "", "-", _fmt(total_value or "0.00")]
+        for item in period_defs:
+            period = item["period"]
+            if period and not period.get("unavailable"):
+                period_total = ((period.get("totals") or {}).get(total_key)) or "0.00"
+            else:
+                period_total = "N/A"
+            total_row.extend(["-", _fmt(period_total)])
+        rows.append(total_row)
+        rows.append(["", "", *["" for _ in range(2 + (len(period_defs) * 2))]])
+
+    append_tree(report.get("income") or [], "Income", (report.get("totals") or {}).get("income"), "income")
+    append_tree(report.get("expenses") or [], "Expenses", (report.get("totals") or {}).get("expense"), "expense")
+    period_net = []
+    for item in period_defs:
+        period = item["period"]
+        if period and not period.get("unavailable"):
+            period_net.append(period.get("net_profit") or ((period.get("totals") or {}).get("net_profit")) or "0.00")
+        else:
+            period_net.append("N/A")
+    net_row = ["Net Profit / Loss", "", "-", _fmt((report.get("totals") or {}).get("net_profit") or "0.00")]
+    for period_value in period_net:
+        net_row.extend(["-", _fmt(period_value)])
+    rows.append(net_row)
+    return headers, rows
+
+
+def _statement_trading_rows(report, *, settings=None):
+    _current_label, period_defs = _statement_period_columns(report)
+    headers = ["Particulars", "Note", "Current Detail", "Current Total"]
+    for item in period_defs:
+        headers.extend([f"{item['label']} Detail", f"{item['label']} Total"])
+    rows = []
+    note_number = 1
+
+    def _normalize_label(value):
+        return str(value or "").strip().lower()
+
+    def _find_period_row(rows_list, label_path):
+        if not label_path:
+            return None
+        head, *rest = label_path
+        for row in rows_list or []:
+            if _normalize_label(row.get("label")) != head:
+                continue
+            if not rest:
+                return row
+            nested = _find_period_row(row.get("children") or [], rest)
+            if nested:
+                return nested
+        return None
+
+    def _period_trading_amount(period, side_key, label_path):
+        if not period:
+            return "N/A"
+        if period.get("unavailable"):
+            return "N/A"
+        rows_list = period.get(side_key) or []
+        matched = _find_period_row(rows_list, label_path)
+        if not matched:
+            return ""
+        return matched.get("amount") or "0.00"
+
+    def _fmt(value):
+        if value in {None, ""}:
+            return ""
+        if value == "N/A":
+            return "N/A"
+        return format_financial_hub_amount(value, settings=settings or {}) if settings else value
+
+    def walk(tree_rows, side_key, depth=0, parent_labels=None):
+        nonlocal note_number
+        parent_labels = parent_labels or []
+        for row in tree_rows or []:
+            label = _trading_account_row_label(row)
+            label_path = [*parent_labels, _normalize_label(label)]
+            note = str(note_number) if depth == 0 else ""
+            if depth == 0:
+                note_number += 1
+            is_major = bool(row.get("children")) or depth == 0
+            current_value = row.get("amount") or "0.00"
+            row_values = ["" if is_major else _fmt(current_value), _fmt(current_value) if is_major else ""]
+            for item in period_defs:
+                period_value = _period_trading_amount(item["period"], side_key, label_path)
+                row_values.extend(["" if is_major else _fmt(period_value), _fmt(period_value) if is_major else ""])
+            rows.append([
+                _statement_indent(str(label), depth),
+                note,
+                *row_values,
+            ])
+            walk(row.get("children") or [], side_key, depth + 1, label_path)
+
+    blank_cells = ["" for _ in range(2 + (len(period_defs) * 2))]
+    rows.append(["Debit Side", "", *blank_cells])
+    walk(report.get("debit_rows") or [], "debit_rows")
+    debit_row = ["Total Debit", "", "-", _fmt(report.get("debit_total") or "0.00")]
+    for item in period_defs:
+        period_value = item["period"].get("debit_total", "0.00") if item["period"] and not item["period"].get("unavailable") else "N/A"
+        debit_row.extend(["-", _fmt(period_value)])
+    rows.append(debit_row)
+    rows.append(["", "", *blank_cells])
+    rows.append(["Credit Side", "", *blank_cells])
+    walk(report.get("credit_rows") or [], "credit_rows")
+    credit_row = ["Total Credit", "", "-", _fmt(report.get("credit_total") or "0.00")]
+    for item in period_defs:
+        period_value = item["period"].get("credit_total", "0.00") if item["period"] and not item["period"].get("unavailable") else "N/A"
+        credit_row.extend(["-", _fmt(period_value)])
+    rows.append(credit_row)
+    gross_profit_row = ["Gross Profit", "", "-", _fmt(report.get("gross_profit") or "0.00")]
+    for item in period_defs:
+        period_value = item["period"].get("gross_profit", "0.00") if item["period"] and not item["period"].get("unavailable") else "N/A"
+        gross_profit_row.extend(["-", _fmt(period_value)])
+    rows.append(gross_profit_row)
+    gross_loss_row = ["Gross Loss", "", "-", _fmt(report.get("gross_loss") or "0.00")]
+    for item in period_defs:
+        period_value = item["period"].get("gross_loss", "0.00") if item["period"] and not item["period"].get("unavailable") else "N/A"
+        gross_loss_row.extend(["-", _fmt(period_value)])
+    rows.append(gross_loss_row)
     return headers, rows
 
 
@@ -932,6 +1432,8 @@ class _BaseTrialBalanceExportAPIView(_BaseFinancialReportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_trial_balance_settings(settings_payload)
         data = build_trial_balance(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -957,15 +1459,57 @@ class _BaseTrialBalanceExportAPIView(_BaseFinancialReportAPIView):
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         headers, rows = _trial_balance_export_table(data)
         subtitle = _trial_balance_subtitle(scope_names, scope)
-        return scope, data, headers, rows, subtitle
+        return scope, data, headers, rows, subtitle, settings
 
 
 class TrialBalanceExcelAPIView(_BaseTrialBalanceExportAPIView):
     def get(self, request):
-        _scope, _data, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Trial Balance", subtitle, headers, rows, numeric_columns={0, 6, 7, 8, 9})
+        scope, data, raw_headers, raw_rows, subtitle, settings = self.report_data(request)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        presentation_headers, presentation_rows, presentation_numeric, presentation_center = _trial_balance_presentation_table(
+            data,
+            view_type=scope.get("view_type") or data.get("reporting", {}).get("view_type") or "summary",
+            group_by=scope.get("account_group") or scope.get("group_by") or data.get("reporting", {}).get("group_by") or "ledger",
+            settings=settings,
+        )
+        content = write_sectioned_excel(
+            title="Trial Balance",
+            subtitle=subtitle,
+            summary_items=_trial_balance_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Trial Balance",
+                    headers=presentation_headers,
+                    rows=presentation_rows,
+                    numeric_columns=presentation_numeric,
+                    center_columns=presentation_center,
+                ),
+                ExportSection(
+                    title="Raw Data",
+                    headers=raw_headers,
+                    rows=raw_rows,
+                    numeric_columns={0, 6, 7, 8, 9},
+                    center_columns={1, 10},
+                ),
+            ] if settings.get("export_layout", {}).get("excel_raw_data_sheet", True) else [
+                ExportSection(
+                    title="Trial Balance",
+                    headers=presentation_headers,
+                    rows=presentation_rows,
+                    numeric_columns=presentation_numeric,
+                    center_columns=presentation_center,
+                )
+            ],
+            freeze_header=settings.get("export_layout", {}).get("freeze_excel_header", True),
+        )
+        filename = build_report_filename(
+            "Trial_Balance",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_trial_balance_scope_filename(scope_names, scope),
+            extension="xlsx",
+        )
         return self.export_response(
-            filename=f"TrialBalance_{_safe_filename(subtitle)}.xlsx",
+            filename=filename,
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -973,10 +1517,35 @@ class TrialBalanceExcelAPIView(_BaseTrialBalanceExportAPIView):
 
 class TrialBalanceCSVAPIView(_BaseTrialBalanceExportAPIView):
     def get(self, request):
-        _scope, _data, headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        scope, data, _headers, _rows, subtitle, settings = self.report_data(request)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        presentation_headers, presentation_rows, presentation_numeric, presentation_center = _trial_balance_presentation_table(
+            data,
+            view_type=scope.get("view_type") or data.get("reporting", {}).get("view_type") or "summary",
+            group_by=scope.get("account_group") or scope.get("group_by") or data.get("reporting", {}).get("group_by") or "ledger",
+            settings=settings,
+        )
+        content = write_sectioned_csv(
+            title="Trial Balance",
+            meta_items=_trial_balance_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Trial Balance",
+                    headers=presentation_headers,
+                    rows=presentation_rows,
+                    numeric_columns=presentation_numeric,
+                    center_columns=presentation_center,
+                )
+            ],
+        )
+        filename = build_report_filename(
+            "Trial_Balance",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_trial_balance_scope_filename(scope_names, scope),
+            extension="csv",
+        )
         return self.export_response(
-            filename=f"TrialBalance_{_safe_filename(subtitle)}.csv",
+            filename=filename,
             content=content,
             content_type="text/csv",
         )
@@ -984,30 +1553,55 @@ class TrialBalanceCSVAPIView(_BaseTrialBalanceExportAPIView):
 
 class TrialBalancePDFAPIView(_BaseTrialBalanceExportAPIView):
     def get(self, request):
-        scope, data, headers, rows, subtitle = self.report_data(request)
-        col_widths = [28, 40, 55, 130, 95, 78, 78, 78, 78, 78, 40]
-        if len(headers) > len(col_widths):
-            col_widths.extend([58] * (len(headers) - len(col_widths)))
+        scope, data, _headers, _rows, subtitle, settings = self.report_data(request)
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
-        meta_items = [
-            ("Entity", scope_names["entity_name"] or "Selected entity"),
-            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
-            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
-            ("Scope", scope.get("scope_mode") or "financial_year"),
-            ("Group by", scope.get("account_group") or scope.get("group_by") or "ledger"),
-            ("View", scope.get("view_type") or "summary"),
-        ]
-        content = _write_pdf(
-            "Trial Balance",
-            subtitle,
-            headers,
-            rows,
-            col_widths=col_widths,
-            meta_items=meta_items,
-            numeric_columns={6, 7, 8, 9},
+        presentation_headers, presentation_rows, presentation_numeric, presentation_center = _trial_balance_presentation_table(
+            data,
+            view_type=scope.get("view_type") or data.get("reporting", {}).get("view_type") or "summary",
+            group_by=scope.get("account_group") or scope.get("group_by") or data.get("reporting", {}).get("group_by") or "ledger",
+            settings=settings,
+        )
+        visible_columns = get_visible_trial_balance_columns(settings)
+        width_map = {
+            "code": 52,
+            "name": 180,
+            "account_head": 90,
+            "account_type": 80,
+            "opening": 62,
+            "debit": 62,
+            "credit": 62,
+            "closing": 62,
+            "abnormal": 42,
+        }
+        base_widths = [width_map.get(column, 60) for column in visible_columns]
+        if len(presentation_headers) > len(base_widths):
+            base_widths.extend([58] * (len(presentation_headers) - len(base_widths)))
+        content = write_sectioned_pdf(
+            title="Trial Balance",
+            subtitle=subtitle,
+            meta_items=_trial_balance_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Trial Balance",
+                    headers=presentation_headers,
+                    rows=presentation_rows,
+                    numeric_columns=presentation_numeric,
+                    center_columns=presentation_center,
+                    col_widths=base_widths,
+                )
+            ],
+            pagesize=landscape(A4),
+            header_density=settings.get("export_layout", {}).get("header_density", "compact"),
+            metadata_visibility=settings.get("export_layout", {}).get("metadata_visibility", "compact"),
+        )
+        filename = build_report_filename(
+            "Trial_Balance",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_trial_balance_scope_filename(scope_names, scope),
+            extension="pdf",
         )
         return self.export_response(
-            filename=f"TrialBalance_{_safe_filename(subtitle)}.pdf",
+            filename=filename,
             content=content,
             content_type="application/pdf",
         )
@@ -1063,6 +1657,8 @@ class _BaseLedgerBookExportAPIView(_BaseFinancialReportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_ledger_book_settings(settings_payload)
         data = build_ledger_book(
             entity_id=scope["entity"],
             ledger_id=scope["ledger"],
@@ -1080,40 +1676,53 @@ class _BaseLedgerBookExportAPIView(_BaseFinancialReportAPIView):
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         ledger = data.get("ledger") or {}
         subtitle = _ledger_book_subtitle(scope_names, scope, ledger)
-        return scope, data, subtitle
+        return scope, data, subtitle, settings
 
-    def build_rows(self, data):
-        rows = [
-            [
-                _format_scope_date(row.get("posting_date")),
-                row.get("voucher_number") or "-",
-                row.get("voucher_type_name") or row.get("voucher_type") or "-",
-                row.get("description") or "-",
-                row.get("debit", "0.00"),
-                row.get("credit", "0.00"),
-                _format_balance_amount(row.get("running_balance", "0.00")),
-            ]
-            for row in data.get("rows", [])
-        ]
+    def build_table(self, data, settings):
+        visible_columns = get_visible_ledger_book_columns(settings)
+        column_labels = {
+            "date": "Date",
+            "voucher_no": "Voucher No",
+            "voucher_type": "Voucher Type",
+            "description": "Description",
+            "debit": "Debit",
+            "credit": "Credit",
+            "running_balance": "Running Balance",
+        }
+        numeric_keys = {"debit", "credit", "running_balance"}
+        headers = [column_labels[key] for key in visible_columns]
+        rows = []
+        for row in data.get("rows", []):
+            base_values = {
+                "date": _format_scope_date(row.get("posting_date")),
+                "voucher_no": row.get("voucher_number") or "-",
+                "voucher_type": row.get("voucher_type_name") or row.get("voucher_type") or "-",
+                "description": row.get("description") or "-",
+                "debit": format_financial_hub_amount(row.get("debit", "0.00"), settings=settings),
+                "credit": format_financial_hub_amount(row.get("credit", "0.00"), settings=settings),
+                "running_balance": format_financial_hub_balance(row.get("running_balance", "0.00"), settings=settings),
+            }
+            rows.append([base_values[key] for key in visible_columns])
         totals = data.get("totals") or {}
-        rows.append([
-            "",
-            "",
-            "",
-            "Totals",
-            totals.get("debit", "0.00"),
-            totals.get("credit", "0.00"),
-            _format_balance_amount(totals.get("closing_balance", "0.00")),
-        ])
-        return rows
+        total_base_values = {
+            "date": "",
+            "voucher_no": "",
+            "voucher_type": "",
+            "description": "Totals",
+            "debit": format_financial_hub_amount(totals.get("debit", "0.00"), settings=settings),
+            "credit": format_financial_hub_amount(totals.get("credit", "0.00"), settings=settings),
+            "running_balance": format_financial_hub_balance(totals.get("closing_balance", "0.00"), settings=settings),
+        }
+        rows.append([total_base_values[key] for key in visible_columns])
+        numeric_columns = {index for index, key in enumerate(visible_columns) if key in numeric_keys}
+        return headers, rows, numeric_columns, visible_columns
 
 
 class LedgerBookExcelAPIView(_BaseLedgerBookExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers = ["Date", "Voucher No", "Voucher Type", "Description", "Debit", "Credit", "Running Balance"]
-        rows = self.build_rows(data)
-        content = _write_excel("Ledger Book", subtitle, headers, rows, numeric_columns={4, 5, 6})
+        _scope, data, subtitle, settings = self.report_data(request)
+        headers, rows, numeric_columns, _visible_columns = self.build_table(data, settings)
+        content = _write_excel("Ledger Book", subtitle, headers, rows, numeric_columns={index + 1 for index in numeric_columns})
         return self.export_response(
             filename=f"LedgerBook_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1123,9 +1732,8 @@ class LedgerBookExcelAPIView(_BaseLedgerBookExportAPIView):
 
 class LedgerBookCSVAPIView(_BaseLedgerBookExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers = ["Date", "Voucher No", "Voucher Type", "Description", "Debit", "Credit", "Running Balance"]
-        rows = self.build_rows(data)
+        _scope, data, subtitle, settings = self.report_data(request)
+        headers, rows, _numeric_columns, _visible_columns = self.build_table(data, settings)
         content = _write_csv(headers, rows)
         return self.export_response(
             filename=f"LedgerBook_{_safe_filename(subtitle)}.csv",
@@ -1136,9 +1744,8 @@ class LedgerBookCSVAPIView(_BaseLedgerBookExportAPIView):
 
 class LedgerBookPDFAPIView(_BaseLedgerBookExportAPIView):
     def get(self, request):
-        scope, data, subtitle = self.report_data(request)
-        headers = ["Date", "Voucher No", "Voucher Type", "Description", "Debit", "Credit", "Running Balance"]
-        rows = self.build_rows(data)
+        scope, data, subtitle, settings = self.report_data(request)
+        headers, rows, numeric_columns, visible_columns = self.build_table(data, settings)
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         ledger = data.get("ledger") or {}
         meta_items = [
@@ -1149,14 +1756,23 @@ class LedgerBookPDFAPIView(_BaseLedgerBookExportAPIView):
             ("Account head", ledger.get("accounthead_name") or "-"),
             ("Account type", ledger.get("accounttype_name") or "-"),
         ]
+        width_map = {
+            "date": 58,
+            "voucher_no": 76,
+            "voucher_type": 100,
+            "description": 220,
+            "debit": 74,
+            "credit": 74,
+            "running_balance": 88,
+        }
         content = _write_pdf(
             "Ledger Book",
             subtitle,
             headers,
             rows,
-            col_widths=[58, 76, 100, 220, 74, 74, 88],
+            col_widths=[width_map.get(column, 80) for column in visible_columns],
             meta_items=meta_items,
-            numeric_columns={4, 5, 6},
+            numeric_columns={index + 1 for index in numeric_columns},
         )
         return self.export_response(
             filename=f"LedgerBook_{_safe_filename(subtitle)}.pdf",
@@ -1172,19 +1788,23 @@ class LedgerBookPrintAPIView(LedgerBookPDFAPIView):
 class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
     def get(self, request):
         scope = self.get_scope(request)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_profit_loss_settings(settings_payload)
+        report_defaults = settings.get("report_defaults") or {}
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
-        view_type = (scope.get("view_type") or "summary").lower()
-        account_group = scope.get("account_group") or scope.get("group_by")
+        view_type = (scope.get("view_type") or report_defaults.get("default_view_type") or "summary").lower()
+        account_group = scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by")
         if not account_group:
             account_group = "ledger" if view_type == "detailed" else "accounthead"
         stock_valuation_mode = scope.get(
             "stock_valuation_mode",
-            REPORT_DEFAULTS["profit_loss_stock_valuation_mode"],
+            report_defaults.get("stock_valuation_mode") or REPORT_DEFAULTS["profit_loss_stock_valuation_mode"],
         )
         stock_valuation_method = scope.get(
             "stock_valuation_method",
-            REPORT_DEFAULTS["profit_loss_stock_valuation_method"],
+            report_defaults.get("stock_valuation_method") or REPORT_DEFAULTS["profit_loss_stock_valuation_method"],
         )
+        period_by = _effective_period_by(scope)
         data = build_profit_and_loss(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -1199,13 +1819,13 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
             ),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
+            sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
-            period_by=scope.get("period_by"),
+            period_by=period_by,
             view_type=view_type,
-            posted_only=scope.get("posted_only", True),
-            hide_zero_rows=not scope.get("include_zero_balance", False),
+            posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
+            hide_zero_rows=scope.get("hide_zero_rows", report_defaults.get("hide_zero_rows", True)),
             account_group=account_group,
             ledger_ids=scope.get("ledger_ids") or None,
             stock_valuation_mode=stock_valuation_mode,
@@ -1247,19 +1867,23 @@ class _BaseProfitAndLossExportAPIView(_BaseFinancialReportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_profit_loss_settings(settings_payload)
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
-        view_type = (scope.get("view_type") or "summary").lower()
-        account_group = scope.get("account_group") or scope.get("group_by")
+        report_defaults = settings.get("report_defaults") or {}
+        view_type = (scope.get("view_type") or report_defaults.get("default_view_type") or "summary").lower()
+        account_group = scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by")
         if not account_group:
             account_group = "ledger" if view_type == "detailed" else "accounthead"
         stock_valuation_mode = scope.get(
             "stock_valuation_mode",
-            REPORT_DEFAULTS["profit_loss_stock_valuation_mode"],
+            report_defaults.get("stock_valuation_mode") or REPORT_DEFAULTS["profit_loss_stock_valuation_mode"],
         )
         stock_valuation_method = scope.get(
             "stock_valuation_method",
-            REPORT_DEFAULTS["profit_loss_stock_valuation_method"],
+            report_defaults.get("stock_valuation_method") or REPORT_DEFAULTS["profit_loss_stock_valuation_method"],
         )
+        period_by = _effective_period_by(scope)
         data = build_profit_and_loss(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -1271,13 +1895,13 @@ class _BaseProfitAndLossExportAPIView(_BaseFinancialReportAPIView):
             include_zero_balances=scope.get("include_zero_balances", REPORT_DEFAULTS["show_zero_balances_default"]),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
+            sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
             page=1,
             page_size=100000,
-            period_by=scope.get("period_by"),
+            period_by=period_by,
             view_type=view_type,
-            posted_only=scope.get("posted_only", True),
-            hide_zero_rows=not scope.get("include_zero_balance", False),
+            posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
+            hide_zero_rows=scope.get("hide_zero_rows", report_defaults.get("hide_zero_rows", True)),
             account_group=account_group,
             ledger_ids=scope.get("ledger_ids") or None,
             stock_valuation_mode=stock_valuation_mode,
@@ -1286,7 +1910,7 @@ class _BaseProfitAndLossExportAPIView(_BaseFinancialReportAPIView):
         )
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         subtitle = _profit_loss_subtitle(scope_names, scope, data)
-        return scope, data, subtitle
+        return scope, data, subtitle, settings
 
     def build_orientation(self, request):
         orientation = str(
@@ -1299,18 +1923,42 @@ class _BaseProfitAndLossExportAPIView(_BaseFinancialReportAPIView):
 
 class ProfitAndLossExcelAPIView(_BaseProfitAndLossExportAPIView):
     def get(self, request):
-        scope, data, subtitle = self.report_data(request)
-        headers, rows = _profit_loss_export_table(data, include_periods=True)
-        content = _write_excel(
-            "Profit & Loss",
-            subtitle,
-            headers,
-            rows,
-            numeric_columns=set(range(4, len(headers))),
+        scope, data, subtitle, settings = self.report_data(request)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        if _presentation_mode(scope) == "statement":
+            headers, rows = _statement_profit_loss_rows(data, settings=settings)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _profit_loss_export_table(data, include_periods=True, settings=settings)
+            numeric_columns = {index for index, header in enumerate(headers) if header.endswith("Amount") or header == "Amount"}
+            center_columns = set()
+        content = write_sectioned_excel(
+            title="Profit & Loss",
+            subtitle=subtitle,
+            summary_items=_profit_loss_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Profit & Loss",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                )
+            ],
             orientation=self.build_orientation(request),
+            freeze_header=settings.get("export_layout", {}).get("freeze_excel_header", True),
+        )
+        filename = build_report_filename(
+            "Profit_Loss",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_profit_loss_scope_filename(scope_names, scope),
+            extension="xlsx",
         )
         return self.export_response(
-            filename=f"ProfitLoss_{_safe_filename(subtitle)}.xlsx",
+            filename=filename,
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -1318,11 +1966,39 @@ class ProfitAndLossExcelAPIView(_BaseProfitAndLossExportAPIView):
 
 class ProfitAndLossCSVAPIView(_BaseProfitAndLossExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _profit_loss_export_table(data, include_periods=True)
-        content = _write_csv(headers, rows)
+        scope, data, subtitle, settings = self.report_data(request)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        if _presentation_mode(scope) == "statement":
+            headers, rows = _statement_profit_loss_rows(data, settings=settings)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _profit_loss_export_table(data, include_periods=True, settings=settings)
+            numeric_columns = {index for index, header in enumerate(headers) if header.endswith("Amount") or header == "Amount"}
+            center_columns = set()
+        content = write_sectioned_csv(
+            title="Profit & Loss",
+            meta_items=_profit_loss_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Profit & Loss",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                )
+            ],
+        )
+        filename = build_report_filename(
+            "Profit_Loss",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_profit_loss_scope_filename(scope_names, scope),
+            extension="csv",
+        )
         return self.export_response(
-            filename=f"ProfitLoss_{_safe_filename(subtitle)}.csv",
+            filename=filename,
             content=content,
             content_type="text/csv",
         )
@@ -1330,44 +2006,75 @@ class ProfitAndLossCSVAPIView(_BaseProfitAndLossExportAPIView):
 
 class ProfitAndLossPDFAPIView(_BaseProfitAndLossExportAPIView):
     def get(self, request):
-        scope, data, subtitle = self.report_data(request)
+        scope, data, subtitle, settings = self.report_data(request)
         orientation = self.build_orientation(request)
         portrait_mode = orientation == "portrait"
-        headers, rows = _profit_loss_export_table(data, include_periods=True)
+        statement_mode = _presentation_mode(scope) == "statement"
         periods = data.get("periods") or []
-        if portrait_mode:
-            col_widths = [54, 160, 82, 82] + [42] * len(periods) + [60]
-            pagesize = A4
-        else:
-            col_widths = [58, 130, 88, 78]
-            col_widths.extend([72] * len(periods))
-            col_widths.append(78)
-            pagesize = landscape(A4)
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
-        stock = data.get("stock_valuation") or {}
-        summary = data.get("summary") or {}
-        meta_items = [
-            ("Entity", scope_names["entity_name"] or "Selected entity"),
-            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
-            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
-            ("View", scope.get("view_type") or "summary"),
-            ("Group by", scope.get("account_group") or scope.get("group_by") or "ledger"),
-            ("Stock", f"{stock.get('effective_mode') or 'trading_account'} / {stock.get('valuation_method') or 'fifo'}"),
-            ("Gross result", summary.get("gross_result") or "0.00"),
-            ("Net margin", f"{summary.get('net_margin_percent') or '0.00'}%"),
-        ]
-        content = _write_pdf(
-            "Profit & Loss",
-            subtitle,
-            headers,
-            rows,
-            col_widths=col_widths,
-            meta_items=meta_items,
-            numeric_columns=set(range(4, len(headers))),
+        if statement_mode:
+            headers, rows = _statement_profit_loss_rows(data, settings=settings)
+            pagesize, col_widths = _statement_pdf_layout(headers)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _profit_loss_export_table(data, include_periods=True, settings=settings)
+            if portrait_mode:
+                base_widths = {
+                    "Section": 54,
+                    "Particulars": 160,
+                    "Account Head": 82,
+                    "Account Type": 82,
+                    "Amount": 60,
+                }
+                col_widths = [base_widths.get(header, 42) for header in headers[:max(0, len(headers) - len(periods))]]
+                if periods:
+                    insertion_at = len(col_widths) - (1 if "Amount" in headers else 0)
+                    col_widths[insertion_at:insertion_at] = [42] * len(periods)
+                pagesize = A4
+            else:
+                base_widths = {
+                    "Section": 58,
+                    "Particulars": 130,
+                    "Account Head": 88,
+                    "Account Type": 78,
+                    "Amount": 78,
+                }
+                col_widths = [base_widths.get(header, 72) for header in headers[:max(0, len(headers) - len(periods))]]
+                if periods:
+                    insertion_at = len(col_widths) - (1 if "Amount" in headers else 0)
+                    col_widths[insertion_at:insertion_at] = [72] * len(periods)
+                pagesize = landscape(A4)
+            numeric_columns = {index for index, header in enumerate(headers) if header.endswith("Amount") or header == "Amount"}
+            center_columns = set()
+        content = write_sectioned_pdf(
+            title="Profit & Loss",
+            subtitle=subtitle,
+            meta_items=_profit_loss_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Profit & Loss",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                    col_widths=col_widths,
+                )
+            ],
             pagesize=pagesize,
+            header_density=settings.get("export_layout", {}).get("header_density", "compact"),
+            metadata_visibility=settings.get("export_layout", {}).get("metadata_visibility", "compact"),
+        )
+        filename = build_report_filename(
+            "Profit_Loss",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_profit_loss_scope_filename(scope_names, scope),
+            extension="pdf",
         )
         return self.export_response(
-            filename=f"ProfitLoss_{_safe_filename(subtitle)}.pdf",
+            filename=filename,
             content=content,
             content_type="application/pdf",
         )
@@ -1396,7 +2103,11 @@ class ProfitAndLossPDFPortraitAPIView(ProfitAndLossPDFAPIView):
 class BalanceSheetAPIView(_BaseFinancialReportAPIView):
     def get(self, request):
         scope = self.get_scope(request)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_balance_sheet_settings(settings_payload)
+        report_defaults = settings.get("report_defaults") or {}
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
+        period_by = _effective_period_by(scope)
         data = build_balance_sheet(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -1404,22 +2115,22 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
             as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("account_group") or scope.get("group_by"),
-            view_type=scope.get("view_type"),
-            posted_only=scope.get("posted_only", REPORT_DEFAULTS["balance_sheet_posted_only_default"]),
-            hide_zero_rows=scope.get("hide_zero_rows", REPORT_DEFAULTS["balance_sheet_hide_zero_rows_default"]),
+            group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
+            view_type=scope.get("view_type") or report_defaults.get("default_view_type"),
+            posted_only=scope.get("posted_only", report_defaults.get("posted_only", REPORT_DEFAULTS["balance_sheet_posted_only_default"])),
+            hide_zero_rows=scope.get("hide_zero_rows", report_defaults.get("hide_zero_rows", REPORT_DEFAULTS["balance_sheet_hide_zero_rows_default"])),
             include_zero_balances=scope.get(
                 "include_zero_balances",
                 REPORT_DEFAULTS["show_zero_balances_default"],
             ),
-            account_group=scope.get("account_group"),
+            account_group=scope.get("account_group") or report_defaults.get("default_group_by"),
             ledger_ids=scope.get("ledger_ids"),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
+            sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
-            period_by=scope.get("period_by"),
+            period_by=period_by,
             reporting_policy=reporting_policy,
         )
         response = build_report_envelope(
@@ -1464,6 +2175,54 @@ def _balance_sheet_subtitle(scope_names, scope, report):
     )
 
 
+def _humanize_balance_sheet_group(value):
+    labels = {
+        "ledger": "Ledger",
+        "accounthead": "Account head",
+        "accounttype": "Account type",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "ledger").replace("_", " ").title())
+
+
+def _humanize_balance_sheet_view(value):
+    labels = {
+        "summary": "Summary",
+        "detailed": "Detailed",
+    }
+    return labels.get(str(value or "").strip().lower(), str(value or "summary").replace("_", " ").title())
+
+
+def _balance_sheet_export_meta(scope_names, scope, report, settings=None):
+    subentity_label = scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")
+    balance_diff = _parse_decimal(report.get("totals", {}).get("assets")) - _parse_decimal(report.get("totals", {}).get("liabilities_and_equity"))
+    reporting = report.get("reporting") or {}
+    meta_items = [
+        ("Entity", scope_names["entity_name"] or "Selected entity"),
+        ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
+        ("Subentity", subentity_label),
+        ("Scope", _humanize_trial_balance_scope(scope.get("scope_mode") or "financial_year")),
+        ("Presentation", f"{_humanize_balance_sheet_view(scope.get('view_type') or reporting.get('view_type') or 'summary')} view • Grouped by {_humanize_balance_sheet_group(scope.get('account_group') or scope.get('group_by') or reporting.get('group_by') or 'ledger')}"),
+        ("Filters", f"{'Posted only' if scope.get('posted_only', True) else 'Posted and draft'} • {'Zero rows hidden' if scope.get('hide_zero_rows', True) else 'Zero rows shown'}"),
+        ("Amount Unit", financial_hub_amount_unit_label(settings or {})),
+        ("Stock", f"{scope.get('stock_valuation_mode') or reporting.get('stock_valuation_mode') or 'auto'} / {scope.get('stock_valuation_method') or reporting.get('stock_valuation_method') or 'fifo'}"),
+        ("Balance Status", "Balanced" if balance_diff == 0 else "Mismatch"),
+        ("Difference", format_financial_hub_amount(f"{balance_diff:.2f}", settings=settings or {})),
+    ]
+    if scope.get("search"):
+        meta_items.append(("Search", scope.get("search")))
+    return meta_items
+
+
+def _balance_sheet_scope_filename(scope_names, scope):
+    if scope.get("as_of_date"):
+        return f"As_Of_{scope.get('as_of_date')}"
+    if scope.get("from_date") and scope.get("to_date"):
+        return f"{scope.get('from_date')}_to_{scope.get('to_date')}"
+    if scope_names.get("entityfin_name"):
+        return scope_names["entityfin_name"]
+    return scope.get("scope_mode") or "balance_sheet"
+
+
 class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
     export_mode = "attachment"
     export_orientation = "landscape"
@@ -1484,7 +2243,11 @@ class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
 
     def report_data(self, request):
         scope = self.get_scope(request)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_balance_sheet_settings(settings_payload)
+        report_defaults = settings.get("report_defaults") or {}
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
+        period_by = _effective_period_by(scope)
         data = build_balance_sheet(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -1492,46 +2255,66 @@ class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
             as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("account_group") or scope.get("group_by"),
-            view_type=scope.get("view_type"),
-            posted_only=scope.get("posted_only", REPORT_DEFAULTS["balance_sheet_posted_only_default"]),
-            hide_zero_rows=scope.get("hide_zero_rows", REPORT_DEFAULTS["balance_sheet_hide_zero_rows_default"]),
+            group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
+            view_type=scope.get("view_type") or report_defaults.get("default_view_type"),
+            posted_only=scope.get("posted_only", report_defaults.get("posted_only", REPORT_DEFAULTS["balance_sheet_posted_only_default"])),
+            hide_zero_rows=scope.get("hide_zero_rows", report_defaults.get("hide_zero_rows", REPORT_DEFAULTS["balance_sheet_hide_zero_rows_default"])),
             include_zero_balances=scope.get("include_zero_balances", REPORT_DEFAULTS["show_zero_balances_default"]),
-            account_group=scope.get("account_group"),
+            account_group=scope.get("account_group") or report_defaults.get("default_group_by"),
             ledger_ids=scope.get("ledger_ids"),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
+            sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
             page=scope.get("page", 1),
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
-            period_by=scope.get("period_by"),
+            period_by=period_by,
             reporting_policy=reporting_policy,
         )
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         subtitle = _balance_sheet_subtitle(scope_names, scope, data)
-        return scope, data, subtitle
+        return scope, data, subtitle, settings
 
 
 class BalanceSheetExcelAPIView(_BaseBalanceSheetExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
+        scope, data, subtitle, settings = self.report_data(request)
         orientation = self.build_orientation(request)
-        landscape_mode = orientation == "landscape"
-        headers, rows = _balance_sheet_export_table(data, landscape_mode=landscape_mode)
-        period_count = len(data.get("periods") or [])
-        numeric_columns = {4 + period_count, 8 + 2 * period_count}
-        numeric_columns.update(range(4, 4 + period_count))
-        numeric_columns.update(range(8 + period_count, 8 + 2 * period_count))
-        content = _write_excel(
-            "Balance Sheet",
-            subtitle,
-            headers,
-            rows,
-            numeric_columns=numeric_columns if landscape_mode else set(range(5, len(headers) + 1)),
+        statement_mode = _presentation_mode(scope) == "statement"
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        if statement_mode:
+            headers, rows = _statement_balance_sheet_rows(data, settings=settings)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _balance_sheet_export_table(data, settings=settings)
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Section", "Particulars", "Account Head", "Account Type"})}
+            center_columns = set()
+        content = write_sectioned_excel(
+            title="Balance Sheet",
+            subtitle=subtitle,
+            summary_items=_balance_sheet_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Balance Sheet",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                )
+            ],
             orientation=orientation,
+            freeze_header=settings.get("export_layout", {}).get("freeze_excel_header", True),
+        )
+        filename = build_report_filename(
+            "Balance_Sheet",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_balance_sheet_scope_filename(scope_names, scope),
+            extension="xlsx",
         )
         return self.export_response(
-            filename=f"BalanceSheet_{_safe_filename(subtitle)}.xlsx",
+            filename=filename,
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -1539,11 +2322,39 @@ class BalanceSheetExcelAPIView(_BaseBalanceSheetExportAPIView):
 
 class BalanceSheetCSVAPIView(_BaseBalanceSheetExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _balance_sheet_export_table(data)
-        content = _write_csv(headers, rows)
+        scope, data, subtitle, settings = self.report_data(request)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        if _presentation_mode(scope) == "statement":
+            headers, rows = _statement_balance_sheet_rows(data, settings=settings)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _balance_sheet_export_table(data, settings=settings)
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Section", "Particulars", "Account Head", "Account Type"})}
+            center_columns = set()
+        content = write_sectioned_csv(
+            title="Balance Sheet",
+            meta_items=_balance_sheet_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Balance Sheet",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                )
+            ],
+        )
+        filename = build_report_filename(
+            "Balance_Sheet",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_balance_sheet_scope_filename(scope_names, scope),
+            extension="csv",
+        )
         return self.export_response(
-            filename=f"BalanceSheet_{_safe_filename(subtitle)}.csv",
+            filename=filename,
             content=content,
             content_type="text/csv",
         )
@@ -1551,47 +2362,68 @@ class BalanceSheetCSVAPIView(_BaseBalanceSheetExportAPIView):
 
 class BalanceSheetPDFAPIView(_BaseBalanceSheetExportAPIView):
     def get(self, request):
-        scope, data, subtitle = self.report_data(request)
+        scope, data, subtitle, settings = self.report_data(request)
         orientation = self.build_orientation(request)
-        pagesize = landscape(A4) if orientation == "landscape" else A4
-        landscape_mode = orientation == "landscape"
-        headers, rows = _balance_sheet_export_table(data, landscape_mode=landscape_mode)
+        statement_mode = _presentation_mode(scope) == "statement"
+        pagesize = landscape(A4) if orientation == "landscape" and not statement_mode else A4
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
-        balance_diff = _parse_decimal(data.get("totals", {}).get("assets")) - _parse_decimal(data.get("totals", {}).get("liabilities_and_equity"))
-        periods = data.get("periods") or []
-        meta_items = [
-            ("Entity", scope_names["entity_name"] or "Selected entity"),
-            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
-            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
-            ("Scope", scope.get("scope_mode") or "financial_year"),
-            ("View", scope.get("view_type") or "summary"),
-            ("Group by", scope.get("account_group") or scope.get("group_by") or "accounthead"),
-            ("Stock", f"{scope.get('stock_valuation_mode') or data.get('reporting', {}).get('stock_valuation_mode') or 'auto'}/{scope.get('stock_valuation_method') or data.get('reporting', {}).get('stock_valuation_method') or 'fifo'}"),
-            ("Balance Status", "Balanced" if balance_diff == 0 else "Mismatch"),
-            ("Difference", f"{balance_diff:.2f}"),
-        ]
-        if landscape_mode:
-            col_widths = [60, 120, 90] + [52] * len(periods) + [72, 60, 120, 90] + [52] * len(periods) + [72]
-        elif orientation == "portrait":
-            col_widths = [54, 160, 82, 82] + [42] * len(periods) + [60]
+        if statement_mode:
+            headers, rows = _statement_balance_sheet_rows(data, settings=settings)
+            pagesize, col_widths = _statement_pdf_layout(headers)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        elif orientation == "landscape":
+            headers, rows, row_kinds = _balance_sheet_export_table(data, settings=settings)
+            base_widths = {
+                "Section": 58,
+                "Particulars": 130,
+                "Account Head": 88,
+                "Account Type": 78,
+                "Amount": 78,
+            }
+            col_widths = [base_widths.get(header, 72) for header in headers]
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Section", "Particulars", "Account Head", "Account Type"})}
+            center_columns = set()
         else:
-            col_widths = [60, 175, 90, 90] + [52] * len(periods) + [72]
-        content = _write_pdf(
-            "Balance Sheet",
-            subtitle,
-            headers,
-            rows,
-            col_widths=col_widths,
-            meta_items=meta_items,
-            numeric_columns=(
-                ({4 + len(periods), 8 + 2 * len(periods)} | set(range(4, 4 + len(periods))) | set(range(8 + len(periods), 8 + 2 * len(periods))))
-                if landscape_mode
-                else set(range(5, len(headers) + 1))
-            ),
+            headers, rows, row_kinds = _balance_sheet_export_table(data, settings=settings)
+            base_widths = {
+                "Section": 54,
+                "Particulars": 160,
+                "Account Head": 82,
+                "Account Type": 82,
+                "Amount": 60,
+            }
+            col_widths = [base_widths.get(header, 42) for header in headers]
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Section", "Particulars", "Account Head", "Account Type"})}
+            center_columns = set()
+        content = write_sectioned_pdf(
+            title="Balance Sheet",
+            subtitle=subtitle,
+            meta_items=_balance_sheet_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Balance Sheet",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                    col_widths=col_widths,
+                )
+            ],
             pagesize=pagesize,
+            header_density=settings.get("export_layout", {}).get("header_density", "compact"),
+            metadata_visibility=settings.get("export_layout", {}).get("metadata_visibility", "compact"),
+        )
+        filename = build_report_filename(
+            "Balance_Sheet",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_balance_sheet_scope_filename(scope_names, scope),
+            extension="pdf",
         )
         return self.export_response(
-            filename=f"BalanceSheet_{_safe_filename(subtitle)}.pdf",
+            filename=filename,
             content=content,
             content_type="application/pdf",
         )
@@ -1626,9 +2458,13 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
         serializer = FinancialReportScopeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
         scope = serializer.validated_data
-        valuation_method = (request.query_params.get("valuation_method") or "fifo").lower()
-        level = (request.query_params.get("level") or ("account" if scope.get("view_type") == "detailed" else "head")).lower()
-        period_by = (scope.get("period_by") or request.query_params.get("period_by") or "").strip().lower() or None
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_trading_account_settings(settings_payload)
+        report_defaults = settings.get("report_defaults") or {}
+        effective_view_type = scope.get("view_type") or report_defaults.get("default_view_type") or "summary"
+        valuation_method = (request.query_params.get("valuation_method") or report_defaults.get("stock_valuation_method") or "fifo").lower()
+        level = (request.query_params.get("level") or ("account" if effective_view_type == "detailed" else "head")).lower()
+        period_by = (_effective_period_by(scope) or request.query_params.get("period_by") or "").strip().lower() or None
 
         self.enforce_scope(
             request,
@@ -1654,10 +2490,10 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
             startdate=start.isoformat(),
             enddate=end.isoformat(),
             period_by=period_by,
-            posted_only=scope.get("posted_only", True),
-            hide_zero_rows=not scope.get("include_zero_balance", False),
-            view_type=scope.get("view_type") or ("detailed" if level == "account" else "summary"),
-            account_group=scope.get("account_group") or scope.get("group_by"),
+            posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
+            hide_zero_rows=scope.get("hide_zero_rows", report_defaults.get("hide_zero_rows", not scope.get("include_zero_balance", False))),
+            view_type=effective_view_type or ("detailed" if level == "account" else "summary"),
+            account_group=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
             ledger_ids=scope.get("ledger_ids") or None,
             valuation_method=valuation_method,
             level=level,
@@ -1731,9 +2567,13 @@ class _BaseTradingAccountExportAPIView(ScopedEntitlementMixin, APIView):
         serializer = FinancialReportScopeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
         scope = serializer.validated_data
-        valuation_method = (request.query_params.get("valuation_method") or "fifo").lower()
-        level = (request.query_params.get("level") or ("account" if scope.get("view_type") == "detailed" else "head")).lower()
-        period_by = (scope.get("period_by") or request.query_params.get("period_by") or "").strip().lower() or None
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        settings = get_effective_trading_account_settings(settings_payload)
+        report_defaults = settings.get("report_defaults") or {}
+        effective_view_type = scope.get("view_type") or report_defaults.get("default_view_type") or "summary"
+        valuation_method = (request.query_params.get("valuation_method") or report_defaults.get("stock_valuation_method") or "fifo").lower()
+        level = (request.query_params.get("level") or ("account" if effective_view_type == "detailed" else "head")).lower()
+        period_by = (_effective_period_by(scope) or request.query_params.get("period_by") or "").strip().lower() or None
         self.enforce_scope(
             request,
             entity_id=scope["entity"],
@@ -1757,34 +2597,58 @@ class _BaseTradingAccountExportAPIView(ScopedEntitlementMixin, APIView):
             startdate=start.isoformat(),
             enddate=end.isoformat(),
             period_by=period_by,
-            posted_only=scope.get("posted_only", True),
-            hide_zero_rows=not scope.get("include_zero_balance", False),
-            view_type=scope.get("view_type") or ("detailed" if level == "account" else "summary"),
-            account_group=scope.get("account_group") or scope.get("group_by"),
+            posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
+            hide_zero_rows=scope.get("hide_zero_rows", report_defaults.get("hide_zero_rows", not scope.get("include_zero_balance", False))),
+            view_type=effective_view_type or ("detailed" if level == "account" else "summary"),
+            account_group=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
             ledger_ids=scope.get("ledger_ids") or None,
             valuation_method=valuation_method,
             level=level,
         )
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         subtitle = _trading_account_subtitle(scope_names, scope, data)
-        return scope, data, subtitle
+        return scope, data, subtitle, settings
 
 
 class TradingAccountExcelAPIView(_BaseTradingAccountExportAPIView):
     def get(self, request):
-        scope, data, subtitle = self.report_data(request)
-        headers, rows = _trading_account_export_table(data, include_periods=True)
-        period_count = len(data.get("periods") or [])
-        content = _write_excel(
-            "Trading Account",
-            subtitle,
-            headers,
-            rows,
-            numeric_columns={3, *range(4, 4 + period_count), 4 + period_count},
+        scope, data, subtitle, settings = self.report_data(request)
+        statement_mode = _presentation_mode(scope) == "statement"
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        if statement_mode:
+            headers, rows = _statement_trading_rows(data, settings=settings)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _trading_account_export_table(data, include_periods=True, settings=settings)
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Side", "Particulars", "Qty"})}
+            center_columns = set()
+        content = write_sectioned_excel(
+            title="Trading Account",
+            subtitle=subtitle,
+            summary_items=_trading_account_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Trading Account",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                )
+            ],
             orientation=self.build_orientation(request),
+            freeze_header=settings.get("export_layout", {}).get("freeze_excel_header", True),
+        )
+        filename = build_report_filename(
+            "Trading_Account",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_trading_account_scope_filename(scope_names, scope),
+            extension="xlsx",
         )
         return self.export_response(
-            filename=f"TradingAccount_{_safe_filename(subtitle)}.xlsx",
+            filename=filename,
             content=content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -1792,11 +2656,39 @@ class TradingAccountExcelAPIView(_BaseTradingAccountExportAPIView):
 
 class TradingAccountCSVAPIView(_BaseTradingAccountExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _trading_account_export_table(data, include_periods=True)
-        content = _write_csv(headers, rows)
+        scope, data, subtitle, settings = self.report_data(request)
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        if _presentation_mode(scope) == "statement":
+            headers, rows = _statement_trading_rows(data, settings=settings)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        else:
+            headers, rows, row_kinds = _trading_account_export_table(data, include_periods=True, settings=settings)
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Side", "Particulars", "Qty"})}
+            center_columns = set()
+        content = write_sectioned_csv(
+            title="Trading Account",
+            meta_items=_trading_account_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Trading Account",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                )
+            ],
+        )
+        filename = build_report_filename(
+            "Trading_Account",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_trading_account_scope_filename(scope_names, scope),
+            extension="csv",
+        )
         return self.export_response(
-            filename=f"TradingAccount_{_safe_filename(subtitle)}.csv",
+            filename=filename,
             content=content,
             content_type="text/csv",
         )
@@ -1804,39 +2696,74 @@ class TradingAccountCSVAPIView(_BaseTradingAccountExportAPIView):
 
 class TradingAccountPDFAPIView(_BaseTradingAccountExportAPIView):
     def get(self, request):
-        scope, data, subtitle = self.report_data(request)
+        scope, data, subtitle, settings = self.report_data(request)
         orientation = self.build_orientation(request)
-        pagesize = landscape(A4) if orientation == "landscape" else A4
-        landscape_mode = orientation == "landscape"
-        headers, rows = _trading_account_export_table(data, include_periods=True)
-        period_count = len(data.get("periods") or [])
+        statement_mode = _presentation_mode(scope) == "statement"
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
-        meta_items = [
-            ("Entity", scope_names["entity_name"] or "Selected entity"),
-            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
-            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
-            ("View", scope.get("view_type") or "summary"),
-            ("Group by", scope.get("account_group") or scope.get("group_by") or "accounthead"),
-            ("Valuation", scope.get("valuation_method") or data.get("params", {}).get("valuation_method") or "fifo"),
-            ("Gross Profit", data.get("gross_profit", "0.00") or "0.00"),
-            ("Gross Loss", data.get("gross_loss", "0.00") or "0.00"),
-        ]
-        if landscape_mode:
-            col_widths = [46, 220, 58] + [58] * period_count + [82]
+        periods = data.get("periods") or []
+        if statement_mode:
+            headers, rows = _statement_trading_rows(data, settings=settings)
+            pagesize, col_widths = _statement_pdf_layout(headers)
+            numeric_columns = set(range(2, len(headers)))
+            center_columns = {1}
+            row_kinds = None
+        elif orientation == "landscape":
+            headers, rows, row_kinds = _trading_account_export_table(data, include_periods=True, settings=settings)
+            base_widths = {
+                "Side": 52,
+                "Particulars": 210,
+                "Qty": 56,
+                "Amount": 82,
+            }
+            col_widths = [base_widths.get(header, 72) for header in headers[:max(0, len(headers) - len(periods))]]
+            if periods:
+                insertion_at = len(col_widths) - (1 if "Amount" in headers else 0)
+                col_widths[insertion_at:insertion_at] = [72] * len(periods)
+            pagesize = landscape(A4)
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Side", "Particulars", "Qty"})}
+            center_columns = set()
         else:
-            col_widths = [52, 190, 56] + [42] * period_count + [78]
-        content = _write_pdf(
-            "Trading Account",
-            subtitle,
-            headers,
-            rows,
-            col_widths=col_widths,
-            meta_items=meta_items,
-            numeric_columns={3, *range(4, 4 + period_count), 4 + period_count},
+            headers, rows, row_kinds = _trading_account_export_table(data, include_periods=True, settings=settings)
+            base_widths = {
+                "Side": 50,
+                "Particulars": 180,
+                "Qty": 48,
+                "Amount": 62,
+            }
+            col_widths = [base_widths.get(header, 42) for header in headers[:max(0, len(headers) - len(periods))]]
+            if periods:
+                insertion_at = len(col_widths) - (1 if "Amount" in headers else 0)
+                col_widths[insertion_at:insertion_at] = [42] * len(periods)
+            pagesize = A4
+            numeric_columns = {index for index, header in enumerate(headers) if header == "Amount" or (header not in {"Side", "Particulars", "Qty"})}
+            center_columns = set()
+        content = write_sectioned_pdf(
+            title="Trading Account",
+            subtitle=subtitle,
+            meta_items=_trading_account_export_meta(scope_names, scope, data, settings),
+            sections=[
+                ExportSection(
+                    title="Trading Account",
+                    headers=headers,
+                    rows=rows,
+                    row_kinds=row_kinds,
+                    numeric_columns=numeric_columns,
+                    center_columns=center_columns,
+                    col_widths=col_widths,
+                )
+            ],
             pagesize=pagesize,
+            header_density=settings.get("export_layout", {}).get("header_density", "compact"),
+            metadata_visibility=settings.get("export_layout", {}).get("metadata_visibility", "compact"),
+        )
+        filename = build_report_filename(
+            "Trading_Account",
+            entity_name=scope_names.get("entity_name"),
+            scope_label=_trading_account_scope_filename(scope_names, scope),
+            extension="pdf",
         )
         return self.export_response(
-            filename=f"TradingAccount_{_safe_filename(subtitle)}.pdf",
+            filename=filename,
             content=content,
             content_type="application/pdf",
         )

@@ -688,6 +688,8 @@ class PurchasePostingAdapterTests(SimpleTestCase):
             "posting_date": date(2026, 3, 3),
             "vendor_id": 7001,
             "vendor_ledger_id": 7001,
+            "vendor_name": "Vendor-A",
+            "vendor": SimpleNamespace(accountname="Vendor-A", ledger_id=7001),
             "doc_type": 1,
             "purchase_number": "PINV-101",
             "grand_total": Decimal("100.00"),
@@ -707,6 +709,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
             "id": 201,
             "line_no": 1,
             "product_id": None,
+            "product_desc": "Copper Wire",
             "is_service": True,
             "purchase_behavior": ProductPurchaseBehavior.EXPENSE,
             "taxable_value": Decimal("100.00"),
@@ -781,6 +784,44 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         self.assertTrue(charge_entries, "Expected a charge journal line in PURCHASE_MISC_EXPENSE.")
         self.assertEqual(charge_entries[0].amount, Decimal("10.00"))
+
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_purchase_descriptions_include_vendor_and_item_context(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=999)
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=self._base_header(),
+            lines=[self._line()],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        jl_inputs = mock_posting_service_cls.return_value.post.call_args.kwargs["jl_inputs"]
+        self.assertIn("Vendor Vendor-A", jl_inputs[0].description)
+        self.assertIn("Item Copper Wire", jl_inputs[0].description)
 
     @patch("posting.adapters.purchase_invoice.PostingService")
     @patch("posting.adapters.purchase_invoice.Product.objects")
@@ -969,6 +1010,71 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         self.assertEqual(move.uom_factor, Decimal("1000.0000"))
         self.assertEqual(move.base_qty, Decimal("2000.0000"))
         self.assertEqual(move.base_uom_id, 1)
+        self.assertTrue(mocked_resolve_location.called)
+
+    @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=5)
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_inventory_move_generates_internal_expiry_lot_for_expiry_tracked_product(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        mocked_resolve_location,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        product = SimpleNamespace(
+            id=99,
+            base_uom_id=1,
+            base_uom=SimpleNamespace(id=1, code="PCS"),
+            uom_conversions=[],
+            is_batch_managed=False,
+            is_expiry_tracked=True,
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=1004)
+
+        header = self._base_header(grand_total=Decimal("500.00"), affects_inventory=True)
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[
+                self._line(
+                    product_id=99,
+                    is_service=False,
+                    purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+                    qty=Decimal("5.0000"),
+                    taxable_value=Decimal("500.00"),
+                    uom_id=1,
+                    batch_number="",
+                    expiry_date=date(2026, 5, 1),
+                )
+            ],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        kwargs = posting_instance.post.call_args.kwargs
+        move = kwargs["im_inputs"][0]
+        self.assertEqual(move.batch_number, "EXP-99-20260501")
+        self.assertEqual(move.expiry_date, date(2026, 5, 1))
         self.assertTrue(mocked_resolve_location.called)
 
 

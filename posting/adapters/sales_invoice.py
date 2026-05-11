@@ -8,11 +8,17 @@ from typing import Any, Iterable, List, Optional
 from django.db import transaction
 
 from posting.common.location_resolver import resolve_posting_location_id
+from posting.common.journal_descriptions import (
+    sales_charge_description,
+    sales_document_prefix,
+    sales_line_description,
+)
 from posting.services.posting_service import PostingService, JLInput, IMInput
 from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product
+from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
 
 
@@ -149,7 +155,7 @@ class SalesInvoicePostingAdapter:
         elif is_debit_note:
             doc_label = "Sales Debit Note"
 
-        narration = f"{doc_label} {voucher_no or txn_id}"
+        narration = sales_document_prefix(header) or f"{doc_label} {voucher_no or txn_id}"
 
         # ---- header totals ----
         header_grand_total = q2(getattr(header, "grand_total", None) or ZERO2)
@@ -255,7 +261,7 @@ class SalesInvoicePostingAdapter:
                 account_id=sales_ac,
                 drcr=revenue_is_debit,
                 amount=q2(base.copy_abs()),
-                description=f"{narration} (line {getattr(ln, 'line_no', '-')})",
+                description=sales_line_description(header, ln),
                 detail_id=int(getattr(ln, "id", 0) or 0) or None,
             ))
 
@@ -279,7 +285,7 @@ class SalesInvoicePostingAdapter:
                     account_id=int(charge_ac),
                     drcr=(sign < 0),  # invoice/DN => credit, CN => debit
                     amount=q2(c_base.copy_abs()),
-                    description=f"{narration} (charge {getattr(ch, 'line_no', '-')})",
+                    description=sales_charge_description(header, ch),
                     detail_id=int(getattr(ch, "id", 0) or 0) or None,
                 ))
 
@@ -453,7 +459,7 @@ class SalesInvoicePostingAdapter:
                 base_qty = q4(qty_for_cost * factor_to_base)
 
                 base = q2(getattr(ln, "taxable_value", None) or ZERO2)
-                unit_cost = q4(base / qty_for_cost)
+                unit_cost = q4(base / base_qty) if base_qty != ZERO4 else ZERO4
                 location_id = resolve_posting_location_id(
                     entity_id=entity_id,
                     subentity_id=int(subentity_id) if subentity_id else None,
@@ -461,6 +467,11 @@ class SalesInvoicePostingAdapter:
                     location_id=getattr(header, "location_id", None),
                 )
 
+                resolved_lot_number = resolve_tracked_lot_number(
+                    product=product,
+                    batch_number=getattr(ln, "batch_number", ""),
+                    expiry_date=getattr(ln, "expiry_date", None),
+                )
                 im.append(IMInput(
                     product_id=int(getattr(ln, "product_id")),
                     qty=qty_for_cost,  # qty positive; move_type controls IN vs OUT
@@ -473,7 +484,7 @@ class SalesInvoicePostingAdapter:
                     cost_source="SALES",
                     movement_nature=InventoryMove.MovementNature.SALE if inventory_move_type == InventoryMove.MoveType.OUT else InventoryMove.MovementNature.RETURN,
                     movement_reason=str(doc_type or "sale"),
-                    batch_number=str(getattr(ln, "batch_number", "") or ""),
+                    batch_number=resolved_lot_number,
                     manufacture_date=getattr(ln, "manufacture_date", None),
                     expiry_date=getattr(ln, "expiry_date", None),
                     cost_meta={
@@ -485,9 +496,11 @@ class SalesInvoicePostingAdapter:
                         "factor_to_base": str(factor_to_base),
                         "base_qty": str(base_qty),
                         "taxable_value": str(base),
+                        "selected_uom_unit_cost": str(q4(base / qty_for_cost)) if qty_for_cost != ZERO4 else "0.0000",
+                        "base_uom_unit_cost": str(unit_cost),
                         "spread_cost_across_free_qty": cfg.spread_cost_across_free_qty,
                         "affects_inventory": affects_inventory,
-                        "batch_number": str(getattr(ln, "batch_number", "") or ""),
+                        "batch_number": resolved_lot_number,
                         "manufacture_date": getattr(ln, "manufacture_date", None),
                         "expiry_date": getattr(ln, "expiry_date", None),
                     },

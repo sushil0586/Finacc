@@ -1,5 +1,6 @@
 from django.test import SimpleTestCase
 
+from reports.schemas.financial_reports import FinancialReportScopeSerializer
 from reports.services.financial.meta import _report_registry
 from reports.services.financial.registry import build_financial_hub
 from reports.services.financial.reporting_policy import _sanitize
@@ -78,3 +79,22 @@ class FinancialHubRegistryTests(SimpleTestCase):
         self.assertEqual(policy["opening"]["grouped_sections"], ["assets", "liabilities", "stock", "equity"])
         self.assertTrue(policy["opening"]["carry_forward"]["cash_bank"])
         self.assertTrue(policy["opening"]["reset"]["trading"])
+
+    def test_statement_presentation_is_available_for_financial_statements(self):
+        reports = {report["code"]: report for report in _report_registry()}
+
+        self.assertTrue(reports["profit_loss"]["supports"]["presentation"])
+        self.assertTrue(reports["balance_sheet"]["supports"]["presentation"])
+        self.assertTrue(reports["trading_account"]["supports"]["presentation"])
+
+
+class FinancialReportScopeSerializerTests(SimpleTestCase):
+    def test_defaults_presentation_to_standard(self):
+        serializer = FinancialReportScopeSerializer(data={"entity": 10})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["presentation"], "standard")
+
+    def test_accepts_statement_presentation(self):
+        serializer = FinancialReportScopeSerializer(data={"entity": 10, "presentation": "statement"})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["presentation"], "statement")

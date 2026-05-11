@@ -146,6 +146,20 @@ class InventoryOpsTests(APITestCase):
             is_serialized=False,
             is_expiry_tracked=True,
         )
+        self.expiry_only_product = Product.objects.create(
+            entity=self.entity,
+            productname='Yogurt Cup',
+            sku='YG-001',
+            productdesc='Expiry-tracked product without manual batch',
+            productcategory=self.category,
+            base_uom=self.uom,
+            is_service=False,
+            is_batch_managed=False,
+            is_serialized=False,
+            is_expiry_tracked=True,
+            shelf_life_days=30,
+            expiry_warning_days=7,
+        )
 
         self.role = Role.objects.create(
             entity=self.entity,
@@ -208,6 +222,14 @@ class InventoryOpsTests(APITestCase):
                         'batch_number': 'B-1',
                         'expiry_date': '2026-05-01',
                         'note': 'Initial batch stock',
+                    },
+                    {
+                        'product': self.expiry_only_product.id,
+                        'direction': 'INCREASE',
+                        'qty': '6.0000',
+                        'unit_cost': '50.0000',
+                        'expiry_date': '2026-08-15',
+                        'note': 'Initial expiry-only stock',
                     },
                 ],
             },
@@ -727,6 +749,59 @@ class InventoryOpsTests(APITestCase):
         shortage_resp = self.client.post(reverse('inventory_ops:inventory-adjustments'), shortage_payload, format='json')
         self.assertEqual(shortage_resp.status_code, 400)
         self.assertIn('Insufficient stock', str(shortage_resp.json()))
+
+    def test_expiry_only_adjustment_generates_internal_lot_and_depletes_stock(self):
+        payload = {
+            'entity': self.entity.id,
+            'entityfinid': self.entityfin.id,
+            'subentity': self.subentity.id,
+            'adjustment_date': '2025-04-12',
+            'location': self.source.id,
+            'reference_no': 'ADJ-EXP-1',
+            'narration': 'Expiry lot shrinkage',
+            'lines': [
+                {
+                    'product': self.expiry_only_product.id,
+                    'direction': 'DECREASE',
+                    'qty': '2.0000',
+                    'expiry_date': '2026-08-15',
+                }
+            ],
+        }
+        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+        self.assertEqual(response.status_code, 201)
+        line = response.json()['adjustment']['lines'][0]
+        self.assertEqual(line['batch_number'], f'EXP-{self.expiry_only_product.id}-20260815')
+        adjustment_id = response.json()['adjustment']['id']
+
+        post_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(post_resp.status_code, 200)
+        move = InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').get()
+        self.assertEqual(move.batch_number, f'EXP-{self.expiry_only_product.id}-20260815')
+        self.assertEqual(str(move.base_qty), '2.0000')
+
+    def test_inventory_stock_hint_uses_expiry_only_internal_lot(self):
+        response = self.client.get(
+            reverse('inventory_ops:inventory-stock-hint'),
+            {
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin.id,
+                'subentity': self.subentity.id,
+                'operation': 'adjustment',
+                'product': self.expiry_only_product.id,
+                'location': self.source.id,
+                'qty': '8.0000',
+                'doc_date': '2025-04-12',
+                'direction': 'DECREASE',
+                'expiry_date': '2026-08-15',
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['batch_number'], f'EXP-{self.expiry_only_product.id}-20260815')
+        self.assertEqual(body['available_qty'], '6.0000')
+        self.assertEqual(body['shortage_qty'], '2.0000')
+        self.assertEqual(body['status'], 'danger')
 
     def test_adjustment_list_returns_rows(self):
         payload = {

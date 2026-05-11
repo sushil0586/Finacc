@@ -6,6 +6,7 @@ from typing import Dict, List
 from django.db import transaction
 
 from payroll.models import PayrollLedgerPolicy, PayrollRun
+from posting.common.journal_descriptions import payroll_prefix
 from posting.models import TxnType
 from posting.services.posting_service import JLInput, PostingService
 
@@ -92,13 +93,14 @@ class PayrollPostingAdapter:
                         )
 
         jl_inputs: List[JLInput] = []
+        prefix = payroll_prefix(run)
         for account_id, amount in sorted(debits.items()):
             jl_inputs.append(
                 JLInput(
                     account_id=account_id,
                     drcr=True,
                     amount=amount,
-                    description=f"Payroll run {run.run_number or run.id}",
+                    description=prefix,
                 )
             )
         for account_id, amount in sorted(credits.items()):
@@ -107,7 +109,7 @@ class PayrollPostingAdapter:
                     account_id=account_id,
                     drcr=False,
                     amount=amount,
-                    description=f"Payroll run {run.run_number or run.id}",
+                    description=prefix,
                 )
             )
         return jl_inputs
@@ -128,7 +130,7 @@ class PayrollPostingAdapter:
             voucher_no=run.run_number or (str(run.doc_no) if run.doc_no else None),
             voucher_date=run.payroll_period.period_end,
             posting_date=run.posting_date,
-            narration=f"Payroll run {run.run_number or run.id}",
+            narration=payroll_prefix(run),
             jl_inputs=PayrollPostingAdapter._aggregate_lines(run, policy),
             im_inputs=[],
             mark_posted=True,

@@ -32,6 +32,8 @@ class PaymentPostingAdapterTests(SimpleTestCase):
             cash_paid_amount=Decimal("100.00"),
             paid_from_id=10,
             paid_to_id=20,
+            paid_from=SimpleNamespace(accountname="HDFC Bank", ledger_id=10),
+            paid_to=SimpleNamespace(accountname="Vendor-A", ledger_id=20),
         )
 
     def test_build_journal_lines_with_adjustments(self):
@@ -61,6 +63,8 @@ class PaymentPostingAdapterTests(SimpleTestCase):
         self.assertEqual(jl[3].account_id, 102)
         self.assertTrue(jl[3].drcr)
         self.assertEqual(jl[3].amount, Decimal("5.00"))
+        self.assertIn("Vendor Vendor-A", jl[0].description)
+        self.assertIn("From HDFC Bank", jl[0].description)
 
 
 class PaymentVoucherServiceTests(SimpleTestCase):

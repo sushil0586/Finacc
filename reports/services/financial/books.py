@@ -10,6 +10,7 @@ from django.db.models.functions import Coalesce
 
 from financial.models import account
 from financial.profile_access import account_partytype
+from assets.models import DepreciationRun, FixedAsset
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, StaticAccount, TxnType
 from purchase.models.purchase_core import PurchaseInvoiceHeader
@@ -50,6 +51,24 @@ TXN_SOURCE_META = {
     TxnType.PAYMENT: ("payments", "Payment Voucher"),
 }
 
+DOCUMENT_TYPE_SOURCE_MODULES = {
+    "purchase_invoice": {"purchase"},
+    "purchase_credit_note": {"purchase"},
+    "purchase_debit_note": {"purchase"},
+    "sales_invoice": {"sales"},
+    "sales_credit_note": {"sales"},
+    "sales_debit_note": {"sales"},
+    "payment_voucher": {"payment"},
+    "receipt_voucher": {"receipt"},
+    "journal_voucher": {"journal"},
+    "cash_voucher": {"journal"},
+    "bank_voucher": {"journal"},
+    "asset_capitalization": {"asset"},
+    "asset_depreciation": {"asset"},
+    "asset_impairment": {"asset"},
+    "asset_disposal": {"asset"},
+}
+
 
 @dataclass(frozen=True)
 class CashbookAccountRef:
@@ -75,6 +94,13 @@ def _txn_source(txn_type: str):
     return TXN_SOURCE_META.get(txn_type, ("posting", txn_type))
 
 
+def _decimal_or_zero(value, places="0.0000"):
+    try:
+        return Decimal(str(value or 0)).quantize(Decimal(places))
+    except Exception:
+        return Decimal(places)
+
+
 def _drilldown_target_for_txn(txn_type: str) -> str:
     mapping = {
         TxnType.SALES: "sales_invoice_detail",
@@ -92,6 +118,108 @@ def _drilldown_target_for_txn(txn_type: str) -> str:
         TxnType.PAYMENT: "payment_voucher_detail",
     }
     return mapping.get(txn_type, "journal_entry_detail")
+
+
+def _document_lookup_binding(document_type: str, source_module: str | None):
+    document_type = str(document_type or "").strip().lower()
+    source_module = str(source_module or "").strip().lower() or None
+    allowed_modules = DOCUMENT_TYPE_SOURCE_MODULES.get(document_type)
+    if not allowed_modules:
+        raise ValueError({"document_type": "Unsupported document type."})
+
+    if source_module and source_module not in allowed_modules:
+        raise ValueError({"source_module": "Source module does not match the selected document type."})
+
+    if not source_module:
+        if len(allowed_modules) > 1:
+            raise ValueError({"source_module": "Source module is required for this document type."})
+        source_module = next(iter(allowed_modules))
+
+    if document_type == "purchase_invoice":
+        return PurchaseInvoiceHeader, {"doc_type": PurchaseInvoiceHeader.DocType.TAX_INVOICE}, TxnType.PURCHASE, source_module
+    if document_type == "purchase_credit_note":
+        return PurchaseInvoiceHeader, {"doc_type": PurchaseInvoiceHeader.DocType.CREDIT_NOTE}, TxnType.PURCHASE_CREDIT_NOTE, source_module
+    if document_type == "purchase_debit_note":
+        return PurchaseInvoiceHeader, {"doc_type": PurchaseInvoiceHeader.DocType.DEBIT_NOTE}, TxnType.PURCHASE_DEBIT_NOTE, source_module
+    if document_type == "sales_invoice":
+        return SalesInvoiceHeader, {"doc_type": SalesInvoiceHeader.DocType.TAX_INVOICE}, TxnType.SALES, source_module
+    if document_type == "sales_credit_note":
+        return SalesInvoiceHeader, {"doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE}, TxnType.SALES_CREDIT_NOTE, source_module
+    if document_type == "sales_debit_note":
+        return SalesInvoiceHeader, {"doc_type": SalesInvoiceHeader.DocType.DEBIT_NOTE}, TxnType.SALES_DEBIT_NOTE, source_module
+    if document_type == "payment_voucher":
+        return PaymentVoucherHeader, {}, TxnType.PAYMENT, source_module
+    if document_type == "receipt_voucher":
+        return ReceiptVoucherHeader, {}, TxnType.RECEIPT, source_module
+    if document_type == "journal_voucher":
+        return VoucherHeader, {"voucher_type": VoucherHeader.VoucherType.JOURNAL}, TxnType.JOURNAL, source_module
+    if document_type == "cash_voucher":
+        return VoucherHeader, {"voucher_type": VoucherHeader.VoucherType.CASH}, TxnType.JOURNAL_CASH, source_module
+    if document_type == "bank_voucher":
+        return VoucherHeader, {"voucher_type": VoucherHeader.VoucherType.BANK}, TxnType.JOURNAL_BANK, source_module
+    if document_type == "asset_capitalization":
+        return FixedAsset, {}, TxnType.FIXED_ASSET_CAPITALIZATION, source_module
+    if document_type == "asset_depreciation":
+        return DepreciationRun, {}, TxnType.FIXED_ASSET_DEPRECIATION, source_module
+    if document_type == "asset_impairment":
+        return FixedAsset, {}, TxnType.FIXED_ASSET_IMPAIRMENT, source_module
+    if document_type == "asset_disposal":
+        return FixedAsset, {}, TxnType.FIXED_ASSET_DISPOSAL, source_module
+    raise ValueError({"document_type": "Unsupported document type."})
+
+
+def resolve_posting_entry_for_document(
+    *,
+    entity_id,
+    document_type,
+    document_id,
+    entityfin_id=None,
+    subentity_id=None,
+    source_module=None,
+):
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+    if not document_id:
+        raise ValueError({"document_id": "Document id is required."})
+
+    document_model, extra_filters, txn_type, source_module = _document_lookup_binding(document_type, source_module)
+    document_filters = {
+        "id": document_id,
+        "entity_id": entity_id,
+        **extra_filters,
+    }
+    if entityfin_id:
+        document_filters["entityfinid_id"] = entityfin_id
+    if subentity_id is not None:
+        document_filters["subentity_id"] = subentity_id
+
+    document = document_model.objects.get(**document_filters)
+    entry_filters = {
+        "entity_id": entity_id,
+        "txn_type": txn_type,
+        "txn_id": document.id,
+    }
+    if entityfin_id:
+        entry_filters["entityfin_id"] = entityfin_id
+    if subentity_id is not None:
+        entry_filters["subentity_id"] = subentity_id
+
+    entry = Entry.objects.filter(**entry_filters).order_by("-id").first()
+    if not entry:
+        raise Entry.DoesNotExist
+
+    return {
+        "entry_id": entry.id,
+        "txn_id": entry.txn_id,
+        "txn_type": entry.txn_type,
+        "voucher_number": entry.voucher_no,
+        "posting_date": entry.posting_date,
+        "voucher_date": entry.voucher_date,
+        "status": entry.status,
+        "status_name": _entry_status_name(entry),
+        "source_module": source_module,
+        "document_type": document_type,
+        "document_id": document.id,
+    }
 
 
 def _cashbook_target_key(line):
@@ -397,6 +525,16 @@ def build_daybook_entry_detail(*, entry_id, entity_id, entityfin_id=None, subent
         .select_related("account", "ledger", "accounthead", "created_by")
         .order_by("posting_date", "id")
     )
+    inventory_moves = (
+        entry.posting_inventory_moves.select_related(
+            "product",
+            "uom",
+            "base_uom",
+            "location",
+            "source_location",
+            "destination_location",
+        ).order_by("posting_date", "id")
+    )
     return {
         "entry_id": entry.id,
         "voucher_number": entry.voucher_no,
@@ -422,6 +560,52 @@ def build_daybook_entry_detail(*, entry_id, entity_id, entityfin_id=None, subent
                 "detail_id": line.detail_id,
             }
             for line in lines
+        ],
+        "inventory_moves": [
+            {
+                "inventory_move_id": move.id,
+                "detail_id": move.detail_id,
+                "product_id": move.product_id,
+                "product_name": getattr(move.product, "productname", None) or getattr(move.product, "product_name", None) or str(move.product),
+                "batch_number": move.batch_number or None,
+                "location_id": move.location_id,
+                "location_name": getattr(move.location, "godownname", None) or getattr(move.location, "name", None),
+                "source_location_id": move.source_location_id,
+                "source_location_name": getattr(move.source_location, "godownname", None) or getattr(move.source_location, "name", None),
+                "destination_location_id": move.destination_location_id,
+                "destination_location_name": getattr(move.destination_location, "godownname", None) or getattr(move.destination_location, "name", None),
+                "uom_id": move.uom_id,
+                "uom_name": getattr(move.uom, "code", None) or getattr(move.uom, "description", None),
+                "base_uom_id": move.base_uom_id,
+                "base_uom_name": getattr(move.base_uom, "code", None) or getattr(move.base_uom, "description", None),
+                "qty": f"{Decimal(move.qty or ZERO4):.4f}",
+                "base_qty": f"{Decimal(move.base_qty or ZERO4):.4f}",
+                "unit_cost": f"{(
+                    (
+                        _decimal_or_zero((move.cost_meta or {}).get('taxable_value'), '0.01')
+                        + _decimal_or_zero((move.cost_meta or {}).get('cap_share'), '0.01')
+                    ) / abs(_decimal_or_zero((move.cost_meta or {}).get('qty_for_cost') or move.qty, '0.0000'))
+                ) if abs(_decimal_or_zero((move.cost_meta or {}).get('qty_for_cost') or move.qty, '0.0000')) else Decimal(move.unit_cost or ZERO4):.4f}",
+                "base_unit_cost": f"{(
+                    (
+                        _decimal_or_zero((move.cost_meta or {}).get('taxable_value'), '0.01')
+                        + _decimal_or_zero((move.cost_meta or {}).get('cap_share'), '0.01')
+                    ) / abs(Decimal(move.base_qty or ZERO4))
+                ) if abs(Decimal(move.base_qty or ZERO4)) else Decimal(move.unit_cost or ZERO4):.4f}",
+                "ext_cost": _money(
+                    (
+                        _decimal_or_zero((move.cost_meta or {}).get('taxable_value'), '0.01')
+                        + _decimal_or_zero((move.cost_meta or {}).get('cap_share'), '0.01')
+                    ) or move.ext_cost
+                ),
+                "move_type": move.move_type,
+                "move_type_name": move.get_move_type_display() if hasattr(move, "get_move_type_display") else move.move_type,
+                "movement_nature": move.movement_nature,
+                "movement_nature_name": move.get_movement_nature_display() if hasattr(move, "get_movement_nature_display") else move.movement_nature,
+                "movement_reason": move.movement_reason or None,
+                "posting_date": move.posting_date,
+            }
+            for move in inventory_moves
         ],
     }
 

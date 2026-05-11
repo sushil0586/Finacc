@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.models import Product
 from catalog.transaction_products import TransactionProductCatalogService
 from entity.models import Godown
@@ -520,6 +521,12 @@ class InventoryStockHintAPIView(_BaseInventoryOpsAPIView):
             require_expiry=bool(getattr(product, "is_expiry_tracked", False) and controls.get("require_expiry_when_expiry_tracked", True)),
         )
 
+        effective_batch_number = resolve_tracked_lot_number(
+            product=product,
+            batch_number=batch_number,
+            expiry_date=expiry_date,
+        )
+
         hint = SalesStockBalanceService.build_hint(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -527,7 +534,7 @@ class InventoryStockHintAPIView(_BaseInventoryOpsAPIView):
             bill_date=bill_date,
             product=product,
             requested_qty=requested_base_qty,
-            batch_number=batch_number,
+            batch_number=effective_batch_number,
             expiry_date=expiry_date,
             location_id=location_id,
             policy=policy,

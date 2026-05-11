@@ -6,6 +6,7 @@ from typing import Any, Iterable, Optional
 
 from django.db import transaction
 
+from posting.common.journal_descriptions import voucher_document_prefix
 from posting.models import Entry, EntryStatus, TxnType
 from posting.services.posting_service import JLInput, PostingService
 from vouchers.models.voucher_core import VoucherHeader
@@ -46,10 +47,11 @@ class VoucherPostingAdapter:
             ledger_id = int(getattr(row, "ledger_id", 0) or getattr(getattr(row, "account", None), "ledger_id", 0) or 0)
             if account_id <= 0:
                 raise ValueError(f"Voucher line {getattr(row, 'id', '')}: account is required.")
+            row_narration = str(getattr(row, "narration", "") or "").strip()
             if dr_amount > ZERO2:
-                jl_inputs.append(JLInput(account_id=account_id, ledger_id=ledger_id or None, drcr=not reverse, amount=dr_amount, description=str(getattr(row, "narration", "") or ""), detail_id=getattr(row, "id", None)))
+                jl_inputs.append(JLInput(account_id=account_id, ledger_id=ledger_id or None, drcr=not reverse, amount=dr_amount, description=row_narration, detail_id=getattr(row, "id", None)))
             if cr_amount > ZERO2:
-                jl_inputs.append(JLInput(account_id=account_id, ledger_id=ledger_id or None, drcr=reverse, amount=cr_amount, description=str(getattr(row, "narration", "") or ""), detail_id=getattr(row, "id", None)))
+                jl_inputs.append(JLInput(account_id=account_id, ledger_id=ledger_id or None, drcr=reverse, amount=cr_amount, description=row_narration, detail_id=getattr(row, "id", None)))
         return jl_inputs
 
     @staticmethod
@@ -64,13 +66,19 @@ class VoucherPostingAdapter:
             user_id=int(user_id) if user_id else None,
         )
         txn_type = VoucherPostingAdapter._txn_type_for_header(header)
+        prefix = voucher_document_prefix(header)
+        for line in jl_inputs:
+            if line.description:
+                line.description = f"{prefix} | {line.description}"
+            else:
+                line.description = prefix
         return svc.post(
             txn_type=txn_type,
             txn_id=int(header.id),
             voucher_no=str(getattr(header, "voucher_code", "") or ""),
             voucher_date=getattr(header, "voucher_date", None),
             posting_date=getattr(header, "voucher_date", None),
-            narration=f"Voucher {getattr(header, 'voucher_code', '')}",
+            narration=prefix,
             jl_inputs=jl_inputs,
             im_inputs=[],
             use_advisory_lock=True,
@@ -88,13 +96,19 @@ class VoucherPostingAdapter:
             user_id=int(user_id) if user_id else None,
         )
         txn_type = VoucherPostingAdapter._txn_type_for_header(header)
+        prefix = voucher_document_prefix(header)
+        for line in jl_inputs:
+            if line.description:
+                line.description = f"Reversal | {prefix} | {line.description}"
+            else:
+                line.description = f"Reversal | {prefix}"
         entry = svc.post(
             txn_type=txn_type,
             txn_id=int(header.id),
             voucher_no=str(getattr(header, "voucher_code", "") or ""),
             voucher_date=getattr(header, "voucher_date", None),
             posting_date=getattr(header, "voucher_date", None),
-            narration=f"Voucher Reversal {getattr(header, 'voucher_code', '')}",
+            narration=f"Reversal | {prefix}",
             jl_inputs=jl_inputs,
             im_inputs=[],
             use_advisory_lock=True,

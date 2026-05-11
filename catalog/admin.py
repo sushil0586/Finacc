@@ -136,7 +136,7 @@ class ProductUomConversionInline(admin.TabularInline):
 class OpeningStockInline(admin.TabularInline):
     model = OpeningStockByLocation
     extra = 1
-    fields = ("location", "openingqty", "openingrate", "openingvalue", "as_of_date")
+    fields = ("branch", "godown", "openingqty", "openingrate", "openingvalue", "as_of_date")
 
 
 class ProductPriceInline(admin.TabularInline):

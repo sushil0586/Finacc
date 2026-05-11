@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
+from catalog.lot_tracking import resolve_tracked_lot_number
 from entity.models import Godown
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.models import InventoryMove
@@ -185,6 +186,7 @@ class SalesStockBalanceService:
         fefo_required = bool(getattr(policy, "fefo_required", False)) or mode == "STRICT"
         allow_manual_override = bool(getattr(policy, "allow_manual_batch_override", True))
         shortage_checks_enabled = mode in {"CONTROLLED", "STRICT"}
+        lot_term = "expiry lot" if bool(getattr(product, "is_expiry_tracked", False)) and not bool(getattr(product, "is_batch_managed", False)) else "batch"
 
         batch_number = str(batch_number or "").strip()
         expiry_date_value = expiry_date
@@ -193,6 +195,11 @@ class SalesStockBalanceService:
                 expiry_date_value = date.fromisoformat(expiry_date_value.strip())
             except ValueError:
                 expiry_date_value = None
+        effective_batch_number = resolve_tracked_lot_number(
+            product=product,
+            batch_number=batch_number,
+            expiry_date=expiry_date_value,
+        )
 
         if not product or bool(getattr(product, "is_service", False)):
             return {
@@ -222,7 +229,7 @@ class SalesStockBalanceService:
                 "fefo_required": fefo_required,
                 "allow_negative_stock": allow_negative_stock,
                 "allow_manual_batch_override": allow_manual_override,
-                "batch_number": batch_number or None,
+                "batch_number": effective_batch_number or batch_number or None,
                 "expiry_date": expiry_date_value.isoformat() if hasattr(expiry_date_value, "isoformat") and expiry_date_value else None,
                 "best_batch_number": None,
                 "best_batch_expiry_date": None,
@@ -243,33 +250,33 @@ class SalesStockBalanceService:
         suggested_batch_available = suggested_batch[2] if suggested_batch else ZERO4
 
         selected_batch_available = ZERO4
-        if batch_number:
-            selected_batch_available = _q4(by_batch.get((batch_number, resolved_location_id), ZERO4))
+        if effective_batch_number:
+            selected_batch_available = _q4(by_batch.get((effective_batch_number, resolved_location_id), ZERO4))
 
-        available_qty = selected_batch_available if batch_number else total_available
+        available_qty = selected_batch_available if effective_batch_number else total_available
         shortage_qty = _q4(max(requested_qty - available_qty, ZERO4))
 
         status = "info"
         message = ""
-        if batch_required and not batch_number:
+        if batch_required and not effective_batch_number:
             if suggested_batch_number:
                 message = (
-                    f"Batch required. Suggested batch {suggested_batch_number}"
+                    f"{lot_term.title()} required. Suggested {lot_term} {suggested_batch_number}"
                     f"{' (' + suggested_batch_expiry.isoformat() + ')' if hasattr(suggested_batch_expiry, 'isoformat') and suggested_batch_expiry else ''}"
                     f" with {suggested_batch_available} available."
                 )
             else:
-                message = "Batch required, but no available batch was found for this product."
+                message = f"{lot_term.title()} required, but no available {lot_term} was found for this product."
             status = "warning"
-        elif batch_number and shortage_checks_enabled:
+        elif effective_batch_number and shortage_checks_enabled:
             if selected_batch_available <= ZERO4:
-                message = f"Batch '{batch_number}' has no available stock at the selected location."
+                message = f"{lot_term.title()} '{effective_batch_number}' has no available stock at the selected location."
                 status = "danger"
             elif shortage_qty > ZERO4:
-                message = f"Only {available_qty} available in batch '{batch_number}'. Short by {shortage_qty}."
+                message = f"Only {available_qty} available in {lot_term} '{effective_batch_number}'. Short by {shortage_qty}."
                 status = "danger" if not allow_negative_stock else "warning"
             else:
-                message = f"{available_qty} available in batch '{batch_number}' at the selected location."
+                message = f"{available_qty} available in {lot_term} '{effective_batch_number}' at the selected location."
                 status = "info"
         elif shortage_checks_enabled:
             if available_qty <= ZERO4:
@@ -283,26 +290,26 @@ class SalesStockBalanceService:
                 status = "info"
 
         if expiry_required:
-            if not batch_number and suggested_batch_number and suggested_batch_expiry:
+            if not effective_batch_number and suggested_batch_number and suggested_batch_expiry:
                 if not message:
-                    message = f"Suggested batch {suggested_batch_number} expires on {suggested_batch_expiry.isoformat()}."
+                    message = f"Suggested {lot_term} {suggested_batch_number} expires on {suggested_batch_expiry.isoformat()}."
                 elif suggested_batch_expiry:
                     message = f"{message} Suggested batch expires on {suggested_batch_expiry.isoformat()}."
                 status = "warning" if status == "info" else status
-            elif batch_number and expiry_date_value is None and suggested_batch_expiry is not None:
+            elif effective_batch_number and expiry_date_value is None and suggested_batch_expiry is not None:
                 expiry_text = suggested_batch_expiry.isoformat() if hasattr(suggested_batch_expiry, "isoformat") else str(suggested_batch_expiry)
                 message = f"{message} Suggested expiry date: {expiry_text}."
                 if status == "info":
                     status = "warning"
 
         if fefo_required and not allow_manual_override and suggested_batch_number:
-            if not batch_number or batch_number != suggested_batch_number:
+            if not effective_batch_number or effective_batch_number != suggested_batch_number:
                 expiry_text = (
                     f" ({suggested_batch_expiry.isoformat()})"
                     if hasattr(suggested_batch_expiry, "isoformat") and suggested_batch_expiry
                     else ""
                 )
-                message = f"FEFO suggests batch '{suggested_batch_number}'{expiry_text}."
+                message = f"FEFO suggests {lot_term} '{suggested_batch_number}'{expiry_text}."
                 status = "warning"
 
         return {
@@ -318,7 +325,7 @@ class SalesStockBalanceService:
             "fefo_required": fefo_required,
             "allow_negative_stock": allow_negative_stock,
             "allow_manual_batch_override": allow_manual_override,
-            "batch_number": batch_number or None,
+            "batch_number": effective_batch_number or batch_number or None,
             "expiry_date": expiry_date_value.isoformat() if hasattr(expiry_date_value, "isoformat") and expiry_date_value else None,
             "best_batch_number": suggested_batch_number,
             "best_batch_expiry_date": suggested_batch_expiry.isoformat() if hasattr(suggested_batch_expiry, "isoformat") and suggested_batch_expiry else None,

@@ -11,6 +11,7 @@ from django.db.models.functions import Coalesce
 
 from catalog.models import Product
 from posting.models import EntryStatus, InventoryMove, JournalLine
+from entity.models import EntityFinancialYear
 
 
 # --------------------------- Common helpers ---------------------------
@@ -47,6 +48,18 @@ def _iter_period_ranges(start_date, end_date, period_by):
             period_end = end_date
         yield cursor, period_end
         cursor = period_end + timedelta(days=1)
+
+
+def _previous_financial_year(entity_id, current_financial_year_id=None, current_start=None):
+    qs = EntityFinancialYear.objects.filter(entity_id=entity_id)
+    if current_financial_year_id:
+        current = qs.filter(id=current_financial_year_id).only("id", "desc", "year_code", "finstartyear", "finendyear").first()
+        current_start = getattr(current, "finstartyear", None) or current_start
+        if current_start:
+            qs = qs.filter(finendyear__lt=current_start)
+    elif current_start:
+        qs = qs.filter(finendyear__lt=current_start)
+    return qs.order_by("-finendyear", "-id").only("id", "desc", "year_code", "finstartyear", "finendyear").first()
 
 def _in_rate(qty: Decimal, unit_cost, ext_cost) -> Decimal:
     """Reliable IN rate: prefer unit_cost, else ext_cost/qty, else 0."""
@@ -779,7 +792,38 @@ def build_trading_account_dynamic(
         resp["warnings"] = warns
 
     period_by = (period_by or "").strip().lower() or None
-    if period_by in {"month", "quarter", "year"}:
+    if period_by == "year":
+        previous_fy = _previous_financial_year(entity_id, entityfin_id, start)
+        if previous_fy and previous_fy.finstartyear and previous_fy.finendyear:
+            previous_start = previous_fy.finstartyear.date() if hasattr(previous_fy.finstartyear, "date") else previous_fy.finstartyear
+            previous_end = previous_fy.finendyear.date() if hasattr(previous_fy.finendyear, "date") else previous_fy.finendyear
+            period_resp = build_trading_account_dynamic(
+                entity_id=entity_id,
+                entityfin_id=previous_fy.id,
+                subentity_id=subentity_id,
+                startdate=previous_start.isoformat(),
+                enddate=previous_end.isoformat(),
+                period_by=None,
+                posted_only=posted_only,
+                hide_zero_rows=hide_zero_rows,
+                view_type=view_type,
+                account_group=account_group,
+                ledger_ids=ledger_ids,
+                valuation_method=valuation_method,
+                detailsingroup_values=detailsingroup_values,
+                level=level,
+                fold_returns=fold_returns,
+                round_decimals=round_decimals,
+                inventory_breakdown=inventory_breakdown,
+                inventory_include_zero=inventory_include_zero,
+                inventory_product_ids=inventory_product_ids,
+            )
+            period_resp["period_key"] = str(previous_fy.year_code or previous_fy.desc or "previous_fy")
+            period_resp["period_label"] = str(previous_fy.desc or previous_fy.year_code or "Previous FY")
+            resp["periods"] = [period_resp]
+        else:
+            resp["periods"] = [{"period_key": "previous_financial_year", "period_label": "N/A", "unavailable": True}]
+    elif period_by in {"month", "quarter"}:
         periods = []
         for index, (period_start, period_end) in enumerate(_iter_period_ranges(start, end, period_by), start=1):
             period_resp = build_trading_account_dynamic(
@@ -803,8 +847,8 @@ def build_trading_account_dynamic(
                 inventory_include_zero=inventory_include_zero,
                 inventory_product_ids=inventory_product_ids,
             )
-            period_resp["period_key"] = f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y") if period_by == "year" else period_end.strftime("%Y-%m")
-            period_resp["period_label"] = f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y") if period_by == "year" else period_end.strftime("%b %Y")
+            period_resp["period_key"] = f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y-%m")
+            period_resp["period_label"] = f"Q{index}" if period_by == "quarter" else period_end.strftime("%b %Y")
             periods.append(period_resp)
         resp["periods"] = periods
     return resp

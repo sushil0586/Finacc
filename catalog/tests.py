@@ -1,20 +1,27 @@
 from tempfile import TemporaryDirectory
+from datetime import datetime
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 
 from assets.models import AssetCategory
-from catalog.models import BarcodeLabelTemplate, HsnSac, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
-from catalog.serializers import ProductBarcodeManageSerializer, ProductSerializer
+from catalog.models import BarcodeLabelTemplate, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
+from catalog.serializers import OpeningStockByLocationSerializer, ProductBarcodeManageSerializer, ProductPlanningSerializer, ProductSerializer
 from catalog.transaction_products import TransactionProductCatalogService
 from catalog.views import ProductBarcodeDownloadPDFAPIView
 from commerce.services import BarcodeResolutionService
-from entity.models import Entity, GstRegistrationType, SubEntity
+from entity.models import Entity, EntityFinancialYear, Godown, GstRegistrationType, SubEntity
+from financial.models import Ledger, account, accountHead, accounttype
+from financial.services import create_account_with_synced_ledger
+from posting.models import Entry, EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
+from reports.services.financial.trial_balance import build_trial_balance
+from reports.services.inventory.stock_summary import build_inventory_stock_summary
 
 
 class CatalogPhase1Tests(TestCase):
@@ -225,6 +232,7 @@ class CatalogPhase1Tests(TestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("shelf_life_days", serializer.errors)
+
 
     def test_product_serializer_rejects_barcode_uom_from_other_entity(self):
         serializer = ProductSerializer(
@@ -886,6 +894,306 @@ class CatalogTransactionProductContractTests(TestCase):
         )
 
         self.assertGreater(len(pdf_file.getvalue()), 0)
+
+
+class CatalogOpeningStockAndPlanningTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="catalog-opening",
+            email="catalog-opening@example.com",
+            password="testpass123",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        self.entity = Entity.objects.create(
+            entityname="Catalog Opening Entity",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            createdby=self.user,
+        )
+        self.branch = SubEntity.objects.create(entity=self.entity, subentityname="Head Office", subentity_code="HO")
+        self.other_branch = SubEntity.objects.create(entity=self.entity, subentityname="Retail", subentity_code="RT")
+        self.godown = Godown.objects.create(entity=self.entity, subentity=self.branch, name="Main Store", code="MAIN", address="A1", city="Delhi", state="DL", pincode="110001", is_default=True)
+        self.other_godown = Godown.objects.create(entity=self.entity, subentity=self.other_branch, name="Retail Rack", code="RACK", address="B1", city="Delhi", state="DL", pincode="110002")
+        self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Goods")
+        self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        self.product = Product.objects.create(
+            entity=self.entity,
+            productname="Opening Stock Product",
+            sku="OSP-001",
+            productdesc="Stocked item",
+            productcategory=self.category,
+            base_uom=self.uom,
+            is_service=False,
+            item_classification=ProductClassification.TRADING,
+            purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+            isactive=True,
+        )
+        self.asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Assets",
+            accounttypecode="AST100",
+            createdby=self.user,
+        )
+        self.equity_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Equity",
+            accounttypecode="EQT100",
+            createdby=self.user,
+        )
+        self.inventory_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Opening Inventory",
+            code=5100,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=self.asset_type,
+            createdby=self.user,
+        )
+        self.equity_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Opening Equity",
+            code=6100,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=self.equity_type,
+            createdby=self.user,
+        )
+        self.inventory_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5101,
+            name="Opening Inventory Carry Forward",
+            accounthead=self.inventory_head,
+            accounttype=self.asset_type,
+            createdby=self.user,
+        )
+        self.equity_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=6101,
+            name="Opening Equity Transfer",
+            accounthead=self.equity_head,
+            accounttype=self.equity_type,
+            createdby=self.user,
+        )
+        self.inventory_account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": self.inventory_ledger,
+                "accountname": "Opening Inventory Carry Forward",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "ledger_code": 5101,
+                "accounthead": self.inventory_head,
+                "accounttype": self.asset_type,
+                "is_party": False,
+            },
+        )
+        self.equity_account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": self.equity_ledger,
+                "accountname": "Opening Equity Transfer",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "ledger_code": 6101,
+                "accounthead": self.equity_head,
+                "accounttype": self.equity_type,
+                "is_party": False,
+            },
+        )
+        self.static_inventory = StaticAccount.objects.create(
+            code="OPENING_INVENTORY_CARRY_FORWARD",
+            name="Opening Inventory Carry Forward",
+            group="EQUITY",
+            is_active=True,
+        )
+        self.static_equity = StaticAccount.objects.create(
+            code="OPENING_EQUITY_TRANSFER",
+            name="Opening Equity Transfer",
+            group="EQUITY",
+            is_active=True,
+        )
+        EntityStaticAccountMap.objects.create(
+            entity=self.entity,
+            static_account=self.static_inventory,
+            account=self.inventory_account,
+            ledger=self.inventory_ledger,
+            createdby=self.user,
+        )
+        EntityStaticAccountMap.objects.create(
+            entity=self.entity,
+            static_account=self.static_equity,
+            account=self.equity_account,
+            ledger=self.equity_ledger,
+            createdby=self.user,
+        )
+
+    def test_product_bootstrap_returns_branch_and_godown_lists(self):
+        response = self.client.get(f"/api/catalog/product-page-all/?entity={self.entity.id}")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["branches"][0]["subentityname"], "Head Office")
+        self.assertEqual(payload["godowns"][0]["code"], "MAIN")
+
+    def test_opening_stock_create_posts_inventory_move_against_selected_godown(self):
+        response = self.client.post(
+            f"/api/catalog/products/{self.product.id}/opening-stocks/?entity={self.entity.id}",
+            {
+                "branch": self.branch.id,
+                "godown": self.godown.id,
+                "openingqty": "12.00",
+                "openingrate": "7.50",
+                "as_of_date": "2026-04-01",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        row = OpeningStockByLocation.objects.get(pk=response.json()["id"])
+        self.assertEqual(row.openingvalue, Decimal("90.0000"))
+        move = InventoryMove.objects.get(
+            entity_id=self.entity.id,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=-row.id,
+        )
+        entry = Entry.objects.get(
+            entity_id=self.entity.id,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=-row.id,
+        )
+        self.assertEqual(move.location_id, self.godown.id)
+        self.assertEqual(move.subentity_id, self.branch.id)
+        self.assertEqual(move.entityfin_id, self.entityfin.id)
+        self.assertEqual(move.movement_nature, InventoryMove.MovementNature.OPENING)
+        self.assertEqual(move.move_type, InventoryMove.MoveType.IN_)
+        self.assertEqual(move.base_qty, Decimal("12.0000"))
+        self.assertEqual(move.unit_cost, Decimal("7.5000"))
+        self.assertEqual(entry.entityfin_id, self.entityfin.id)
+
+        journal_lines = list(
+            JournalLine.objects
+            .filter(entity_id=self.entity.id, txn_type=TxnType.OPENING_BALANCE, txn_id=-row.id)
+            .order_by("drcr", "id")
+        )
+        self.assertEqual(len(journal_lines), 2)
+        self.assertEqual(sum(line.amount for line in journal_lines if line.drcr), Decimal("90.00"))
+        self.assertEqual(sum(line.amount for line in journal_lines if not line.drcr), Decimal("90.00"))
+        self.assertEqual({line.account_id for line in journal_lines}, {self.inventory_account.id, self.equity_account.id})
+
+        stock_summary = build_inventory_stock_summary(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.branch.id,
+            as_of_date="2026-04-01",
+            search="OSP-001",
+        )
+        self.assertEqual(len(stock_summary["rows"]), 1)
+        self.assertEqual(stock_summary["rows"][0]["closing_qty"], "12.0000")
+        self.assertEqual(stock_summary["rows"][0]["closing_value"], "90.00")
+
+        trial_balance = build_trial_balance(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.branch.id,
+            as_of_date="2026-04-01",
+            include_zero_balances=True,
+        )
+        tb_rows = {row["ledger_name"]: row for row in trial_balance["rows"]}
+        self.assertEqual(tb_rows["Opening Inventory Carry Forward"]["debit"], "90.00")
+        self.assertEqual(tb_rows["Opening Equity Transfer"]["credit"], "90.00")
+
+    def test_opening_stock_rejects_godown_from_another_branch(self):
+        serializer = OpeningStockByLocationSerializer(
+            data={
+                "branch": self.branch.id,
+                "godown": self.other_godown.id,
+                "openingqty": "1.00",
+                "openingrate": "1.00",
+                "as_of_date": "2026-04-01",
+            },
+            context={"entity": self.entity, "product": self.product},
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("godown", serializer.errors)
+
+    def test_opening_stock_serializer_requires_financial_year_and_static_mappings(self):
+        EntityStaticAccountMap.objects.filter(entity=self.entity).delete()
+        serializer = OpeningStockByLocationSerializer(
+            data={
+                "branch": self.branch.id,
+                "godown": self.godown.id,
+                "openingqty": "1.00",
+                "openingrate": "1.00",
+                "as_of_date": "2026-04-01",
+            },
+            context={"entity": self.entity, "product": self.product},
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("as_of_date", serializer.errors)
+        self.assertIn("OPENING_INVENTORY_CARRY_FORWARD", str(serializer.errors["as_of_date"][0]))
+
+    def test_nested_product_create_with_opening_stock_posts_inventory_and_journal(self):
+        serializer = ProductSerializer(
+            data={
+                "entity": self.entity.id,
+                "productname": "Nested Opening Product",
+                "sku": "NOP-001",
+                "productdesc": "Created with nested opening row",
+                "productcategory": self.category.id,
+                "base_uom": self.uom.id,
+                "is_service": False,
+                "item_classification": ProductClassification.TRADING,
+                "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+                "isactive": True,
+                "opening_stocks": [
+                    {
+                        "branch": self.branch.id,
+                        "godown": self.godown.id,
+                        "openingqty": "5.00",
+                        "openingrate": "20.00",
+                        "as_of_date": "2026-04-05",
+                    }
+                ],
+            },
+            context={"entity": self.entity},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        product = serializer.save(entity=self.entity)
+
+        row = product.opening_stocks.get()
+        entry = Entry.objects.get(entity_id=self.entity.id, txn_type=TxnType.OPENING_BALANCE, txn_id=-row.id)
+        move = InventoryMove.objects.get(entity_id=self.entity.id, txn_type=TxnType.OPENING_BALANCE, txn_id=-row.id)
+        journal_lines = list(JournalLine.objects.filter(entity_id=self.entity.id, txn_type=TxnType.OPENING_BALANCE, txn_id=-row.id))
+
+        self.assertEqual(entry.entityfin_id, self.entityfin.id)
+        self.assertEqual(move.ext_cost, Decimal("100.00"))
+        self.assertEqual(len(journal_lines), 2)
+        self.assertEqual(sum(line.amount for line in journal_lines if line.drcr), Decimal("100.00"))
+        self.assertEqual(sum(line.amount for line in journal_lines if not line.drcr), Decimal("100.00"))
+
+    def test_planning_serializer_returns_friendly_bucket_errors(self):
+        serializer = ProductPlanningSerializer(
+            data={
+                "min_stock": "100",
+                "max_stock": "50",
+                "reorder_level": "10",
+                "reorder_qty": "0",
+                "lead_time_days": "5",
+                "abc_class": "abc",
+                "fsn_class": "fsn",
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("max_stock", serializer.errors)
 
 
 class CatalogBarcodeLabelTemplateTests(TestCase):

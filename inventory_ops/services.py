@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 
+from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.models import Product, ProductUomConversion, UnitOfMeasure
 from catalog.uom_helpers import resolve_product_uom
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
@@ -293,6 +294,14 @@ def _extract_batch_fields(
             raise ValidationError({"lines": [f"Batch number is required for batch-managed {line_kind} line {line_no}."]})
         if require_expiry and getattr(product, "is_expiry_tracked", False) and not expiry_date:
             raise ValidationError({"lines": [f"Expiry date is required for expiry-tracked {line_kind} line {line_no}."]})
+    elif getattr(product, "is_expiry_tracked", False):
+        if require_expiry and not expiry_date:
+            raise ValidationError({"lines": [f"Expiry date is required for expiry-tracked {line_kind} line {line_no}."]})
+        batch_number = resolve_tracked_lot_number(
+            product=product,
+            batch_number=batch_number,
+            expiry_date=expiry_date,
+        )
     elif batch_number or manufacture_date or expiry_date:
         raise ValidationError({"lines": [f"Batch details are only allowed for batch-managed items on {line_kind} line {line_no}."]})
     return batch_number, manufacture_date, expiry_date

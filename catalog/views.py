@@ -35,7 +35,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from entity.models import Entity, SubEntity
+from entity.models import Entity, Godown, SubEntity
 from financial.models import Ledger
 from assets.models import AssetCategory
 
@@ -92,6 +92,19 @@ class SubentityLiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = SubEntity
         fields = ("id", "subentityname", "is_head_office")
+
+
+class GodownLiteSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Godown
+        fields = ("id", "subentity", "name", "code", "is_default", "display_name")
+
+    def get_display_name(self, obj):
+        if getattr(obj, "subentity_id", None) and getattr(obj.subentity, "subentityname", None):
+            return f"{obj.subentity.subentityname} - {obj.name}"
+        return obj.name
 
 
 # ----------------------------------------------------------------------
@@ -487,7 +500,14 @@ class ProductPageBootstrapAPIView(APIView):
                 "ledger_code",
             )
         )
-        locations = SubEntity.objects.filter(entity_id=entity_id_int).order_by("subentityname", "id")
+        branches = SubEntity.objects.filter(entity_id=entity_id_int).only("id", "subentityname", "is_head_office").order_by("subentityname", "id")
+        godowns = (
+            Godown.objects
+            .filter(entity_id=entity_id_int, is_active=True)
+            .select_related("subentity")
+            .only("id", "subentity_id", "name", "code", "is_default", "subentity__subentityname")
+            .order_by("subentity__subentityname", "name", "id")
+        )
         asset_categories = AssetCategory.objects.filter(entity_id=entity_id_int, is_active=True).order_by("name", "id")
 
         data = {
@@ -520,7 +540,9 @@ class ProductPageBootstrapAPIView(APIView):
                 }
                 for row in accounts
             ],
-            "locations": SubentityLiteSerializer(locations, many=True).data,
+            "branches": SubentityLiteSerializer(branches, many=True).data,
+            "godowns": GodownLiteSerializer(godowns, many=True).data,
+            "locations": SubentityLiteSerializer(branches, many=True).data,
         }
         return Response(data)
 
@@ -902,7 +924,12 @@ class OpeningStockByLocationListCreateAPIView(ProductScopedChildMixin, generics.
     serializer_class = OpeningStockByLocationSerializer
 
     def get_queryset(self):
-        return OpeningStockByLocation.objects.filter(product=self.get_product()).select_related("location").order_by("-as_of_date", "id")
+        return (
+            OpeningStockByLocation.objects
+            .filter(product=self.get_product())
+            .select_related("branch", "godown")
+            .order_by("-as_of_date", "id")
+        )
 
     def perform_create(self, serializer):
         serializer.save(product=self.get_product(), entity=self.get_product().entity)
@@ -913,7 +940,11 @@ class OpeningStockByLocationRUDAPIView(ProductScopedChildMixin, generics.Retriev
     serializer_class = OpeningStockByLocationSerializer
 
     def get_queryset(self):
-        return OpeningStockByLocation.objects.select_related("product", "location").filter(entity_id=self._get_entity_id())
+        return (
+            OpeningStockByLocation.objects
+            .select_related("product", "branch", "godown")
+            .filter(entity_id=self._get_entity_id())
+        )
 
 
 class ProductPriceListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):

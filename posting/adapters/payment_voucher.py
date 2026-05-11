@@ -6,6 +6,7 @@ from typing import Any, Iterable, Optional
 
 from django.db import transaction
 
+from posting.common.journal_descriptions import payment_document_prefix
 from posting.models import TxnType, EntryStatus, Entry
 from posting.services.posting_service import JLInput, PostingService
 
@@ -28,6 +29,7 @@ class PaymentVoucherPostingConfig:
 class PaymentVoucherPostingAdapter:
     @staticmethod
     def _build_journal_lines(*, header: Any, adjustments: Iterable[Any], reverse: bool = False) -> list[JLInput]:
+        prefix = payment_document_prefix(header)
         cash_paid = q2(getattr(header, "cash_paid_amount", ZERO2))
         paid_from_id = int(getattr(header, "paid_from_id", 0) or 0)
         paid_to_id = int(getattr(header, "paid_to_id", 0) or 0)
@@ -57,10 +59,10 @@ class PaymentVoucherPostingAdapter:
 
             if effect == "PLUS":
                 plus_total = q2(plus_total + amt)
-                rows.append(("CR", account_id, ledger_id or None, amt, f"Payment adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("CR", account_id, ledger_id or None, amt, f"{prefix} | Adjustment PLUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             elif effect == "MINUS":
                 minus_total = q2(minus_total + amt)
-                rows.append(("DR", account_id, ledger_id or None, amt, f"Payment adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
+                rows.append(("DR", account_id, ledger_id or None, amt, f"{prefix} | Adjustment MINUS ({getattr(adj, 'adj_type', 'OTHER')})"))
             else:
                 raise ValueError(f"Unsupported settlement_effect '{effect}'.")
 
@@ -75,7 +77,7 @@ class PaymentVoucherPostingAdapter:
             ledger_id=paid_to_ledger_id or None,
             drcr=True,
             amount=vendor_settlement,
-            description=f"Payment voucher {getattr(header, 'voucher_code', '')} vendor settlement",
+            description=f"{prefix} | Vendor settlement",
         ))
         # Cr Cash/Bank (paid_from)
         if cash_paid > ZERO2:
@@ -84,7 +86,7 @@ class PaymentVoucherPostingAdapter:
                 ledger_id=paid_from_ledger_id or None,
                 drcr=False,
                 amount=cash_paid,
-                description=f"Payment voucher {getattr(header, 'voucher_code', '')} cash/bank",
+                description=f"{prefix} | Cash/Bank outflow",
             ))
 
         for side, account_id, ledger_id, amt, desc in rows:
@@ -93,7 +95,7 @@ class PaymentVoucherPostingAdapter:
                 ledger_id=ledger_id,
                 drcr=(side == "DR"),
                 amount=amt,
-                description=f"{getattr(header, 'voucher_code', '')} {desc}",
+                description=desc,
             ))
 
         if reverse:
@@ -128,7 +130,7 @@ class PaymentVoucherPostingAdapter:
             voucher_no=str(getattr(header, "voucher_code", "") or ""),
             voucher_date=getattr(header, "voucher_date", None),
             posting_date=getattr(header, "voucher_date", None),
-            narration=f"Payment Voucher {getattr(header, 'voucher_code', '')}",
+            narration=payment_document_prefix(header),
             jl_inputs=jl_inputs,
             im_inputs=[],
             use_advisory_lock=True,
@@ -151,7 +153,7 @@ class PaymentVoucherPostingAdapter:
             voucher_no=str(getattr(header, "voucher_code", "") or ""),
             voucher_date=getattr(header, "voucher_date", None),
             posting_date=getattr(header, "voucher_date", None),
-            narration=f"Payment Voucher Reversal {getattr(header, 'voucher_code', '')}",
+            narration=f"Reversal | {payment_document_prefix(header)}",
             jl_inputs=jl_inputs,
             im_inputs=[],
             use_advisory_lock=True,

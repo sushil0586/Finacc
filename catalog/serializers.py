@@ -12,7 +12,7 @@
 
 from rest_framework import serializers
 from django.db import transaction
-from entity.models import SubEntity
+from entity.models import Godown, SubEntity
 from financial.models import account
 
 from .models import (
@@ -454,6 +454,9 @@ class ProductUomConversionSerializer(EntityScopedValidationMixin, serializers.Mo
 class OpeningStockByLocationSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     as_of_date = FlexibleDateField(required=False)
+    branch_name = serializers.CharField(source="branch.subentityname", read_only=True)
+    godown_name = serializers.CharField(source="godown.name", read_only=True, allow_null=True)
+    posting_entry_id = serializers.SerializerMethodField()
 
     class Meta:
         model = OpeningStockByLocation
@@ -461,36 +464,78 @@ class OpeningStockByLocationSerializer(EntityScopedValidationMixin, serializers.
             "id",
             "entity",     # derived from product in model.save
             "product",    # parent sets
-            "location",
+            "branch",
+            "branch_name",
+            "godown",
+            "godown_name",
             "openingqty",
             "openingrate",
             "openingvalue",
             "as_of_date",
+            "posting_entry_id",
             "createdon",
             "modifiedon",
         )
         read_only_fields = ("product", "entity", "createdon", "modifiedon")
 
+    def get_posting_entry_id(self, obj):
+        from .services.opening_stock_posting import catalog_opening_stock_txn_id
+
+        txn_id = catalog_opening_stock_txn_id(obj.id)
+        entry = getattr(obj, "_posting_entry", None)
+        if entry is not None:
+            return getattr(entry, "id", None)
+        from posting.models import Entry, TxnType
+
+        return (
+            Entry.objects.filter(
+                entity_id=obj.entity_id,
+                txn_type=TxnType.OPENING_BALANCE,
+                txn_id=txn_id,
+            )
+            .values_list("id", flat=True)
+            .first()
+        )
+
     def validate(self, attrs):
+        from .services.opening_stock_posting import validate_catalog_opening_stock_prerequisites
+
         entity = self._target_entity(attrs)
         product = self.context.get("product") or getattr(self.instance, "product", None)
-        location = attrs.get("location", getattr(self.instance, "location", None))
+        branch = attrs.get("branch", getattr(self.instance, "branch", None))
+        godown = attrs.get("godown", getattr(self.instance, "godown", None))
         as_of_date = attrs.get("as_of_date", getattr(self.instance, "as_of_date", None))
-        self._validate_entity_scoped_fk(field_name="location", obj=location, entity=entity, label="Location")
+        self._validate_entity_scoped_fk(field_name="branch", obj=branch, entity=entity, label="Branch")
+        self._validate_entity_scoped_fk(field_name="godown", obj=godown, entity=entity, label="Location")
 
-        if product and location and as_of_date:
+        if branch is None:
+            raise serializers.ValidationError({"branch": "Branch is required for opening stock."})
+        if godown is None:
+            raise serializers.ValidationError({"godown": "Location is required for opening stock."})
+        if godown and branch and godown.subentity_id not in (None, branch.id):
+            raise serializers.ValidationError({"godown": "Location must belong to the selected branch or be entity-wide."})
+
+        if product and branch and godown and as_of_date:
             duplicate = OpeningStockByLocation.objects.filter(
                 entity=product.entity,
                 product=product,
-                location=location,
+                branch=branch,
+                godown=godown,
                 as_of_date=as_of_date,
             )
             if self.instance:
                 duplicate = duplicate.exclude(pk=self.instance.pk)
             if duplicate.exists():
                 raise serializers.ValidationError({
-                    "as_of_date": "Opening stock already exists for this location and date. Edit the existing row."
+                    "as_of_date": "Opening stock already exists for this branch, location, and date. Edit the existing row."
                 })
+            try:
+                validate_catalog_opening_stock_prerequisites(
+                    entity_id=product.entity_id,
+                    as_of_date=as_of_date,
+                )
+            except ValueError as exc:
+                raise serializers.ValidationError({"as_of_date": str(exc)}) from exc
         return attrs
 
 
@@ -586,6 +631,8 @@ class ProductPriceSerializer(EntityScopedValidationMixin, serializers.ModelSeria
 
 class ProductPlanningSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    abc_class = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
+    fsn_class = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
 
     class Meta:
         model = ProductPlanning
@@ -603,6 +650,50 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
             "modifiedon",
         )
         read_only_fields = ("product", "createdon", "modifiedon")
+
+    def validate(self, attrs):
+        def _normalize_bucket(field_name, allowed, label):
+            raw = attrs.get(field_name, getattr(self.instance, field_name, None))
+            if raw in (None, ""):
+                attrs[field_name] = None if raw in (None, "") else raw
+                return
+            normalized = str(raw).strip().upper()
+            if normalized not in allowed:
+                raise serializers.ValidationError({field_name: f"{label} must be one of {', '.join(sorted(allowed))}."})
+            attrs[field_name] = normalized
+
+        numeric_fields = {
+            "min_stock": "Min stock",
+            "max_stock": "Max stock",
+            "reorder_level": "Reorder level",
+            "reorder_qty": "Reorder quantity",
+        }
+        for field_name, label in numeric_fields.items():
+            value = attrs.get(field_name, getattr(self.instance, field_name, None))
+            if value is not None and value < 0:
+                raise serializers.ValidationError({field_name: f"{label} cannot be negative."})
+
+        lead_time_days = attrs.get("lead_time_days", getattr(self.instance, "lead_time_days", None))
+        if lead_time_days is not None and int(lead_time_days) < 0:
+            raise serializers.ValidationError({"lead_time_days": "Lead time days cannot be negative."})
+
+        min_stock = attrs.get("min_stock", getattr(self.instance, "min_stock", None))
+        max_stock = attrs.get("max_stock", getattr(self.instance, "max_stock", None))
+        reorder_level = attrs.get("reorder_level", getattr(self.instance, "reorder_level", None))
+        reorder_qty = attrs.get("reorder_qty", getattr(self.instance, "reorder_qty", None))
+
+        if min_stock is not None and max_stock is not None and max_stock < min_stock:
+            raise serializers.ValidationError({"max_stock": "Max stock must be greater than or equal to min stock."})
+        if reorder_level is not None and min_stock is not None and reorder_level < min_stock:
+            raise serializers.ValidationError({"reorder_level": "Reorder level cannot be below min stock."})
+        if reorder_level is not None and max_stock is not None and reorder_level > max_stock:
+            raise serializers.ValidationError({"reorder_level": "Reorder level cannot exceed max stock."})
+        if reorder_level is not None and reorder_level > 0 and (reorder_qty is None or reorder_qty <= 0):
+            raise serializers.ValidationError({"reorder_qty": "Reorder quantity must be greater than zero when reorder level is set."})
+
+        _normalize_bucket("abc_class", {"A", "B", "C"}, "ABC class")
+        _normalize_bucket("fsn_class", {"F", "S", "N"}, "FSN class")
+        return attrs
 
 
 class ProductAttributeValueSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
@@ -900,10 +991,14 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
                         })
 
             for idx, row in enumerate(self.initial_data.get("opening_stocks", []) or [], start=1):
-                location_id = row.get("location")
-                if location_id:
-                    location = SubEntity.objects.filter(pk=location_id).first()
-                    self._validate_entity_scoped_fk(field_name="opening_stocks", obj=location, entity=entity, label=f"Opening stock row {idx} location")
+                branch_id = row.get("branch")
+                godown_id = row.get("godown")
+                if branch_id:
+                    branch = SubEntity.objects.filter(pk=branch_id).first()
+                    self._validate_entity_scoped_fk(field_name="opening_stocks", obj=branch, entity=entity, label=f"Opening stock row {idx} branch")
+                if godown_id:
+                    godown = Godown.objects.filter(pk=godown_id).first()
+                    self._validate_entity_scoped_fk(field_name="opening_stocks", obj=godown, entity=entity, label=f"Opening stock row {idx} location")
 
             for idx, row in enumerate(self.initial_data.get("prices", []) or [], start=1):
                 pricelist_id = row.get("pricelist")

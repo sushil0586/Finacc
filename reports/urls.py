@@ -79,6 +79,11 @@ from reports.api.book_views import (
     DaybookExcelAPIView,
     DaybookExcelLandscapeAPIView,
     DaybookExcelPortraitAPIView,
+    PostingDocumentLookupAPIView,
+    PostingDetailCSVAPIView,
+    PostingDetailExcelAPIView,
+    PostingDetailPDFAPIView,
+    PostingDetailPrintAPIView,
     DaybookPDFAPIView,
     DaybookPDFLandscapeAPIView,
     DaybookPDFPortraitAPIView,
@@ -87,6 +92,7 @@ from reports.api.book_views import (
 from reports.api.controls_views import PhaseOneControlsHubAPIView, PhaseOneOpeningGenerateAPIView, PhaseOneOpeningPolicyAPIView, PhaseOneOpeningPreviewAPIView
 from reports.api.controls_views import PhaseOnePostingSetupApplyAPIView, PhaseOnePostingSetupPreviewAPIView
 from reports.api.controls_close_views import YearEndCloseExecuteAPIView, YearEndClosePreviewAPIView
+from reports.api.financial_hub_settings_view import FinancialHubSettingsAPIView
 from reports.api.purchase_register_view import (
     PurchaseRegisterAPIView,
     PurchaseRegisterCSVAPIView,
@@ -288,6 +294,11 @@ urlpatterns = [
     path("financial/daybook/csv/", DaybookCSVAPIView.as_view(), name="financial-daybook-csv"),
     path("financial/daybook/print/", DaybookPrintAPIView.as_view(), name="financial-daybook-print"),
     path("financial/daybook/<int:entry_id>/", DaybookEntryDetailAPIView.as_view(), name="financial-daybook-detail"),
+    path("financial/posting-lookup/", PostingDocumentLookupAPIView.as_view(), name="financial-posting-lookup"),
+    path("financial/posting-detail/<int:entry_id>/excel/", PostingDetailExcelAPIView.as_view(), name="financial-posting-detail-excel"),
+    path("financial/posting-detail/<int:entry_id>/pdf/", PostingDetailPDFAPIView.as_view(), name="financial-posting-detail-pdf"),
+    path("financial/posting-detail/<int:entry_id>/csv/", PostingDetailCSVAPIView.as_view(), name="financial-posting-detail-csv"),
+    path("financial/posting-detail/<int:entry_id>/print/", PostingDetailPrintAPIView.as_view(), name="financial-posting-detail-print"),
     path("financial/cashbook/", CashbookAPIView.as_view(), name="financial-cashbook"),
     path("financial/cashbook/excel/", CashbookExcelAPIView.as_view(), name="financial-cashbook-excel"),
     path("financial/cashbook/excel/landscape/", CashbookExcelLandscapeAPIView.as_view(), name="financial-cashbook-excel-landscape"),
@@ -410,6 +421,7 @@ urlpatterns = [
     path("financial/trial-balance/pdf/", TrialBalancePDFAPIView.as_view(), name="financial-trial-balance-pdf"),
     path("financial/trial-balance/csv/", TrialBalanceCSVAPIView.as_view(), name="financial-trial-balance-csv"),
     path("financial/trial-balance/print/", TrialBalancePrintAPIView.as_view(), name="financial-trial-balance-print"),
+    path("financial/settings/financial-hub/", FinancialHubSettingsAPIView.as_view(), name="financial-hub-settings"),
     path("financial/ledger-book/", LedgerBookAPIView.as_view(), name="financial-ledger-book"),
     path("financial/ledger-book/excel/", LedgerBookExcelAPIView.as_view(), name="financial-ledger-book-excel"),
     path("financial/ledger-book/pdf/", LedgerBookPDFAPIView.as_view(), name="financial-ledger-book-pdf"),

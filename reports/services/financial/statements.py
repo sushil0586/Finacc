@@ -859,7 +859,68 @@ def build_profit_and_loss(
         },
     }
 
-    if period_by and from_date and to_date and from_date <= to_date:
+    if period_by == "year":
+        previous_fy = _previous_financial_year(entity_id, entityfin_id, from_date)
+        if previous_fy and previous_fy.finstartyear and previous_fy.finendyear:
+            previous_start = previous_fy.finstartyear.date() if hasattr(previous_fy.finstartyear, "date") else previous_fy.finstartyear
+            previous_end = previous_fy.finendyear.date() if hasattr(previous_fy.finendyear, "date") else previous_fy.finendyear
+            period_snapshot = _build_profit_loss_snapshot(
+                entity_id=entity_id,
+                entityfin_id=previous_fy.id,
+                subentity_id=subentity_id,
+                from_date=previous_start,
+                to_date=previous_end,
+                group_by=group_by,
+                include_zero_balances=include_zero_balances and not hide_zero_rows,
+                search=search,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                page=1,
+                page_size=page_size,
+                stock_valuation_mode=stock_valuation_mode,
+                stock_valuation_method=stock_valuation_method,
+                posted_only=posted_only,
+                ledger_ids=ledger_ids,
+                view_type=view_type,
+                include_pagination=False,
+                reporting_policy=reporting_policy,
+            )
+            period_snapshot["period_key"] = str(previous_fy.year_code or previous_fy.desc or "previous_fy")
+            period_snapshot["period_label"] = str(previous_fy.desc or previous_fy.year_code or "Previous FY")
+            period_meta = [
+                {
+                    "period_key": period_snapshot["period_key"],
+                    "period_label": period_snapshot["period_label"],
+                }
+            ]
+            income_period_maps = [
+                _build_profit_loss_period_map(
+                    period_snapshot["income"],
+                    group_by,
+                    period_snapshot["period_key"],
+                    period_snapshot["period_label"],
+                )
+            ]
+            expense_period_maps = [
+                _build_profit_loss_period_map(
+                    period_snapshot["expenses"],
+                    group_by,
+                    period_snapshot["period_key"],
+                    period_snapshot["period_label"],
+                )
+            ]
+            _attach_profit_loss_period_rows(snapshot["income"], income_period_maps, period_meta, group_by)
+            _attach_profit_loss_period_rows(snapshot["expenses"], expense_period_maps, period_meta, group_by)
+            response["periods"] = [period_snapshot]
+        else:
+            response["periods"] = [
+                {
+                    "period_key": "previous_financial_year",
+                    "period_label": "N/A",
+                    "unavailable": True,
+                }
+            ]
+    elif period_by and from_date and to_date and from_date <= to_date:
         periods = []
         period_meta = []
         income_period_maps = []
@@ -887,18 +948,10 @@ def build_profit_and_loss(
                 reporting_policy=reporting_policy,
             )
             period_snapshot["period_key"] = (
-                f"Q{index}"
-                if period_by == "quarter"
-                else period_end.strftime("%Y")
-                if period_by == "year"
-                else period_end.strftime("%Y-%m")
+                f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y-%m")
             )
             period_snapshot["period_label"] = (
-                f"Q{index}"
-                if period_by == "quarter"
-                else period_end.strftime("%Y")
-                if period_by == "year"
-                else period_end.strftime("%b %Y")
+                f"Q{index}" if period_by == "quarter" else period_end.strftime("%b %Y")
             )
             period_meta.append(
                 {
@@ -1652,18 +1705,10 @@ def build_balance_sheet(
                 reporting_policy=reporting_policy,
             )
             period_snapshot["period_key"] = (
-                f"Q{index}"
-                if period_by == "quarter"
-                else period_end.strftime("%Y")
-                if period_by == "year"
-                else period_end.strftime("%Y-%m")
+                f"Q{index}" if period_by == "quarter" else period_end.strftime("%Y-%m")
             )
             period_snapshot["period_label"] = (
-                f"Q{index}"
-                if period_by == "quarter"
-                else period_end.strftime("%Y")
-                if period_by == "year"
-                else period_end.strftime("%b %Y")
+                f"Q{index}" if period_by == "quarter" else period_end.strftime("%b %Y")
             )
             period_meta.append(
                 {

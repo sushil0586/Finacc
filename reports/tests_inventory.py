@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -482,6 +482,144 @@ class InventoryReportAPITests(APITestCase):
         )
         flour_row = next(row for row in report['rows'] if row['product_name'] == 'Flour')
         self.assertEqual(flour_row['closing_qty'], '750.0000')
+
+    def test_inventory_stock_summary_handles_expiry_only_internal_lots(self):
+        yogurt = Product.objects.create(
+            entity=self.entity,
+            productname='Yogurt',
+            sku='YG-001',
+            productdesc='Expiry tracked yogurt',
+            productcategory=self.category,
+            base_uom=self.uom,
+            is_service=False,
+            is_batch_managed=False,
+            is_expiry_tracked=True,
+            shelf_life_days=30,
+            expiry_warning_days=7,
+        )
+
+        purchase_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=3001,
+            voucher_no='PUR-3001',
+            created_by=self.user,
+            is_active=True,
+        )
+        purchase_entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=3001,
+            voucher_no='PUR-3001',
+            voucher_date='2025-04-12',
+            posting_date='2025-04-12',
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=purchase_batch,
+            narration='Purchase of yogurt',
+            created_by=self.user,
+        )
+        InventoryMove.objects.create(
+            entry=purchase_entry,
+            posting_batch=purchase_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=3001,
+            detail_id=1,
+            voucher_no='PUR-3001',
+            product=yogurt,
+            batch_number=f'EXP-{yogurt.id}-20260520',
+            expiry_date=date(2026, 5, 20),
+            location=self.godown,
+            destination_location=self.godown,
+            uom=self.uom,
+            base_uom=self.uom,
+            qty=Decimal('8.0000'),
+            uom_factor=Decimal('1'),
+            base_qty=Decimal('8.0000'),
+            unit_cost=Decimal('25.0000'),
+            ext_cost=Decimal('200.00'),
+            cost_source=InventoryMove.CostSource.PURCHASE,
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            movement_reason='purchase',
+            posting_date='2025-04-12',
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        sales_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=3002,
+            voucher_no='SAL-3002',
+            created_by=self.user,
+            is_active=True,
+        )
+        sales_entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=3002,
+            voucher_no='SAL-3002',
+            voucher_date='2025-04-15',
+            posting_date='2025-04-15',
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=sales_batch,
+            narration='Sale of yogurt',
+            created_by=self.user,
+        )
+        InventoryMove.objects.create(
+            entry=sales_entry,
+            posting_batch=sales_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=3002,
+            detail_id=1,
+            voucher_no='SAL-3002',
+            product=yogurt,
+            batch_number=f'EXP-{yogurt.id}-20260520',
+            expiry_date=date(2026, 5, 20),
+            location=self.godown,
+            source_location=self.godown,
+            uom=self.uom,
+            base_uom=self.uom,
+            qty=Decimal('3.0000'),
+            uom_factor=Decimal('1'),
+            base_qty=Decimal('3.0000'),
+            unit_cost=Decimal('25.0000'),
+            ext_cost=Decimal('75.00'),
+            cost_source=InventoryMove.CostSource.FIFO,
+            move_type=InventoryMove.MoveType.OUT,
+            movement_nature=InventoryMove.MovementNature.SALE,
+            movement_reason='sale',
+            posting_date='2025-04-15',
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        report = build_inventory_stock_summary(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date='2025-04-30',
+        )
+        yogurt_row = next(row for row in report['rows'] if row['product_name'] == 'Yogurt')
+        self.assertEqual(yogurt_row['closing_qty'], '5.0000')
 
     def test_inventory_stock_summary_export_routes_return_files(self):
         excel = self.client.get(reverse('reports_api:inventory-stock-summary-excel'), self._scope())

@@ -30,6 +30,11 @@ class FinancialReportScopeSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+    presentation = serializers.ChoiceField(
+        choices=("standard", "statement"),
+        required=False,
+        allow_null=True,
+    )
     scope_mode = serializers.ChoiceField(
         choices=("financial_year", "month", "quarter", "year", "custom", "as_of"),
         required=False,
@@ -115,6 +120,8 @@ class FinancialReportScopeSerializer(serializers.Serializer):
             attrs["posted_only"] = True
         if "view_type" not in attrs or attrs.get("view_type") is None:
             attrs["view_type"] = "summary"
+        if "presentation" not in attrs or attrs.get("presentation") is None:
+            attrs["presentation"] = "standard"
 
         if "include_opening" not in attrs:
             attrs["include_opening"] = True

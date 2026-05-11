@@ -22,6 +22,7 @@ from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails, account
 from financial.profile_access import account_gstno, account_partytype, account_region_state
 from catalog.models import Product
+from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from sales.services.profile_resolvers import entity_primary_gstin, entity_primary_state
@@ -334,14 +335,19 @@ class SalesInvoiceService:
                 continue
 
             is_batch_managed = bool(getattr(product, "is_batch_managed", False))
-            if not (is_batch_managed or require_batch_for_sales):
+            is_expiry_tracked = bool(getattr(product, "is_expiry_tracked", False))
+            if not (is_batch_managed or is_expiry_tracked or require_batch_for_sales):
                 continue
 
             issue_qty = cls._stock_issue_qty(line, product=product)
             if issue_qty <= ZERO4:
                 continue
 
-            batch_number = cls._normalize_batch_number(getattr(line, "batch_number", ""))
+            batch_number = resolve_tracked_lot_number(
+                product=product,
+                batch_number=getattr(line, "batch_number", ""),
+                expiry_date=getattr(line, "expiry_date", None),
+            )
             expiry_date = getattr(line, "expiry_date", None)
             line_no = int(getattr(line, "line_no", 0) or 0) or 0
 
