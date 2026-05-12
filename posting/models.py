@@ -39,6 +39,7 @@ class TxnType(models.TextChoices):
     RECEIPT = "RV", "Receipt Voucher"
     PAYMENT = "PV", "Payment Voucher"
     OPENING_BALANCE = "OB", "Opening Balance"
+    YEAR_END_CLOSE = "YEC", "Year-End Close"
 
 
 class EntryStatus(models.IntegerChoices):

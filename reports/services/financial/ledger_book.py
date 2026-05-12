@@ -36,6 +36,7 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
         TxnType.PURCHASE_DEBIT_NOTE: ("purchase", "purchase_invoice", "purchase_invoice_detail"),
         TxnType.PURCHASE_RETURN: ("purchase", "purchase_invoice", "purchase_invoice_detail"),
         TxnType.JOURNAL: ("vouchers", "voucher", "voucher_detail"),
+        TxnType.YEAR_END_CLOSE: ("controls", "year_end_close", "journal_entry_detail"),
         TxnType.JOURNAL_CASH: ("vouchers", "voucher", "voucher_detail"),
         TxnType.JOURNAL_BANK: ("vouchers", "voucher", "voucher_detail"),
         TxnType.RECEIPT: ("receipts", "receipt_voucher", "receipt_voucher_detail"),

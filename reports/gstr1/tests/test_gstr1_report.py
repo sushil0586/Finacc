@@ -554,6 +554,370 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(Decimal(str(row["gst_rate"])), Decimal("18.00"))
         self.assertEqual(Decimal(str(row["reported_cess_amount"])), Decimal("2280.00"))
 
+    def test_table_4_splits_mixed_rate_invoice_into_multiple_rows(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="MIXED-001",
+            taxable="20500.00",
+            cgst="1812.50",
+            sgst="1812.50",
+            grand_total="24125.00",
+            hsn_code="7203",
+        )
+        invoice.tax_summaries.all().delete()
+        SalesTaxSummary.objects.bulk_create(
+            [
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=invoice,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=False,
+                    gst_rate=Decimal("18.00"),
+                    taxable_value=Decimal("20000.00"),
+                    cgst_amount=Decimal("1800.00"),
+                    sgst_amount=Decimal("1800.00"),
+                    igst_amount=Decimal("0.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=invoice,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=True,
+                    gst_rate=Decimal("5.00"),
+                    taxable_value=Decimal("500.00"),
+                    cgst_amount=Decimal("12.50"),
+                    sgst_amount=Decimal("12.50"),
+                    igst_amount=Decimal("0.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+            ]
+        )
+
+        response = self.client.get(self.table_url("TABLE_4"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        invoice_rows = [r for r in payload["rows"] if r["invoice_id"] == invoice.id]
+        self.assertEqual(len(invoice_rows), 2)
+        self.assertEqual(
+            sorted(Decimal(str(row["gst_rate"])) for row in invoice_rows),
+            [Decimal("5.00"), Decimal("18.00")],
+        )
+        by_rate = {Decimal(str(row["gst_rate"])): row for row in invoice_rows}
+        self.assertEqual(Decimal(str(by_rate[Decimal("5.00")]["taxable_amount"])), Decimal("500.00"))
+        self.assertEqual(Decimal(str(by_rate[Decimal("18.00")]["taxable_amount"])), Decimal("20000.00"))
+        self.assertTrue(all(Decimal(str(row["grand_total"])) == Decimal("24125.00") for row in invoice_rows))
+
+    def _assert_mixed_rate_rows(
+        self,
+        *,
+        table_code: str,
+        rows: list[dict],
+        key_name: str,
+        key_value: int,
+        taxable_field: str,
+        grand_total_field: str,
+        expected_grand_total: str,
+        expected_taxable_by_rate: dict[Decimal, Decimal] | None = None,
+    ) -> None:
+        matching_rows = [row for row in rows if row[key_name] == key_value]
+        self.assertEqual(len(matching_rows), 2)
+        self.assertEqual(
+            sorted(Decimal(str(row["gst_rate"])) for row in matching_rows),
+            [Decimal("5.00"), Decimal("18.00")],
+            msg=f"{table_code} should expose one row per GST bucket",
+        )
+        by_rate = {Decimal(str(row["gst_rate"])): row for row in matching_rows}
+        expected_taxable_by_rate = expected_taxable_by_rate or {
+            Decimal("5.00"): Decimal("500.00"),
+            Decimal("18.00"): Decimal("20000.00"),
+        }
+        for rate, expected_taxable in expected_taxable_by_rate.items():
+            self.assertEqual(Decimal(str(by_rate[rate][taxable_field])), expected_taxable)
+        self.assertTrue(
+            all(Decimal(str(row[grand_total_field])) == Decimal(expected_grand_total) for row in matching_rows)
+        )
+
+    def test_table_5_splits_mixed_rate_invoice_into_multiple_rows(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="B2CL-MIXED-001",
+            taxable="300500.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="54025.00",
+            grand_total="354525.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+        )
+        invoice.tax_summaries.all().delete()
+        SalesTaxSummary.objects.bulk_create(
+            [
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=invoice,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=False,
+                    gst_rate=Decimal("18.00"),
+                    taxable_value=Decimal("300000.00"),
+                    cgst_amount=Decimal("0.00"),
+                    sgst_amount=Decimal("0.00"),
+                    igst_amount=Decimal("54000.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=invoice,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=True,
+                    gst_rate=Decimal("5.00"),
+                    taxable_value=Decimal("500.00"),
+                    cgst_amount=Decimal("0.00"),
+                    sgst_amount=Decimal("0.00"),
+                    igst_amount=Decimal("25.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+            ]
+        )
+
+        response = self.client.get(self.table_url("TABLE_5"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self._assert_mixed_rate_rows(
+            table_code="TABLE_5",
+            rows=payload["rows"],
+            key_name="invoice_id",
+            key_value=invoice.id,
+            taxable_field="taxable_amount",
+            grand_total_field="grand_total",
+            expected_grand_total="354525.00",
+            expected_taxable_by_rate={
+                Decimal("5.00"): Decimal("500.00"),
+                Decimal("18.00"): Decimal("300000.00"),
+            },
+        )
+
+    def test_table_6_splits_mixed_rate_invoice_into_multiple_rows(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="EXP-MIXED-001",
+            taxable="20500.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="3625.00",
+            grand_total="24125.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="96",
+        )
+        invoice.tax_summaries.all().delete()
+        SalesTaxSummary.objects.bulk_create(
+            [
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=invoice,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=False,
+                    gst_rate=Decimal("18.00"),
+                    taxable_value=Decimal("20000.00"),
+                    cgst_amount=Decimal("0.00"),
+                    sgst_amount=Decimal("0.00"),
+                    igst_amount=Decimal("3600.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=invoice,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="9983",
+                    is_service=True,
+                    gst_rate=Decimal("5.00"),
+                    taxable_value=Decimal("500.00"),
+                    cgst_amount=Decimal("0.00"),
+                    sgst_amount=Decimal("0.00"),
+                    igst_amount=Decimal("25.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+            ]
+        )
+
+        response = self.client.get(self.table_url("TABLE_6"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self._assert_mixed_rate_rows(
+            table_code="TABLE_6",
+            rows=payload["rows"],
+            key_name="invoice_id",
+            key_value=invoice.id,
+            taxable_field="taxable_amount",
+            grand_total_field="grand_total",
+            expected_grand_total="24125.00",
+        )
+
+    def test_table_9_splits_mixed_rate_note_into_multiple_rows(self):
+        original = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="ORIG-MIXED-001",
+            taxable="20500.00",
+            cgst="1812.50",
+            sgst="1812.50",
+            grand_total="24125.00",
+        )
+        note = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="NOTE-MIXED-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=original,
+            taxable="20500.00",
+            cgst="1812.50",
+            sgst="1812.50",
+            grand_total="24125.00",
+        )
+        note.tax_summaries.all().delete()
+        SalesTaxSummary.objects.bulk_create(
+            [
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=note,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=False,
+                    gst_rate=Decimal("18.00"),
+                    taxable_value=Decimal("20000.00"),
+                    cgst_amount=Decimal("1800.00"),
+                    sgst_amount=Decimal("1800.00"),
+                    igst_amount=Decimal("0.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=note,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="9983",
+                    is_service=True,
+                    gst_rate=Decimal("5.00"),
+                    taxable_value=Decimal("500.00"),
+                    cgst_amount=Decimal("12.50"),
+                    sgst_amount=Decimal("12.50"),
+                    igst_amount=Decimal("0.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+            ]
+        )
+
+        response = self.client.get(self.table_url("TABLE_9"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self._assert_mixed_rate_rows(
+            table_code="TABLE_9",
+            rows=payload["rows"],
+            key_name="note_id",
+            key_value=note.id,
+            taxable_field="taxable_amount",
+            grand_total_field="grand_total",
+            expected_grand_total="24125.00",
+        )
+
+    def test_table_10_splits_mixed_rate_note_into_multiple_rows(self):
+        original = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="ORIG-CDNUR-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            customer_gstin="",
+            place_of_supply="29",
+            taxable="20500.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="3625.00",
+            grand_total="24125.00",
+        )
+        note = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="CDNUR-MIXED-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=original,
+            customer_gstin="",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+            taxable="20500.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="3625.00",
+            grand_total="24125.00",
+        )
+        note.tax_summaries.all().delete()
+        SalesTaxSummary.objects.bulk_create(
+            [
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=note,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="7203",
+                    is_service=False,
+                    gst_rate=Decimal("18.00"),
+                    taxable_value=Decimal("20000.00"),
+                    cgst_amount=Decimal("0.00"),
+                    sgst_amount=Decimal("0.00"),
+                    igst_amount=Decimal("3600.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+                SalesTaxSummary(
+                    entity=self.entity,
+                    entityfinid=self.entityfin,
+                    subentity=self.subentity,
+                    header=note,
+                    taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+                    hsn_sac_code="9983",
+                    is_service=True,
+                    gst_rate=Decimal("5.00"),
+                    taxable_value=Decimal("500.00"),
+                    cgst_amount=Decimal("0.00"),
+                    sgst_amount=Decimal("0.00"),
+                    igst_amount=Decimal("25.00"),
+                    cess_amount=Decimal("0.00"),
+                ),
+            ]
+        )
+
+        response = self.client.get(self.table_url("TABLE_10"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self._assert_mixed_rate_rows(
+            table_code="TABLE_10",
+            rows=payload["rows"],
+            key_name="note_id",
+            key_value=note.id,
+            taxable_field="taxable_amount",
+            grand_total_field="grand_total",
+            expected_grand_total="24125.00",
+        )
+
     def test_table_endpoints_5_7_10(self):
         b2cl = self._create_sales_document(
             customer=self.customer_beta,

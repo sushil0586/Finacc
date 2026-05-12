@@ -6,7 +6,7 @@ from datetime import datetime
 from django.test import SimpleTestCase
 from unittest.mock import patch
 
-from reports.services.controls.opening_generation import build_opening_generation
+from reports.services.controls.opening_generation import build_opening_generation, build_opening_generation_rollback
 
 
 class OpeningGenerationTests(SimpleTestCase):
@@ -23,6 +23,7 @@ class OpeningGenerationTests(SimpleTestCase):
                 self.period_status = "closed"
                 self.is_year_closed = True
                 self.is_audit_closed = False
+                self.isactive = True
                 self.metadata = {}
                 self.saved_fields = None
 
@@ -44,6 +45,7 @@ class OpeningGenerationTests(SimpleTestCase):
                 self.period_status = "open"
                 self.is_year_closed = False
                 self.is_audit_closed = False
+                self.isactive = False
                 self.metadata = {}
                 self.saved_fields = None
 
@@ -55,21 +57,27 @@ class OpeningGenerationTests(SimpleTestCase):
     @patch("reports.services.controls.opening_generation.timezone.now")
     @patch("reports.services.controls.opening_generation.PostingService")
     @patch("reports.services.controls.opening_generation._resolve_destination_fy")
+    @patch("reports.services.controls.opening_generation.StaticAccountService.get_account_id")
     @patch("reports.services.controls.opening_generation.StaticAccountService.get_ledger_id")
     @patch("reports.services.controls.opening_generation.resolve_opening_policy")
     @patch("reports.services.controls.opening_generation._compute_snapshot")
     @patch("reports.services.controls.opening_generation.build_opening_preview")
     @patch("reports.services.controls.opening_generation.YearOpeningPostingAdapter.build_context")
     @patch("reports.services.controls.opening_generation.EntityFinancialYear.objects.select_for_update")
+    @patch("reports.services.controls.opening_generation.EntityFinancialYear.objects.filter")
+    @patch("reports.services.controls.opening_generation._activate_financial_years")
     @patch("reports.services.controls.opening_generation.transaction.atomic", return_value=contextlib.nullcontext())
     def test_opening_generation_posts_carry_forward_and_stamps_history(
         self,
         _mock_atomic,
+        mock_activate_financial_years,
+        mock_entity_fy_filter,
         mock_select_for_update,
         mock_build_context,
         mock_preview,
         mock_snapshot,
         mock_policy,
+        mock_account_ids,
         mock_ledgers,
         mock_destination,
         mock_posting_service_cls,
@@ -127,9 +135,11 @@ class OpeningGenerationTests(SimpleTestCase):
             "reset": {"trading": True, "profit_loss": True},
             "grouped_sections": ["assets", "liabilities", "stock", "equity"],
         }
+        mock_account_ids.side_effect = [6200, 9000]
         mock_ledgers.side_effect = [6200, 9000]
         mock_destination.return_value = destination_fy
         mock_now.return_value = datetime(2026, 4, 15, 12, 0, 0)
+        mock_entity_fy_filter.return_value.order_by.return_value.values_list.return_value = [51]
 
         class DummyQuerySet:
             def __init__(self):
@@ -164,25 +174,34 @@ class OpeningGenerationTests(SimpleTestCase):
         self.assertEqual(payload["entityfin_id"], 52)
         self.assertIsNotNone(payload["opening_history"])
         self.assertEqual(payload["opening_history"]["batch"]["voucher_no"], "OB-FY2027-28")
+        self.assertEqual(payload["opening_history"]["active_year_transition"]["before_generation"], [51])
+        self.assertEqual(payload["opening_history"]["active_year_transition"]["after_generation"], 52)
         self.assertEqual(destination_fy.metadata["opening_carry_forward"]["status"], "generated")
         self.assertEqual(destination_fy.saved_fields, ["metadata"])
+        mock_activate_financial_years.assert_called_once_with(58, [52])
         self.assertTrue(posting_service.post.called)
 
     @patch("reports.services.controls.opening_generation.timezone.now")
     @patch("reports.services.controls.opening_generation.PostingService")
     @patch("reports.services.controls.opening_generation._resolve_destination_fy")
+    @patch("reports.services.controls.opening_generation.StaticAccountService.get_account_id")
     @patch("reports.services.controls.opening_generation.resolve_opening_policy")
     @patch("reports.services.controls.opening_generation._compute_snapshot")
     @patch("reports.services.controls.opening_generation.build_opening_preview")
     @patch("reports.services.controls.opening_generation.EntityFinancialYear.objects.select_for_update")
+    @patch("reports.services.controls.opening_generation.EntityFinancialYear.objects.filter")
+    @patch("reports.services.controls.opening_generation._activate_financial_years")
     @patch("reports.services.controls.opening_generation.transaction.atomic", return_value=contextlib.nullcontext())
     def test_opening_generation_splits_equity_lines_for_partnership(
         self,
         _mock_atomic,
+        _mock_activate_financial_years,
+        mock_entity_fy_filter,
         mock_select_for_update,
         mock_preview,
         mock_snapshot,
         mock_policy,
+        mock_account_ids,
         mock_destination,
         mock_posting_service_cls,
         mock_now,
@@ -221,8 +240,10 @@ class OpeningGenerationTests(SimpleTestCase):
             "reset": {"trading": True, "profit_loss": True},
             "grouped_sections": ["assets", "liabilities", "stock", "equity"],
         }
+        mock_account_ids.side_effect = [7101, 7102]
         mock_destination.return_value = destination_fy
         mock_now.return_value = datetime(2026, 4, 15, 12, 0, 0)
+        mock_entity_fy_filter.return_value.order_by.return_value.values_list.return_value = [51]
 
         class DummyQuerySet:
             def __init__(self):
@@ -309,3 +330,66 @@ class OpeningGenerationTests(SimpleTestCase):
         equity_ledger_ids = [item.ledger_id for item in jl_inputs if item.accounthead_id is None]
         self.assertIn(7101, equity_ledger_ids)
         self.assertIn(7102, equity_ledger_ids)
+
+    @patch("reports.services.controls.opening_generation.transaction.atomic", return_value=contextlib.nullcontext())
+    @patch("reports.services.controls.opening_generation.Entry.objects.filter")
+    @patch("reports.services.controls.opening_generation.purge_posting_locator")
+    @patch("reports.services.controls.opening_generation.EntityFinancialYear.objects.select_for_update")
+    @patch("reports.services.controls.opening_generation._activate_financial_years")
+    @patch("reports.services.controls.opening_generation._compute_snapshot")
+    @patch("reports.services.controls.opening_generation.build_opening_preview")
+    def test_opening_generation_rollback_clears_history_and_may_delete_destination_year(
+        self,
+        mock_preview,
+        mock_snapshot,
+        mock_activate_financial_years,
+        mock_select_for_update,
+        mock_purge_posting_locator,
+        mock_entry_filter,
+        _mock_atomic,
+    ):
+        source_fy = self._source_year()
+        destination_fy = self._destination_year()
+        destination_fy.metadata = {
+            "opening_carry_forward": {
+                "source_year": {"id": 51, "name": "FY 2026-27"},
+                "destination_year": {"id": 52, "name": "FY 2027-28", "was_auto_created": True},
+                "batch": {"voucher_no": "OB-FY2027-28"},
+                "active_year_transition": {"before_generation": [51], "after_generation": 52},
+            }
+        }
+        destination_fy.deleted = False
+
+        def _delete():
+            destination_fy.deleted = True
+
+        destination_fy.delete = _delete
+
+        mock_preview.return_value = {
+            "opening_history": destination_fy.metadata["opening_carry_forward"],
+            "destination_year": {"id": 52, "name": "FY 2027-28"},
+        }
+        mock_snapshot.return_value = {"financial_year": source_fy}
+
+        class DummyQuerySet:
+            def __init__(self, source, destination):
+                self.source = source
+                self.destination = destination
+                self._kwargs = {}
+
+            def filter(self, **kwargs):
+                self._kwargs = kwargs
+                return self
+
+            def first(self):
+                return self.destination if self._kwargs.get("pk") == self.destination.pk else self.source
+
+        mock_select_for_update.return_value = DummyQuerySet(source_fy, destination_fy)
+        mock_purge_posting_locator.return_value = {"entries_deleted": 1, "journal_lines_deleted": 4}
+        mock_entry_filter.return_value.count.return_value = 0
+
+        payload = build_opening_generation_rollback(entity_id=58, entityfin_id=51, subentity_id=17, executed_by=None)
+
+        self.assertEqual(payload["status"], "success")
+        mock_activate_financial_years.assert_called_once_with(58, [51])
+        self.assertTrue(destination_fy.deleted)

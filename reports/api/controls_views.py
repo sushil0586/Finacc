@@ -9,7 +9,7 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from reports.services.controls.phase_one import build_phase_one_controls_hub
 from reports.services.controls.opening_setup import apply_posting_setup, build_posting_setup_preview
-from reports.services.controls.opening_generation import build_opening_generation
+from reports.services.controls.opening_generation import build_opening_generation, build_opening_generation_rollback
 from reports.services.controls.opening_policy import resolve_opening_policy, summarize_opening_policy, update_opening_policy
 from reports.services.controls.opening_preview import build_opening_preview
 
@@ -155,6 +155,32 @@ class PhaseOneOpeningGenerateAPIView(ScopedEntitlementMixin, APIView):
         )
         return Response(
             build_opening_generation(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                executed_by=getattr(request, "user", None),
+            )
+        )
+
+
+class PhaseOneOpeningRollbackAPIView(ScopedEntitlementMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = OpeningGenerationSerializer
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        self.enforce_scope(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
+        return Response(
+            build_opening_generation_rollback(
                 entity_id=scope["entity"],
                 entityfin_id=scope.get("entityfinid"),
                 subentity_id=scope.get("subentity"),

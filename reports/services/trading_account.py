@@ -473,6 +473,7 @@ def _aggregate_journal(
     subentity_id=None,
     posted_only=True,
     ledger_ids: Optional[List[int]] = None,
+    search: Optional[str] = None,
 ):
     """
     Aggregate JournalLine by requested level (head|account|product|voucher).
@@ -517,6 +518,15 @@ def _aggregate_journal(
 
     if ledger_ids:
         jl_base = jl_base.filter(resolved_account_id__in=ledger_ids)
+
+    query = str(search or "").strip()
+    if query:
+        jl_base = jl_base.filter(
+            Q(resolved_head_name__icontains=query)
+            | Q(resolved_account_name__icontains=query)
+            | Q(txn_type__icontains=query)
+            | Q(voucher_no__icontains=query)
+        )
 
     common_fields = [
         'resolved_head_id',
@@ -636,6 +646,7 @@ def build_trading_account_dynamic(
     view_type: str = "summary",
     account_group: str | None = None,
     ledger_ids: Optional[List[int]] = None,
+    search: Optional[str] = None,
     valuation_method: str = "fifo",      # fifo | lifo | mwa | wac | latest
     detailsingroup_values=(1,),          # which accounthead groups count as "Trading"
     level='head',                        # head | account | product | voucher
@@ -670,6 +681,7 @@ def build_trading_account_dynamic(
         subentity_id=subentity_id,
         posted_only=posted_only,
         ledger_ids=ledger_ids,
+        search=search,
     )
 
     # 2) Inventory valuation (opening/closing/COGS by strategy)
@@ -767,6 +779,7 @@ def build_trading_account_dynamic(
             "hide_zero_rows": bool(hide_zero_rows),
             "account_group": account_group,
             "ledger_ids": list(ledger_ids) if ledger_ids else None,
+            "search": search,
             "inventory_breakdown": bool(inventory_breakdown),
             "inventory_include_zero": bool(inventory_include_zero),
             "inventory_product_ids": list(inventory_product_ids) if inventory_product_ids else None,
@@ -809,6 +822,7 @@ def build_trading_account_dynamic(
                 view_type=view_type,
                 account_group=account_group,
                 ledger_ids=ledger_ids,
+                search=search,
                 valuation_method=valuation_method,
                 detailsingroup_values=detailsingroup_values,
                 level=level,
@@ -838,6 +852,7 @@ def build_trading_account_dynamic(
                 view_type=view_type,
                 account_group=account_group,
                 ledger_ids=ledger_ids,
+                search=search,
                 valuation_method=valuation_method,
                 detailsingroup_values=detailsingroup_values,
                 level=level,

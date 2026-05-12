@@ -12,6 +12,7 @@ FINANCIAL_REPORTING_POLICY_DEFAULTS: dict[str, Any] = {
         "featured_reports": [
             "trial_balance",
             "ledger_book",
+            "ledger_summary",
             "profit_loss",
             "balance_sheet",
             "trading_account",
@@ -21,6 +22,7 @@ FINANCIAL_REPORTING_POLICY_DEFAULTS: dict[str, Any] = {
         "enabled_reports": [
             "trial_balance",
             "ledger_book",
+            "ledger_summary",
             "profit_loss",
             "balance_sheet",
             "trading_account",

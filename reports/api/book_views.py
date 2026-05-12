@@ -25,6 +25,13 @@ from purchase.models.purchase_core import PurchaseInvoiceHeader
 from receipts.models.receipt_core import ReceiptVoucherHeader
 from reports.schemas.book_reports import CashbookScopeSerializer, DaybookScopeSerializer
 from reports.schemas.common import build_report_envelope
+from reports.api.financial.export_utils import ExportSection, write_sectioned_csv, write_sectioned_excel, write_sectioned_pdf
+from reports.services.financial_hub_settings import (
+    format_financial_hub_amount,
+    get_financial_hub_settings_payload,
+    get_visible_cashbook_columns,
+    get_visible_daybook_columns,
+)
 from reports.services.financial.books import (
     BOOK_REPORT_DEFAULTS,
     _money,
@@ -285,6 +292,82 @@ def _daybook_export_table(report):
             row.get("source_module") or "",
         ])
     return headers, rows
+
+
+DAYBOOK_COLUMN_DEFS = {
+    "transaction_date": ("Transaction Date", lambda row, _settings: row.get("transaction_date") or ""),
+    "voucher_date": ("Voucher Date", lambda row, _settings: row.get("voucher_date") or ""),
+    "voucher_no": ("Voucher No", lambda row, _settings: row.get("voucher_number") or ""),
+    "voucher_type": ("Voucher Type", lambda row, _settings: row.get("voucher_type_name") or row.get("voucher_type") or ""),
+    "narration": ("Narration", lambda row, _settings: row.get("narration") or ""),
+    "reference": ("Reference", lambda row, _settings: row.get("reference_number") or ""),
+    "debit": ("Debit", lambda row, settings: format_financial_hub_amount(row.get("debit_total"), settings=settings)),
+    "credit": ("Credit", lambda row, settings: format_financial_hub_amount(row.get("credit_total"), settings=settings)),
+    "status": ("Status", lambda row, _settings: row.get("status_name") or row.get("status") or ""),
+    "posted": ("Posted", lambda row, _settings: "Yes" if row.get("posted") else "No"),
+    "source": ("Source", lambda row, _settings: row.get("source_module") or ""),
+}
+
+
+def _daybook_export_section(report, *, settings):
+    visible_columns = get_visible_daybook_columns(settings)
+    headers = [DAYBOOK_COLUMN_DEFS[key][0] for key in visible_columns]
+    rows = [
+        [DAYBOOK_COLUMN_DEFS[key][1](row, settings) for key in visible_columns]
+        for row in (report.get("results") or [])
+    ]
+    numeric_columns = {
+        index + 1
+        for index, key in enumerate(visible_columns)
+        if key in {"debit", "credit"}
+    }
+    return ExportSection(
+        title="Daybook Entries",
+        headers=headers,
+        rows=rows,
+        numeric_columns=numeric_columns,
+        empty_message="No vouchers found for the selected scope.",
+    )
+
+
+def _daybook_pdf_table(report, *, settings):
+    visible_columns = get_visible_daybook_columns(settings)
+    preferred_columns = [
+        "transaction_date",
+        "voucher_no",
+        "voucher_type",
+        "narration",
+        "debit",
+        "credit",
+        "status",
+    ]
+    selected_columns = [key for key in preferred_columns if key in visible_columns] or visible_columns[:7]
+    headers = [DAYBOOK_COLUMN_DEFS[key][0] for key in selected_columns]
+    rows = [
+        [DAYBOOK_COLUMN_DEFS[key][1](row, settings) for key in selected_columns]
+        for row in (report.get("results") or [])
+    ]
+    numeric_columns = {
+        index + 1
+        for index, key in enumerate(selected_columns)
+        if key in {"debit", "credit"}
+    }
+    width_map = {
+        "transaction_date": 0.12,
+        "voucher_no": 0.17,
+        "voucher_type": 0.12,
+        "narration": 0.31,
+        "debit": 0.10,
+        "credit": 0.10,
+        "status": 0.08,
+        "voucher_date": 0.12,
+        "reference": 0.16,
+        "posted": 0.08,
+        "source": 0.10,
+    }
+    col_widths = [width_map.get(key, 0.12) for key in selected_columns]
+    return headers, rows, numeric_columns, col_widths
+
 
 
 def _posting_detail_subtitle(detail):
@@ -566,29 +649,29 @@ def _write_posting_detail_pdf(detail, subtitle, meta_items, *, pagesize=None):
     title_style.fontSize = 16
 
     subtitle_style = styles["BodyText"].clone("PostingDetailPdfSubtitle")
-    subtitle_style.fontSize = 9
-    subtitle_style.leading = 11
+    subtitle_style.fontSize = 8
+    subtitle_style.leading = 9
     subtitle_style.textColor = colors.HexColor("#4A5568")
 
     section_style = styles["Heading4"].clone("PostingDetailPdfSection")
-    section_style.fontSize = 10
-    section_style.leading = 12
+    section_style.fontSize = 9
+    section_style.leading = 10
     section_style.textColor = colors.HexColor("#1F2937")
-    section_style.spaceAfter = 6
+    section_style.spaceAfter = 4
 
     meta_label_style = styles["BodyText"].clone("PostingDetailPdfMetaLabel")
-    meta_label_style.fontSize = 7.5
-    meta_label_style.leading = 9
+    meta_label_style.fontSize = 7
+    meta_label_style.leading = 8
     meta_label_style.textColor = colors.HexColor("#5B6573")
 
     meta_value_style = styles["BodyText"].clone("PostingDetailPdfMetaValue")
-    meta_value_style.fontSize = 9
-    meta_value_style.leading = 11
+    meta_value_style.fontSize = 8
+    meta_value_style.leading = 9
     meta_value_style.textColor = colors.HexColor("#1F2937")
 
     body_style = styles["BodyText"].clone("PostingDetailPdfBody")
-    body_style.fontSize = 8
-    body_style.leading = 10
+    body_style.fontSize = 7.5
+    body_style.leading = 8.5
 
     story = []
     story.append(Table([[Paragraph("<b>Posting Detail</b>", title_style)]], colWidths=[doc.width]))
@@ -597,32 +680,66 @@ def _write_posting_detail_pdf(detail, subtitle, meta_items, *, pagesize=None):
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
     ]))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 5))
     story.append(Paragraph(escape(subtitle), subtitle_style))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 5))
 
-    meta_rows = [
+    meta_map = {str(label): value for label, value in meta_items}
+    compact_meta_rows = [
         [
-            Paragraph(f"<b>{escape(str(label))}:</b>", meta_label_style),
-            Paragraph(escape(str(value or "-")), meta_value_style),
-        ]
-        for label, value in meta_items
+            Paragraph(
+                f"<b>Entry</b>: {escape(str(meta_map.get('Posting Entry ID') or '-'))}<br/>"
+                f"<b>Posting</b>: {escape(str(meta_map.get('Posting Date') or '-'))}<br/>"
+                f"<b>Voucher</b>: {escape(str(meta_map.get('Voucher No') or '-'))}",
+                meta_value_style,
+            ),
+            Paragraph(
+                f"<b>Type</b>: {escape(str(meta_map.get('Voucher Type') or '-'))}<br/>"
+                f"<b>Status</b>: {escape(str(meta_map.get('Status') or '-'))}<br/>"
+                f"<b>Voucher Date</b>: {escape(str(meta_map.get('Voucher Date') or '-'))}",
+                meta_value_style,
+            ),
+            Paragraph(
+                f"<b>Entity</b>: {escape(str(meta_map.get('Entity') or '-'))}<br/>"
+                f"<b>FY</b>: {escape(str(meta_map.get('Financial Year') or '-'))}<br/>"
+                f"<b>Subentity</b>: {escape(str(meta_map.get('Subentity') or '-'))}",
+                meta_value_style,
+            ),
+        ],
+        [
+            Paragraph(
+                f"<b>Debit</b>: {escape(str(meta_map.get('Debit Total') or '-'))}<br/>"
+                f"<b>Credit</b>: {escape(str(meta_map.get('Credit Total') or '-'))}<br/>"
+                f"<b>Difference</b>: {escape(str(meta_map.get('Difference') or '-'))}",
+                meta_value_style,
+            ),
+            Paragraph(
+                f"<b>Journal Lines</b>: {escape(str(meta_map.get('Journal Lines') or '-'))}<br/>"
+                f"<b>Inventory Moves</b>: {escape(str(meta_map.get('Inventory Moves') or '-'))}<br/>"
+                f"<b>Created By</b>: {escape(str(meta_map.get('Created By') or '-'))}",
+                meta_value_style,
+            ),
+            Paragraph(
+                f"<b>Narration</b>: {escape(str(meta_map.get('Narration') or '-'))}",
+                meta_value_style,
+            ),
+        ],
     ]
-    meta_table = Table(meta_rows, colWidths=[doc.width * 0.28, doc.width * 0.72])
+    meta_table = Table(compact_meta_rows, colWidths=[doc.width * 0.24, doc.width * 0.24, doc.width * 0.52])
     meta_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F7FAFF")),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D9E1F2")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(meta_table)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 7))
 
     def build_section_table(title, headers, rows, col_widths):
         story.append(Paragraph(title, section_style))
@@ -640,16 +757,16 @@ def _write_posting_detail_pdf(detail, subtitle, meta_items, *, pagesize=None):
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D9E1F2")),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("LEADING", (0, 0), (-1, -1), 10),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.2),
+            ("LEADING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         story.append(section_table)
-        story.append(Spacer(1, 10))
+        story.append(Spacer(1, 6))
 
     (journal_headers, journal_rows), (inventory_headers, inventory_rows) = _posting_detail_export_tables(detail)
     build_section_table("Journal Lines", journal_headers, journal_rows, [doc.width * 0.16, doc.width * 0.16, doc.width * 0.46, doc.width * 0.11, doc.width * 0.11])
@@ -976,15 +1093,21 @@ class _BaseDaybookExportAPIView(_BaseBookReportAPIView):
 
 class DaybookExcelAPIView(_BaseDaybookExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _daybook_export_table(data)
-        content = _write_excel(
-            "Daybook",
-            subtitle,
-            headers,
-            rows,
-            numeric_columns={6, 7},
+        scope, data, subtitle = self.report_data(request)
+        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        section = _daybook_export_section(data, settings=settings)
+        summary_items = [
+            ("Transactions", data.get("totals", {}).get("transaction_count", 0)),
+            ("Debit Total", format_financial_hub_amount(data.get("totals", {}).get("debit_total"), settings=settings)),
+            ("Credit Total", format_financial_hub_amount(data.get("totals", {}).get("credit_total"), settings=settings)),
+        ]
+        content = write_sectioned_excel(
+            title="Daybook",
+            subtitle=subtitle,
+            summary_items=summary_items,
+            sections=[section],
             orientation=self.build_orientation(request),
+            freeze_header=(settings.get("export_layout") or {}).get("freeze_excel_header", True),
         )
         return self.export_response(
             filename=f"Daybook_{_safe_filename(subtitle)}.xlsx",
@@ -995,11 +1118,20 @@ class DaybookExcelAPIView(_BaseDaybookExportAPIView):
 
 class DaybookCSVAPIView(_BaseDaybookExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _daybook_export_table(data)
-        content = _write_csv(headers, rows)
+        scope, data, _subtitle = self.report_data(request)
+        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        section = _daybook_export_section(data, settings=settings)
+        meta_items = [
+            ("Entity", data.get("entity_name") or "Selected entity"),
+            ("Financial Year", data.get("entityfin_name") or "Current FY"),
+            ("Subentity", data.get("subentity_name") or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
+            ("Period", f"{scope.get('from_date') or '-'} to {scope.get('to_date') or '-'}"),
+            ("Posted", "Posted only" if scope.get("posted") is True else "Non-posted only" if scope.get("posted") is False else "All entries"),
+            ("Transactions", data.get("totals", {}).get("transaction_count", 0)),
+        ]
+        content = write_sectioned_csv(title="Daybook", meta_items=meta_items, sections=[section])
         return self.export_response(
-            filename=f"Daybook_{_safe_filename(subtitle)}.csv",
+            filename=f"Daybook_{_safe_filename(_daybook_subtitle(scope, {'entity_name': data.get('entity_name'),'entityfin_name': data.get('entityfin_name'),'subentity_name': data.get('subentity_name')}, data))}.csv",
             content=content,
             content_type="text/csv",
         )
@@ -1008,31 +1140,30 @@ class DaybookCSVAPIView(_BaseDaybookExportAPIView):
 class DaybookPDFAPIView(_BaseDaybookExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        orientation = self.build_orientation(request)
-        pagesize = _report_pagesize(orientation)
-        headers, rows = _daybook_export_table(data)
-        scope_names = {
-            "entity_name": data.get("entity_name"),
-            "entityfin_name": data.get("entityfin_name"),
-            "subentity_name": data.get("subentity_name"),
-        }
+        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = settings.get("daybook") or {}
         meta_items = [
-            ("Entity", scope_names["entity_name"] or "Selected entity"),
-            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
-            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
+            ("Entity", data.get("entity_name") or "Selected entity"),
+            ("Financial Year", data.get("entityfin_name") or "Current FY"),
+            ("Subentity", data.get("subentity_name") or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
             ("Period", f"{scope.get('from_date') or '-'} to {scope.get('to_date') or '-'}"),
             ("Posted", "Posted only" if scope.get("posted") is True else "Non-posted only" if scope.get("posted") is False else "All entries"),
             ("Transactions", data.get("totals", {}).get("transaction_count", 0)),
+            ("Debit Total", format_financial_hub_amount(data.get("totals", {}).get("debit_total"), settings=effective)),
+            ("Credit Total", format_financial_hub_amount(data.get("totals", {}).get("credit_total"), settings=effective)),
         ]
-        col_widths = [58, 58, 72, 82, 178, 82, 56, 56, 62, 42, 68] if orientation == "landscape" else [52, 52, 64, 72, 126, 68, 50, 50, 54, 38, 60]
+        headers, rows, numeric_columns, width_ratios = _daybook_pdf_table(data, settings=effective)
+        pagesize = _report_pagesize(self.build_orientation(request))
+        total_width = pagesize[0] - 36
+        col_widths = [total_width * ratio for ratio in width_ratios]
         content = _write_pdf(
-            "Daybook",
-            subtitle,
-            headers,
-            rows,
-            col_widths=col_widths,
+            title="Daybook",
+            subtitle=subtitle,
             meta_items=meta_items,
-            numeric_columns={6, 7},
+            headers=headers,
+            rows=rows,
+            col_widths=col_widths,
+            numeric_columns=numeric_columns,
             pagesize=pagesize,
         )
         return self.export_response(
@@ -1159,6 +1290,80 @@ def _cashbook_export_table(report):
     return headers, rows
 
 
+CASHBOOK_COLUMN_DEFS = {
+    "date": ("Date", lambda row, _settings: row.get("date") or ""),
+    "voucher_no": ("Voucher No", lambda row, _settings: row.get("voucher_number") or ""),
+    "voucher_type": ("Voucher Type", lambda row, _settings: row.get("voucher_type_name") or row.get("voucher_type") or ""),
+    "account_impacted": ("Account Impacted", lambda row, _settings: (row.get("account_impacted") or {}).get("name") or ""),
+    "counter_account": ("Counter Account", lambda row, _settings: row.get("counter_account") or ""),
+    "particulars": ("Particulars", lambda row, _settings: row.get("particulars") or ""),
+    "receipt": ("Receipt", lambda row, settings: format_financial_hub_amount(row.get("receipt_amount"), settings=settings)),
+    "payment": ("Payment", lambda row, settings: format_financial_hub_amount(row.get("payment_amount"), settings=settings)),
+    "running_balance": ("Running Balance", lambda row, settings: "" if row.get("running_balance") is None else format_financial_hub_amount(row.get("running_balance"), settings=settings)),
+    "source": ("Source", lambda row, _settings: row.get("source_module") or ""),
+}
+
+
+def _cashbook_export_section(report, *, settings):
+    visible_columns = get_visible_cashbook_columns(settings)
+    headers = [CASHBOOK_COLUMN_DEFS[key][0] for key in visible_columns]
+    rows = [
+        [CASHBOOK_COLUMN_DEFS[key][1](row, settings) for key in visible_columns]
+        for row in (report.get("results") or [])
+    ]
+    numeric_columns = {
+        index + 1
+        for index, key in enumerate(visible_columns)
+        if key in {"receipt", "payment", "running_balance"}
+    }
+    return ExportSection(
+        title="Cashbook Entries",
+        headers=headers,
+        rows=rows,
+        numeric_columns=numeric_columns,
+        empty_message="No cashbook rows found for the selected scope.",
+    )
+
+
+def _cashbook_pdf_table(report, *, settings):
+    visible_columns = get_visible_cashbook_columns(settings)
+    preferred_columns = [
+        "date",
+        "voucher_no",
+        "voucher_type",
+        "particulars",
+        "receipt",
+        "payment",
+        "running_balance",
+    ]
+    selected_columns = [key for key in preferred_columns if key in visible_columns] or visible_columns[:7]
+    headers = [CASHBOOK_COLUMN_DEFS[key][0] for key in selected_columns]
+    rows = [
+        [CASHBOOK_COLUMN_DEFS[key][1](row, settings) for key in selected_columns]
+        for row in (report.get("results") or [])
+    ]
+    numeric_columns = {
+        index + 1
+        for index, key in enumerate(selected_columns)
+        if key in {"receipt", "payment", "running_balance"}
+    }
+    width_map = {
+        "date": 0.11,
+        "voucher_no": 0.16,
+        "voucher_type": 0.12,
+        "particulars": 0.32,
+        "receipt": 0.10,
+        "payment": 0.10,
+        "running_balance": 0.11,
+        "account_impacted": 0.16,
+        "counter_account": 0.16,
+        "source": 0.09,
+    }
+    col_widths = [width_map.get(key, 0.12) for key in selected_columns]
+    return headers, rows, numeric_columns, col_widths
+
+
+
 class _BaseCashbookExportAPIView(_BaseBookReportAPIView):
     serializer_class = CashbookScopeSerializer
     export_mode = "attachment"
@@ -1209,15 +1414,23 @@ class _BaseCashbookExportAPIView(_BaseBookReportAPIView):
 
 class CashbookExcelAPIView(_BaseCashbookExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _cashbook_export_table(data)
-        content = _write_excel(
-            "Cashbook",
-            subtitle,
-            headers,
-            rows,
-            numeric_columns={6, 7, 8},
+        scope, data, subtitle = self.report_data(request)
+        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = settings.get("cashbook") or {}
+        section = _cashbook_export_section(data, settings=effective)
+        summary_items = [
+            ("Opening Balance", format_financial_hub_amount(data.get("opening_balance"), settings=effective)),
+            ("Receipt Total", format_financial_hub_amount(data.get("totals", {}).get("receipt_total"), settings=effective)),
+            ("Payment Total", format_financial_hub_amount(data.get("totals", {}).get("payment_total"), settings=effective)),
+            ("Closing Balance", format_financial_hub_amount(data.get("closing_balance"), settings=effective)),
+        ]
+        content = write_sectioned_excel(
+            title="Cashbook",
+            subtitle=subtitle,
+            summary_items=summary_items,
+            sections=[section],
             orientation=self.build_orientation(request),
+            freeze_header=(effective.get("export_layout") or {}).get("freeze_excel_header", True),
         )
         return self.export_response(
             filename=f"Cashbook_{_safe_filename(subtitle)}.xlsx",
@@ -1228,11 +1441,21 @@ class CashbookExcelAPIView(_BaseCashbookExportAPIView):
 
 class CashbookCSVAPIView(_BaseCashbookExportAPIView):
     def get(self, request):
-        _scope, data, subtitle = self.report_data(request)
-        headers, rows = _cashbook_export_table(data)
-        content = _write_csv(headers, rows)
+        scope, data, _subtitle = self.report_data(request)
+        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = settings.get("cashbook") or {}
+        section = _cashbook_export_section(data, settings=effective)
+        meta_items = [
+            ("Entity", data.get("entity_name") or "Selected entity"),
+            ("Financial Year", data.get("entityfin_name") or "Current FY"),
+            ("Subentity", data.get("subentity_name") or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
+            ("Period", f"{scope.get('from_date') or '-'} to {scope.get('to_date') or '-'}"),
+            ("Mode", "Cash only" if scope.get("mode") == "cash" else "Bank only" if scope.get("mode") == "bank" else "Cash and bank"),
+            ("Transactions", data.get("totals", {}).get("transaction_count", 0)),
+        ]
+        content = write_sectioned_csv(title="Cashbook", meta_items=meta_items, sections=[section])
         return self.export_response(
-            filename=f"Cashbook_{_safe_filename(subtitle)}.csv",
+            filename=f"Cashbook_{_safe_filename(_cashbook_subtitle(scope, {'entity_name': data.get('entity_name'),'entityfin_name': data.get('entityfin_name'),'subentity_name': data.get('subentity_name')}, data))}.csv",
             content=content,
             content_type="text/csv",
         )
@@ -1241,31 +1464,30 @@ class CashbookCSVAPIView(_BaseCashbookExportAPIView):
 class CashbookPDFAPIView(_BaseCashbookExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        orientation = self.build_orientation(request)
-        pagesize = _report_pagesize(orientation)
-        headers, rows = _cashbook_export_table(data)
-        scope_names = {
-            "entity_name": data.get("entity_name"),
-            "entityfin_name": data.get("entityfin_name"),
-            "subentity_name": data.get("subentity_name"),
-        }
+        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = settings.get("cashbook") or {}
         meta_items = [
-            ("Entity", scope_names["entity_name"] or "Selected entity"),
-            ("Financial Year", scope_names["entityfin_name"] or "Current FY"),
-            ("Subentity", scope_names["subentity_name"] or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
+            ("Entity", data.get("entity_name") or "Selected entity"),
+            ("Financial Year", data.get("entityfin_name") or "Current FY"),
+            ("Subentity", data.get("subentity_name") or (f"Subentity {scope.get('subentity')}" if scope.get("subentity") else "All subentities")),
             ("Period", f"{scope.get('from_date') or '-'} to {scope.get('to_date') or '-'}"),
             ("Mode", "Cash only" if scope.get("mode") == "cash" else "Bank only" if scope.get("mode") == "bank" else "Cash and bank"),
             ("Transactions", data.get("totals", {}).get("transaction_count", 0)),
+            ("Opening Balance", format_financial_hub_amount(data.get("opening_balance"), settings=effective)),
+            ("Closing Balance", format_financial_hub_amount(data.get("closing_balance"), settings=effective)),
         ]
-        col_widths = [54, 68, 72, 82, 82, 128, 56, 56, 60, 58] if orientation == "landscape" else [44, 58, 62, 72, 72, 104, 48, 48, 54, 50]
+        headers, rows, numeric_columns, width_ratios = _cashbook_pdf_table(data, settings=effective)
+        pagesize = _report_pagesize(self.build_orientation(request))
+        total_width = pagesize[0] - 36
+        col_widths = [total_width * ratio for ratio in width_ratios]
         content = _write_pdf(
-            "Cashbook",
-            subtitle,
-            headers,
-            rows,
-            col_widths=col_widths,
+            title="Cashbook",
+            subtitle=subtitle,
             meta_items=meta_items,
-            numeric_columns={6, 7, 8},
+            headers=headers,
+            rows=rows,
+            col_widths=col_widths,
+            numeric_columns=numeric_columns,
             pagesize=pagesize,
         )
         return self.export_response(

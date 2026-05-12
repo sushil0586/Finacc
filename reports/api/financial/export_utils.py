@@ -10,7 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A3, A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -622,6 +622,194 @@ def write_sectioned_pdf(*, title, subtitle, meta_items=None, sections: Sequence[
         for col_index in section.center_columns:
             table.setStyle(TableStyle([("ALIGN", (col_index, 0), (col_index, -1), "CENTER")]))
         story.extend([table, Spacer(1, 6)])
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def write_balance_sheet_statement_pdf(
+    *,
+    title,
+    subtitle,
+    meta_items=None,
+    amount_headers: Sequence[str],
+    sections: Sequence[dict],
+    header_density="compact",
+    metadata_visibility="compact",
+):
+    amount_headers = list(amount_headers or ["Current"])
+    amount_count = len(amount_headers)
+    if amount_count <= 2:
+        pagesize = A4
+        amount_width = 86
+    elif amount_count <= 5:
+        pagesize = landscape(A4)
+        amount_width = 74
+    else:
+        pagesize = landscape(A3)
+        amount_width = 64
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=pagesize, rightMargin=18, leftMargin=18, topMargin=18, bottomMargin=14)
+    styles = getSampleStyleSheet()
+
+    title_style = styles["Title"].clone("BalanceStatementPdfTitle")
+    title_style.textColor = colors.HexColor("#FFFFFF")
+    title_style.alignment = 1
+    title_style.leading = 15
+    title_style.fontSize = 13
+
+    subtitle_style = styles["BodyText"].clone("BalanceStatementPdfSubtitle")
+    subtitle_style.fontSize = 8
+    subtitle_style.leading = 9
+    subtitle_style.textColor = colors.HexColor(EXECUTIVE_TEXT_MUTED)
+
+    body_style = styles["BodyText"].clone("BalanceStatementPdfBody")
+    body_style.fontSize = 7.5
+    body_style.leading = 9
+    body_style.textColor = colors.HexColor(EXECUTIVE_TEXT_STRONG)
+    body_bold_style = body_style.clone("BalanceStatementPdfBodyBold")
+    body_bold_style.fontName = "Helvetica-Bold"
+    body_bold_inverse_style = body_bold_style.clone("BalanceStatementPdfBodyBoldInverse")
+    body_bold_inverse_style.textColor = colors.white
+    body_italic_style = body_style.clone("BalanceStatementPdfBodyItalic")
+    body_italic_style.fontName = "Helvetica-Oblique"
+    body_right_style = body_style.clone("BalanceStatementPdfBodyRight")
+    body_right_style.alignment = 2
+    body_right_bold_style = body_right_style.clone("BalanceStatementPdfBodyRightBold")
+    body_right_bold_style.fontName = "Helvetica-Bold"
+    body_right_bold_inverse_style = body_right_bold_style.clone("BalanceStatementPdfBodyRightBoldInverse")
+    body_right_bold_inverse_style.textColor = colors.white
+
+    density = (header_density or "compact").strip().lower()
+    if density not in {"full", "compact", "minimal"}:
+        density = "compact"
+    metadata_mode = (metadata_visibility or "compact").strip().lower()
+    if metadata_mode not in {"full", "compact", "hide"}:
+        metadata_mode = "compact"
+    title_font_size = 15 if density == "full" else 13 if density == "compact" else 11
+    title_leading = 17 if density == "full" else 15 if density == "compact" else 13
+    subtitle_font_size = 9 if density == "full" else 8 if density == "compact" else 7.25
+    subtitle_leading = 11 if density == "full" else 9 if density == "compact" else 8
+    header_top = 8 if density == "full" else 6 if density == "compact" else 4
+    header_bottom = 9 if density == "full" else 7 if density == "compact" else 4
+    spacer_after_header = 6 if density == "full" else 4 if density == "compact" else 2
+    spacer_after_subtitle = 8 if density == "full" else 6 if density == "compact" else 3
+
+    title_style.fontSize = title_font_size
+    title_style.leading = title_leading
+    subtitle_style.fontSize = subtitle_font_size
+    subtitle_style.leading = subtitle_leading
+
+    story = [Table([[Paragraph(escape(title), title_style)]], colWidths=[doc.width])]
+    story[0].setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(f"#{EXECUTIVE_HEADER_BG}")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING", (0, 0), (-1, -1), header_top),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), header_bottom),
+    ]))
+    story.extend([Spacer(1, spacer_after_header), Paragraph(escape(subtitle), subtitle_style), Spacer(1, spacer_after_subtitle)])
+
+    if meta_items and metadata_mode != "hide":
+        visible_meta_items = meta_items[:6] if metadata_mode == "compact" else meta_items
+        meta_cards = [
+            Paragraph(f"<b>{escape(str(label))}:</b> {escape(str(value or '-'))}", body_style)
+            for label, value in visible_meta_items
+        ]
+        while len(meta_cards) % 3 != 0:
+            meta_cards.append(Paragraph("", body_style))
+        meta_rows = [meta_cards[index:index + 3] for index in range(0, len(meta_cards), 3)]
+        meta_table = Table(meta_rows, colWidths=[doc.width / 3.0] * 3)
+        meta_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(f"#{EXECUTIVE_SECTION_BG}")),
+            ("BOX", (0, 0), (-1, -1), 0.35, colors.HexColor(f"#{EXECUTIVE_SECTION_BORDER}")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor(f"#{EXECUTIVE_SECTION_BORDER}")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.extend([meta_table, Spacer(1, 8)])
+
+    particulars_width = max(220, doc.width - (amount_width * amount_count))
+    col_widths = [particulars_width] + [amount_width] * amount_count
+
+    for section in sections:
+        section_title = str(section.get("title") or "")
+        header_row = [Paragraph(escape(section_title), body_bold_style)] + [
+            Paragraph(escape(str(label)), body_right_bold_inverse_style) for label in amount_headers
+        ]
+        header_row[0] = Paragraph(escape(section_title), body_bold_inverse_style)
+        section_table = Table([header_row], colWidths=col_widths)
+        section_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(f"#{EXECUTIVE_HEADER_BG}")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ]))
+        story.extend([section_table, Spacer(1, 3)])
+
+        for group in section.get("groups") or []:
+            group_title = str(group.get("title") or "")
+            group_table = Table([[Paragraph(escape(group_title), body_italic_style)] + [""] * amount_count], colWidths=col_widths)
+            group_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#DDE7F4")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]))
+            story.extend([group_table, Spacer(1, 2)])
+
+            detail_rows = []
+            for line in group.get("lines") or []:
+                detail_rows.append(
+                    [Paragraph(escape(str(line.get("label") or "")), body_style)]
+                    + [Paragraph(escape(str(value or "")), body_right_style) for value in line.get("amounts") or []]
+                )
+            if detail_rows:
+                detail_table = Table(detail_rows, colWidths=col_widths)
+                detail_table.setStyle(TableStyle([
+                    ("LEFTPADDING", (0, 0), (-1, -1), 20),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ]))
+                story.extend([detail_table, Spacer(1, 2)])
+
+            if group.get("total_label"):
+                total_row = [Paragraph(escape(str(group.get("total_label") or "")), body_style)] + [
+                    Paragraph(escape(str(value or "")), body_right_style) for value in group.get("total_amounts") or []
+                ]
+                total_table = Table([total_row], colWidths=col_widths)
+                total_table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(f"#{EXECUTIVE_SECTION_BG}")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ]))
+                story.extend([total_table, Spacer(1, 8)])
+
+        if section.get("total_label"):
+            section_total_row = [Paragraph(escape(str(section.get("total_label") or "")), body_bold_style)] + [
+                Paragraph(escape(str(value or "")), body_right_bold_style) for value in section.get("total_amounts") or []
+            ]
+            section_total_table = Table([section_total_row], colWidths=col_widths)
+            section_total_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#DDE7F4")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ]))
+            story.extend([section_total_table, Spacer(1, 12)])
 
     doc.build(story)
     return buffer.getvalue()

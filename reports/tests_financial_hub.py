@@ -15,6 +15,7 @@ class FinancialHubRegistryTests(SimpleTestCase):
         self.assertEqual(hub["featured_reports"], [
             "trial_balance",
             "ledger_book",
+            "ledger_summary",
             "profit_loss",
             "balance_sheet",
             "trading_account",
@@ -35,6 +36,7 @@ class FinancialHubRegistryTests(SimpleTestCase):
             [
                 "trial_balance",
                 "ledger_book",
+                "ledger_summary",
                 "profit_loss",
                 "balance_sheet",
                 "trading_account",
@@ -50,8 +52,8 @@ class FinancialHubRegistryTests(SimpleTestCase):
             {
                 "financial_hub": {
                     "default_report_code": " Trial_Balance ",
-                    "enabled_reports": ("trial_balance", "ledger_book"),
-                    "featured_reports": ("trial_balance", "cashbook"),
+                    "enabled_reports": ("trial_balance", "ledger_book", "ledger_summary"),
+                    "featured_reports": ("trial_balance", "cashbook", "ledger_summary"),
                 },
                 "profit_loss": {
                     "accounting_only_notes_disclosure": "invalid",
@@ -62,8 +64,8 @@ class FinancialHubRegistryTests(SimpleTestCase):
         )
 
         self.assertEqual(policy["financial_hub"]["default_report_code"], "trial_balance")
-        self.assertEqual(policy["financial_hub"]["enabled_reports"], ["trial_balance", "ledger_book"])
-        self.assertEqual(policy["financial_hub"]["featured_reports"], ["trial_balance", "cashbook"])
+        self.assertEqual(policy["financial_hub"]["enabled_reports"], ["trial_balance", "ledger_book", "ledger_summary"])
+        self.assertEqual(policy["financial_hub"]["featured_reports"], ["trial_balance", "cashbook", "ledger_summary"])
         self.assertEqual(policy["profit_loss"]["accounting_only_notes_disclosure"], "summary")
         self.assertEqual(policy["profit_loss"]["accounting_only_notes_split"], "purchase_sales")
         self.assertTrue(policy["balance_sheet"]["include_accounting_only_notes_disclosure"])

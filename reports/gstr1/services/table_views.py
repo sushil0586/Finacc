@@ -71,6 +71,58 @@ class Gstr1TableViewService:
         gst_total = Decimal(cgst or 0) + Decimal(sgst or 0) + Decimal(igst or 0)
         return ((gst_total * Decimal("100")) / taxable_value).quantize(Decimal("0.01"))
 
+    @staticmethod
+    def _invoice_tax_buckets(invoice: SalesInvoiceHeader):
+        return list(
+            invoice.tax_summaries.order_by(
+                "gst_rate",
+                "taxability",
+                "hsn_sac_code",
+                "id",
+            )
+        )
+
+    def _bucketed_invoice_rows(
+        self,
+        *,
+        invoice: SalesInvoiceHeader,
+        table_code: str,
+        base_payload: dict,
+        include_tax_components: tuple[str, ...],
+    ) -> list[dict]:
+        tax_buckets = self._invoice_tax_buckets(invoice)
+        if not tax_buckets:
+            payload = dict(base_payload)
+            payload["gst_rate"] = self._effective_gst_rate(
+                taxable=base_payload.get("taxable_amount") or base_payload.get("taxable_value"),
+                cgst=base_payload.get("cgst_amount"),
+                sgst=base_payload.get("sgst_amount"),
+                igst=base_payload.get("igst_amount"),
+            )
+            return [self._attach_invoice_rcm_contract(payload, invoice, table_code=table_code)]
+
+        rows: list[dict] = []
+        for bucket in tax_buckets:
+            payload = dict(base_payload)
+            payload["taxability"] = bucket.taxability
+            payload["hsn_sac_code"] = bucket.hsn_sac_code or ""
+            payload["is_service"] = bucket.is_service
+            if "taxable_amount" in payload:
+                payload["taxable_amount"] = bucket.taxable_value
+            if "taxable_value" in payload:
+                payload["taxable_value"] = bucket.taxable_value
+            payload["gst_rate"] = bucket.gst_rate or Decimal("0.00")
+            if "cgst_amount" in include_tax_components:
+                payload["cgst_amount"] = bucket.cgst_amount
+            if "sgst_amount" in include_tax_components:
+                payload["sgst_amount"] = bucket.sgst_amount
+            if "igst_amount" in include_tax_components:
+                payload["igst_amount"] = bucket.igst_amount
+            if "cess_amount" in include_tax_components:
+                payload["cess_amount"] = bucket.cess_amount
+            rows.append(self._attach_invoice_rcm_contract(payload, invoice, table_code=table_code))
+        return rows
+
     def build(self, table_code: str):
         code = (table_code or "").upper()
         if code == TABLE_1_3.code:
@@ -163,17 +215,18 @@ class Gstr1TableViewService:
                 "customer_name": row.customer_name,
                 "place_of_supply_state_code": row.place_of_supply_state_code,
                 "taxable_amount": row.total_taxable_value,
-                "gst_rate": self._effective_gst_rate(
-                    taxable=row.total_taxable_value,
-                    cgst=row.total_cgst,
-                    sgst=row.total_sgst,
-                    igst=row.total_igst,
-                ),
                 "igst_amount": row.total_igst,
                 "cess_amount": row.total_cess,
                 "grand_total": row.grand_total,
             }
-            rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_5.code))
+            rows.extend(
+                self._bucketed_invoice_rows(
+                    invoice=row,
+                    table_code=TABLE_5.code,
+                    base_payload=payload,
+                    include_tax_components=("igst_amount", "cess_amount"),
+                )
+            )
         return self._ok(TABLE_5, rows)
 
     def _table_4(self):
@@ -182,27 +235,52 @@ class Gstr1TableViewService:
         ).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for row in qs:
-            payload = {
-                "invoice_id": row.id,
-                "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
-                "invoice_date": row.bill_date,
-                "customer_name": row.customer_name,
-                "customer_gstin": row.customer_gstin,
-                "place_of_supply_state_code": row.place_of_supply_state_code,
-                "taxable_amount": row.total_taxable_value,
-                "gst_rate": self._effective_gst_rate(
-                    taxable=row.total_taxable_value,
-                    cgst=row.total_cgst,
-                    sgst=row.total_sgst,
-                    igst=row.total_igst,
-                ),
-                "cgst_amount": row.total_cgst,
-                "sgst_amount": row.total_sgst,
-                "igst_amount": row.total_igst,
-                "cess_amount": row.total_cess,
-                "grand_total": row.grand_total,
-            }
-            rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_4.code))
+            tax_buckets = self._invoice_tax_buckets(row)
+            if not tax_buckets:
+                payload = {
+                    "invoice_id": row.id,
+                    "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
+                    "invoice_date": row.bill_date,
+                    "customer_name": row.customer_name,
+                    "customer_gstin": row.customer_gstin,
+                    "place_of_supply_state_code": row.place_of_supply_state_code,
+                    "taxable_amount": row.total_taxable_value,
+                    "gst_rate": self._effective_gst_rate(
+                        taxable=row.total_taxable_value,
+                        cgst=row.total_cgst,
+                        sgst=row.total_sgst,
+                        igst=row.total_igst,
+                    ),
+                    "cgst_amount": row.total_cgst,
+                    "sgst_amount": row.total_sgst,
+                    "igst_amount": row.total_igst,
+                    "cess_amount": row.total_cess,
+                    "grand_total": row.grand_total,
+                }
+                rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_4.code))
+                continue
+
+            for bucket in tax_buckets:
+                payload = {
+                    "invoice_id": row.id,
+                    "invoice_number": row.invoice_number or f"{row.doc_code}-{row.doc_no}",
+                    "invoice_date": row.bill_date,
+                    "customer_name": row.customer_name,
+                    "customer_gstin": row.customer_gstin,
+                    "place_of_supply_state_code": row.place_of_supply_state_code,
+                    "taxability": bucket.taxability,
+                    "hsn_sac_code": bucket.hsn_sac_code or "",
+                    "is_service": bucket.is_service,
+                    "taxable_amount": bucket.taxable_value,
+                    "gst_rate": bucket.gst_rate or Decimal("0.00"),
+                    "cgst_amount": bucket.cgst_amount,
+                    "sgst_amount": bucket.sgst_amount,
+                    "igst_amount": bucket.igst_amount,
+                    "cess_amount": bucket.cess_amount,
+                    # Keep invoice value at invoice level; frontend summary de-duplicates it.
+                    "grand_total": row.grand_total,
+                }
+                rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_4.code))
         return self._ok(TABLE_4, rows)
 
     def _table_6(self):
@@ -227,17 +305,18 @@ class Gstr1TableViewService:
                 "customer_gstin": row.customer_gstin,
                 "place_of_supply_state_code": row.place_of_supply_state_code,
                 "taxable_amount": row.total_taxable_value,
-                "gst_rate": self._effective_gst_rate(
-                    taxable=row.total_taxable_value,
-                    cgst=row.total_cgst,
-                    sgst=row.total_sgst,
-                    igst=row.total_igst,
-                ),
                 "igst_amount": row.total_igst,
                 "cess_amount": row.total_cess,
                 "grand_total": row.grand_total,
             }
-            rows.append(self._attach_invoice_rcm_contract(payload, row, table_code=TABLE_6.code))
+            rows.extend(
+                self._bucketed_invoice_rows(
+                    invoice=row,
+                    table_code=TABLE_6.code,
+                    base_payload=payload,
+                    include_tax_components=("igst_amount", "cess_amount"),
+                )
+            )
         return self._ok(TABLE_6, rows)
 
     def _table_7(self):
@@ -338,19 +417,20 @@ class Gstr1TableViewService:
                 "original_invoice_number": original.invoice_number if original else "",
                 "amendment_target_section": target_section,
                 "taxable_amount": note.total_taxable_value,
-                "gst_rate": self._effective_gst_rate(
-                    taxable=note.total_taxable_value,
-                    cgst=note.total_cgst,
-                    sgst=note.total_sgst,
-                    igst=note.total_igst,
-                ),
                 "cgst_amount": note.total_cgst,
                 "sgst_amount": note.total_sgst,
                 "igst_amount": note.total_igst,
                 "cess_amount": note.total_cess,
                 "grand_total": note.grand_total,
             }
-            rows.append(self._attach_invoice_rcm_contract(payload, note, table_code=TABLE_9.code))
+            rows.extend(
+                self._bucketed_invoice_rows(
+                    invoice=note,
+                    table_code=TABLE_9.code,
+                    base_payload=payload,
+                    include_tax_components=("cgst_amount", "sgst_amount", "igst_amount", "cess_amount"),
+                )
+            )
         return self._ok(TABLE_9, rows)
 
     def _table_10(self):
@@ -366,17 +446,18 @@ class Gstr1TableViewService:
                 "note_type": note.get_doc_type_display(),
                 "place_of_supply_state_code": note.place_of_supply_state_code,
                 "taxable_amount": note.total_taxable_value,
-                "gst_rate": self._effective_gst_rate(
-                    taxable=note.total_taxable_value,
-                    cgst=note.total_cgst,
-                    sgst=note.total_sgst,
-                    igst=note.total_igst,
-                ),
                 "igst_amount": note.total_igst,
                 "cess_amount": note.total_cess,
                 "grand_total": note.grand_total,
             }
-            rows.append(self._attach_invoice_rcm_contract(payload, note, table_code=TABLE_10.code))
+            rows.extend(
+                self._bucketed_invoice_rows(
+                    invoice=note,
+                    table_code=TABLE_10.code,
+                    base_payload=payload,
+                    include_tax_components=("igst_amount", "cess_amount"),
+                )
+            )
         return self._ok(TABLE_10, rows)
 
     def _table_11(self):

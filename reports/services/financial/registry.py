@@ -9,7 +9,7 @@ FINANCIAL_HUB_SECTIONS = [
     {
         "title": "Core Statements",
         "tag": "Statements",
-        "codes": ["trial_balance", "ledger_book"],
+        "codes": ["trial_balance", "ledger_book", "ledger_summary"],
     },
     {
         "title": "Financial Statements",
@@ -64,6 +64,7 @@ FINANCIAL_HUB_SECTIONS = [
 FINANCIAL_HUB_FEATURED_REPORTS = [
     "trial_balance",
     "ledger_book",
+    "ledger_summary",
     "profit_loss",
     "balance_sheet",
     "trading_account",

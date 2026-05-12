@@ -271,6 +271,7 @@ def build_opening_preview(*, entity_id: int, entityfin_id: int | None = None, su
             "can_print": True,
             "can_refresh": True,
             "can_generate": can_generate,
+            "can_rollback": bool(opening_history),
         },
         "preview_state": "generated" if opening_history else "ready" if can_generate else "review" if preview_ready and constitution_is_valid else "blocked",
     }

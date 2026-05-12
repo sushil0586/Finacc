@@ -9,12 +9,13 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from entity.models import EntityFinancialYear
-from posting.models import TxnType
+from posting.models import Entry, TxnType
 from posting.adapters.year_opening import YearOpeningPostingAdapter
 from posting.services.posting_service import JLInput, PostingService
 from posting.services.static_accounts import StaticAccountService  # compatibility for existing tests/patches
 from reports.services.controls.opening_policy import resolve_opening_policy
 from reports.services.controls.opening_preview import _build_opening_history, _resolve_destination_year, build_opening_preview
+from reports.services.controls.posting_rollback import purge_posting_locator
 from reports.services.controls.year_end_close import _compute_snapshot
 
 
@@ -108,12 +109,22 @@ def _resolve_destination_fy(entity_id: int, source_fy: EntityFinancialYear | Non
     )
 
 
+def _activate_financial_years(entity_id: int, active_ids: list[int]) -> None:
+    active_ids = [int(fy_id) for fy_id in active_ids if fy_id]
+    EntityFinancialYear.objects.filter(entity_id=entity_id).exclude(pk__in=active_ids).update(isactive=False)
+    if active_ids:
+        EntityFinancialYear.objects.filter(entity_id=entity_id, pk__in=active_ids).update(isactive=True)
+
+
 def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int) -> tuple[list[JLInput], list[dict], dict[str, object]]:
     bs = snapshot.get("bs") or {}
     summary = bs.get("summary") or {}
     stock_valuation = bs.get("stock_valuation") or {}
     adapter = _opening_adapter(entity_id, opening_policy)
-    context = adapter.build_context(net_profit=_decimal(summary.get("net_profit_brought_to_equity") or 0))
+    net_profit = _decimal(summary.get("net_profit_brought_to_equity") or 0)
+    raw_net_profit = _decimal(summary.get("raw_net_profit") or 0)
+    synthetic_equity_adjustment = net_profit - raw_net_profit
+    context = adapter.build_context(net_profit=synthetic_equity_adjustment)
     validation_issues = context.get("validation_issues") or []
     if any(issue.get("severity") == "error" for issue in validation_issues):
         raise ValidationError(
@@ -160,11 +171,27 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
         "equity": 0,
     }
 
-    def _append_line(*, ledger_id: int, accounthead_id: int | None, drcr: bool, amount: Decimal, description: str, section: str, label: str, source: str):
+    def _append_line(
+        *,
+        ledger_id: int,
+        account_id: int | None = None,
+        accounthead_id: int | None = None,
+        drcr: bool,
+        amount: Decimal,
+        description: str,
+        section: str,
+        label: str,
+        source: str,
+    ):
         if amount <= ZERO:
             return
+        if not account_id and not accounthead_id:
+            raise ValidationError(
+                {"detail": f"Opening generation could not resolve posting locator for {label or section}."}
+            )
         journal_lines.append(
             JLInput(
+                account_id=account_id,
                 accounthead_id=accounthead_id,
                 ledger_id=ledger_id,
                 drcr=drcr,
@@ -190,6 +217,7 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
             continue
         _append_line(
             ledger_id=int(ledger_id),
+            account_id=None,
             accounthead_id=row.get("accounthead_id"),
             drcr=True,
             amount=amount,
@@ -206,6 +234,7 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
             continue
         _append_line(
             ledger_id=int(ledger_id),
+            account_id=None,
             accounthead_id=row.get("accounthead_id"),
             drcr=False,
             amount=amount,
@@ -217,11 +246,14 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
 
     if inventory_rows:
         inventory_amount = sum((_decimal(row.get("amount_decimal") or row.get("amount")) for row in inventory_rows), ZERO)
+        inventory_code = opening_ledgers["inventory"]["static_account_code"]
+        inventory_account_id = StaticAccountService.get_account_id(entity_id, inventory_code, required=False)
         _append_line(
-        ledger_id=opening_ledgers["inventory"]["ledger_id"],
-        accounthead_id=None,
-        drcr=True,
-        amount=inventory_amount,
+            ledger_id=opening_ledgers["inventory"]["ledger_id"],
+            account_id=int(inventory_account_id) if inventory_account_id else None,
+            accounthead_id=None,
+            drcr=True,
+            amount=inventory_amount,
             description="Opening balance carry forward - Closing stock",
             section="inventory",
             label=INVENTORY_SYNTHETIC_LABEL,
@@ -229,6 +261,8 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
         )
 
     net_profit = _decimal(summary.get("net_profit_brought_to_equity") or 0)
+    raw_net_profit = _decimal(summary.get("raw_net_profit") or 0)
+    synthetic_equity_adjustment = net_profit - raw_net_profit
     if equity_targets:
         for target in equity_targets:
             amount = _decimal(target.get("amount"))
@@ -239,35 +273,44 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
                 continue
             _append_line(
                 ledger_id=int(ledger_id),
+                account_id=int(StaticAccountService.get_account_id(entity_id, target.get("static_account_code"), required=False))
+                if target.get("static_account_code")
+                else None,
                 accounthead_id=None,
-                drcr=(target.get("drcr") or ("credit" if net_profit > ZERO else "debit")) == "debit",
+                drcr=(target.get("drcr") or ("credit" if synthetic_equity_adjustment > ZERO else "debit")) == "debit",
                 amount=amount,
                 description=(
                     "Opening balance carry forward - "
-                    f"{CURRENT_PROFIT_LABEL if net_profit > ZERO else CURRENT_LOSS_LABEL}"
+                    f"{CURRENT_PROFIT_LABEL if synthetic_equity_adjustment > ZERO else CURRENT_LOSS_LABEL}"
                     + (f" - {target.get('ownership_name')}" if target.get("ownership_name") else "")
                 ),
                 section="equity",
                 label=target.get("static_account_name") or CURRENT_PROFIT_LABEL,
-                source="synthetic_profit_allocation" if net_profit > ZERO else "synthetic_loss_allocation",
+                source="synthetic_profit_allocation" if synthetic_equity_adjustment > ZERO else "synthetic_loss_allocation",
             )
-    elif net_profit > ZERO:
+    elif synthetic_equity_adjustment > ZERO:
+        equity_code = opening_ledgers["equity"]["static_account_code"]
+        equity_account_id = StaticAccountService.get_account_id(entity_id, equity_code, required=False)
         _append_line(
             ledger_id=opening_ledgers["equity"]["ledger_id"],
+            account_id=int(equity_account_id) if equity_account_id else None,
             accounthead_id=None,
             drcr=False,
-            amount=net_profit,
+            amount=synthetic_equity_adjustment,
             description="Opening balance carry forward - Current period profit",
             section="equity",
             label=CURRENT_PROFIT_LABEL,
             source="synthetic_profit",
         )
-    elif net_profit < ZERO:
+    elif synthetic_equity_adjustment < ZERO:
+        equity_code = opening_ledgers["equity"]["static_account_code"]
+        equity_account_id = StaticAccountService.get_account_id(entity_id, equity_code, required=False)
         _append_line(
             ledger_id=opening_ledgers["equity"]["ledger_id"],
+            account_id=int(equity_account_id) if equity_account_id else None,
             accounthead_id=None,
             drcr=True,
-            amount=abs(net_profit),
+            amount=abs(synthetic_equity_adjustment),
             description="Opening balance carry forward - Current period loss",
             section="equity",
             label=CURRENT_LOSS_LABEL,
@@ -279,6 +322,8 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
         "source_liabilities": f"{sum((_decimal(row.get('amount_decimal') or row.get('amount')) for row in actual_liability_rows), ZERO):.2f}",
         "inventory_carry_forward": f"{sum((_decimal(row.get('amount_decimal') or row.get('amount')) for row in inventory_rows), ZERO):.2f}",
         "net_profit_transfer": f"{net_profit:.2f}",
+        "raw_net_profit_already_posted": f"{raw_net_profit:.2f}",
+        "synthetic_equity_adjustment": f"{synthetic_equity_adjustment:.2f}",
         "stock_effective_mode": stock_valuation.get("effective_mode"),
         "valuation_method": stock_valuation.get("valuation_method"),
         "constitution": context["constitution"],
@@ -286,6 +331,7 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
         "equity_targets": equity_targets,
         "missing_equity_codes": missing_equity_codes,
         "equity_allocation_mode": context.get("equity_allocation_mode"),
+        "equity_embedded_in_balance_sheet": True,
     }
 
     return journal_lines, line_meta, {
@@ -295,7 +341,20 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
     }
 
 
-def _build_opening_history_payload(*, source_fy: EntityFinancialYear, destination_fy: EntityFinancialYear, entry, posting_batch, line_meta: list[dict[str, object]], summary: dict[str, object], opening_policy: dict, executed_by) -> dict[str, object]:
+def _build_opening_history_payload(
+    *,
+    source_fy: EntityFinancialYear,
+    destination_fy: EntityFinancialYear,
+    entry,
+    posting_batch,
+    line_meta: list[dict[str, object]],
+    summary: dict[str, object],
+    opening_policy: dict,
+    executed_by,
+    destination_year_created: bool,
+    active_year_ids_before_generation: list[int],
+    active_year_id_after_generation: int,
+) -> dict[str, object]:
     now = timezone.now()
     user_id = getattr(executed_by, "id", None)
     username = getattr(executed_by, "get_username", lambda: None)()
@@ -326,6 +385,11 @@ def _build_opening_history_payload(*, source_fy: EntityFinancialYear, destinatio
             "start_date": dest_start.isoformat() if dest_start else None,
             "end_date": dest_end.isoformat() if dest_end else None,
             "status": destination_fy.period_status,
+            "was_auto_created": bool(destination_year_created),
+        },
+        "active_year_transition": {
+            "before_generation": [int(fy_id) for fy_id in active_year_ids_before_generation if fy_id],
+            "after_generation": int(active_year_id_after_generation),
         },
         "summary": summary,
         "sections": [
@@ -384,7 +448,14 @@ def build_opening_generation(
         if not bool(getattr(locked_source, "is_year_closed", False)):
             raise ValidationError({"detail": "Opening generation requires the source year to be closed."})
 
+        active_year_ids_before_generation = list(
+            EntityFinancialYear.objects.filter(entity_id=entity_id, isactive=True)
+            .order_by("finstartyear", "id")
+            .values_list("id", flat=True)
+        )
+
         destination_fy = _resolve_destination_fy(entity_id, locked_source, executed_by=executed_by)
+        destination_year_created = not bool((preview.get("destination_year") or {}).get("id"))
         destination_fy = EntityFinancialYear.objects.select_for_update().filter(pk=destination_fy.pk, entity_id=entity_id).first() or destination_fy
         destination_metadata = dict(getattr(destination_fy, "metadata", None) or {})
         if isinstance(destination_metadata.get("opening_carry_forward"), dict):
@@ -444,12 +515,19 @@ def build_opening_generation(
             },
             opening_policy=opening_policy,
             executed_by=executed_by,
+            destination_year_created=destination_year_created,
+            active_year_ids_before_generation=active_year_ids_before_generation,
+            active_year_id_after_generation=destination_fy.id,
         )
 
         metadata = dict(getattr(destination_fy, "metadata", None) or {})
         metadata["opening_carry_forward"] = opening_history
         destination_fy.metadata = metadata
         destination_fy.save(update_fields=["metadata"])
+
+        _activate_financial_years(entity_id, [destination_fy.id])
+        locked_source.isactive = locked_source.id == destination_fy.id
+        destination_fy.isactive = True
 
     return {
         "status": "success",
@@ -465,5 +543,119 @@ def build_opening_generation(
             "status": destination_fy.period_status,
             "start_date": _as_date(destination_fy.finstartyear).isoformat() if _as_date(destination_fy.finstartyear) else None,
             "end_date": _as_date(destination_fy.finendyear).isoformat() if _as_date(destination_fy.finendyear) else None,
+        },
+    }
+
+
+def build_opening_generation_rollback(
+    *,
+    entity_id: int,
+    entityfin_id: int | None = None,
+    subentity_id: int | None = None,
+    executed_by=None,
+    reporting_policy: dict | None = None,
+) -> dict:
+    preview = build_opening_preview(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        reporting_policy=reporting_policy,
+    )
+    opening_history = preview.get("opening_history")
+    if not opening_history:
+        raise ValidationError({"detail": "No opening carry-forward history was found to roll back."})
+
+    source_fy = _compute_snapshot(entity_id, entityfin_id, subentity_id, reporting_policy).get("financial_year")
+    if source_fy is None:
+        raise ValidationError({"detail": "Source financial year could not be resolved for rollback."})
+
+    destination_year_id = (opening_history.get("destination_year") or {}).get("id") or (preview.get("destination_year") or {}).get("id")
+    if not destination_year_id:
+        raise ValidationError({"detail": "Destination financial year could not be resolved for rollback."})
+
+    with transaction.atomic():
+        locked_source = EntityFinancialYear.objects.select_for_update().filter(pk=source_fy.pk, entity_id=entity_id).first()
+        if locked_source is None:
+            raise ValidationError({"detail": "Source financial year could not be locked for rollback."})
+
+        destination_fy = EntityFinancialYear.objects.select_for_update().filter(pk=destination_year_id, entity_id=entity_id).first()
+        if destination_fy is None:
+            raise ValidationError({"detail": "Destination financial year could not be locked for rollback."})
+
+        destination_metadata = dict(getattr(destination_fy, "metadata", None) or {})
+        active_history = destination_metadata.get("opening_carry_forward")
+        if not isinstance(active_history, dict):
+            raise ValidationError({"detail": "No opening carry-forward history was found on the destination year."})
+
+        purge_result = purge_posting_locator(
+            entity_id=entity_id,
+            entityfin_id=destination_fy.id,
+            subentity_id=subentity_id,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=destination_fy.id,
+        )
+
+        rollback_logs = list(destination_metadata.get("opening_carry_forward_rollbacks") or [])
+        rollback_logs.append(
+            {
+                "rolled_back_at": timezone.now().isoformat(),
+                "rolled_back_by": {
+                    "id": getattr(executed_by, "id", None),
+                    "username": getattr(executed_by, "get_username", lambda: None)(),
+                    "name": " ".join(
+                        part for part in [getattr(executed_by, "first_name", ""), getattr(executed_by, "last_name", "")]
+                        if part
+                    ).strip() or None,
+                },
+                "source_year": active_history.get("source_year") or {},
+                "destination_year": active_history.get("destination_year") or {},
+                "batch": active_history.get("batch") or {},
+                "purge_result": purge_result,
+            }
+        )
+        destination_metadata["opening_carry_forward_rollbacks"] = rollback_logs
+        destination_metadata.pop("opening_carry_forward", None)
+        destination_fy.metadata = destination_metadata
+        destination_fy.save(update_fields=["metadata"])
+
+        transition = active_history.get("active_year_transition") or {}
+        restore_active_ids = transition.get("before_generation") or [locked_source.id]
+        if not isinstance(restore_active_ids, list):
+            restore_active_ids = [locked_source.id]
+        restore_active_ids = [int(fy_id) for fy_id in restore_active_ids if fy_id]
+        if not restore_active_ids:
+            restore_active_ids = [locked_source.id]
+        _activate_financial_years(entity_id, restore_active_ids)
+        locked_source.isactive = locked_source.id in restore_active_ids
+        destination_fy.isactive = destination_fy.id in restore_active_ids
+
+        destination_was_auto_created = bool((active_history.get("destination_year") or {}).get("was_auto_created"))
+        remaining_entries = Entry.objects.filter(entity_id=entity_id, entityfin_id=destination_fy.id).count()
+        if destination_was_auto_created and remaining_entries == 0 and not (destination_metadata.keys() - {"opening_carry_forward_rollbacks"}):
+            destination_id = destination_fy.id
+            destination_name = destination_fy.desc or destination_fy.year_code or _fy_label(_as_date(destination_fy.finstartyear), _as_date(destination_fy.finendyear))
+            destination_fy.delete()
+            destination_result = {
+                "id": destination_id,
+                "name": destination_name,
+                "deleted": True,
+            }
+        else:
+            destination_result = {
+                "id": destination_fy.id,
+                "name": destination_fy.desc or destination_fy.year_code or _fy_label(_as_date(destination_fy.finstartyear), _as_date(destination_fy.finendyear)),
+                "deleted": False,
+            }
+
+    return {
+        "status": "success",
+        "message": "Opening carry-forward rolled back successfully.",
+        "report_code": "opening_generation_rollback",
+        "entity_id": entity_id,
+        "entityfin_id": locked_source.id,
+        "subentity_id": subentity_id,
+        "rollback": {
+            "purge_result": purge_result,
+            "destination_year": destination_result,
         },
     }
