@@ -120,6 +120,7 @@ INSTALLED_APPS = [
     "manufacturing",
     "retail",
     "assets",
+    "invoice_import.apps.InvoiceImportConfig",
     "sales.apps.SalesConfig",
     "withholding",
     "gst_tds",

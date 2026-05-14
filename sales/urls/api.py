@@ -75,6 +75,16 @@ from sales.views.sales_ar_exports import (
     CustomerStatementPDFAPIView,
     CustomerStatementPrintAPIView,
 )
+from invoice_import.views import (
+    SalesInvoiceImportTemplateAPIView,
+    SalesInvoiceImportProfileListCreateAPIView,
+    SalesInvoiceImportProfileDetailAPIView,
+    SalesInvoiceImportJobCreateAPIView,
+    SalesInvoiceImportJobDetailAPIView,
+    SalesInvoiceImportJobCommitAPIView,
+    SalesInvoiceImportJobErrorsExportAPIView,
+    SalesInvoiceImportJobReconciliationAPIView,
+)
 
 urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
@@ -104,6 +114,14 @@ urlpatterns = [
     path("bulk-print/jobs/", SalesBulkPrintJobListCreateAPIView.as_view(), name="sales-bulk-print-job-list-create"),
     path("bulk-print/jobs/<int:job_id>/", SalesBulkPrintJobDetailAPIView.as_view(), name="sales-bulk-print-job-detail"),
     path("bulk-print/jobs/<int:job_id>/download/", SalesBulkPrintJobDownloadAPIView.as_view(), name="sales-bulk-print-job-download"),
+    path("legacy-import/template/", SalesInvoiceImportTemplateAPIView.as_view(), name="sales-legacy-import-template"),
+    path("legacy-import/profiles/", SalesInvoiceImportProfileListCreateAPIView.as_view(), name="sales-legacy-import-profile-list-create"),
+    path("legacy-import/profiles/<int:profile_id>/", SalesInvoiceImportProfileDetailAPIView.as_view(), name="sales-legacy-import-profile-detail"),
+    path("legacy-import/jobs/", SalesInvoiceImportJobCreateAPIView.as_view(), name="sales-legacy-import-job-create"),
+    path("legacy-import/jobs/<int:job_id>/", SalesInvoiceImportJobDetailAPIView.as_view(), name="sales-legacy-import-job-detail"),
+    path("legacy-import/jobs/<int:job_id>/commit/", SalesInvoiceImportJobCommitAPIView.as_view(), name="sales-legacy-import-job-commit"),
+    path("legacy-import/jobs/<int:job_id>/errors/", SalesInvoiceImportJobErrorsExportAPIView.as_view(), name="sales-legacy-import-job-errors"),
+    path("legacy-import/jobs/<int:job_id>/reconciliation/", SalesInvoiceImportJobReconciliationAPIView.as_view(), name="sales-legacy-import-job-reconciliation"),
     path("meta/invoice-form/", SalesInvoiceFormMetaAPIView.as_view(), name="sales-invoice-form-meta"),
     path("meta/invoice-detail-form/", SalesInvoiceDetailFormMetaAPIView.as_view(), name="sales-invoice-detail-form-meta"),
     path("meta/invoice-search/", SalesInvoiceSearchMetaAPIView.as_view(), name="sales-invoice-search-meta"),

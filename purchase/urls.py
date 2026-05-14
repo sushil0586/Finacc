@@ -95,6 +95,16 @@ from purchase.views.purchase_gstr2b import (
     PurchaseGstr2bImportBatchMatchAPIView,
     PurchaseGstr2bImportRowReviewAPIView,
 )
+from invoice_import.views import (
+    PurchaseInvoiceImportTemplateAPIView,
+    PurchaseInvoiceImportProfileListCreateAPIView,
+    PurchaseInvoiceImportProfileDetailAPIView,
+    PurchaseInvoiceImportJobCreateAPIView,
+    PurchaseInvoiceImportJobDetailAPIView,
+    PurchaseInvoiceImportJobCommitAPIView,
+    PurchaseInvoiceImportJobErrorsExportAPIView,
+    PurchaseInvoiceImportJobReconciliationAPIView,
+)
 
 urlpatterns = [
     # CRUD
@@ -108,6 +118,14 @@ urlpatterns = [
     path("purchase-service-invoices/<int:pk>/attachments/", PurchaseInvoiceAttachmentListCreateAPIView.as_view(), name="purchase-service-invoice-attachments"),
     path("purchase-service-invoices/<int:pk>/attachments/<int:attachment_id>/", PurchaseInvoiceAttachmentDeleteAPIView.as_view(), name="purchase-service-invoice-attachment-delete"),
     path("purchase-service-invoices/<int:pk>/attachments/<int:attachment_id>/download/", PurchaseInvoiceAttachmentDownloadAPIView.as_view(), name="purchase-service-invoice-attachment-download"),
+    path("legacy-import/template/", PurchaseInvoiceImportTemplateAPIView.as_view(), name="purchase-legacy-import-template"),
+    path("legacy-import/profiles/", PurchaseInvoiceImportProfileListCreateAPIView.as_view(), name="purchase-legacy-import-profile-list-create"),
+    path("legacy-import/profiles/<int:profile_id>/", PurchaseInvoiceImportProfileDetailAPIView.as_view(), name="purchase-legacy-import-profile-detail"),
+    path("legacy-import/jobs/", PurchaseInvoiceImportJobCreateAPIView.as_view(), name="purchase-legacy-import-job-create"),
+    path("legacy-import/jobs/<int:job_id>/", PurchaseInvoiceImportJobDetailAPIView.as_view(), name="purchase-legacy-import-job-detail"),
+    path("legacy-import/jobs/<int:job_id>/commit/", PurchaseInvoiceImportJobCommitAPIView.as_view(), name="purchase-legacy-import-job-commit"),
+    path("legacy-import/jobs/<int:job_id>/errors/", PurchaseInvoiceImportJobErrorsExportAPIView.as_view(), name="purchase-legacy-import-job-errors"),
+    path("legacy-import/jobs/<int:job_id>/reconciliation/", PurchaseInvoiceImportJobReconciliationAPIView.as_view(), name="purchase-legacy-import-job-reconciliation"),
 
     # Actions
     path("purchase-invoices/<int:pk>/confirm/", PurchaseInvoiceConfirmAPIView.as_view(), name="purchase-invoice-confirm"),

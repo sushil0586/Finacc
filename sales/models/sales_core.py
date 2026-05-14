@@ -247,6 +247,18 @@ class SalesInvoiceHeader(EntityScopedModel):
     reference = models.CharField(max_length=255, blank=True, default="")
     remarks = models.TextField(blank=True, default="")
     custom_fields_json = models.JSONField(default=dict, blank=True)
+    is_legacy_imported = models.BooleanField(default=False, db_index=True)
+    legacy_import_job = models.ForeignKey(
+        "invoice_import.ImportJob",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sales_headers",
+    )
+    legacy_source_system = models.CharField(max_length=100, blank=True, default="")
+    legacy_source_key = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    legacy_import_mode = models.CharField(max_length=30, blank=True, default="")
+    legacy_behavior_flags = models.JSONField(default=dict, blank=True)
 
     # -------------------------
     # Audit / lifecycle
@@ -283,6 +295,11 @@ class SalesInvoiceHeader(EntityScopedModel):
                 fields=["entity", "entityfinid", "doc_type", "doc_code", "invoice_number"],
                 condition=Q(subentity__isnull=True, invoice_number__isnull=False) & ~Q(invoice_number=""),
                 name="uq_sales_hdr_root_invoiceno",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "legacy_source_system", "legacy_source_key"],
+                condition=~Q(legacy_source_system="") & ~Q(legacy_source_key=""),
+                name="uq_sales_legacy_source_scope",
             ),
         ]
         indexes = [

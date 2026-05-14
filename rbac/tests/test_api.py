@@ -259,6 +259,54 @@ class RBACAPITests(TestCase):
         self.assertIsNotNone(found)
         self.assertEqual(found["route_path"], "/reports/receivables/receivable-aging")
 
+    def test_sales_legacy_import_menu_is_visible_with_sales_invoice_permission(self):
+        role = Role.objects.create(entity=self.entity_a, name="Sales Viewer", code=f"sales_viewer_{self.entity_a.id}_legacy")
+        menu = Menu.objects.get(code="sales.sales-legacy-import")
+        permission = Permission.objects.get(code="sales.invoice.view")
+        RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/sales-legacy-import")
+
+    def test_purchase_legacy_import_menu_is_visible_with_purchase_invoice_permission(self):
+        role = Role.objects.create(entity=self.entity_a, name="Purchase Viewer", code=f"purchase_viewer_{self.entity_a.id}_legacy")
+        menu = Menu.objects.get(code="purchase.purchase-legacy-import")
+        permission = Permission.objects.get(code="purchase.invoice.view")
+        RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+        def find_node(nodes, menu_code):
+            for node in nodes:
+                if node["code"] == menu_code:
+                    return node
+                child = find_node(node.get("children", []), menu_code)
+                if child:
+                    return child
+            return None
+
+        found = find_node(response.data["menus"], menu.code)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["route_path"], "/purchase-legacy-import")
+
     def test_receivable_aging_detail_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_rad")
         menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging_detail")

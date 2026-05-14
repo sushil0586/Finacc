@@ -15,7 +15,13 @@ from openpyxl import Workbook, load_workbook
 from catalog.models import ProductBulkJob
 from entity.models import Entity
 from financial.models import account
-from financial.profile_access import account_primary_email, account_primary_phone
+from financial.profile_access import (
+    account_primary_bank_account,
+    account_primary_bank_name,
+    account_primary_contact_person,
+    account_primary_email,
+    account_primary_phone,
+)
 from financial.serializers_ledger import AccountProfileV2WriteSerializer
 
 SHEET = "accounts"
@@ -153,19 +159,42 @@ def template_payload() -> dict[str, list[dict[str, Any]]]:
                 "legalname": "ABC Traders Pvt Ltd",
                 "emailid": "abc@example.com",
                 "contactno": "9876543210",
+                "contactperson": "Amit Sharma",
                 "isactive": True,
+                "website": "https://example.com",
                 "accounthead": "",
                 "creditaccounthead": "",
+                "contra_ledger": "",
                 "accounttype": "",
                 "openingbdr": "0.00",
                 "openingbcr": "0.00",
+                "canbedeleted": True,
                 "partytype": "Customer",
                 "gstno": "29ABCDE1234F1Z5",
                 "pan": "ABCDE1234F",
+                "gstintype": "",
+                "gstregtype": "",
+                "is_sez": False,
+                "cin": "",
+                "msme": "",
+                "gsttdsno": "",
+                "tdsno": "",
+                "tdsrate": "",
+                "tdssection": "",
+                "tds_threshold": "",
+                "istcsapplicable": False,
+                "tcscode": "",
                 "creditlimit": "0.00",
                 "creditdays": "0",
                 "paymentterms": "Net30",
                 "currency": "INR",
+                "blockstatus": "",
+                "blockedreason": "",
+                "approved": False,
+                "agent": "",
+                "reminders": "",
+                "bankname": "State Bank",
+                "banKAcno": "1234567890",
                 "line1": "Address Line 1",
                 "line2": "",
                 "floor_no": "",
@@ -202,19 +231,42 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
                 "legalname": row.legalname,
                 "emailid": account_primary_email(row),
                 "contactno": account_primary_phone(row),
+                "contactperson": account_primary_contact_person(row),
                 "isactive": row.isactive,
+                "website": row.website,
                 "accounthead": getattr(row.ledger, "accounthead_id", None),
                 "creditaccounthead": getattr(row.ledger, "creditaccounthead_id", None),
+                "contra_ledger": getattr(row.ledger, "contra_ledger_id", None),
                 "accounttype": getattr(row.ledger, "accounttype_id", None),
                 "openingbdr": str(getattr(row.ledger, "openingbdr", Decimal("0.00")) or "0.00"),
                 "openingbcr": str(getattr(row.ledger, "openingbcr", Decimal("0.00")) or "0.00"),
+                "canbedeleted": row.canbedeleted,
                 "partytype": getattr(commercial, "partytype", None),
                 "gstno": getattr(compliance, "gstno", None),
                 "pan": getattr(compliance, "pan", None),
+                "gstintype": getattr(compliance, "gstintype", None),
+                "gstregtype": getattr(compliance, "gstregtype", None),
+                "is_sez": getattr(compliance, "is_sez", None),
+                "cin": getattr(compliance, "cin", None),
+                "msme": getattr(compliance, "msme", None),
+                "gsttdsno": getattr(compliance, "gsttdsno", None),
+                "tdsno": getattr(compliance, "tdsno", None),
+                "tdsrate": str(getattr(compliance, "tdsrate", "") or ""),
+                "tdssection": getattr(compliance, "tdssection", None),
+                "tds_threshold": str(getattr(compliance, "tds_threshold", "") or ""),
+                "istcsapplicable": getattr(compliance, "istcsapplicable", None),
+                "tcscode": getattr(compliance, "tcscode", None),
                 "creditlimit": str(getattr(commercial, "creditlimit", Decimal("0.00")) or "0.00"),
                 "creditdays": getattr(commercial, "creditdays", None),
                 "paymentterms": getattr(commercial, "paymentterms", None),
                 "currency": getattr(commercial, "currency", None),
+                "blockstatus": getattr(commercial, "blockstatus", None),
+                "blockedreason": getattr(commercial, "blockedreason", None),
+                "approved": getattr(commercial, "approved", None),
+                "agent": getattr(commercial, "agent", None),
+                "reminders": getattr(commercial, "reminders", None),
+                "bankname": account_primary_bank_name(row),
+                "banKAcno": account_primary_bank_account(row),
                 "line1": getattr(primary_address, "line1", None),
                 "line2": getattr(primary_address, "line2", None),
                 "floor_no": getattr(primary_address, "floor_no", None),
@@ -304,11 +356,14 @@ def _build_payload(entity: Entity, row: dict[str, Any]) -> dict[str, Any]:
     set_if_value(payload, "legalname", _normalize_text(row.get("legalname")))
     set_if_value(payload, "emailid", _normalize_text(row.get("emailid")))
     set_if_value(payload, "contactno", _normalize_text(row.get("contactno")))
+    set_if_value(payload, "contactperson", _normalize_text(row.get("contactperson")))
+    set_if_value(payload, "website", _normalize_text(row.get("website")))
     payload["isactive"] = _to_bool(row.get("isactive"), default=True)
 
     set_if_value(payload, "ledger_code", _to_int(row.get("ledger_code")))
     set_if_value(payload, "accounthead", _to_int(row.get("accounthead")))
     set_if_value(payload, "creditaccounthead", _to_int(row.get("creditaccounthead")))
+    set_if_value(payload, "contra_ledger", _to_int(row.get("contra_ledger")))
     set_if_value(payload, "accounttype", _to_int(row.get("accounttype")))
     set_if_value(payload, "openingbdr", _to_decimal(row.get("openingbdr"), default=None))
     set_if_value(payload, "openingbcr", _to_decimal(row.get("openingbcr"), default=None))
@@ -321,12 +376,28 @@ def _build_payload(entity: Entity, row: dict[str, Any]) -> dict[str, Any]:
     set_if_value(compliance, "gstregtype", _normalize_text(row.get("gstregtype")))
     if row.get("is_sez") not in (None, ""):
         compliance["is_sez"] = _to_bool(row.get("is_sez"), default=False)
+    set_if_value(compliance, "cin", _normalize_text(row.get("cin")))
+    set_if_value(compliance, "msme", _normalize_text(row.get("msme")))
+    set_if_value(compliance, "gsttdsno", _normalize_text(row.get("gsttdsno")))
+    set_if_value(compliance, "tdsno", _normalize_text(row.get("tdsno")))
+    set_if_value(compliance, "tdsrate", _to_decimal(row.get("tdsrate"), default=None))
+    set_if_value(compliance, "tdssection", _normalize_text(row.get("tdssection")))
+    set_if_value(compliance, "tds_threshold", _to_decimal(row.get("tds_threshold"), default=None))
+    if row.get("istcsapplicable") not in (None, ""):
+        compliance["istcsapplicable"] = _to_bool(row.get("istcsapplicable"), default=False)
+    set_if_value(compliance, "tcscode", _normalize_text(row.get("tcscode")))
 
     set_if_value(commercial, "partytype", _normalize_text(row.get("partytype")))
     set_if_value(commercial, "creditlimit", _to_decimal(row.get("creditlimit"), default=None))
     set_if_value(commercial, "creditdays", _to_int(row.get("creditdays")))
     set_if_value(commercial, "paymentterms", _normalize_text(row.get("paymentterms")))
     set_if_value(commercial, "currency", _normalize_text(row.get("currency")))
+    set_if_value(commercial, "blockstatus", _normalize_text(row.get("blockstatus")))
+    set_if_value(commercial, "blockedreason", _normalize_text(row.get("blockedreason")))
+    if row.get("approved") not in (None, ""):
+        commercial["approved"] = _to_bool(row.get("approved"), default=False)
+    set_if_value(commercial, "agent", _normalize_text(row.get("agent")))
+    set_if_value(commercial, "reminders", _to_int(row.get("reminders")))
 
     set_if_value(primary_address, "line1", _normalize_text(row.get("line1")))
     set_if_value(primary_address, "line2", _normalize_text(row.get("line2")))
@@ -337,9 +408,6 @@ def _build_payload(entity: Entity, row: dict[str, Any]) -> dict[str, Any]:
     set_if_value(primary_address, "district_id", _to_int(row.get("district")))
     set_if_value(primary_address, "city_id", _to_int(row.get("city")))
     set_if_value(primary_address, "pincode", _normalize_text(row.get("pincode")))
-
-    set_if_value(payload, "dateofreg", _to_datetime_string(row.get("dateofreg")))
-    set_if_value(payload, "dateofdreg", _to_datetime_string(row.get("dateofdreg")))
 
     if compliance:
         payload["compliance_profile"] = compliance

@@ -9,7 +9,7 @@ from django.utils import timezone
 from Authentication.models import User
 from entity.models import Entity, SubEntity
 from rbac.models import Menu, Permission, Role, RolePermission, UserRoleAssignment
-from rbac.seeding import PayrollRBACSeedService
+from rbac.seeding import PayrollRBACSeedService, RBACSeedService
 from rbac.services import EffectivePermissionService, RoleTemplateService
 
 
@@ -229,6 +229,80 @@ class RBACModelTests(TestCase):
 
         self.assertTrue(required_codes.issubset(template_permissions))
         self.assertNotIn("reports.payablesclosepack.view", template_permissions)
+
+    def test_sales_and_purchase_templates_include_invoice_view_permissions(self):
+        Permission.objects.update_or_create(
+            code="sales.invoice.view",
+            defaults={
+                "name": "View Sales Invoice",
+                "module": "sales",
+                "resource": "invoice",
+                "action": "view",
+                "isactive": True,
+            },
+        )
+        Permission.objects.update_or_create(
+            code="purchase.invoice.view",
+            defaults={
+                "name": "View Purchase Invoice",
+                "module": "purchase",
+                "resource": "invoice",
+                "action": "view",
+                "isactive": True,
+            },
+        )
+
+        sales_codes = set(
+            RoleTemplateService._permission_queryset_for_template("sales_user").values_list("code", flat=True)
+        )
+        purchase_codes = set(
+            RoleTemplateService._permission_queryset_for_template("purchase_user").values_list("code", flat=True)
+        )
+
+        self.assertIn("sales.invoice.view", sales_codes)
+        self.assertIn("purchase.invoice.view", purchase_codes)
+
+    def test_entity_seeding_grants_invoice_view_permissions_to_default_sales_and_purchase_roles(self):
+        Permission.objects.update_or_create(
+            code="sales.invoice.view",
+            defaults={
+                "name": "View Sales Invoice",
+                "module": "sales",
+                "resource": "invoice",
+                "action": "view",
+                "isactive": True,
+            },
+        )
+        Permission.objects.update_or_create(
+            code="purchase.invoice.view",
+            defaults={
+                "name": "View Purchase Invoice",
+                "module": "purchase",
+                "resource": "invoice",
+                "action": "view",
+                "isactive": True,
+            },
+        )
+
+        RBACSeedService.seed_entity(entity=self.entity, actor=self.user, seed_default_roles=True)
+
+        sales_role = Role.objects.get(entity=self.entity, code="sales_user")
+        purchase_role = Role.objects.get(entity=self.entity, code="purchase_user")
+
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=sales_role,
+                permission__code="sales.invoice.view",
+                isactive=True,
+            ).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=purchase_role,
+                permission__code="purchase.invoice.view",
+                isactive=True,
+            ).exists()
+        )
 
     def test_admin_full_access_reconcile_migration_grants_all_active_permissions(self):
         migration = importlib.import_module("rbac.migrations.0064_sync_admin_full_access")

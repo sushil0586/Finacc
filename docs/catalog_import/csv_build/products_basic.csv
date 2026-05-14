@@ -1,0 +1,11 @@
+﻿sku,productname,productdesc,category,brand,base_uom_code,sales_account_code,purchase_account_code,is_service,item_classification,purchase_behavior,default_asset_category_code,is_batch_managed,is_serialized,is_expiry_tracked,shelf_life_days,expiry_warning_days,is_ecomm_9_5_service,default_is_rcm,is_itc_eligible,product_status,launch_date,discontinue_date,isactive
+RM-001,Steel Rod 10mm,Raw material for fabrication,Raw Materials,Tata,KG,4001,5001,False,raw_material,inventory,,False,False,False,,30,False,False,True,active,01-04-2026,,True
+FG-001,Office Chair,Finished goods sale item,Finished Goods,Nilkamal,PCS,4001,5001,False,finished_good,inventory,,False,False,False,,30,False,False,True,active,01-04-2026,,True
+SRV-001,Installation Service,On-site installation,Services,Generic,NOS,4001,,True,service,expense,,False,False,False,,0,False,False,True,active,01-04-2026,,True
+AST-001,Laptop Asset Intake,Capex product mapped to asset,Electronics,Dell,NOS,4001,5001,False,trading_item,asset,COMP,False,True,False,,30,False,False,True,active,01-04-2026,,True
+BAT-001,Chemical Drum Batch Item,Batch managed consumable,Raw Materials,Generic,LTR,4001,5001,False,raw_material,inventory,,True,False,False,,30,False,False,True,active,01-04-2026,,True
+SER-001,High Value UPS Serialized,Serialized electronics item,Electronics,APC,NOS,4001,5001,False,trading_item,inventory,,False,True,False,,30,False,False,True,active,01-04-2026,,True
+EXP-001,Milk Packet 500ml,Expiry tracked FMCG item,Finished Goods,Amul,PCS,4001,5001,False,finished_good,inventory,,False,False,True,180,15,False,False,True,active,01-04-2026,,True
+RCM-001,Imported Legal Service,RCM applicable service,Services,External,NOS,4001,5001,True,service,expense,,False,False,False,,0,False,True,True,active,01-04-2026,,True
+ITC-001,Blocked ITC Motor Car,Purchase allowed but ITC blocked,Assets,Maruti,NOS,4001,5001,False,trading_item,asset,MACH,False,True,False,,30,False,False,False,active,01-04-2026,,True
+DISC-001,Legacy Printer Model,Inactive discontinued product,Spare Parts,HP,PCS,4001,5001,False,trading_item,inventory,,False,False,False,,30,False,False,True,active,01-04-2025,31-03-2026,False

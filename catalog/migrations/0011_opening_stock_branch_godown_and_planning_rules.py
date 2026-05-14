@@ -45,6 +45,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RemoveConstraint(
+            model_name="openingstockbylocation",
+            name="uq_openingstock_entity_product_location_date",
+        ),
         migrations.RenameField(
             model_name="openingstockbylocation",
             old_name="location",
@@ -54,10 +58,6 @@ class Migration(migrations.Migration):
             model_name="openingstockbylocation",
             name="godown",
             field=models.ForeignKey(blank=True, null=True, on_delete=models.PROTECT, related_name="catalog_opening_stocks", to="entity.godown"),
-        ),
-        migrations.RemoveConstraint(
-            model_name="openingstockbylocation",
-            name="uq_openingstock_entity_product_location_date",
         ),
         migrations.RunPython(backfill_opening_stock_branch_godown, migrations.RunPython.noop),
         migrations.AddConstraint(

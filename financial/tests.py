@@ -4,6 +4,9 @@ from rest_framework.test import APIClient
 
 from Authentication.models import User
 from entity.models import Entity
+from financial.bulk_accounts import commit_payload as commit_accounts_bulk_payload
+from financial.bulk_accounts import export_payload as export_accounts_bulk_payload
+from financial.bulk_accounts import template_payload as accounts_bulk_template_payload
 from financial.models import AccountAddress, AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
 from geography.models import City, Country, District, State
 from financial.seeding import FinancialSeedService
@@ -526,3 +529,193 @@ class FinancialEndpointAliasTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         ledger = Ledger.objects.select_related("account_profile").get(id=response.data["id"])
         self.assertEqual(ledger.account_profile.accountname, "Vendor A")
+
+
+class FinancialAccountsBulkCoverageTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="fin-bulk@example.com",
+            username="fin-bulk@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity = Entity.objects.create(entityname="Bulk Accounts Entity", createdby=self.user)
+        self.head = accountHead.objects.create(
+            entity=self.entity,
+            name="Sundry Debtors",
+            code=4100,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        self.credit_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Sundry Creditors",
+            code=4200,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+
+    def test_template_and_export_include_extended_profile_fields(self):
+        template_row = accounts_bulk_template_payload()["accounts"][0]
+        for field in (
+            "contactperson",
+            "website",
+            "contra_ledger",
+            "gstintype",
+            "gstregtype",
+            "cin",
+            "msme",
+            "gsttdsno",
+            "tdsno",
+            "tdsrate",
+            "tdssection",
+            "tds_threshold",
+            "istcsapplicable",
+            "tcscode",
+            "blockstatus",
+            "blockedreason",
+            "approved",
+            "agent",
+            "reminders",
+            "bankname",
+            "banKAcno",
+        ):
+            self.assertIn(field, template_row)
+
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "ABC Traders",
+                "legalname": "ABC Traders Pvt Ltd",
+                "website": "https://example.com",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "ledger_code": 5100,
+                "name": "ABC Traders",
+                "legal_name": "ABC Traders Pvt Ltd",
+                "accounthead_id": self.head.id,
+                "creditaccounthead_id": self.credit_head.id,
+                "is_party": True,
+                "isactive": True,
+            },
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={
+                "gstno": "29ABCDE1234F1Z5",
+                "pan": "ABCDE1234F",
+                "gstintype": "Regular",
+                "gstregtype": "Regular",
+                "is_sez": True,
+                "cin": "L12345KA2024PLC000001",
+                "msme": "MSME123",
+                "gsttdsno": "GSTTDS001",
+                "tdsno": "TDS001",
+                "tdsrate": "1.00",
+                "tdssection": "194C",
+                "tds_threshold": "50000.00",
+                "istcsapplicable": True,
+                "tcscode": "TCS206C",
+            },
+            commercial_data={
+                "partytype": "Customer",
+                "creditlimit": "1000.00",
+                "creditdays": 15,
+                "paymentterms": "Net15",
+                "currency": "INR",
+                "blockstatus": "Blocked",
+                "blockedreason": "KYC pending",
+                "approved": True,
+                "agent": "Raj",
+                "reminders": 3,
+            },
+            primary_contact_data={
+                "emailid": "abc@example.com",
+                "phoneno": "9876543210",
+                "full_name": "Amit Sharma",
+            },
+            primary_bank_data={
+                "bankname": "State Bank",
+                "banKAcno": "1234567890",
+            },
+            createdby=self.user,
+        )
+
+        export_row = export_accounts_bulk_payload(self.entity)["accounts"][0]
+        self.assertEqual(export_row["contactperson"], "Amit Sharma")
+        self.assertEqual(export_row["website"], "https://example.com")
+        self.assertEqual(export_row["gstintype"], "Regular")
+        self.assertEqual(export_row["blockstatus"], "Blocked")
+        self.assertEqual(export_row["bankname"], "State Bank")
+
+    def test_commit_payload_persists_extended_profile_fields(self):
+        payload = {
+            "accounts": [
+                {
+                    "id": "",
+                    "ledger_code": "7001",
+                    "accountname": "XYZ Supplies",
+                    "legalname": "XYZ Supplies LLP",
+                    "emailid": "xyz@example.com",
+                    "contactno": "9999999999",
+                    "contactperson": "Priya",
+                    "isactive": True,
+                    "website": "https://xyz.example.com",
+                    "accounthead": str(self.head.id),
+                    "creditaccounthead": str(self.credit_head.id),
+                    "contra_ledger": "",
+                    "accounttype": "",
+                    "openingbdr": "100.00",
+                    "openingbcr": "0.00",
+                    "canbedeleted": True,
+                    "partytype": "Customer",
+                    "gstno": "29ABCDE1234F1Z5",
+                    "pan": "ABCDE1234F",
+                    "gstintype": "Regular",
+                    "gstregtype": "Regular",
+                    "is_sez": True,
+                    "cin": "L12345KA2024PLC000002",
+                    "msme": "MSME456",
+                    "gsttdsno": "GSTTDS002",
+                    "tdsno": "TDS002",
+                    "tdsrate": "2.00",
+                    "tdssection": "194J",
+                    "tds_threshold": "75000.00",
+                    "istcsapplicable": True,
+                    "tcscode": "TCS206C",
+                    "creditlimit": "5000.00",
+                    "creditdays": "30",
+                    "paymentterms": "Net30",
+                    "currency": "INR",
+                    "blockstatus": "Active",
+                    "blockedreason": "",
+                    "approved": True,
+                    "agent": "Neha",
+                    "reminders": "2",
+                    "bankname": "HDFC",
+                    "banKAcno": "9988776655",
+                    "line1": "Address 1",
+                    "line2": "Address 2",
+                    "floor_no": "3",
+                    "street": "MG Road",
+                    "country": "",
+                    "state": "",
+                    "district": "",
+                    "city": "",
+                    "pincode": "560001",
+                }
+            ]
+        }
+
+        result = commit_accounts_bulk_payload(payload, self.entity)
+
+        self.assertEqual(result.errors, [])
+        acc = account.objects.get(entity=self.entity, accountname="XYZ Supplies")
+        self.assertEqual(acc.website, "https://xyz.example.com")
+        self.assertEqual(acc.compliance_profile.gstintype, "Regular")
+        self.assertEqual(acc.compliance_profile.tdssection, "194J")
+        self.assertEqual(acc.commercial_profile.agent, "Neha")
+        self.assertEqual(acc.commercial_profile.reminders, 2)
+        self.assertEqual(acc.bank_details.get(isprimary=True).bankname, "HDFC")
+        self.assertEqual(acc.contact_details.get(isprimary=True).full_name, "Priya")

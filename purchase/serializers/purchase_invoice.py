@@ -352,6 +352,11 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         model = PurchaseInvoiceHeader
         fields = [
             "id",
+            "is_legacy_imported",
+            "legacy_source_system",
+            "legacy_source_key",
+            "legacy_import_mode",
+            "legacy_behavior_flags",
             "doc_type",
             "bill_date",
             "posting_date",
@@ -1042,6 +1047,10 @@ class PurchaseInvoiceListSerializer(serializers.ModelSerializer):
         model = PurchaseInvoiceHeader
         fields = [
             "id",
+            "is_legacy_imported",
+            "legacy_source_system",
+            "legacy_source_key",
+            "legacy_import_mode",
             "doc_type",
             "doc_type_name",
             "status",

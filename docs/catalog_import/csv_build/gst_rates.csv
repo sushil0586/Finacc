@@ -1,0 +1,11 @@
+﻿sku,hsn_code,gst_type,sgst,cgst,igst,cess,cess_type,cess_specific_amount,valid_from,valid_to,isdefault
+RM-001,7203,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+FG-001,9401,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+SRV-001,9987,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+AST-001,8471,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+BAT-001,3824,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+SER-001,8504,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+EXP-001,0401,regular,2.50,2.50,5.00,0.00,none,,01-04-2026,,True
+RCM-001,9982,regular,9.00,9.00,18.00,0.00,none,,01-04-2026,,True
+ITC-001,8703,regular,14.00,14.00,28.00,0.00,none,,01-04-2026,,True
+DISC-001,8443,regular,9.00,9.00,18.00,0.00,none,,01-04-2025,31-03-2026,True

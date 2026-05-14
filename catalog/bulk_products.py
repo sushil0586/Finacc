@@ -11,6 +11,7 @@ from typing import Any
 from django.db import transaction
 from openpyxl import Workbook, load_workbook
 
+from assets.models import AssetCategory
 from entity.models import Entity, Godown, SubEntity
 from financial.models import account
 
@@ -177,6 +178,8 @@ def template_payload() -> dict[str, list[dict[str, Any]]]:
                 "purchase_account_code": "",
                 "is_service": False,
                 "item_classification": "trading_item",
+                "purchase_behavior": "inventory",
+                "default_asset_category_code": "",
                 "is_batch_managed": False,
                 "is_serialized": False,
                 "is_expiry_tracked": False,
@@ -258,7 +261,16 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
     products_qs = Product.objects.filter(entity=entity)
     if search:
         products_qs = products_qs.filter(productname__icontains=search)
-    products = list(products_qs.select_related("productcategory", "brand", "base_uom", "sales_account", "purchase_account"))
+    products = list(
+        products_qs.select_related(
+            "productcategory",
+            "brand",
+            "base_uom",
+            "sales_account",
+            "purchase_account",
+            "default_asset_category",
+        )
+    )
     product_ids = [p.id for p in products]
     sku_by_id = {p.id: p.sku for p in products}
 
@@ -301,6 +313,8 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
                 "purchase_account_code": getattr(p.purchase_account, "ledger_code", "") or "",
                 "is_service": p.is_service,
                 "item_classification": p.item_classification,
+                "purchase_behavior": p.purchase_behavior,
+                "default_asset_category_code": getattr(p.default_asset_category, "code", "") or "",
                 "is_batch_managed": p.is_batch_managed,
                 "is_serialized": p.is_serialized,
                 "is_expiry_tracked": p.is_expiry_tracked,
@@ -424,6 +438,7 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
     existing_skus = set(Product.objects.filter(entity=entity).values_list("sku", flat=True))
     existing_categories = {c.strip().lower() for c in ProductCategory.objects.filter(entity=entity).values_list("pcategoryname", flat=True)}
     existing_uoms = {c.strip().lower() for c in UnitOfMeasure.objects.filter(entity=entity).values_list("code", flat=True)}
+    existing_asset_categories = {c.strip().lower() for c in AssetCategory.objects.filter(entity=entity).values_list("code", flat=True)}
     file_categories = {(row.get("pcategoryname") or "").strip().lower() for row in payload.get("categories_master", []) if (row.get("pcategoryname") or "").strip()}
     file_uoms = {(row.get("code") or "").strip().lower() for row in payload.get("uoms_master", []) if (row.get("code") or "").strip()}
 
@@ -460,6 +475,8 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
 
         category = (row.get("category") or "").strip().lower()
         base_uom = (row.get("base_uom_code") or "").strip().lower()
+        purchase_behavior = (row.get("purchase_behavior") or "").strip() or "inventory"
+        asset_category_code = (row.get("default_asset_category_code") or "").strip().lower()
         if not category:
             errors.append(
                 {
@@ -496,6 +513,25 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
                     "message": f"UOM '{row.get('base_uom_code')}' not found in DB or uoms_master sheet.",
                 }
             )
+        if purchase_behavior == "asset":
+            if not asset_category_code:
+                errors.append(
+                    {
+                        "sheet": "products_basic",
+                        "row": idx,
+                        "field": "default_asset_category_code",
+                        "message": "default_asset_category_code is required when purchase_behavior is 'asset'.",
+                    }
+                )
+            elif asset_category_code not in existing_asset_categories:
+                errors.append(
+                    {
+                        "sheet": "products_basic",
+                        "row": idx,
+                        "field": "default_asset_category_code",
+                        "message": f"Asset category '{row.get('default_asset_category_code')}' not found.",
+                    }
+                )
 
     for idx, row in enumerate(payload.get("categories_master", []), start=2):
         name = (row.get("pcategoryname") or "").strip()
@@ -551,6 +587,7 @@ def commit_payload(
     price_map = {p.name.strip().lower(): p for p in PriceList.objects.filter(entity=entity)}
     subentity_map = {s.subentity_code.strip().lower(): s for s in SubEntity.objects.filter(entity=entity)}
     acc_code_map = {str(a.ledger.ledger_code): a for a in account.objects.filter(entity=entity, ledger__isnull=False).select_related("ledger")}
+    asset_category_map = {c.code.strip().lower(): c for c in AssetCategory.objects.filter(entity=entity)}
 
     product_map = {p.sku: p for p in Product.objects.filter(entity=entity)}
 
@@ -678,6 +715,8 @@ def commit_payload(
                 obj.purchase_account = acc_code_map.get(str(row.get("purchase_account_code") or "").strip())
                 obj.is_service = _to_bool(row.get("is_service"))
                 obj.item_classification = (row.get("item_classification") or obj.item_classification or "trading_item")
+                obj.purchase_behavior = (row.get("purchase_behavior") or obj.purchase_behavior or "inventory")
+                obj.default_asset_category = asset_category_map.get((row.get("default_asset_category_code") or "").strip().lower())
                 obj.is_batch_managed = _to_bool(row.get("is_batch_managed"))
                 obj.is_serialized = _to_bool(row.get("is_serialized"))
                 obj.is_expiry_tracked = _to_bool(row.get("is_expiry_tracked"))

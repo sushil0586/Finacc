@@ -259,6 +259,18 @@ class PurchaseInvoiceHeader(models.Model):
     match_status = models.CharField(max_length=10, choices=MatchStatus.choices, default=MatchStatus.NA, db_index=True)
     match_notes = models.JSONField(default=dict, blank=True)
     custom_fields_json = models.JSONField(default=dict, blank=True)
+    is_legacy_imported = models.BooleanField(default=False, db_index=True)
+    legacy_import_job = models.ForeignKey(
+        "invoice_import.ImportJob",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="purchase_headers",
+    )
+    legacy_source_system = models.CharField(max_length=100, blank=True, default="")
+    legacy_source_key = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    legacy_import_mode = models.CharField(max_length=30, blank=True, default="")
+    legacy_behavior_flags = models.JSONField(default=dict, blank=True)
 
     # SaaS scope
     subentity = models.ForeignKey("entity.SubEntity", on_delete=models.PROTECT, null=True, blank=True)
@@ -288,6 +300,11 @@ class PurchaseInvoiceHeader(models.Model):
                     (Q(doc_type=1) & Q(ref_document__isnull=True)) |
                     (Q(doc_type__in=[2, 3]) & Q(ref_document__isnull=False))
                 ),
+            ),
+            models.UniqueConstraint(
+                fields=("entity", "legacy_source_system", "legacy_source_key"),
+                condition=~Q(legacy_source_system="") & ~Q(legacy_source_key=""),
+                name="uq_purchase_legacy_source_scope",
             ),
         ]
         indexes = [

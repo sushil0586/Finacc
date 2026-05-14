@@ -191,6 +191,10 @@ class SalesInvoiceListSerializer(serializers.ModelSerializer):
         model = SalesInvoiceHeader
         fields = [
             "id",
+            "is_legacy_imported",
+            "legacy_source_system",
+            "legacy_source_key",
+            "legacy_import_mode",
             "doc_code",
             "doc_type_name",
             "invoice_number",
@@ -340,6 +344,11 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "reference",
             "remarks",
             "custom_fields",
+            "is_legacy_imported",
+            "legacy_source_system",
+            "legacy_source_key",
+            "legacy_import_mode",
+            "legacy_behavior_flags",
 
             "withholding_enabled",
             "tcs_section",
@@ -384,6 +393,11 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "is_posting_reversed",
             "compliance_override_at",
             "compliance_override_by",
+            "is_legacy_imported",
+            "legacy_source_system",
+            "legacy_source_key",
+            "legacy_import_mode",
+            "legacy_behavior_flags",
 
             # nav + summaries
             "tax_summaries",

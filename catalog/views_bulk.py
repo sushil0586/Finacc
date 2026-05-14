@@ -10,6 +10,7 @@ from rest_framework.negotiation import DefaultContentNegotiation
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from zipfile import BadZipFile
 
 from .bulk_products import (
     commit_payload,
@@ -107,7 +108,28 @@ class ProductBulkImportValidateAPIView(APIView):
         if fmt not in ("xlsx", "csv"):
             raise ValidationError({"format": "Use xlsx or csv."})
 
-        payload = parse_payload(upload.read(), fmt)
+        try:
+            payload = parse_payload(upload.read(), fmt)
+        except BadZipFile:
+            expected = ".xlsx workbook" if fmt == "xlsx" else ".zip file containing CSV sheets"
+            raise ValidationError(
+                {
+                    "file": (
+                        f"Uploaded file could not be read as {expected}. "
+                        f"Check the selected format and upload the original file without renaming extensions."
+                    )
+                }
+            )
+        except KeyError:
+            expected = ".xlsx workbook" if fmt == "xlsx" else ".zip file containing CSV sheets"
+            raise ValidationError(
+                {
+                    "file": (
+                        f"Uploaded file structure does not match the selected format. "
+                        f"Expected {expected}."
+                    )
+                }
+            )
         result = validate_payload(payload, entity)
         token = secrets.token_hex(24)
         job = ProductBulkJob.objects.create(

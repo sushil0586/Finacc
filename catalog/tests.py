@@ -11,6 +11,9 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 
 from assets.models import AssetCategory
+from catalog.bulk_products import commit_payload as commit_product_bulk_payload
+from catalog.bulk_products import export_payload as export_product_bulk_payload
+from catalog.bulk_products import template_payload as product_bulk_template_payload
 from catalog.models import BarcodeLabelTemplate, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
 from catalog.serializers import OpeningStockByLocationSerializer, ProductBarcodeManageSerializer, ProductPlanningSerializer, ProductSerializer
 from catalog.transaction_products import TransactionProductCatalogService
@@ -1484,3 +1487,95 @@ class CatalogProductListApiTests(TestCase):
         self.assertEqual(raw_response.json()[0]["item_classification"], ProductClassification.RAW_MATERIAL)
         self.assertEqual(len(service_response.json()), 1)
         self.assertTrue(service_response.json()[0]["is_service"])
+
+
+class CatalogBulkProductsCoverageTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="catalog-bulk-user",
+            email="catalog-bulk@example.com",
+            password="testpass123",
+        )
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        self.entity = Entity.objects.create(
+            entityname="Catalog Bulk Entity",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+        self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Machinery")
+        self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        self.asset_category = AssetCategory.objects.create(
+            entity=self.entity,
+            code="COMP",
+            name="Computers",
+        )
+
+    def test_template_and_export_include_asset_purchase_fields(self):
+        template_row = product_bulk_template_payload()["products_basic"][0]
+        self.assertIn("purchase_behavior", template_row)
+        self.assertIn("default_asset_category_code", template_row)
+
+        Product.objects.create(
+            entity=self.entity,
+            productname="Desktop",
+            sku="DESK-001",
+            productdesc="Workstation",
+            productcategory=self.category,
+            base_uom=self.uom,
+            item_classification=ProductClassification.TRADING,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            default_asset_category=self.asset_category,
+            is_service=False,
+            product_status="active",
+            isactive=True,
+        )
+        export_row = export_product_bulk_payload(self.entity)["products_basic"][0]
+        self.assertEqual(export_row["purchase_behavior"], ProductPurchaseBehavior.ASSET)
+        self.assertEqual(export_row["default_asset_category_code"], self.asset_category.code)
+
+    def test_commit_payload_persists_asset_purchase_fields(self):
+        payload = {
+            "categories_master": [],
+            "uoms_master": [],
+            "products_basic": [
+                {
+                    "sku": "ASSET-001",
+                    "productname": "Laser Printer",
+                    "productdesc": "Office printer",
+                    "category": self.category.pcategoryname,
+                    "brand": "",
+                    "base_uom_code": self.uom.code,
+                    "sales_account_code": "",
+                    "purchase_account_code": "",
+                    "is_service": False,
+                    "item_classification": ProductClassification.TRADING,
+                    "purchase_behavior": ProductPurchaseBehavior.ASSET,
+                    "default_asset_category_code": self.asset_category.code,
+                    "is_batch_managed": False,
+                    "is_serialized": False,
+                    "is_expiry_tracked": False,
+                    "shelf_life_days": "",
+                    "expiry_warning_days": 30,
+                    "is_ecomm_9_5_service": False,
+                    "default_is_rcm": False,
+                    "is_itc_eligible": True,
+                    "product_status": "active",
+                    "launch_date": "2026-04-01",
+                    "discontinue_date": "",
+                    "isactive": True,
+                }
+            ],
+            "gst_rates": [],
+            "prices": [],
+            "barcodes": [],
+            "opening_stocks": [],
+            "uom_conversions": [],
+        }
+
+        result = commit_product_bulk_payload(payload, self.entity)
+
+        self.assertEqual(result.errors, [])
+        product = Product.objects.get(entity=self.entity, sku="ASSET-001")
+        self.assertEqual(product.purchase_behavior, ProductPurchaseBehavior.ASSET)
+        self.assertEqual(product.default_asset_category_id, self.asset_category.id)
