@@ -582,18 +582,24 @@ def build_daybook_entry_detail(*, entry_id, entity_id, entityfin_id=None, subent
                 "base_uom_name": getattr(move.base_uom, "code", None) or getattr(move.base_uom, "description", None),
                 "qty": f"{Decimal(move.qty or ZERO4):.4f}",
                 "base_qty": f"{Decimal(move.base_qty or ZERO4):.4f}",
-                "unit_cost": f"{(
+                "unit_cost": format(
                     (
-                        _decimal_or_zero((move.cost_meta or {}).get('taxable_value'), '0.01')
-                        + _decimal_or_zero((move.cost_meta or {}).get('cap_share'), '0.01')
-                    ) / abs(_decimal_or_zero((move.cost_meta or {}).get('qty_for_cost') or move.qty, '0.0000'))
-                ) if abs(_decimal_or_zero((move.cost_meta or {}).get('qty_for_cost') or move.qty, '0.0000')) else Decimal(move.unit_cost or ZERO4):.4f}",
-                "base_unit_cost": f"{(
+                        (
+                            _decimal_or_zero((move.cost_meta or {}).get("taxable_value"), "0.01")
+                            + _decimal_or_zero((move.cost_meta or {}).get("cap_share"), "0.01")
+                        ) / abs(_decimal_or_zero((move.cost_meta or {}).get("qty_for_cost") or move.qty, "0.0000"))
+                    ) if abs(_decimal_or_zero((move.cost_meta or {}).get("qty_for_cost") or move.qty, "0.0000")) else Decimal(move.unit_cost or ZERO4),
+                    ".4f",
+                ),
+                "base_unit_cost": format(
                     (
-                        _decimal_or_zero((move.cost_meta or {}).get('taxable_value'), '0.01')
-                        + _decimal_or_zero((move.cost_meta or {}).get('cap_share'), '0.01')
-                    ) / abs(Decimal(move.base_qty or ZERO4))
-                ) if abs(Decimal(move.base_qty or ZERO4)) else Decimal(move.unit_cost or ZERO4):.4f}",
+                        (
+                            _decimal_or_zero((move.cost_meta or {}).get("taxable_value"), "0.01")
+                            + _decimal_or_zero((move.cost_meta or {}).get("cap_share"), "0.01")
+                        ) / abs(Decimal(move.base_qty or ZERO4))
+                    ) if abs(Decimal(move.base_qty or ZERO4)) else Decimal(move.unit_cost or ZERO4),
+                    ".4f",
+                ),
                 "ext_cost": _money(
                     (
                         _decimal_or_zero((move.cost_meta or {}).get('taxable_value'), '0.01')
