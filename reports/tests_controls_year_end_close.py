@@ -199,6 +199,8 @@ class YearEndClosePreviewTests(SimpleTestCase):
         self.assertIn("year_end_close", dummy_fy.metadata)
         self.assertEqual(dummy_fy.metadata["year_end_close"]["journal_entry"]["entry_id"], 7001)
         self.assertEqual(payload["execution"]["journal_entry"]["voucher_no"], "YEC-FY2026-27")
+        self.assertEqual(payload["execution"]["journal_entry"]["drilldown"]["target"], "posting_detail")
+        self.assertEqual(payload["execution"]["journal_entry"]["drilldown"]["params"]["entry_id"], 7001)
         self.assertTrue(mock_posting_service_cls.return_value.post.called)
         self.assertEqual(mock_posting_service_cls.return_value.post.call_args.kwargs["txn_type"], TxnType.YEAR_END_CLOSE)
         self.assertEqual(dummy_fy.saved_fields, [
@@ -294,6 +296,8 @@ class YearEndClosePreviewTests(SimpleTestCase):
         self.assertEqual(payload["close_history"]["warnings"][0], "Profit and loss snapshot was generated from fallback statements.")
         self.assertEqual(payload["close_history"]["next_steps"][0], "Year-end close has already been executed for this scope.")
         self.assertEqual(payload["close_history"]["journal_entry"]["voucher_no"], "YEC-FY2026-27")
+        self.assertEqual(payload["close_history"]["journal_entry"]["drilldown"]["target"], "posting_detail")
+        self.assertEqual(payload["close_history"]["journal_entry"]["drilldown"]["params"]["entry_id"], 7001)
 
     @patch("reports.services.controls.year_end_close.build_year_end_close_preview")
     def test_year_end_close_execution_rejects_review_state(self, mock_preview):

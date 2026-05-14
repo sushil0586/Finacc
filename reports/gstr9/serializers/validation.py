@@ -9,4 +9,4 @@ class Gstr9ValidationWarningSerializer(serializers.Serializer):
     message = serializers.CharField()
     table_code = serializers.CharField(required=False, allow_blank=True)
     field = serializers.CharField(required=False, allow_blank=True)
-
+    drilldowns = serializers.JSONField(required=False)

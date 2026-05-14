@@ -13,6 +13,7 @@ from posting.adapters.year_opening import YearOpeningPostingAdapter
 from posting.models import TxnType
 from posting.services.posting_service import JLInput, PostingService
 from posting.services.static_accounts import StaticAccountService
+from reports.services.controls.drilldowns import build_posting_detail_drilldown
 from reports.services.controls.posting_rollback import purge_posting_locator
 from reports.services.financial.statements import build_balance_sheet, build_profit_and_loss
 
@@ -649,13 +650,20 @@ def _apply_close_stamp(fy: EntityFinancialYear, close_metadata: dict[str, object
     )
 
 
-def _build_close_history(fy: EntityFinancialYear | None) -> dict[str, object] | None:
+def _build_close_history(
+    fy: EntityFinancialYear | None,
+    *,
+    entity_id: int,
+    entityfin_id: int | None = None,
+    subentity_id: int | None = None,
+) -> dict[str, object] | None:
     if fy is None:
         return None
     metadata = getattr(fy, "metadata", None) or {}
     history = metadata.get("year_end_close")
     if not isinstance(history, dict):
         return None
+    journal_entry = history.get("journal_entry")
     return {
         "status": history.get("status", "closed"),
         "closed_at": history.get("closed_at"),
@@ -672,7 +680,20 @@ def _build_close_history(fy: EntityFinancialYear | None) -> dict[str, object] | 
         "warnings": history.get("warnings") or [],
         "next_steps": history.get("next_steps") or [],
         "snapshot": history.get("snapshot") or {},
-        "journal_entry": history.get("journal_entry"),
+        "journal_entry": (
+            {
+                **journal_entry,
+                "drilldown": build_posting_detail_drilldown(
+                    entry_id=journal_entry.get("entry_id"),
+                    entity_id=entity_id,
+                    entityfin_id=entityfin_id,
+                    subentity_id=subentity_id,
+                    label="Open close journal",
+                ),
+            }
+            if isinstance(journal_entry, dict)
+            else journal_entry
+        ),
     }
 
 
@@ -817,7 +838,12 @@ def build_year_end_close_preview(*, entity_id: int, entityfin_id: int | None = N
         },
     ]
 
-    close_history = _build_close_history(fy)
+    close_history = _build_close_history(
+        fy,
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
     next_steps = _build_next_steps(
         close_state=snapshot["close_state"],
         summary=summary,
@@ -969,6 +995,13 @@ def build_year_end_close_execution(
                 "line_count": len(line_meta),
                 "lines": line_meta,
                 "diagnostics": diagnostics,
+                "drilldown": build_posting_detail_drilldown(
+                    entry_id=getattr(entry, "id", None),
+                    entity_id=entity_id,
+                    entityfin_id=locked_fy.id,
+                    subentity_id=subentity_id,
+                    label="Open close journal",
+                ),
             }
             if entry or line_meta
             else None

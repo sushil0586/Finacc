@@ -13,6 +13,7 @@ from posting.models import Entry, TxnType
 from posting.adapters.year_opening import YearOpeningPostingAdapter
 from posting.services.posting_service import JLInput, PostingService
 from posting.services.static_accounts import StaticAccountService  # compatibility for existing tests/patches
+from reports.services.controls.drilldowns import build_posting_detail_drilldown
 from reports.services.controls.opening_policy import resolve_opening_policy
 from reports.services.controls.opening_preview import _build_opening_history, _resolve_destination_year, build_opening_preview
 from reports.services.controls.posting_rollback import purge_posting_locator
@@ -343,6 +344,7 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
 
 def _build_opening_history_payload(
     *,
+    entity_id: int,
     source_fy: EntityFinancialYear,
     destination_fy: EntityFinancialYear,
     entry,
@@ -402,6 +404,13 @@ def _build_opening_history_payload(
             "txn_type": posting_batch.txn_type,
             "txn_id": posting_batch.txn_id,
             "voucher_no": posting_batch.voucher_no,
+            "drilldown": build_posting_detail_drilldown(
+                entry_id=entry.id,
+                entity_id=entity_id,
+                entityfin_id=destination_fy.id,
+                subentity_id=getattr(entry, "subentity_id", None),
+                label="Open opening batch",
+            ),
         },
         "opening_lines": line_meta,
         "policy_snapshot": deepcopy(opening_policy),
@@ -495,6 +504,7 @@ def build_opening_generation(
         )
 
         opening_history = _build_opening_history_payload(
+            entity_id=entity_id,
             source_fy=locked_source,
             destination_fy=destination_fy,
             entry=entry,

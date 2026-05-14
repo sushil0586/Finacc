@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
@@ -26,6 +28,12 @@ class Gstr3bSummaryAPITests(APITestCase):
             email="gstr3b@example.com",
             password="pass123",
         )
+        self.permission_codes_patch = patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr3b.view"],
+        )
+        self.permission_codes_patch.start()
+        self.addCleanup(self.permission_codes_patch.stop)
         self.client.force_authenticate(user=self.user)
 
         self.summary_url = reverse("reports_api:gstr3b-summary")
@@ -85,6 +93,7 @@ class Gstr3bSummaryAPITests(APITestCase):
         taxability,
         supply_category,
         doc_type=1,
+        status=SalesInvoiceHeader.Status.POSTED,
         pos_state_code="27",
     ):
         SalesInvoiceHeader.objects.create(
@@ -92,7 +101,7 @@ class Gstr3bSummaryAPITests(APITestCase):
             entityfinid=self.entityfin,
             subentity=self.subentity,
             doc_type=doc_type,
-            status=SalesInvoiceHeader.Status.POSTED,
+            status=status,
             bill_date="2025-04-05",
             posting_date="2025-04-05",
             doc_code="SINV",
@@ -190,6 +199,11 @@ class Gstr3bSummaryAPITests(APITestCase):
         response = self.client.get(self.meta_url, {"entity": self.entity.id})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["phase"], 2)
+
+    @patch("reports.gstr3b.views.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
+    def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 403)
 
     def test_summary_computes_phase1_sections(self):
         self._create_sales_doc(
@@ -418,6 +432,76 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertEqual(self._d(data["section_6_1"]["balance_payable"]["cgst"]), Decimal("0.00"))
         self.assertEqual(self._d(data["section_6_1"]["balance_payable"]["sgst"]), Decimal("5.00"))
 
+    def test_summary_classifies_sez_and_deemed_export_under_outward_taxable(self):
+        self._create_sales_doc(
+            doc_no=31,
+            taxable="600.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="108.00",
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            supply_category=SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
+        )
+        self._create_sales_doc(
+            doc_no=32,
+            taxable="400.00",
+            cgst="36.00",
+            sgst="36.00",
+            igst="0.00",
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DEEMED_EXPORT,
+        )
+        self._create_sales_doc(
+            doc_no=33,
+            taxable="500.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="90.00",
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            supply_category=SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
+        )
+
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["summary"]["section_3_1"]
+
+        self.assertEqual(self._d(data["outward_taxable_supplies"]["taxable_value"]), Decimal("1000.00"))
+        self.assertEqual(self._d(data["outward_taxable_supplies"]["igst"]), Decimal("108.00"))
+        self.assertEqual(self._d(data["outward_taxable_supplies"]["cgst"]), Decimal("36.00"))
+        self.assertEqual(self._d(data["outward_taxable_supplies"]["sgst"]), Decimal("36.00"))
+        self.assertEqual(self._d(data["outward_zero_rated_supplies"]["taxable_value"]), Decimal("500.00"))
+        self.assertEqual(self._d(data["outward_zero_rated_supplies"]["igst"]), Decimal("90.00"))
+
+    def test_summary_includes_confirmed_sales_invoices_for_outward_taxable(self):
+        self._create_sales_doc(
+            doc_no=41,
+            taxable="1000.00",
+            cgst="90.00",
+            sgst="90.00",
+            igst="0.00",
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            status=SalesInvoiceHeader.Status.POSTED,
+        )
+        self._create_sales_doc(
+            doc_no=42,
+            taxable="847.46",
+            cgst="76.27",
+            sgst="76.27",
+            igst="0.00",
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            status=SalesInvoiceHeader.Status.CONFIRMED,
+        )
+
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 200)
+        section = response.json()["summary"]["section_3_1"]["outward_taxable_supplies"]
+
+        self.assertEqual(self._d(section["taxable_value"]), Decimal("1847.46"))
+        self.assertEqual(self._d(section["cgst"]), Decimal("166.27"))
+        self.assertEqual(self._d(section["sgst"]), Decimal("166.27"))
+
     def test_validations_endpoint(self):
         self._create_sales_doc(
             doc_no=50,
@@ -435,3 +519,13 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertTrue(any(w["code"] == "GSTR3B_POS_MISSING" for w in warnings))
         self.assertTrue(any(w["code"] == "GSTR3B_TAX_BREAKUP_MISSING" for w in warnings))
         self.assertTrue(any(w["code"] == "GSTR3B_CASH_TAX_SOURCE_PENDING" for w in warnings))
+
+        pos_warning = next(w for w in warnings if w["code"] == "GSTR3B_POS_MISSING")
+        self.assertEqual(pos_warning["drilldowns"]["section_view"]["route"], "/gstr3breport")
+        self.assertEqual(pos_warning["drilldowns"]["section_view"]["params"]["section"], "3.1")
+        self.assertEqual(pos_warning["drilldowns"]["related_report"]["route"], "/gstreport")
+        self.assertEqual(pos_warning["drilldowns"]["related_report"]["params"]["entityfinid"], self.entityfin.id)
+
+        cash_warning = next(w for w in warnings if w["code"] == "GSTR3B_CASH_TAX_SOURCE_PENDING")
+        self.assertEqual(cash_warning["drilldowns"]["section_view"]["params"]["section"], "6.1")
+        self.assertNotIn("related_report", cash_warning["drilldowns"])

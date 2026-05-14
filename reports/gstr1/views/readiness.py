@@ -5,12 +5,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from reports.schemas.common import build_report_envelope
-from reports.gstr1.serializers.validation import Gstr1ReadinessSerializer, Gstr1ValidationWarningSerializer
+from reports.gstr1.serializers.summary import Gstr1SummarySerializer
+from reports.gstr1.serializers.validation import Gstr1ReadinessSerializer
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr1.views.utils import Gstr1ScopedReportMixin, attach_gstr1_export_actions, scope_filters
 
 
-class Gstr1ValidationAPIView(Gstr1ScopedReportMixin, APIView):
+class Gstr1ReadinessAPIView(Gstr1ScopedReportMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     service_class = Gstr1ReportService
 
@@ -20,20 +21,15 @@ class Gstr1ValidationAPIView(Gstr1ScopedReportMixin, APIView):
         self.enforce_report_scope(request, scope)
         smart_filters = service.build_smart_filters(request.query_params)
         summary = service.summary(scope, smart_filters=smart_filters)
-        readiness = service.readiness(scope, smart_filters=smart_filters, summary=summary)
-        warnings = readiness["warnings"]
-        severity = getattr(smart_filters, "warning_severity", None)
-        if severity:
-            warnings = [warning for warning in warnings if str(warning.get("severity", "")).lower() == severity]
-        payload = {
-            "warnings": Gstr1ValidationWarningSerializer(warnings, many=True).data,
-            "warning_count": len(warnings),
-            "readiness": Gstr1ReadinessSerializer(readiness).data,
+        payload = service.readiness(scope, smart_filters=smart_filters, summary=summary)
+        response_payload = {
+            "readiness": Gstr1ReadinessSerializer(payload).data,
+            "summary": Gstr1SummarySerializer(summary).data,
         }
         response = build_report_envelope(
-            report_code="gstr1-validations",
-            report_name="GSTR-1 Validations",
-            payload=payload,
+            report_code="gstr1-readiness",
+            report_name="GSTR-1 Filing Readiness",
+            payload=response_payload,
             filters=scope_filters(scope, smart_filters),
             defaults={
                 "decimal_places": 2,

@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from reports.api.report_permissions import assert_any_report_permission
 from reports.api.receivables_views import _write_csv, _write_excel
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr3b.services import Gstr3bSummaryService
@@ -36,16 +37,35 @@ class GstExceptionDashboardAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=gstr1_scope.entityfinid_id,
             subentity_id=gstr1_scope.subentity_id,
         )
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=gstr1_scope.entity_id,
+            required_permissions=("reports.gst_exception_dashboard.view",),
+            message="You do not have permission to access the GST exception dashboard.",
+        )
         gstr1_warnings = gstr1_service.validations(gstr1_scope)
         gstr3b_warnings = gstr3b_service.validations(gstr3b_scope)
         reconciliation = build_gstr1_vs_gstr3b_reconciliation(
             gstr1_summary=gstr1_service.summary(gstr1_scope),
             gstr3b_summary=gstr3b_service.build(gstr3b_scope),
+            scope_params={
+                "entityfinid": gstr1_scope.entityfinid_id,
+                "subentity": gstr1_scope.subentity_id,
+                "from_date": gstr1_scope.from_date,
+                "to_date": gstr1_scope.to_date,
+            },
+            gstr1_scope=gstr1_scope,
         )
         payload = build_gst_exception_dashboard(
             gstr1_warnings=gstr1_warnings,
             gstr3b_warnings=gstr3b_warnings,
             reconciliation_payload=reconciliation,
+            scope_params={
+                "entityfinid": gstr1_scope.entityfinid_id,
+                "subentity": gstr1_scope.subentity_id,
+                "from_date": gstr1_scope.from_date,
+                "to_date": gstr1_scope.to_date,
+            },
         )
         response = build_report_envelope(
             report_code="gst-exception-dashboard",
@@ -103,16 +123,35 @@ class GstExceptionDashboardExportAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=gstr1_scope.entityfinid_id,
             subentity_id=gstr1_scope.subentity_id,
         )
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=gstr1_scope.entity_id,
+            required_permissions=("reports.gst_exception_dashboard.view",),
+            message="You do not have permission to access the GST exception dashboard.",
+        )
         gstr1_warnings = gstr1_service.validations(gstr1_scope)
         gstr3b_warnings = gstr3b_service.validations(gstr3b_scope)
         reconciliation = build_gstr1_vs_gstr3b_reconciliation(
             gstr1_summary=gstr1_service.summary(gstr1_scope),
             gstr3b_summary=gstr3b_service.build(gstr3b_scope),
+            scope_params={
+                "entityfinid": gstr1_scope.entityfinid_id,
+                "subentity": gstr1_scope.subentity_id,
+                "from_date": gstr1_scope.from_date,
+                "to_date": gstr1_scope.to_date,
+            },
+            gstr1_scope=gstr1_scope,
         )
         payload = build_gst_exception_dashboard(
             gstr1_warnings=gstr1_warnings,
             gstr3b_warnings=gstr3b_warnings,
             reconciliation_payload=reconciliation,
+            scope_params={
+                "entityfinid": gstr1_scope.entityfinid_id,
+                "subentity": gstr1_scope.subentity_id,
+                "from_date": gstr1_scope.from_date,
+                "to_date": gstr1_scope.to_date,
+            },
         )
         if export_format == "json":
             return Response(payload)

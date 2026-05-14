@@ -17,8 +17,10 @@ from financial.profile_access import account_gstno
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
+from posting.models import Entry, EntryStatus, TxnType
 from sales.models import (
     SalesAdvanceAdjustment,
+    SalesChargeLine,
     SalesEcommerceSupply,
     SalesInvoiceHeader,
     SalesInvoiceLine,
@@ -35,8 +37,15 @@ class Gstr1ReportAPITests(APITestCase):
             email="gstr1@example.com",
             password="pass123",
         )
+        self.permission_codes_patch = patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gst.view", "reports.gstr1report.view"],
+        )
+        self.permission_codes_patch.start()
+        self.addCleanup(self.permission_codes_patch.stop)
         self.client.force_authenticate(user=self.user)
         self.summary_url = reverse("reports_api:gstr1-summary")
+        self.readiness_url = reverse("reports_api:gstr1-readiness")
         self.section_url = lambda section: reverse("reports_api:gstr1-section", args=[section])
         self.validation_url = reverse("reports_api:gstr1-validations")
         self.meta_url = reverse("reports_api:gstr1-meta")
@@ -257,6 +266,46 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("sections", data["summary"])
         self.assertIn("hsn_summary", data["summary"])
 
+    def test_invoice_detail_includes_posting_lookup_and_drilldowns(self):
+        invoice = self._create_sales_document(customer=self.customer_alpha)
+        Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=invoice.id,
+            voucher_no="SINV-POST-001",
+            voucher_date=invoice.bill_date,
+            posting_date=invoice.posting_date,
+            status=EntryStatus.POSTED,
+            created_by=self.user,
+        )
+
+        response = self.client.get(self.invoice_url(invoice.id), self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["invoice"]["id"], invoice.id)
+        self.assertEqual(data["posting_lookup"]["entry_id"], Entry.objects.get(txn_id=invoice.id, txn_type=TxnType.SALES).id)
+        self.assertEqual(data["posting_lookup"]["document_type"], "sales_invoice")
+        self.assertEqual(data["drilldowns"]["source_document"]["drilldown_target"], "sales_invoice_detail")
+        self.assertEqual(data["drilldowns"]["source_document"]["drilldown_params"]["id"], invoice.id)
+        self.assertEqual(data["drilldowns"]["posting_detail"]["drilldown_target"], "journal_entry_detail")
+        self.assertEqual(
+            data["drilldowns"]["posting_detail"]["query_params"]["entityfinid"],
+            self.entityfin.id,
+        )
+
+    def test_invoice_detail_handles_missing_posting_entry(self):
+        invoice = self._create_sales_document(customer=self.customer_alpha)
+
+        response = self.client.get(self.invoice_url(invoice.id), self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIsNone(data["posting_lookup"])
+        self.assertIsNone(data["drilldowns"]["posting_detail"])
+
     def test_section_classification(self):
         self._create_sales_document(customer=self.customer_alpha, supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B)
         self._create_sales_document(
@@ -437,6 +486,84 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(error_response.status_code, 200)
         self.assertEqual(error_response.json().get("warning_count", 0), 0)
 
+    def test_readiness_endpoint_returns_blocked_status_and_export_actions(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            customer_gstin="",
+        )
+        response = self.client.get(self.readiness_url, self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        readiness = payload["readiness"]
+        self.assertEqual(readiness["status"]["code"], "blocked")
+        self.assertGreaterEqual(readiness["counts"]["blocked_warnings"], 1)
+        invoice_warning = next(item for item in readiness["warnings"] if item.get("invoice_id") == invoice.id)
+        self.assertIn("invoice_detail_url", invoice_warning)
+        self.assertEqual(invoice_warning["drilldowns"]["source_document"]["target"], "sales_invoice_detail")
+        self.assertEqual(invoice_warning["drilldowns"]["source_document"]["params"]["transactionid"], invoice.id)
+        self.assertEqual(invoice_warning["drilldowns"]["posting_lookup"]["lookup"]["document_type"], "sales_invoice")
+        self.assertIn("gstn_json", payload["actions"]["export_urls"])
+        self.assertIn("gstn_json", payload["available_exports"])
+
+    def test_readiness_endpoint_returns_review_status_for_tax_mismatch(self):
+        invoice = self._create_sales_document(customer=self.customer_alpha, invoice_number="REVIEW-001")
+        invoice.lines.update(line_total=Decimal("10.00"))
+        response = self.client.get(self.readiness_url, self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        readiness = payload["readiness"]
+        self.assertEqual(readiness["status"]["code"], "review")
+        self.assertEqual(readiness["counts"]["blocked_warnings"], 0)
+        self.assertGreaterEqual(readiness["counts"]["review_warnings"], 1)
+        codes = {item["code"] for item in readiness["warnings"]}
+        self.assertIn("INVOICE_TOTAL_MISMATCH", codes)
+
+    def test_readiness_skips_invoice_total_warning_when_additional_charges_explain_total(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="CHARGE-001",
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            grand_total="124.40",
+        )
+        invoice.lines.update(line_total=Decimal("118.00"))
+        invoice.total_other_charges = Decimal("5.00")
+        invoice.round_off = Decimal("0.50")
+        invoice.grand_total = Decimal("124.40")
+        invoice.save(update_fields=["total_other_charges", "round_off", "grand_total"])
+        SalesChargeLine.objects.create(
+            header=invoice,
+            line_no=1,
+            charge_type=SalesChargeLine.ChargeType.OTHER,
+            taxable_value=Decimal("5.00"),
+            cgst_amount=Decimal("0.45"),
+            sgst_amount=Decimal("0.45"),
+            igst_amount=Decimal("0.00"),
+            total_value=Decimal("5.90"),
+        )
+
+        response = self.client.get(self.readiness_url, self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        readiness = response.json()["readiness"]
+        codes = {item["code"] for item in readiness["warnings"]}
+        self.assertNotIn("INVOICE_TOTAL_MISMATCH", codes)
+
+    def test_validation_endpoint_includes_readiness_snapshot(self):
+        self._create_sales_document(
+            customer=self.customer_alpha,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            customer_gstin="",
+        )
+        response = self.client.get(self.validation_url, self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("readiness", payload)
+        self.assertEqual(payload["readiness"]["status"]["code"], "blocked")
+        self.assertGreaterEqual(len(payload["readiness"]["validation_groups"]), 1)
+
     def test_b2cl_threshold_boundary(self):
         self._create_sales_document(
             customer=self.customer_beta,
@@ -480,6 +607,7 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("supply_category", payload["choices"])
         self.assertIn("doc_type", payload["choices"])
         self.assertIn("status", payload["choices"])
+        self.assertIn("readiness", payload["endpoints"])
 
     def test_table_endpoint_taxpayer(self):
         response = self.client.get(self.table_url("TAXPAYER_1_3"), self.base_params)
@@ -1056,6 +1184,11 @@ class Gstr1ReportAPITests(APITestCase):
             self.meta_url,
             {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
         )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("reports.gstr1.views.utils.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
+    def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):
+        response = self.client.get(self.summary_url, self.base_params)
         self.assertEqual(response.status_code, 403)
 
     @override_settings(GSTR1_ENABLE_GSTIN_CHECKSUM=False)

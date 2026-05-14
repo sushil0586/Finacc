@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from reports.schemas.common import build_report_envelope
 from reports.gstr1.serializers.summary import Gstr1SummarySerializer
 from reports.gstr1.services.report import Gstr1ReportService
-from reports.gstr1.views.utils import Gstr1ScopedReportMixin, filtered_query, scope_filters
+from reports.gstr1.views.utils import Gstr1ScopedReportMixin, attach_gstr1_export_actions, scope_filters
 
 
 class Gstr1SummaryAPIView(Gstr1ScopedReportMixin, APIView):
@@ -35,11 +35,5 @@ class Gstr1SummaryAPIView(Gstr1ScopedReportMixin, APIView):
                 "enable_drilldown": True,
             },
         )
-        query = filtered_query(request, exclude=["page", "page_size"])
-        response["actions"]["export_urls"] = {
-            "excel": f"/api/reports/gstr1/export/?format=xlsx&{query}",
-            "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
-            "json": f"/api/reports/gstr1/export/?format=json&{query}",
-        }
-        response["available_exports"] = ["excel", "csv", "json"]
+        attach_gstr1_export_actions(response, request)
         return Response(response)

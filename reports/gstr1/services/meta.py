@@ -79,6 +79,7 @@ def build_gstr1_report_meta(*, entity_id: int, entityfinid_id: int | None = None
         "financial_years": financial_years,
         "subentities": subentities,
         "endpoints": {
+            "readiness": "/api/reports/gstr1/readiness/",
             "summary": "/api/reports/gstr1/summary/",
             "section": "/api/reports/gstr1/section/<section_name>/",
             "table": "/api/reports/gstr1/table/<table_code>/",
@@ -92,6 +93,7 @@ def build_gstr1_report_meta(*, entity_id: int, entityfinid_id: int | None = None
             "can_export_excel": True,
         },
         "flags": {
+            "supports_readiness": True,
             "supports_reverse_charge": True,
             "supports_nil_exempt_summary": True,
             "supports_exports": True,

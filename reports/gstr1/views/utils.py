@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.entitlements import ScopedEntitlementMixin
+from reports.api.report_permissions import assert_any_report_permission
 from reports.gstr1.selectors.scope import Gstr1FilterParams
 from reports.gstr1.selectors.smart_filters import Gstr1SmartFilters, smart_filters_as_dict
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
@@ -9,6 +10,15 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 class Gstr1ScopedReportMixin(ScopedEntitlementMixin):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.gst.view", "reports.gstr1report.view")
+
+    def enforce_permission(self, request, *, entity_id: int):
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=self.required_permission_codes,
+            message="You do not have permission to access the GSTR-1 workspace.",
+        )
 
     def enforce_report_scope(self, request, scope: Gstr1FilterParams):
         self.enforce_scope(
@@ -17,6 +27,7 @@ class Gstr1ScopedReportMixin(ScopedEntitlementMixin):
             entityfinid_id=scope.entityfinid_id,
             subentity_id=scope.subentity_id,
         )
+        self.enforce_permission(request, entity_id=scope.entity_id)
 
     def enforce_entity_scope(self, request, *, entity_id: int, entityfinid_id: int | None = None, subentity_id: int | None = None):
         self.enforce_scope(
@@ -25,6 +36,7 @@ class Gstr1ScopedReportMixin(ScopedEntitlementMixin):
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
         )
+        self.enforce_permission(request, entity_id=entity_id)
 
 
 def scope_filters(scope: Gstr1FilterParams, smart_filters: Gstr1SmartFilters | None = None):
@@ -53,3 +65,15 @@ def filtered_query(request, *, exclude=None, overrides=None):
         else:
             params[key] = str(value)
     return params.urlencode()
+
+
+def attach_gstr1_export_actions(payload, request):
+    query = filtered_query(request, exclude=["page", "page_size"])
+    payload["actions"]["export_urls"] = {
+        "excel": f"/api/reports/gstr1/export/?format=xlsx&{query}",
+        "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
+        "json": f"/api/reports/gstr1/export/?format=json&{query}",
+        "gstn_json": f"/api/reports/gstr1/export/?format=gstn_json&{query}",
+    }
+    payload["available_exports"] = ["excel", "csv", "json", "gstn_json"]
+    return payload

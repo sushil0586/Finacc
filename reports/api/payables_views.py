@@ -66,6 +66,22 @@ def _export_headers(report_code, *, view=None, feature_state=None):
     return ["Details"]
 
 
+def _export_columns_from_report_meta(payload, *, fallback_keys):
+    meta = payload.get("_meta") if isinstance(payload, dict) else {}
+    available = meta.get("available_columns") if isinstance(meta, dict) else None
+    effective = meta.get("effective_columns") if isinstance(meta, dict) else None
+    if isinstance(available, list) and isinstance(effective, list):
+        labels_by_key = {
+            str(column.get("key")): str(column.get("label") or column.get("key"))
+            for column in available
+            if isinstance(column, dict) and column.get("key")
+        }
+        selected = [str(key) for key in effective if str(key) in labels_by_key]
+        if selected:
+            return [(key, labels_by_key[key]) for key in selected]
+    return [(key, key.replace("_", " ").title()) for key in fallback_keys]
+
+
 def _payable_scope_filters(scope):
     return {
         "entityfinid": scope.get("entityfinid"),
@@ -208,6 +224,7 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
             view=scope.get("view") or "summary",
             reconcile_gl=scope.get("reconcile_gl", False),
             include_trace=scope.get("include_trace", True),
+            user=request.user,
         )
         return Response(
             self.build_envelope(
@@ -245,6 +262,7 @@ class ApAgingReportAPIView(_BasePayableAPIView):
             page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
             view=scope.get("view") or "summary",
             include_trace=scope.get("include_trace", True),
+            user=request.user,
         )
         return Response(
             self.build_envelope(
@@ -296,6 +314,7 @@ class PayablesDashboardSummaryAPIView(_BasePayableAPIView):
             region_id=scope.get("region"),
             currency=scope.get("currency"),
             search=scope.get("search"),
+            user=request.user,
         )
         response = build_report_envelope(
             report_code="payables_dashboard_summary",
@@ -341,6 +360,7 @@ class UpcomingPaymentsCalendarAPIView(_BasePayableAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
             include_trace=scope.get("include_trace", True),
+            user=request.user,
         )
         return Response(
             self.build_envelope(
@@ -393,34 +413,34 @@ class _VendorOutstandingExportMixin(_BasePayableExportAPIView):
             page_size=100000,
             reconcile_gl=scope.get("reconcile_gl", False),
             include_trace=scope.get("include_trace", True),
+            user=request.user,
         )
-        rows = [
-            [
-                row["vendor_code"],
-                row["vendor_name"],
-                row["outstanding"],
-                row["not_due"],
-                row["bucket_0_30"],
-                row["bucket_31_60"],
-                row["bucket_61_90"],
-                row["bucket_91_180"],
-                row["bucket_181_plus"],
-                row["oldest_due_date"],
-                row["gstin"],
-                row["opening_balance"],
-                row["bill_amount"],
-                row["payment_amount"],
-                row["last_bill_date"],
-                row["last_payment_date"],
-            ]
-            for row in data["rows"]
+        fallback_keys = [
+            "vendor_code",
+            "vendor_name",
+            "outstanding",
+            "not_due",
+            "bucket_0_30",
+            "bucket_31_60",
+            "bucket_61_90",
+            "bucket_91_180",
+            "bucket_181_plus",
+            "oldest_due_date",
+            "gstin",
+            "opening_balance",
+            "bill_amount",
+            "payment_amount",
+            "last_bill_date",
+            "last_payment_date",
         ]
+        columns = _export_columns_from_report_meta(data, fallback_keys=fallback_keys)
+        rows = [[row.get(key, "") for key, _label in columns] for row in data["rows"]]
         subtitle = (
             f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
             f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
             f"As of: {scope.get('as_of_date') or scope.get('to_date') or ''}"
         )
-        headers = _export_headers("vendor_outstanding")
+        headers = [label for _key, label in columns]
         return scope, data, headers, rows, subtitle
 
 
@@ -491,54 +511,55 @@ class _ApAgingExportMixin(_BasePayableExportAPIView):
             page_size=100000,
             view=scope.get("view") or "summary",
             include_trace=scope.get("include_trace", True),
+            user=request.user,
         )
         if (scope.get("view") or "summary") == "invoice":
-            rows = [
-                [
-                    row["vendor_name"],
-                    row["vendor_code"],
-                    row["bill_number"],
-                    row["bill_date"],
-                    row["due_date"],
-                    row["credit_days"],
-                    row["bill_amount"],
-                    row["paid_amount"],
-                    row["balance"],
-                    row["current"],
-                    row["bucket_1_30"],
-                    row["bucket_31_60"],
-                    row["bucket_61_90"],
-                    row["bucket_90_plus"],
-                    row["currency"],
-                ]
-                for row in data["rows"]
+            fallback_keys = [
+                "vendor_name",
+                "vendor_code",
+                "bill_number",
+                "bill_date",
+                "due_date",
+                "credit_days",
+                "bill_amount",
+                "paid_amount",
+                "balance",
+                "current",
+                "bucket_1_30",
+                "bucket_31_60",
+                "bucket_61_90",
+                "bucket_90_plus",
+                "currency",
             ]
+            columns = _export_columns_from_report_meta(data, fallback_keys=fallback_keys)
+            rows = [[row.get(key, "") for key, _label in columns] for row in data["rows"]]
             title = "AP Aging Invoice Report"
-            headers = _export_headers("ap_aging", view="invoice", feature_state={"view": "invoice"})
-            numeric_columns = set(range(6, 15))
+            headers = [label for _key, label in columns]
+            numeric_fields = {"credit_days", "bill_amount", "paid_amount", "balance", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus"}
+            numeric_columns = {index for index, (key, _label) in enumerate(columns) if key in numeric_fields}
         else:
-            rows = [
-                [
-                    row["vendor_name"],
-                    row["vendor_code"],
-                    row["outstanding"],
-                    row["overdue_amount"],
-                    row["current"],
-                    row["bucket_1_30"],
-                    row["bucket_31_60"],
-                    row["bucket_61_90"],
-                    row["bucket_90_plus"],
-                    row["unapplied_advance"],
-                    row["credit_limit"],
-                    row["credit_days"],
-                    row["last_payment_date"],
-                    row["currency"],
-                ]
-                for row in data["rows"]
+            fallback_keys = [
+                "vendor_name",
+                "vendor_code",
+                "outstanding",
+                "overdue_amount",
+                "current",
+                "bucket_1_30",
+                "bucket_31_60",
+                "bucket_61_90",
+                "bucket_90_plus",
+                "unapplied_advance",
+                "credit_limit",
+                "credit_days",
+                "last_payment_date",
+                "currency",
             ]
+            columns = _export_columns_from_report_meta(data, fallback_keys=fallback_keys)
+            rows = [[row.get(key, "") for key, _label in columns] for row in data["rows"]]
             title = "AP Aging Summary Report"
-            headers = _export_headers("ap_aging", view="summary", feature_state={"view": "summary"})
-            numeric_columns = set(range(3, 12))
+            headers = [label for _key, label in columns]
+            numeric_fields = {"outstanding", "overdue_amount", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus", "unapplied_advance", "credit_limit", "credit_days"}
+            numeric_columns = {index for index, (key, _label) in enumerate(columns) if key in numeric_fields}
         subtitle = f"As of: {scope.get('as_of_date') or scope.get('to_date')} | View: {scope.get('view') or 'summary'}"
         return scope, headers, rows, subtitle, title, numeric_columns
 
@@ -607,24 +628,24 @@ class _UpcomingPaymentsCalendarExportMixin(_BasePayableExportAPIView):
             page=1,
             page_size=100000,
             include_trace=scope.get("include_trace", True),
+            user=request.user,
         )
-        headers = _export_headers("upcoming_payments_calendar")
-        rows = [
-            [
-                row["vendor_name"],
-                row["vendor_code"],
-                row["bill_number"],
-                row["bill_date"],
-                row["due_date"],
-                row["days_to_due"],
-                row["payment_status"],
-                row["balance"],
-                row["currency"],
-                row["branch"],
-                row["reference"],
-            ]
-            for row in data["rows"]
+        fallback_keys = [
+            "vendor_name",
+            "vendor_code",
+            "bill_number",
+            "bill_date",
+            "due_date",
+            "days_to_due",
+            "payment_status",
+            "balance",
+            "currency",
+            "branch",
+            "reference",
         ]
+        columns = _export_columns_from_report_meta(data, fallback_keys=fallback_keys)
+        headers = [label for _key, label in columns]
+        rows = [[row.get(key, "") for key, _label in columns] for row in data["rows"]]
         subtitle = (
             f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
             f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "

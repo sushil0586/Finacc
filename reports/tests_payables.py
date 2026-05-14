@@ -71,6 +71,7 @@ class PayableReportAPITests(APITestCase):
             "reports.apglreconciliation.view",
             "reports.payablesclosepack.view",
             "reports.vendorbalanceexceptions.view",
+            "reports.payables.settings.view",
         ]
         report_permission_ids = []
         for code in report_permission_codes:
@@ -802,6 +803,69 @@ class PayableReportAPITests(APITestCase):
         row_drilldown = payload["rows"][0]["_meta"]["drilldown"]["aging_summary"]
         self.assertEqual(row_drilldown["report_code"], "ap_aging")
         self.assertEqual(row_drilldown["path"], "/api/reports/payables/aging/")
+
+    def test_report_metadata_surfaces_payables_settings_display_and_overrides(self):
+        settings_response = self.client.patch(
+            reverse("reports_api:payables-settings"),
+            {
+                "entity": self.entity.id,
+                "payload": {
+                    "display_preferences": {
+                        "amount_unit": "thousand",
+                        "decimal_places": 3,
+                    },
+                    "report_overrides": {
+                        "vendor_outstanding": {
+                            "columns": ["vendor_name", "outstanding"],
+                            "default_sort_by": "vendor_name",
+                            "default_sort_order": "asc",
+                        }
+                    },
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(settings_response.status_code, 200)
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        meta = response.json()["_meta"]
+        self.assertEqual(meta["display_preferences"]["amount_unit"], "thousand")
+        self.assertEqual(meta["display_preferences"]["decimal_places"], 3)
+        self.assertEqual(meta["report_override"]["default_sort_by"], "vendor_name")
+        self.assertEqual(meta["report_override"]["default_sort_order"], "asc")
+        self.assertIn("drilldown", meta["report_override"]["columns"])
+        self.assertIn("vendor_name", meta["effective_columns"])
+        self.assertIn("outstanding", meta["effective_columns"])
+        self.assertNotIn("vendor_code", meta["effective_columns"])
+
+    def test_vendor_outstanding_csv_export_honors_selected_columns(self):
+        settings_response = self.client.patch(
+            reverse("reports_api:payables-settings"),
+            {
+                "entity": self.entity.id,
+                "payload": {
+                    "report_overrides": {
+                        "vendor_outstanding": {
+                            "columns": ["vendor_name", "outstanding", "drilldown"],
+                        }
+                    },
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(settings_response.status_code, 200)
+
+        export_response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report-csv"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(export_response.status_code, 200)
+        header_line = export_response.content.decode("utf-8-sig").splitlines()[0]
+        self.assertEqual(header_line, "Vendor Name,Outstanding")
 
     def test_report_endpoints_require_authentication(self):
         client = APIClient()

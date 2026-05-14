@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from reports.api.report_permissions import assert_any_report_permission
 from reports.gstr3b.exporters import export_gstr3b_csv_rows, export_gstr3b_excel
 from reports.gstr3b.selectors import scope_filters
 from reports.gstr3b.serializers import Gstr3bSummarySerializer, Gstr3bValidationSerializer
@@ -21,6 +22,14 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
+    def enforce_report_permission(self, request, *, entity_id: int):
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=("reports.gstr3b.view",),
+            message="You do not have permission to access the GSTR-3B workspace.",
+        )
+
     def get(self, request):
         service = self.service_class()
         try:
@@ -28,6 +37,7 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
         self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
+        self.enforce_report_permission(request, entity_id=scope.entity_id)
 
         payload = {
             "summary": Gstr3bSummarySerializer(service.build(scope)).data,
@@ -41,7 +51,7 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
                 "decimal_places": 2,
                 "show_zero_balances_default": True,
                 "show_opening_balance_default": False,
-                "enable_drilldown": False,
+                "enable_drilldown": True,
             },
         )
         response["available_exports"] = ["json", "xlsx", "csv"]
@@ -60,7 +70,14 @@ class Gstr3bMetaAPIView(ScopedEntitlementMixin, APIView):
         entity_id = request.query_params.get("entity")
         if not entity_id:
             return Response({"detail": "entity is required."}, status=400)
-        self.enforce_scope(request, entity_id=int(entity_id))
+        entity_id = int(entity_id)
+        self.enforce_scope(request, entity_id=entity_id)
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=("reports.gstr3b.view",),
+            message="You do not have permission to access the GSTR-3B workspace.",
+        )
         return Response(
             {
                 "report_code": "gstr3b-summary",
@@ -85,6 +102,12 @@ class Gstr3bValidationAPIView(ScopedEntitlementMixin, APIView):
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
         self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=scope.entity_id,
+            required_permissions=("reports.gstr3b.view",),
+            message="You do not have permission to access the GSTR-3B workspace.",
+        )
         warnings = Gstr3bValidationSerializer(service.validations(scope), many=True).data
         return Response({"warnings": warnings})
 
@@ -112,6 +135,12 @@ class Gstr3bExportAPIView(ScopedEntitlementMixin, APIView):
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
         self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=scope.entity_id,
+            required_permissions=("reports.gstr3b.view",),
+            message="You do not have permission to access the GSTR-3B workspace.",
+        )
 
         summary = Gstr3bSummarySerializer(service.build(scope)).data
         warnings = Gstr3bValidationSerializer(service.validations(scope), many=True).data

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.entitlements import ScopedEntitlementMixin
+from reports.api.report_permissions import assert_any_report_permission
 from reports.gstr9.selectors.scope import Gstr9FilterParams
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -8,6 +9,15 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 class Gstr9ScopedReportMixin(ScopedEntitlementMixin):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.gstr9.view",)
+
+    def enforce_permission(self, request, *, entity_id: int):
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=self.required_permission_codes,
+            message="You do not have permission to access the GSTR-9 workspace.",
+        )
 
     def enforce_report_scope(self, request, scope: Gstr9FilterParams):
         self.enforce_scope(
@@ -16,6 +26,7 @@ class Gstr9ScopedReportMixin(ScopedEntitlementMixin):
             entityfinid_id=scope.entityfinid_id,
             subentity_id=scope.subentity_id,
         )
+        self.enforce_permission(request, entity_id=scope.entity_id)
 
     def enforce_entity_scope(self, request, *, entity_id: int, entityfinid_id: int | None = None, subentity_id: int | None = None):
         self.enforce_scope(
@@ -24,6 +35,7 @@ class Gstr9ScopedReportMixin(ScopedEntitlementMixin):
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
         )
+        self.enforce_permission(request, entity_id=entity_id)
 
 
 def scope_filters(scope: Gstr9FilterParams):

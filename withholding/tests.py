@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from payments.models.payment_core import PaymentVoucherHeader
 from withholding.models import (
     EntityPartyTaxProfile,
     EntityTcsThresholdOpening,
@@ -37,6 +38,8 @@ from withholding.views import (
     TcsDepositAllocateAPIView,
     TcsSectionListCreateAPIView,
     TcsWorkspaceTransactionsAPIView,
+    TcsWorkspaceTransactionsExportAPIView,
+    WithholdingReadinessDashboardAPIView,
     _filing_readiness_errors,
     _row_readiness_status,
     _runtime_quality_flags,
@@ -914,6 +917,232 @@ class WithholdingTcsApiPermissionTests(TestCase):
         mocked_entity.assert_called_once_with(self.user, 1)
         mocked_codes.assert_called_once_with(self.user, 1)
         mocked_subscription.assert_called_once()
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_tcs_workspace_export_requires_workspace_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+        request = self.factory.get("/tcs/workspace/transactions/export/?entity_id=1")
+        force_authenticate(request, user=self.user)
+
+        response = TcsWorkspaceTransactionsExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_tcs_filing_pack_export_requires_report_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+        request = self.factory.get("/tcs/reports/filing-pack/export/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=self.user)
+
+        response = TcsReportFilingPackExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_withholding_readiness_requires_view_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+        request = self.factory.get("/withholding/reports/readiness/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        response = WithholdingReadinessDashboardAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
+
+
+class WithholdingReadinessDashboardApiTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = get_user_model().objects.create_user(
+            username="withholding-readiness-tests",
+            email="withholding-readiness-tests@example.com",
+            password="testpass123",
+        )
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=["purchase.statutory.view"])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_readiness_requires_entity_scope(self, _mocked_entity, _mocked_codes, _mocked_subscription):
+        request = self.factory.get("/withholding/reports/readiness/")
+        force_authenticate(request, user=self.user)
+
+        response = WithholdingReadinessDashboardAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("entity_id", response.data)
+
+    @patch("withholding.views.account_pan", return_value="")
+    @patch("withholding.views.EntityPartyTaxProfile.objects.filter")
+    @patch("withholding.views.WithholdingSection.objects.filter")
+    @patch("withholding.views.PaymentVoucherHeader.objects.filter")
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=["purchase.statutory.view"])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_readiness_returns_posting_state_and_drilldowns(
+        self,
+        _mocked_entity,
+        _mocked_codes,
+        _mocked_subscription,
+        mocked_voucher_filter,
+        mocked_section_filter,
+        mocked_profile_filter,
+        _mocked_account_pan,
+    ):
+        posted_status = int(PaymentVoucherHeader.Status.POSTED)
+        draft_status = int(PaymentVoucherHeader.Status.DRAFT)
+        voucher_posted = SimpleNamespace(
+            id=101,
+            entity_id=1,
+            entityfinid_id=10,
+            subentity_id=100,
+            voucher_date=date(2026, 4, 15),
+            doc_code="PV",
+            doc_no="101",
+            status=posted_status,
+            paid_to_id=5001,
+            paid_to=SimpleNamespace(pan=""),
+            workflow_payload={
+                "withholding_runtime_result": {
+                    "section_id": 1,
+                    "amount": "125.00",
+                    "base_amount": "5000.00",
+                    "rate": "2.50",
+                    "reason_code": "OK",
+                    "enabled": True,
+                    "mode": "AUTO",
+                }
+            },
+        )
+        voucher_unposted = SimpleNamespace(
+            id=102,
+            entity_id=1,
+            entityfinid_id=10,
+            subentity_id=100,
+            voucher_date=date(2026, 4, 16),
+            doc_code="PV",
+            doc_no="102",
+            status=draft_status,
+            paid_to_id=5002,
+            paid_to=SimpleNamespace(pan=""),
+            workflow_payload={
+                "withholding_runtime_result": {
+                    "section_id": 1,
+                    "amount": "0.00",
+                    "base_amount": "5000.00",
+                    "rate": "0.00",
+                    "reason_code": "NO_COMPUTED_TDS",
+                    "enabled": True,
+                    "mode": "AUTO",
+                }
+            },
+        )
+
+        voucher_qs = MagicMock()
+        voucher_qs.exclude.return_value = voucher_qs
+        voucher_qs.filter.return_value = voucher_qs
+        voucher_qs.select_related.return_value = voucher_qs
+        voucher_qs.only.return_value = voucher_qs
+        voucher_qs.order_by.return_value = [voucher_unposted, voucher_posted]
+        mocked_voucher_filter.return_value = voucher_qs
+
+        mocked_section_filter.return_value.only.return_value = [
+            SimpleNamespace(id=1, section_code="194A", description="Interest")
+        ]
+        mocked_profile_filter.return_value.order_by.return_value = []
+
+        request = self.factory.get("/withholding/reports/readiness/?entity=1")
+        force_authenticate(request, user=self.user)
+        response = WithholdingReadinessDashboardAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.data
+        self.assertEqual(payload["header"]["row_count"], 2)
+        self.assertIn("rows", payload)
+        self.assertEqual(len(payload["rows"]), 2)
+
+        first = payload["rows"][0]
+        second = payload["rows"][1]
+        self.assertEqual(first["posting_state"], "not_posted")
+        self.assertEqual(first["posting_state_label"], "Voucher not posted")
+        self.assertIsNone(first["drilldowns"]["posting_lookup"])
+
+        self.assertEqual(second["posting_state"], "posted")
+        self.assertEqual(second["posting_state_label"], "Posted")
+        self.assertEqual(second["drilldowns"]["posting_lookup"]["lookup"]["document_type"], "payment_voucher")
+
+    @patch("withholding.views.account_pan", return_value="")
+    @patch("withholding.views.EntityPartyTaxProfile.objects.filter")
+    @patch("withholding.views.WithholdingSection.objects.filter")
+    @patch("withholding.views.PaymentVoucherHeader.objects.filter")
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=["purchase.statutory.view"])
+    @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    def test_readiness_excludes_non_target_sections_by_default(
+        self,
+        _mocked_entity,
+        _mocked_codes,
+        _mocked_subscription,
+        mocked_voucher_filter,
+        mocked_section_filter,
+        mocked_profile_filter,
+        _mocked_account_pan,
+    ):
+        voucher = SimpleNamespace(
+            id=201,
+            entity_id=1,
+            entityfinid_id=10,
+            subentity_id=100,
+            voucher_date=date(2026, 4, 15),
+            doc_code="PV",
+            doc_no="201",
+            status=int(PaymentVoucherHeader.Status.POSTED),
+            paid_to_id=5001,
+            paid_to=SimpleNamespace(pan=""),
+            workflow_payload={
+                "withholding_runtime_result": {
+                    "section_id": 99,
+                    "amount": "100.00",
+                    "base_amount": "1000.00",
+                    "rate": "10.00",
+                    "reason_code": "OK",
+                    "enabled": True,
+                }
+            },
+        )
+        voucher_qs = MagicMock()
+        voucher_qs.exclude.return_value = voucher_qs
+        voucher_qs.filter.return_value = voucher_qs
+        voucher_qs.select_related.return_value = voucher_qs
+        voucher_qs.only.return_value = voucher_qs
+        voucher_qs.order_by.return_value = [voucher]
+        mocked_voucher_filter.return_value = voucher_qs
+        mocked_section_filter.return_value.only.return_value = [
+            SimpleNamespace(id=99, section_code="194C", description="Contractor")
+        ]
+        mocked_profile_filter.return_value.order_by.return_value = []
+
+        request = self.factory.get("/withholding/reports/readiness/?entity=1")
+        force_authenticate(request, user=self.user)
+        response = WithholdingReadinessDashboardAPIView.as_view()(request)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["header"]["row_count"], 0)
+
+        request_all = self.factory.get("/withholding/reports/readiness/?entity=1&include_all_sections=1")
+        force_authenticate(request_all, user=self.user)
+        response_all = WithholdingReadinessDashboardAPIView.as_view()(request_all)
+        self.assertEqual(response_all.status_code, 200)
+        self.assertEqual(response_all.data["header"]["row_count"], 1)
 
 
 class WithholdingSeedServiceTests(SimpleTestCase):

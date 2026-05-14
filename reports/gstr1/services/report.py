@@ -9,6 +9,7 @@ from reports.gstr1.selectors.queries import apply_scope_filters, apply_smart_fil
 from reports.gstr1.selectors.scope import parse_scope_params
 from reports.gstr1.selectors.smart_filters import parse_smart_filters
 from reports.gstr1.services.classification import Gstr1ClassificationService
+from reports.gstr1.services.readiness import Gstr1ReadinessService
 from reports.gstr1.services.summary import Gstr1SummaryService, SECTION_LABELS
 from reports.gstr1.services.validation import Gstr1ValidationService
 
@@ -60,6 +61,11 @@ class Gstr1ReportService:
         if severity:
             warnings = [warning for warning in warnings if str(warning.get("severity", "")).lower() == severity]
         return warnings
+
+    def readiness(self, scope, *, smart_filters=None, summary=None):
+        summary = summary or self.summary(scope, smart_filters=smart_filters)
+        warnings = self.validations(scope, smart_filters=smart_filters)
+        return Gstr1ReadinessService().build(warnings=warnings, summary=summary)
 
     def invoice_detail(self, scope, invoice_id):
         qs = self.scoped_queryset(scope)

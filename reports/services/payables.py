@@ -51,6 +51,7 @@ from reports.services.payables_config import (
     resolve_supported_filters,
     resolve_view_modes,
 )
+from reports.services.payables_settings import get_payables_settings_response
 
 ZERO = Decimal("0.00")
 GL_RECONCILIATION_TOLERANCE = Decimal("0.05")
@@ -226,12 +227,28 @@ def _report_meta_payload(
     required_permissions,
     feature_state=None,
     extra_meta=None,
+    user=None,
 ):
     hierarchy = _payable_drilldown_flow()
     report_meta = get_payables_report_config(report_code, view=view)
     column_meta = resolve_report_columns(report_code, view=view, enabled_features=feature_state)
     summary_blocks = resolve_report_summary_blocks(report_code, view=view, enabled_features=feature_state)
     permission_set = set(required_permissions or [])
+    report_override = {}
+    display_preferences = {}
+    if user is not None:
+        settings_payload = get_payables_settings_response(user=user, entity_id=entity_id).get("payload") or {}
+        display_preferences = settings_payload.get("display_preferences") if isinstance(settings_payload, dict) else {}
+        report_overrides = settings_payload.get("report_overrides") if isinstance(settings_payload, dict) else {}
+        report_override = report_overrides.get(report_code, {}) if isinstance(report_overrides, dict) else {}
+        selected_columns = report_override.get("columns") if isinstance(report_override, dict) else None
+        if isinstance(selected_columns, list):
+            selected_column_set = {str(key).strip() for key in selected_columns if str(key).strip()}
+            available_column_keys = {column["key"] for column in column_meta}
+            # Apply overrides only when at least one key exists for this report/view.
+            if selected_column_set & available_column_keys:
+                for column in column_meta:
+                    column["included"] = column["key"] in selected_column_set
     available_drilldowns = []
     for code in (report_meta or {}).get("drilldown_targets", []):
         target = get_payables_drilldown_target(code) or {"code": code, "target": code, "label": code.replace("_", " ").title()}
@@ -291,6 +308,9 @@ def _report_meta_payload(
         ),
         "report_registry": get_payables_registry_payload(permission_codes=permission_set),
     }
+    if user is not None:
+        meta["display_preferences"] = display_preferences if isinstance(display_preferences, dict) else {}
+        meta["report_override"] = report_override if isinstance(report_override, dict) else {}
     if extra_meta:
         meta.update(extra_meta)
     return {
@@ -386,6 +406,7 @@ def build_vendor_outstanding_report(
     view="summary",
     reconcile_gl=False,
     include_trace=True,
+    user=None,
 ):
     """Build the vendor outstanding report with vendor summary and bill-wise detail."""
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
@@ -877,6 +898,7 @@ def build_vendor_outstanding_report(
                 "include_advances_separately": include_advances_separately,
             },
             extra_meta=reconciliation_meta,
+            user=user,
         ),
     }
 
@@ -900,6 +922,7 @@ def build_ap_aging_report(
     page_size=100,
     view="summary",
     include_trace=True,
+    user=None,
 ):
     """Build AP aging in summary or invoice view.
 
@@ -1184,6 +1207,7 @@ def build_ap_aging_report(
                 required_menu_code="reports.accountspayableaging",
                 required_permissions=["reports.accountspayableaging.view"],
                 feature_state={"view": "invoice", "include_trace": include_trace},
+                user=user,
             ),
         }
 
@@ -1215,6 +1239,7 @@ def build_ap_aging_report(
             required_menu_code="reports.accountspayableaging",
             required_permissions=["reports.accountspayableaging.view"],
             feature_state={"view": "summary", "include_trace": include_trace},
+            user=user,
         ),
     }
 
@@ -1240,6 +1265,7 @@ def build_upcoming_payments_calendar_report(
     page=1,
     page_size=100,
     include_trace=True,
+    user=None,
 ):
     """Return open payable bills due in the selected planning window."""
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
@@ -1500,6 +1526,7 @@ def build_upcoming_payments_calendar_report(
             required_menu_code="reports.payables.upcoming_payments_calendar",
             required_permissions=["reports.payables.upcoming_payments_calendar.view"],
             feature_state={"include_trace": include_trace, "overdue_only": overdue_only},
+            user=user,
         ),
     }
 
@@ -1515,6 +1542,7 @@ def build_payables_dashboard_summary(
     region_id=None,
     currency=None,
     search=None,
+    user=None,
 ):
     """Return a lightweight AP dashboard rollup for cards and top-vendor widgets."""
     summary_payload = build_ap_aging_report(
@@ -1530,6 +1558,7 @@ def build_payables_dashboard_summary(
         sort_by="outstanding",
         sort_order="desc",
         view="summary",
+        user=user,
     )
     rows = summary_payload["rows"]
     top_vendors = sorted(rows, key=lambda row: q2(row.get("outstanding") or ZERO), reverse=True)[:10]
@@ -1581,5 +1610,6 @@ def build_payables_dashboard_summary(
             required_menu_code="reports.vendoroutstanding",
             required_permissions=["reports.vendoroutstanding.view", "reports.accountspayableaging.view"],
             extra_meta={"dashboard": True, "supports_drilldown": True},
+            user=user,
         ),
     }

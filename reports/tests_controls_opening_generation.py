@@ -174,6 +174,8 @@ class OpeningGenerationTests(SimpleTestCase):
         self.assertEqual(payload["entityfin_id"], 52)
         self.assertIsNotNone(payload["opening_history"])
         self.assertEqual(payload["opening_history"]["batch"]["voucher_no"], "OB-FY2027-28")
+        self.assertEqual(payload["opening_history"]["batch"]["drilldown"]["target"], "posting_detail")
+        self.assertEqual(payload["opening_history"]["batch"]["drilldown"]["params"]["entry_id"], 7001)
         self.assertEqual(payload["opening_history"]["active_year_transition"]["before_generation"], [51])
         self.assertEqual(payload["opening_history"]["active_year_transition"]["after_generation"], 52)
         self.assertEqual(destination_fy.metadata["opening_carry_forward"]["status"], "generated")

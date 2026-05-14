@@ -86,3 +86,4 @@ class Gstr3bValidationSerializer(serializers.Serializer):
     code = serializers.CharField()
     severity = serializers.ChoiceField(choices=["info", "warning", "error"])
     message = serializers.CharField()
+    drilldowns = serializers.JSONField(required=False)

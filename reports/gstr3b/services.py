@@ -190,9 +190,6 @@ class Gstr3bSummaryService:
     ZERO_RATED_SUPPLY_CATEGORIES = (
         SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
         SalesInvoiceHeader.SupplyCategory.EXPORT_WITHOUT_IGST,
-        SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
-        SalesInvoiceHeader.SupplyCategory.SEZ_WITHOUT_IGST,
-        SalesInvoiceHeader.SupplyCategory.DEEMED_EXPORT,
     )
     NIL_EXEMPT_TAXABILITIES = (
         SalesInvoiceHeader.Taxability.EXEMPT,
@@ -208,8 +205,8 @@ class Gstr3bSummaryService:
             entity_id=scope.entity_id,
             bill_date__gte=scope.from_date,
             bill_date__lte=scope.to_date,
-            status=SalesInvoiceHeader.Status.POSTED,
         )
+        qs = qs.exclude(status=SalesInvoiceHeader.Status.CANCELLED)
         if scope.entityfinid_id:
             qs = qs.filter(entityfinid_id=scope.entityfinid_id)
         if scope.subentity_id:
@@ -460,11 +457,12 @@ class Gstr3bSummaryService:
         missing_pos_count = sales_qs.filter(place_of_supply_state_code__in=["", None]).count()
         if missing_pos_count:
             warnings.append(
-                {
-                    "code": "GSTR3B_POS_MISSING",
-                    "severity": "warning",
-                    "message": f"{missing_pos_count} posted sales invoices have missing place of supply.",
-                }
+                self._build_validation_warning(
+                    scope,
+                    code="GSTR3B_POS_MISSING",
+                    severity="warning",
+                    message=f"{missing_pos_count} in-scope sales invoices have missing place of supply.",
+                )
             )
         missing_tax_count = sales_qs.filter(
             taxability=SalesInvoiceHeader.Taxability.TAXABLE,
@@ -475,19 +473,82 @@ class Gstr3bSummaryService:
         ).count()
         if missing_tax_count:
             warnings.append(
-                {
-                    "code": "GSTR3B_TAX_BREAKUP_MISSING",
-                    "severity": "warning",
-                    "message": f"{missing_tax_count} taxable posted sales invoices have zero GST breakup.",
-                }
+                self._build_validation_warning(
+                    scope,
+                    code="GSTR3B_TAX_BREAKUP_MISSING",
+                    severity="warning",
+                    message=f"{missing_tax_count} taxable in-scope sales invoices have zero GST breakup.",
+                )
             )
         _, has_cash_tax_source = _sum_cash_tax_paid(scope)
         if sales_qs.exists() and not has_cash_tax_source:
             warnings.append(
-                {
-                    "code": "GSTR3B_CASH_TAX_SOURCE_PENDING",
-                    "severity": "info",
-                    "message": "Section 6.1 tax_paid_cash is provisional (0.00) because output GST static account mappings are missing.",
-                }
+                self._build_validation_warning(
+                    scope,
+                    code="GSTR3B_CASH_TAX_SOURCE_PENDING",
+                    severity="info",
+                    message="Section 6.1 tax_paid_cash is provisional (0.00) because output GST static account mappings are missing.",
+                )
             )
         return warnings
+
+    def _build_validation_warning(self, scope: Gstr3bScope, *, code: str, severity: str, message: str) -> dict:
+        warning = {
+            "code": code,
+            "severity": severity,
+            "message": message,
+        }
+        drilldowns = {}
+        section = self._section_for_warning(code)
+        if section:
+            drilldowns["section_view"] = self._build_section_drilldown(scope, section)
+        related_report = self._build_related_report_drilldown(scope, code)
+        if related_report:
+            drilldowns["related_report"] = related_report
+        if drilldowns:
+            warning["drilldowns"] = drilldowns
+        return warning
+
+    def _section_for_warning(self, code: str) -> str | None:
+        if code in {"GSTR3B_POS_MISSING", "GSTR3B_TAX_BREAKUP_MISSING"}:
+            return "3.1"
+        if code == "GSTR3B_CASH_TAX_SOURCE_PENDING":
+            return "6.1"
+        return None
+
+    def _build_section_drilldown(self, scope: Gstr3bScope, section: str) -> dict:
+        params = {
+            "section": section,
+            "from_date": scope.from_date.isoformat(),
+            "to_date": scope.to_date.isoformat(),
+        }
+        if scope.entityfinid_id:
+            params["entityfinid"] = scope.entityfinid_id
+        if scope.subentity_id:
+            params["subentity"] = scope.subentity_id
+        return {
+            "target": "gstr3b_section",
+            "label": "Open GSTR-3B section",
+            "kind": "report",
+            "route": "/gstr3breport",
+            "params": params,
+        }
+
+    def _build_related_report_drilldown(self, scope: Gstr3bScope, code: str) -> dict | None:
+        if code not in {"GSTR3B_POS_MISSING", "GSTR3B_TAX_BREAKUP_MISSING"}:
+            return None
+        params = {
+            "from_date": scope.from_date.isoformat(),
+            "to_date": scope.to_date.isoformat(),
+        }
+        if scope.entityfinid_id:
+            params["entityfinid"] = scope.entityfinid_id
+        if scope.subentity_id:
+            params["subentity"] = scope.subentity_id
+        return {
+            "target": "gstr1_readiness",
+            "label": "Open GSTR-1 readiness workspace",
+            "kind": "report",
+            "route": "/gstreport",
+            "params": params,
+        }

@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
+from financial.profile_access import account_pan
+from payments.models.payment_core import PaymentVoucherHeader
+from reports.gstr1.services.report import Gstr1ReportService
+from reports.gstr3b.services import Gstr3bSummaryService
+from reports.services.gst_exception_dashboard import build_gst_exception_dashboard
+from reports.services.gst_reconciliation import build_gstr1_vs_gstr3b_reconciliation
 from reports.services.controls.opening_policy import resolve_opening_policy, summarize_opening_policy
+from withholding.models import EntityPartyTaxProfile, TcsCollection, TcsComputation, WithholdingSection
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,370 @@ def _resolve_scope(entity_id: int, entityfin_id: int | None = None, subentity_id
         "entityfin_name": entityfin_name,
         "subentity_name": subentity_name,
     }
+
+
+def _iso_date(value) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "date"):
+        try:
+            value = value.date()
+        except Exception:
+            pass
+    return str(value)
+
+
+def _q2(value) -> Decimal:
+    try:
+        return Decimal(str(value or "0")).quantize(Decimal("0.01"))
+    except Exception:
+        return Decimal("0.00")
+
+
+def _tcs_counts(entity_id: int, entityfin_id: int | None, subentity_id: int | None, from_date: str, to_date: str) -> dict:
+    qs = (
+        TcsComputation.objects.filter(entity_id=entity_id, doc_date__gte=from_date, doc_date__lte=to_date)
+        .exclude(status__in=[TcsComputation.Status.DRAFT, TcsComputation.Status.REVERSED])
+        .prefetch_related("collections__deposit_allocations__deposit")
+    )
+    if entityfin_id:
+        qs = qs.filter(entityfin_id=entityfin_id)
+    if subentity_id:
+        qs = qs.filter(subentity_id=subentity_id)
+
+    total_rows = 0
+    missing_section = 0
+    pending_collection = 0
+    pending_deposit = 0
+    no_computed_tcs = 0
+    total_gap = Decimal("0.00")
+
+    for comp in qs:
+        total_rows += 1
+        if not comp.section_id:
+            missing_section += 1
+        comp_tcs = _q2(comp.tcs_amount)
+        collected = Decimal("0.00")
+        deposited = Decimal("0.00")
+        for col in comp.collections.all():
+            if col.status == TcsCollection.Status.CANCELLED:
+                continue
+            collected += _q2(col.tcs_collected_amount)
+            for alloc in col.deposit_allocations.all():
+                dep = alloc.deposit
+                dep_status = str(getattr(dep, "status", "") or "").upper()
+                if dep_status in {"CONFIRMED", "FILED"}:
+                    deposited += _q2(alloc.allocated_amount)
+        if comp_tcs <= Decimal("0.00"):
+            no_computed_tcs += 1
+            continue
+        if _q2(comp_tcs - collected) > Decimal("0.00"):
+            pending_collection += 1
+            total_gap += _q2(comp_tcs - collected)
+        if _q2(collected - deposited) > Decimal("0.00"):
+            pending_deposit += 1
+            total_gap += _q2(collected - deposited)
+
+    blockers = missing_section + pending_collection + pending_deposit
+    review_items = no_computed_tcs
+    status = "ready_to_file" if blockers == 0 and review_items == 0 else ("blocked" if blockers > 0 else "review")
+    return {
+        "status": status,
+        "total_rows": total_rows,
+        "blockers": blockers,
+        "review_items": review_items,
+        "pending_collection": pending_collection,
+        "pending_deposit": pending_deposit,
+        "missing_section": missing_section,
+        "total_gap": str(_q2(total_gap)),
+    }
+
+
+def _tds_counts(entity_id: int, entityfin_id: int | None, subentity_id: int | None, from_date: str, to_date: str) -> dict:
+    vouchers = PaymentVoucherHeader.objects.filter(entity_id=entity_id, voucher_date__gte=from_date, voucher_date__lte=to_date).exclude(
+        status=PaymentVoucherHeader.Status.CANCELLED
+    ).select_related("paid_to")
+    if entityfin_id:
+        vouchers = vouchers.filter(entityfinid_id=entityfin_id)
+    if subentity_id:
+        vouchers = vouchers.filter(subentity_id=subentity_id)
+
+    rows = list(vouchers)
+    party_ids = [row.paid_to_id for row in rows if row.paid_to_id]
+    profile_map = {
+        int(p.party_account_id): p
+        for p in EntityPartyTaxProfile.objects.filter(entity_id=entity_id, party_account_id__in=party_ids, is_active=True)
+    }
+    section_ids = set()
+    for voucher in rows:
+        payload = voucher.workflow_payload if isinstance(voucher.workflow_payload, dict) else {}
+        runtime = payload.get("withholding_runtime_result") if isinstance(payload.get("withholding_runtime_result"), dict) else {}
+        sid = runtime.get("section_id")
+        if sid:
+            try:
+                section_ids.add(int(sid))
+            except Exception:
+                pass
+    section_map = {
+        int(sec.id): str(sec.section_code or "").strip().upper()
+        for sec in WithholdingSection.objects.filter(id__in=section_ids).only("id", "section_code")
+    }
+
+    target_sections = {"194A", "194N", "195"}
+    total_rows = 0
+    blockers = 0
+    review_items = 0
+    for voucher in rows:
+        payload = voucher.workflow_payload if isinstance(voucher.workflow_payload, dict) else {}
+        runtime = payload.get("withholding_runtime_result") if isinstance(payload.get("withholding_runtime_result"), dict) else {}
+        withholding_cfg = payload.get("withholding") if isinstance(payload.get("withholding"), dict) else {}
+        enabled = bool(runtime.get("enabled", withholding_cfg.get("enabled", False)))
+        if not enabled:
+            continue
+        sid = runtime.get("section_id") or withholding_cfg.get("section_id")
+        code = section_map.get(int(sid), "") if sid not in (None, "") else str(runtime.get("section_code") or "").strip().upper()
+        if code and code not in target_sections:
+            continue
+        total_rows += 1
+        pan = (account_pan(voucher.paid_to) or getattr(voucher.paid_to, "pan", None) or "").strip().upper()
+        profile = profile_map.get(int(voucher.paid_to_id or 0))
+        tax_identifier = str(getattr(profile, "tax_identifier", "") or "").strip()
+        residency = str(getattr(profile, "residency_status", "") or "").strip().lower()
+        amount = _q2(runtime.get("amount"))
+
+        is_blocked = False
+        is_review = False
+        if not code:
+            is_blocked = True
+        elif code in {"194A", "194N"} and not pan:
+            is_review = True
+        elif code == "195":
+            if not tax_identifier:
+                is_blocked = True
+            if residency and residency != "non_resident":
+                is_blocked = True
+        if amount <= Decimal("0.00"):
+            is_review = True
+        if is_blocked:
+            blockers += 1
+        elif is_review:
+            review_items += 1
+    status = "ready_to_file" if blockers == 0 and review_items == 0 else ("blocked" if blockers > 0 else "review")
+    return {
+        "status": status,
+        "total_rows": total_rows,
+        "blockers": blockers,
+        "review_items": review_items,
+    }
+
+
+def _build_gst_compliance_snapshot(*, entity_id: int, entityfin_id: int | None, subentity_id: int | None) -> dict:
+    if not entityfin_id:
+        return {
+            "status": "review",
+            "status_label": "Review",
+            "summary_cards": [
+                {"label": "GST Blockers", "value": 0, "note": "Select a financial year for scoped checks", "tone": "warning"},
+                {"label": "GST Review Items", "value": 0, "note": "Validation scope pending", "tone": "neutral"},
+                {"label": "GST Advisories", "value": 0, "note": "Informational mismatches", "tone": "neutral"},
+            ],
+            "actions": [],
+        }
+
+    try:
+        fin = EntityFinancialYear.objects.filter(pk=entityfin_id, entity_id=entity_id).only("finstartyear", "finendyear").first()
+        from_date = _iso_date(getattr(fin, "finstartyear", None))
+        to_date = _iso_date(getattr(fin, "finendyear", None))
+        if not from_date or not to_date:
+            return {
+                "status": "review",
+                "status_label": "Review",
+                "summary_cards": [
+                    {"label": "GST Blockers", "value": 0, "note": "Financial year dates unavailable", "tone": "warning"},
+                    {"label": "GST Review Items", "value": 0, "note": "Validation scope pending", "tone": "neutral"},
+                    {"label": "GST Advisories", "value": 0, "note": "Informational mismatches", "tone": "neutral"},
+                ],
+                "actions": [],
+            }
+
+        gstr1_service = Gstr1ReportService()
+        gstr3b_service = Gstr3bSummaryService()
+        params = {
+            "entity": str(entity_id),
+            "entityfinid": str(entityfin_id),
+            "from_date": from_date,
+            "to_date": to_date,
+        }
+        if subentity_id:
+            params["subentity"] = str(subentity_id)
+        gstr1_scope = gstr1_service.build_scope(params)
+        gstr3b_scope = gstr3b_service.build_scope(params)
+        gstr1_warnings = gstr1_service.validations(gstr1_scope)
+        gstr3b_warnings = gstr3b_service.validations(gstr3b_scope)
+        reconciliation = build_gstr1_vs_gstr3b_reconciliation(
+            gstr1_summary=gstr1_service.summary(gstr1_scope),
+            gstr3b_summary=gstr3b_service.build(gstr3b_scope),
+            scope_params={
+                "entityfinid": gstr1_scope.entityfinid_id,
+                "subentity": gstr1_scope.subentity_id,
+                "from_date": gstr1_scope.from_date,
+                "to_date": gstr1_scope.to_date,
+            },
+            gstr1_scope=gstr1_scope,
+        )
+        payload = build_gst_exception_dashboard(
+            gstr1_warnings=gstr1_warnings,
+            gstr3b_warnings=gstr3b_warnings,
+            reconciliation_payload=reconciliation,
+            scope_params={
+                "entityfinid": gstr1_scope.entityfinid_id,
+                "subentity": gstr1_scope.subentity_id,
+                "from_date": gstr1_scope.from_date,
+                "to_date": gstr1_scope.to_date,
+            },
+        )
+        overview = payload.get("overview", {})
+        blockers = int(overview.get("blocking_exception_count") or 0)
+        review_items = int(overview.get("total_exception_count") or 0) - blockers
+        advisories = int(overview.get("reconciliation_advisory_count") or 0)
+        status = "ready_to_file" if blockers == 0 and review_items == 0 else ("blocked" if blockers > 0 else "review")
+        status_label = "Ready to File" if status == "ready_to_file" else ("Blocked" if status == "blocked" else "Review")
+        tds = _tds_counts(entity_id, entityfin_id, subentity_id, from_date, to_date)
+        tcs = _tcs_counts(entity_id, entityfin_id, subentity_id, from_date, to_date)
+
+        actions = [
+            {
+                "label": "Open GST Blockers",
+                "route": "/reports/compliance/gst-exception-dashboard",
+                "params": {
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "tab": 1,
+                    "focus": "blockers",
+                },
+            },
+            {
+                "label": "Open GST Reconciliation Gaps",
+                "route": "/reports/compliance/gst-exception-dashboard",
+                "params": {
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "tab": 3,
+                    "focus": "reconciliation",
+                },
+            },
+            {
+                "label": "Open Purchase Statutory (TDS Blocked)",
+                "route": "/purchasestatutory",
+                "params": {
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                    "workspace": "overview",
+                    "readiness_status": "blocked",
+                    "tax_type": "IT_TDS",
+                },
+            },
+            {
+                "label": "Open Purchase Statutory (TDS Fix Now)",
+                "route": "/purchasestatutory",
+                "params": {
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                    "workspace": "overview",
+                    "readiness_status": "fix_now",
+                    "tax_type": "IT_TDS",
+                },
+            },
+            {
+                "label": "Open TCS Workspace (Blocked)",
+                "route": "/tcsstatutory",
+                "params": {
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                    "readiness": "blocked",
+                },
+            },
+        ]
+        if tcs["pending_collection"] > 0:
+            actions.append(
+                {
+                    "label": "Open TCS Pending Collection",
+                    "route": "/tcsstatutory",
+                    "params": {
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "workspace_status": "COMPUTED_PENDING_COLLECTION",
+                    },
+                }
+            )
+        if tcs["pending_deposit"] > 0:
+            actions.append(
+                {
+                    "label": "Open TCS Pending Deposit",
+                    "route": "/tcsstatutory",
+                    "params": {
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "workspace_status": "COLLECTED_PENDING_DEPOSIT",
+                    },
+                }
+            )
+        if tcs["missing_section"] > 0:
+            actions.append(
+                {
+                    "label": "Open TCS Missing Section",
+                    "route": "/tcsstatutory",
+                    "params": {
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "section": "UNMAPPED",
+                    },
+                }
+            )
+
+        return {
+            "status": status,
+            "status_label": status_label,
+            "summary_cards": [
+                {"label": "GST Blockers", "value": blockers, "note": "Must be resolved before filing", "tone": "warning" if blockers else "neutral"},
+                {"label": "GST Review Items", "value": max(review_items, 0), "note": "Need finance review", "tone": "accent" if review_items > 0 else "neutral"},
+                {"label": "GST Advisories", "value": advisories, "note": "Informational reconciliation notes", "tone": "neutral"},
+                {
+                    "label": "Max Tax Gap",
+                    "value": str(overview.get("max_reconciliation_tax_gap") or "0.00"),
+                    "note": "Largest mismatch in total tax",
+                    "tone": "neutral",
+                },
+                {
+                    "label": "TDS Blockers",
+                    "value": tds["blockers"],
+                    "note": f"{tds['review_items']} review items across {tds['total_rows']} payment rows",
+                    "tone": "warning" if tds["blockers"] else ("accent" if tds["review_items"] else "neutral"),
+                },
+                {
+                    "label": "TCS Blockers",
+                    "value": tcs["blockers"],
+                    "note": f"{tcs['pending_collection']} pending collection · {tcs['pending_deposit']} pending deposit · {tcs['missing_section']} missing section",
+                    "tone": "warning" if tcs["blockers"] else ("accent" if tcs["review_items"] else "neutral"),
+                },
+            ],
+            "actions": actions,
+        }
+    except Exception:
+        return {
+            "status": "review",
+            "status_label": "Review",
+            "summary_cards": [
+                {"label": "GST Blockers", "value": 0, "note": "Compliance snapshot unavailable", "tone": "warning"},
+                {"label": "GST Review Items", "value": 0, "note": "Retry after data refresh", "tone": "neutral"},
+                {"label": "GST Advisories", "value": 0, "note": "No advisory snapshot", "tone": "neutral"},
+            ],
+            "actions": [],
+        }
 
 
 def _control_sections() -> list[dict[str, object]]:
@@ -254,6 +625,11 @@ def build_phase_one_controls_hub(*, entity_id: int, entityfin_id: int | None = N
     scope_names = _resolve_scope(entity_id, entityfin_id, subentity_id)
     sections = _control_sections()
     opening_policy = resolve_opening_policy(entity_id)
+    gst_compliance = _build_gst_compliance_snapshot(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
     total_cards = sum(len(section["cards"]) for section in sections)
     planned_cards = total_cards
     available_cards = sum(1 for section in sections for card in section["cards"] if card["status"] == "available")
@@ -273,6 +649,12 @@ def build_phase_one_controls_hub(*, entity_id: int, entityfin_id: int | None = N
             {"label": "Planned", "value": planned_cards, "note": "All controls start from a clean build", "tone": "warning"},
             {"label": "Available now", "value": available_cards, "note": "No legacy shortcuts used", "tone": "neutral"},
             {"label": "Sections", "value": len(sections), "note": "Daily control and close operations", "tone": "neutral"},
+            {
+                "label": "Compliance Status",
+                "value": gst_compliance["status_label"],
+                "note": "GST readiness from exception and reconciliation checks",
+                "tone": "warning" if gst_compliance["status"] == "blocked" else "accent" if gst_compliance["status"] == "review" else "neutral",
+            },
         ],
         "sections": sections,
         "opening_policy": opening_policy,
@@ -299,4 +681,5 @@ def build_phase_one_controls_hub(*, entity_id: int, entityfin_id: int | None = N
             {"phase": "3", "title": "Alerts and Exceptions", "status": "planned"},
             {"phase": "4", "title": "Forecasting and Variance", "status": "planned"},
         ],
+        "compliance_readiness": gst_compliance,
     }

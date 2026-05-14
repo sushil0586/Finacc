@@ -911,6 +911,151 @@ PAYABLE_REPORTS.update(
     }
 )
 
+# Phase 2 advanced payable analytics (same meta/export/drilldown structure as payables family).
+PAYABLE_REPORTS.update(
+    {
+        "ap_payment_forecast": {
+            "code": "ap_payment_forecast",
+            "name": "AP Payment Forecast",
+            "path": "/api/reports/payables/ap-payment-forecast/",
+            "menu_code": "reports.payables.ap_payment_forecast",
+            "route_name": "reports-payables-ap-payment-forecast",
+            "required_permission": "reports.payables.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "due_date", "sort_order": "asc"},
+            "columns": _ordered_columns(
+                {"key": "due_date", "label": "Due Date", "default": True},
+                {"key": "vendor_count", "label": "Vendors", "default": True},
+                {"key": "bill_count", "label": "Bills", "default": True},
+                {"key": "due_amount", "label": "Due Amount", "default": True},
+                {"key": "overdue_amount", "label": "Overdue Amount", "default": True},
+                {"key": "next_7_days_amount", "label": "Next 7 Days", "default": True},
+                {"key": "next_30_days_amount", "label": "Next 30 Days", "default": True},
+                {"key": "payment_band", "label": "Payment Band", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {
+                    "totals": {"code": "totals", "label": "Totals", "default": True},
+                    "window_summary": {"code": "window_summary", "label": "Window Summary", "default": True},
+                }
+            ),
+            "drilldown_targets": ["upcoming_payments_calendar", "vendor_outstanding", "ap_aging"],
+            "export_columns": ["due_date", "vendor_count", "bill_count", "due_amount", "overdue_amount", "next_7_days_amount", "next_30_days_amount", "payment_band"],
+            "related_reports": ["upcoming_payments_calendar", "vendor_outstanding", "ap_aging_summary"],
+            "print_sections": ["rows", "totals"],
+        },
+        "vendor_reconciliation_statement": {
+            "code": "vendor_reconciliation_statement",
+            "name": "Vendor Reconciliation Statement",
+            "path": "/api/reports/payables/vendor-reconciliation-statement/",
+            "menu_code": "reports.payables.vendor_reconciliation_statement",
+            "route_name": "reports-payables-vendor-reconciliation-statement",
+            "required_permission": "reports.payables.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "closing_balance", "sort_order": "desc"},
+            "columns": _ordered_columns(
+                {"key": "vendor_name", "label": "Vendor Name", "default": True},
+                {"key": "vendor_code", "label": "Vendor Code", "default": True},
+                {"key": "opening_balance", "label": "Opening", "default": True},
+                {"key": "invoiced", "label": "Invoiced", "default": True},
+                {"key": "notes", "label": "Notes", "default": True},
+                {"key": "settled", "label": "Settled", "default": True},
+                {"key": "closing_balance", "label": "Closing", "default": True},
+                {"key": "status", "label": "Status", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {"totals": {"code": "totals", "label": "Totals", "default": True}}
+            ),
+            "drilldown_targets": ["vendor_ledger_statement", "vendor_outstanding", "ap_aging"],
+            "export_columns": ["vendor_name", "vendor_code", "opening_balance", "invoiced", "notes", "settled", "closing_balance", "status"],
+            "related_reports": ["vendor_ledger_statement", "vendor_outstanding", "ap_aging_invoice"],
+            "print_sections": ["rows", "totals"],
+        },
+        "grn_invoice_posting_exceptions": {
+            "code": "grn_invoice_posting_exceptions",
+            "name": "GRN vs Invoice vs Posting Exceptions",
+            "path": "/api/reports/payables/grn-invoice-posting-exceptions/",
+            "menu_code": "reports.payables.grn_invoice_posting_exceptions",
+            "route_name": "reports-payables-grn-invoice-posting-exceptions",
+            "required_permission": "reports.payables.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "bill_date", "sort_order": "desc"},
+            "columns": _ordered_columns(
+                {"key": "purchase_number", "label": "Purchase Number", "default": True},
+                {"key": "supplier_invoice_number", "label": "Supplier Invoice", "default": True},
+                {"key": "bill_date", "label": "Bill Date", "default": True},
+                {"key": "status", "label": "Status", "default": True},
+                {"key": "posting_status", "label": "Posting Status", "default": True},
+                {"key": "grand_total", "label": "Grand Total", "default": True},
+                {"key": "issue_type", "label": "Issue Type", "default": True},
+                {"key": "issue_message", "label": "Issue Message", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {"issue_breakup": {"code": "issue_breakup", "label": "Issue Breakup", "default": True}}
+            ),
+            "drilldown_targets": ["purchase_document_detail", "vendor_outstanding", "ap_aging"],
+            "export_columns": ["purchase_number", "supplier_invoice_number", "bill_date", "status", "posting_status", "grand_total", "issue_type", "issue_message"],
+            "related_reports": ["purchase_register", "vendor_outstanding", "ap_aging_invoice"],
+            "print_sections": ["rows", "summary"],
+        },
+        "ap_compliance_aging": {
+            "code": "ap_compliance_aging",
+            "name": "AP Compliance Aging",
+            "path": "/api/reports/payables/ap-compliance-aging/",
+            "menu_code": "reports.payables.ap_compliance_aging",
+            "route_name": "reports-payables-ap-compliance-aging",
+            "required_permission": "reports.payables.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "days_overdue", "sort_order": "desc"},
+            "columns": _ordered_columns(
+                {"key": "vendor_name", "label": "Vendor Name", "default": True},
+                {"key": "vendor_code", "label": "Vendor Code", "default": True},
+                {"key": "gstin", "label": "GSTIN", "default": True},
+                {"key": "bill_number", "label": "Bill Number", "default": True},
+                {"key": "due_date", "label": "Due Date", "default": True},
+                {"key": "days_overdue", "label": "Days Overdue", "default": True},
+                {"key": "outstanding", "label": "Outstanding", "default": True},
+                {"key": "compliance_risk", "label": "Compliance Risk", "default": True},
+                {"key": "risk_reason", "label": "Risk Reason", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {"risk_summary": {"code": "risk_summary", "label": "Risk Summary", "default": True}}
+            ),
+            "drilldown_targets": ["vendor_outstanding", "ap_aging", "vendor_ledger_statement"],
+            "export_columns": ["vendor_name", "vendor_code", "gstin", "bill_number", "due_date", "days_overdue", "outstanding", "compliance_risk", "risk_reason"],
+            "related_reports": ["vendor_outstanding", "ap_aging_invoice", "vendor_ledger_statement"],
+            "print_sections": ["rows", "summary"],
+        },
+        "duplicate_anomalous_bill_detection": {
+            "code": "duplicate_anomalous_bill_detection",
+            "name": "Duplicate / Anomalous Bill Detection",
+            "path": "/api/reports/payables/duplicate-anomalous-bill-detection/",
+            "menu_code": "reports.payables.duplicate_anomalous_bill_detection",
+            "route_name": "reports-payables-duplicate-anomalous-bill-detection",
+            "required_permission": "reports.payables.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "bill_date", "sort_order": "desc"},
+            "columns": _ordered_columns(
+                {"key": "vendor_name", "label": "Vendor Name", "default": True},
+                {"key": "vendor_code", "label": "Vendor Code", "default": True},
+                {"key": "supplier_invoice_number", "label": "Supplier Invoice", "default": True},
+                {"key": "bill_date", "label": "Bill Date", "default": True},
+                {"key": "grand_total", "label": "Grand Total", "default": True},
+                {"key": "anomaly_type", "label": "Anomaly Type", "default": True},
+                {"key": "anomaly_score", "label": "Anomaly Score", "default": True},
+                {"key": "anomaly_reason", "label": "Anomaly Reason", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {"anomaly_summary": {"code": "anomaly_summary", "label": "Anomaly Summary", "default": True}}
+            ),
+            "drilldown_targets": ["purchase_document_detail", "vendor_outstanding", "ap_aging"],
+            "export_columns": ["vendor_name", "vendor_code", "supplier_invoice_number", "bill_date", "grand_total", "anomaly_type", "anomaly_score", "anomaly_reason"],
+            "related_reports": ["purchase_register", "vendor_outstanding", "ap_aging_invoice"],
+            "print_sections": ["rows", "summary"],
+        },
+    }
+)
+
 
 def _merge_report_variant(report_config, *, view=None):
     merged = deepcopy(report_config)

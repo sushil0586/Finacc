@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from posting.models import Entry
+from reports.gstr1.selectors.queries import apply_scope_filters, base_queryset
+from reports.gstr1.services.classification import Gstr1ClassificationService
 
 ZERO = Decimal("0.00")
 TOLERANCE = Decimal("0.05")
+ADVISORY_CODES = {"INTERSTATE_DISCLOSURE", "NON_GST_ONLY"}
 
 
 def _q(value) -> Decimal:
@@ -73,10 +77,18 @@ def _difference_row(*, code: str, label: str, gstr1_row: dict[str, Decimal], gst
     status = "matched"
     if any(abs(value) > TOLERANCE for value in [taxable_diff, cgst_diff, sgst_diff, igst_diff, cess_diff, total_tax_diff]):
         status = "mismatch"
+    is_advisory = code in ADVISORY_CODES
+    explanation = (
+        f"GSTR-1 taxable {gstr1_row['taxable_value']} vs GSTR-3B taxable {gstr3b_row['taxable_value']}; "
+        f"GSTR-1 tax {gstr1_row['total_tax']} vs GSTR-3B tax {gstr3b_row['total_tax']}."
+    )
     return {
         "code": code,
         "label": label,
         "status": status,
+        "is_advisory": is_advisory,
+        "mismatch_kind": "advisory" if is_advisory else "actionable",
+        "explanation": explanation,
         "note": note,
         "gstr1_taxable_value": gstr1_row["taxable_value"],
         "gstr1_cgst": gstr1_row["cgst"],
@@ -99,7 +111,190 @@ def _difference_row(*, code: str, label: str, gstr1_row: dict[str, Decimal], gst
     }
 
 
-def build_gstr1_vs_gstr3b_reconciliation(*, gstr1_summary: dict, gstr3b_summary: dict) -> dict:
+def _clean_scope_params(scope_params: dict | None) -> dict:
+    params = {}
+    for key in ("entityfinid", "subentity", "from_date", "to_date"):
+        value = (scope_params or {}).get(key)
+        if value not in (None, ""):
+            params[key] = value
+    return params
+
+
+def _build_reconciliation_drilldowns(scope_params: dict | None, code: str) -> dict:
+    base_params = _clean_scope_params(scope_params)
+    base_params["recon_code"] = code
+    return {
+        "gstr1_workspace": {
+            "target": "gstr1_workspace",
+            "label": "Open GSTR-1 workspace",
+            "kind": "report",
+            "route": "/gstreport",
+            "params": dict(base_params),
+        },
+        "gstr3b_workspace": {
+            "target": "gstr3b_workspace",
+            "label": "Open GSTR-3B workspace",
+            "kind": "report",
+            "route": "/gstr3breport",
+            "params": dict(base_params),
+        },
+    }
+
+
+def _build_source_document_drilldown(*, invoice_id: int) -> dict:
+    return {
+        "target": "sales_invoice_detail",
+        "label": "Open source invoice",
+        "kind": "document",
+        "route": "/saleinvoice",
+        "params": {
+            "transactionid": int(invoice_id),
+        },
+    }
+
+
+def _build_posting_lookup_drilldown(*, invoice_id: int) -> dict:
+    return {
+        "target": "posting_detail_lookup",
+        "label": "Open posted voucher",
+        "kind": "posting_lookup",
+        "lookup": {
+            "document_type": "sales_invoice",
+            "document_id": int(invoice_id),
+            "source_module": "sales",
+        },
+    }
+
+
+def _outward_taxable_filter():
+    return (
+        Gstr1ClassificationService.section_filter("B2B")
+        | Gstr1ClassificationService.section_filter("B2CL")
+        | Gstr1ClassificationService.section_filter("B2CS")
+        | Gstr1ClassificationService.section_filter("CDNR")
+        | Gstr1ClassificationService.section_filter("CDNUR")
+    )
+
+
+def _build_outward_taxable_contributors(scope) -> list[dict]:
+    if not scope:
+        return []
+    if not hasattr(scope, "entity_id") or not hasattr(scope, "include_cancelled"):
+        return []
+    queryset = apply_scope_filters(base_queryset(), scope).filter(_outward_taxable_filter())
+    invoices = list(
+        queryset.order_by("-total_taxable_value", "-id")[:5]
+    )
+    if not invoices:
+        return []
+
+    txn_ids = [int(invoice.id) for invoice in invoices]
+    entry_filters = {
+        "entity_id": scope.entity_id,
+        "txn_id__in": txn_ids,
+    }
+    if scope.entityfinid_id:
+        entry_filters["entityfin_id"] = scope.entityfinid_id
+    if scope.subentity_id is not None:
+        entry_filters["subentity_id"] = scope.subentity_id
+    entries = Entry.objects.filter(**entry_filters).order_by("-id")
+    latest_entry_by_txn = {}
+    for entry in entries:
+        txn_id = int(entry.txn_id or 0)
+        if txn_id and txn_id not in latest_entry_by_txn:
+            latest_entry_by_txn[txn_id] = entry
+
+    contributors = []
+    for invoice in invoices:
+        invoice_id = int(invoice.id)
+        entry = latest_entry_by_txn.get(invoice_id)
+        posting_lookup = (
+            {
+                "entry_id": int(entry.id),
+                "txn_id": int(entry.txn_id),
+                "txn_type": entry.txn_type,
+                "voucher_number": entry.voucher_no,
+                "posting_date": entry.posting_date,
+                "voucher_date": entry.voucher_date,
+                "status": entry.status,
+                "status_name": entry.get_status_display(),
+                "source_module": "sales",
+                "document_type": "sales_invoice",
+                "document_id": invoice_id,
+            }
+            if entry
+            else None
+        )
+        contributors.append(
+            {
+                "invoice_id": invoice_id,
+                "invoice_number": invoice.invoice_number or f"Invoice-{invoice_id}",
+                "bill_date": invoice.bill_date,
+                "taxable_value": _q(invoice.total_taxable_value),
+                "total_tax": _q(invoice.total_cgst) + _q(invoice.total_sgst) + _q(invoice.total_igst) + _q(invoice.total_cess),
+                "grand_total": _q(invoice.grand_total),
+                "is_posted": bool(entry),
+                "posting_status_label": "Posted" if entry else "Not posted",
+                "drilldowns": (
+                    {
+                        "source_document": _build_source_document_drilldown(invoice_id=invoice_id),
+                        "posting_lookup": _build_posting_lookup_drilldown(invoice_id=invoice_id),
+                    }
+                    if entry
+                    else {
+                        "source_document": _build_source_document_drilldown(invoice_id=invoice_id),
+                    }
+                ),
+                "posting_lookup": posting_lookup,
+            }
+        )
+    return contributors
+
+
+def _same_reconciliation_signature(left: dict, right: dict) -> bool:
+    comparable_fields = (
+        "difference_taxable_value",
+        "difference_total_tax",
+        "gstr1_taxable_value",
+        "gstr3b_taxable_value",
+        "gstr1_total_tax",
+        "gstr3b_total_tax",
+    )
+    return all(_q(left.get(field)) == _q(right.get(field)) for field in comparable_fields)
+
+
+def _normalize_rollup_duplicate(rows: list[dict]) -> list[dict]:
+    outward_taxable = next((row for row in rows if row.get("code") == "OUTWARD_TAXABLE"), None)
+    zero_rated = next((row for row in rows if row.get("code") == "ZERO_RATED"), None)
+    total_outward = next((row for row in rows if row.get("code") == "TOTAL_OUTWARD_TAX"), None)
+    if not outward_taxable or not total_outward:
+        return rows
+    if str(total_outward.get("status") or "").lower() != "mismatch":
+        return rows
+    if str(outward_taxable.get("status") or "").lower() != "mismatch":
+        return rows
+    if zero_rated and str(zero_rated.get("status") or "").lower() != "matched":
+        return rows
+    if not _same_reconciliation_signature(total_outward, outward_taxable):
+        return rows
+
+    # Avoid double counting the same variance in the roll-up when zero-rated side is matched.
+    total_outward["status"] = "matched"
+    total_outward["is_advisory"] = True
+    total_outward["mismatch_kind"] = "advisory"
+    total_outward["note"] = (
+        "Roll-up mirrors Outward Taxable Supplies variance and is shown as informational to avoid duplicate mismatch counting."
+    )
+    return rows
+
+
+def build_gstr1_vs_gstr3b_reconciliation(
+    *,
+    gstr1_summary: dict,
+    gstr3b_summary: dict,
+    scope_params: dict | None = None,
+    gstr1_scope=None,
+) -> dict:
     sections = _section_map(gstr1_summary)
     nil_rows = _nil_exempt_map(gstr1_summary)
 
@@ -171,8 +366,20 @@ def build_gstr1_vs_gstr3b_reconciliation(*, gstr1_summary: dict, gstr3b_summary:
         ),
     ]
 
+    rows = _normalize_rollup_duplicate(rows)
+    outward_contributors = _build_outward_taxable_contributors(gstr1_scope)
+    for row in rows:
+        row["drilldowns"] = _build_reconciliation_drilldowns(scope_params, str(row.get("code") or ""))
+        if str(row.get("code") or "").upper() == "OUTWARD_TAXABLE":
+            row["contributors"] = outward_contributors
+            row["contributors_count"] = len(outward_contributors)
+            if outward_contributors:
+                row["note"] = row.get("note") or "Review contributors for invoice-level source and posting actions."
+
     matched_count = len([row for row in rows if row["status"] == "matched"])
     mismatch_count = len(rows) - matched_count
+    advisory_mismatch_count = len([row for row in rows if row["status"] == "mismatch" and row["is_advisory"]])
+    actionable_mismatch_count = len([row for row in rows if row["status"] == "mismatch" and not row["is_advisory"]])
     max_taxable_difference = max((abs(_q(row["difference_taxable_value"])) for row in rows), default=ZERO)
     max_total_tax_difference = max((abs(_q(row["difference_total_tax"])) for row in rows), default=ZERO)
     return {
@@ -181,6 +388,8 @@ def build_gstr1_vs_gstr3b_reconciliation(*, gstr1_summary: dict, gstr3b_summary:
             "comparison_count": len(rows),
             "matched_count": matched_count,
             "mismatch_count": mismatch_count,
+            "actionable_mismatch_count": actionable_mismatch_count,
+            "advisory_mismatch_count": advisory_mismatch_count,
             "max_taxable_difference": max_taxable_difference,
             "max_total_tax_difference": max_total_tax_difference,
             "gstr1_total_taxable": total_outward_gstr1["taxable_value"],

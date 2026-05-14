@@ -386,12 +386,18 @@ class RoleTemplateService:
             "description": "Core accounts payable reporting access.",
             "exact_codes": [
                 "reports.payables.view",
+                "reports.payables.ap_payment_forecast.view",
+                "reports.payables.vendor_reconciliation_statement.view",
+                "reports.payables.grn_invoice_posting_exceptions.view",
+                "reports.payables.ap_compliance_aging.view",
+                "reports.payables.duplicate_anomalous_bill_detection.view",
                 "reports.vendoroutstanding.view",
                 "reports.accountspayableaging.view",
                 "reports.purchase_register.view",
                 "reports.vendorledgerstatement.view",
                 "reports.vendorsettlementhistory.view",
                 "reports.vendornoteregister.view",
+                "reports.payables.settings.view",
             ],
             "exclude_codes": [
                 "reports.apglreconciliation.view",
@@ -523,8 +529,6 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
-
-
 
 
 

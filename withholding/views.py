@@ -58,6 +58,8 @@ from withholding.serializers import (
 from withholding.services import compute_withholding_preview, q2, upsert_tcs_computation
 from financial.profile_access import account_pan
 from payments.models.payment_core import PaymentVoucherHeader
+from purchase.models import PurchaseInvoiceHeader
+from sales.models import SalesInvoiceHeader
 
 
 TCS_FEATURE_CODE = SubscriptionLimitCodes.FEATURE_FINANCIAL
@@ -102,6 +104,7 @@ TCS_RETURN_VIEW_PERMISSIONS = ("compliance.tcs_return_27eq.view", "tcs.return_27
 TCS_RETURN_FILE_PERMISSIONS = ("compliance.tcs_return_27eq.file", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
 TCS_LEDGER_REPORT_VIEW_PERMISSIONS = ("reports.tcsledgerreport.view", "tcs.ledger_report.view")
 TCS_FILING_PACK_VIEW_PERMISSIONS = ("reports.tcsfilingpack.view", "tcs.filing_pack.view")
+WITHHOLDING_READINESS_VIEW_PERMISSIONS = ("purchase.statutory.view", "reports.tds.view")
 
 
 def _safe_int(raw):
@@ -416,6 +419,36 @@ def _row_readiness_status(*, amount: Decimal, flags: dict[str, bool]) -> str:
     if bool(flags.get("missing_pan")):
         return "fix_now"
     return "ready_to_file"
+
+
+def _tcs_source_route(module_name: str | None, document_type: str | None) -> str | None:
+    module = str(module_name or "").strip().lower()
+    dtype = str(document_type or "").strip().lower()
+    if module == "sales" and dtype in {"invoice", "credit_note", "debit_note"}:
+        return "/saleinvoice"
+    if module == "purchase" and dtype in {"invoice", "credit_note", "debit_note"}:
+        return "/purchaseinvoice"
+    return None
+
+
+def _tcs_posting_lookup_document_type(module_name: str | None, document_type: str | None) -> str | None:
+    module = str(module_name or "").strip().lower()
+    dtype = str(document_type or "").strip().lower()
+    if module == "sales":
+        if dtype == "invoice":
+            return "sales_invoice"
+        if dtype == "credit_note":
+            return "sales_credit_note"
+        if dtype == "debit_note":
+            return "sales_debit_note"
+    if module == "purchase":
+        if dtype == "invoice":
+            return "purchase_invoice"
+        if dtype == "credit_note":
+            return "purchase_credit_note"
+        if dtype == "debit_note":
+            return "purchase_debit_note"
+    return None
 
 
 class TcsSectionListCreateAPIView(generics.ListCreateAPIView):
@@ -1551,6 +1584,29 @@ class TcsWorkspaceTransactionsAPIView(APIView):
         if not include_cancelled:
             qs = _exclude_cancelled_documents(qs)
 
+        sales_doc_ids = {
+            int(comp.document_id)
+            for comp in qs
+            if str(comp.module_name or "").strip().lower() == "sales"
+            and str(comp.document_type or "").strip().lower() in {"invoice", "credit_note", "debit_note"}
+            and _safe_int(comp.document_id)
+        }
+        purchase_doc_ids = {
+            int(comp.document_id)
+            for comp in qs
+            if str(comp.module_name or "").strip().lower() == "purchase"
+            and str(comp.document_type or "").strip().lower() in {"invoice", "credit_note", "debit_note"}
+            and _safe_int(comp.document_id)
+        }
+        sales_status_map = {
+            int(row.id): str(row.status or "").strip().lower()
+            for row in SalesInvoiceHeader.objects.filter(id__in=sales_doc_ids).only("id", "status")
+        }
+        purchase_status_map = {
+            int(row.id): str(row.status or "").strip().lower()
+            for row in PurchaseInvoiceHeader.objects.filter(id__in=purchase_doc_ids).only("id", "status")
+        }
+
         rows = []
         party_ids = {int(comp.party_account_id) for comp in qs}
         profile_map = {
@@ -1719,6 +1775,24 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             total_collected += q2(comp_collected)
             total_deposited += q2(comp_deposited)
 
+            source_route = _tcs_source_route(comp.module_name, comp.document_type)
+            posting_lookup_document_type = _tcs_posting_lookup_document_type(comp.module_name, comp.document_type)
+            module_name = str(comp.module_name or "").strip().lower()
+            document_type = str(comp.document_type or "").strip().lower()
+            doc_id = _safe_int(comp.document_id)
+            doc_status = ""
+            if module_name == "sales" and document_type in {"invoice", "credit_note", "debit_note"} and doc_id:
+                doc_status = sales_status_map.get(int(doc_id), "")
+            elif module_name == "purchase" and document_type in {"invoice", "credit_note", "debit_note"} and doc_id:
+                doc_status = purchase_status_map.get(int(doc_id), "")
+            is_posted = doc_status == "posted"
+            if doc_status:
+                posting_state = "posted" if is_posted else "not_posted"
+                posting_state_label = "Posted" if is_posted else "Invoice not posted"
+            else:
+                posting_state = "unknown"
+                posting_state_label = "Posting status unavailable"
+
             rows.append(
                 {
                     "id": comp.id,
@@ -1757,6 +1831,32 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                     "lifecycle_status": lifecycle_status,
                     "computation_status": comp.status,
                     "collections": collections_payload,
+                    "is_posted": is_posted,
+                    "posting_state": posting_state,
+                    "posting_state_label": posting_state_label,
+                    "drilldowns": {
+                        "source_document": (
+                            {
+                                "route": source_route,
+                                "params": {
+                                    "transactionid": int(doc_id),
+                                },
+                            }
+                            if source_route and doc_id
+                            else None
+                        ),
+                        "posting_lookup": (
+                            {
+                                "lookup": {
+                                    "document_type": posting_lookup_document_type,
+                                    "document_id": int(doc_id),
+                                    "source_module": module_name,
+                                }
+                            }
+                            if posting_lookup_document_type and doc_id and is_posted
+                            else None
+                        ),
+                    },
                 }
             )
 
@@ -1872,6 +1972,28 @@ class TcsReportFilingPackAPIView(APIView):
         deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months).order_by("challan_date", "id")
         return_row = TcsQuarterlyReturn.objects.filter(entity_id=entity_id, fy__in=fy_candidates, quarter=quarter, form_name="27EQ").order_by("-id").first()
 
+        sales_doc_ids = set()
+        purchase_doc_ids = set()
+        for comp in computations:
+            module_name = str(comp.module_name or "").strip().lower()
+            document_type = str(comp.document_type or "").strip().lower()
+            document_id = int(comp.document_id or 0)
+            if not document_id:
+                continue
+            if module_name == "sales" and document_type in {"invoice", "credit_note", "debit_note"}:
+                sales_doc_ids.add(document_id)
+            elif module_name == "purchase" and document_type in {"invoice", "credit_note", "debit_note"}:
+                purchase_doc_ids.add(document_id)
+
+        sales_status_map = {
+            int(row["id"]): int(row["status"])
+            for row in SalesInvoiceHeader.objects.filter(id__in=list(sales_doc_ids)).values("id", "status")
+        }
+        purchase_status_map = {
+            int(row["id"]): int(row["status"])
+            for row in PurchaseInvoiceHeader.objects.filter(id__in=list(purchase_doc_ids)).values("id", "status")
+        }
+
         rows = []
         section_totals = {}
         total_base = Decimal("0.00")
@@ -1971,6 +2093,47 @@ class TcsReportFilingPackAPIView(APIView):
                         "ack_no": return_row.ack_no if return_row else "",
                         "filed_on": return_row.filed_on if return_row else None,
                     }
+                    source_route = _tcs_source_route(comp.module_name, comp.document_type)
+                    posting_lookup_document_type = _tcs_posting_lookup_document_type(comp.module_name, comp.document_type)
+                    doc_id = int(comp.document_id or 0)
+                    posting_state = "unknown"
+                    posting_state_label = "Posting state unknown"
+                    is_posted = False
+                    module_name = str(comp.module_name or "").strip().lower()
+                    document_type = str(comp.document_type or "").strip().lower()
+                    if module_name == "sales" and document_type in {"invoice", "credit_note", "debit_note"} and doc_id:
+                        status_value = sales_status_map.get(doc_id)
+                        is_posted = status_value == SalesInvoiceHeader.Status.POSTED
+                        posting_state = "posted" if is_posted else "not_posted"
+                        posting_state_label = "Posted" if is_posted else "Invoice not posted"
+                    elif module_name == "purchase" and document_type in {"invoice", "credit_note", "debit_note"} and doc_id:
+                        status_value = purchase_status_map.get(doc_id)
+                        is_posted = status_value == PurchaseInvoiceHeader.Status.POSTED
+                        posting_state = "posted" if is_posted else "not_posted"
+                        posting_state_label = "Posted" if is_posted else "Invoice not posted"
+                    row["posting_state"] = posting_state
+                    row["posting_state_label"] = posting_state_label
+                    row["is_posted"] = is_posted
+                    row["drilldowns"] = {}
+                    if source_route and doc_id:
+                        row["drilldowns"]["source_document"] = {
+                            "target": "document_source",
+                            "label": "Open source document",
+                            "kind": "document",
+                            "route": source_route,
+                            "params": {"transactionid": doc_id},
+                        }
+                    if posting_lookup_document_type and doc_id and is_posted:
+                        row["drilldowns"]["posting_lookup"] = {
+                            "target": "posting_detail_lookup",
+                            "label": "Open posted voucher",
+                            "kind": "posting_lookup",
+                            "lookup": {
+                                "document_type": posting_lookup_document_type,
+                                "document_id": doc_id,
+                                "source_module": module_name,
+                            },
+                        }
                     row["exceptions"] = {
                         "missing_pan": bool(runtime_flags["missing_pan"]),
                         "invalid_pan_format": invalid_pan_format,
@@ -2186,6 +2349,12 @@ class WithholdingReadinessDashboardAPIView(APIView):
         entity_id = _safe_int(request.query_params.get("entity_id") or request.query_params.get("entity"))
         if entity_id is None:
             raise ValidationError({"entity_id": ["This query param is required."]})
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=WITHHOLDING_READINESS_VIEW_PERMISSIONS,
+            message="Missing permission to view withholding readiness.",
+        )
 
         entityfin_id = _safe_int(request.query_params.get("entityfinid") or request.query_params.get("entityfin_id"))
         subentity_id = _safe_int(request.query_params.get("subentity_id") or request.query_params.get("subentity"))
@@ -2335,6 +2504,36 @@ class WithholdingReadinessDashboardAPIView(APIView):
                     "residency_status": residency_status or "unknown",
                     "quality_flags": flags,
                     "readiness_status": row_status,
+                    "is_posted": int(voucher.status or 0) == int(PaymentVoucherHeader.Status.POSTED),
+                    "posting_state": (
+                        "posted"
+                        if int(voucher.status or 0) == int(PaymentVoucherHeader.Status.POSTED)
+                        else "not_posted"
+                    ),
+                    "posting_state_label": (
+                        "Posted"
+                        if int(voucher.status or 0) == int(PaymentVoucherHeader.Status.POSTED)
+                        else "Voucher not posted"
+                    ),
+                    "drilldowns": {
+                        "source_document": {
+                            "route": "/paymentvoucher",
+                            "params": {
+                                "transactionid": int(voucher.id),
+                            },
+                        },
+                        "posting_lookup": (
+                            {
+                                "lookup": {
+                                    "document_type": "payment_voucher",
+                                    "document_id": int(voucher.id),
+                                    "source_module": "payment",
+                                }
+                            }
+                            if int(voucher.status or 0) == int(PaymentVoucherHeader.Status.POSTED)
+                            else None
+                        ),
+                    },
                 }
             )
 

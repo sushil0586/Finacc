@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from reports.api.report_permissions import assert_any_report_permission
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from reports.services.controls.phase_one import build_phase_one_controls_hub
@@ -14,17 +15,32 @@ from reports.services.controls.opening_policy import resolve_opening_policy, sum
 from reports.services.controls.opening_preview import build_opening_preview
 
 
+class ControlsPermissionMixin:
+    required_permission_codes: tuple[str, ...] = ()
+    permission_denied_message = "You do not have permission to access this controls workspace."
+
+    def enforce_report_permission(self, request, *, entity_id: int):
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=self.required_permission_codes,
+            message=self.permission_denied_message,
+        )
+
+
 class PhaseOneControlsScopeSerializer(serializers.Serializer):
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
 
 
-class PhaseOneControlsHubAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOneControlsHubAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PhaseOneControlsScopeSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    permission_denied_message = "You do not have permission to access the controls hub."
 
     def get(self, request):
         serializer = self.serializer_class(data=request.query_params)
@@ -36,6 +52,7 @@ class PhaseOneControlsHubAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return Response(
             build_phase_one_controls_hub(
                 entity_id=scope["entity"],
@@ -59,17 +76,20 @@ class OpeningPolicySerializer(serializers.Serializer):
     grouped_sections = serializers.ListField(child=serializers.CharField(), required=False)
 
 
-class PhaseOneOpeningPolicyAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOneOpeningPolicyAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OpeningPolicySerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    permission_denied_message = "You do not have permission to access opening policy controls."
 
     def get(self, request):
         serializer = self.serializer_class(data=request.query_params)
         serializer.is_valid(raise_exception=True)
         entity_id = serializer.validated_data["entity"]
         self.enforce_scope(request, entity_id=entity_id)
+        self.enforce_report_permission(request, entity_id=entity_id)
         opening_policy = resolve_opening_policy(entity_id)
         return Response(
             {
@@ -86,11 +106,13 @@ class OpeningPreviewScopeSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
 
 
-class PhaseOneOpeningPreviewAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOneOpeningPreviewAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OpeningPreviewScopeSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    permission_denied_message = "You do not have permission to access opening preview controls."
 
     def get(self, request):
         serializer = self.serializer_class(data=request.query_params)
@@ -102,6 +124,7 @@ class PhaseOneOpeningPreviewAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return Response(
             build_opening_preview(
                 entity_id=scope["entity"],
@@ -115,6 +138,7 @@ class PhaseOneOpeningPreviewAPIView(ScopedEntitlementMixin, APIView):
         serializer.is_valid(raise_exception=True)
         entity_id = serializer.validated_data["entity"]
         self.enforce_scope(request, entity_id=entity_id)
+        self.enforce_report_permission(request, entity_id=entity_id)
 
         updates = {key: value for key, value in serializer.validated_data.items() if key != "entity"}
         opening_policy = update_opening_policy(
@@ -137,11 +161,13 @@ class OpeningGenerationSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
 
 
-class PhaseOneOpeningGenerateAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOneOpeningGenerateAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OpeningGenerationSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    permission_denied_message = "You do not have permission to generate opening balances."
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
@@ -153,6 +179,7 @@ class PhaseOneOpeningGenerateAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return Response(
             build_opening_generation(
                 entity_id=scope["entity"],
@@ -163,11 +190,13 @@ class PhaseOneOpeningGenerateAPIView(ScopedEntitlementMixin, APIView):
         )
 
 
-class PhaseOneOpeningRollbackAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOneOpeningRollbackAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OpeningGenerationSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    permission_denied_message = "You do not have permission to roll back opening balances."
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
@@ -179,6 +208,7 @@ class PhaseOneOpeningRollbackAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return Response(
             build_opening_generation_rollback(
                 entity_id=scope["entity"],
@@ -208,11 +238,13 @@ class PostingSetupApplySerializer(PostingSetupScopeSerializer):
     targets = PostingSetupTargetOverrideSerializer(many=True, required=False)
 
 
-class PhaseOnePostingSetupPreviewAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOnePostingSetupPreviewAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PostingSetupScopeSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.posting_setup.view",)
+    permission_denied_message = "You do not have permission to access posting setup."
 
     def get(self, request):
         serializer = self.serializer_class(data=request.query_params)
@@ -224,6 +256,7 @@ class PhaseOnePostingSetupPreviewAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return Response(
             build_posting_setup_preview(
                 entity_id=scope["entity"],
@@ -233,11 +266,13 @@ class PhaseOnePostingSetupPreviewAPIView(ScopedEntitlementMixin, APIView):
         )
 
 
-class PhaseOnePostingSetupApplyAPIView(ScopedEntitlementMixin, APIView):
+class PhaseOnePostingSetupApplyAPIView(ControlsPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PostingSetupApplySerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.posting_setup.view",)
+    permission_denied_message = "You do not have permission to apply posting setup."
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
@@ -249,6 +284,7 @@ class PhaseOnePostingSetupApplyAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return Response(
             apply_posting_setup(
                 entity_id=scope["entity"],

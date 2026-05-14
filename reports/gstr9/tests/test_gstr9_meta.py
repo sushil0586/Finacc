@@ -22,6 +22,12 @@ class Gstr9MetaAPITests(APITestCase):
             email="gstr9@example.com",
             password="pass123",
         )
+        self.permission_codes_patch = patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr9.view"],
+        )
+        self.permission_codes_patch.start()
+        self.addCleanup(self.permission_codes_patch.stop)
         self.client.force_authenticate(user=self.user)
         self.meta_url = reverse("reports_api:gstr9-meta")
 
@@ -66,6 +72,14 @@ class Gstr9MetaAPITests(APITestCase):
 
     @patch("reports.gstr9.views.meta.Gstr9MetaAPIView.enforce_entity_scope", side_effect=PermissionDenied("forbidden"))
     def test_meta_denies_when_scope_enforcement_fails(self, _enforce_scope):
+        response = self.client.get(
+            self.meta_url,
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("reports.gstr9.views.utils.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
+    def test_meta_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(
             self.meta_url,
             {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},

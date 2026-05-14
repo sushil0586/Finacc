@@ -83,24 +83,30 @@ class Gstr9ReportService:
         table_9_payable = Decimal(table_9["rows"][0]["total_tax"] or ZERO)
         if table_4_total_tax != table_9_payable:
             warnings.append(
-                {
-                    "code": "TABLE4_TABLE9_TAX_MISMATCH",
-                    "severity": "error",
-                    "message": "Table 4 total tax and Table 9 payable tax are not aligned.",
-                    "table_code": "TABLE_9",
-                    "field": "total_tax",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE4_TABLE9_TAX_MISMATCH",
+                        "severity": "error",
+                        "message": "Table 4 total tax and Table 9 payable tax are not aligned.",
+                        "table_code": "TABLE_9",
+                        "field": "total_tax",
+                    },
+                )
             )
         table_5_total_tax = Decimal(table_5["rows"][-1]["total_tax"] or ZERO)
         if table_5_total_tax != ZERO:
             warnings.append(
-                {
-                    "code": "TABLE5_NONZERO_TAX_DETECTED",
-                    "severity": "warning",
-                    "message": "Table 5 contains non-zero tax. Review taxability and supply category tagging.",
-                    "table_code": "TABLE_5",
-                    "field": "total_tax",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE5_NONZERO_TAX_DETECTED",
+                        "severity": "warning",
+                        "message": "Table 5 contains non-zero tax. Review taxability and supply category tagging.",
+                        "table_code": "TABLE_5",
+                        "field": "total_tax",
+                    },
+                )
             )
 
         from_date, to_date, effective_entityfinid_id = self._resolve_date_window(scope)
@@ -118,70 +124,88 @@ class Gstr9ReportService:
         gstr3b_itc_available = Decimal(gstr3b_summary["section_4"]["itc_available"]["total_tax"] or ZERO)
         if gstr9_itc_available != gstr3b_itc_available:
             warnings.append(
-                {
-                    "code": "TABLE6_GSTR3B_ITC_AVAILABLE_MISMATCH",
-                    "severity": "warning",
-                    "message": "Table 6 ITC available does not match GSTR-3B section 4 ITC available.",
-                    "table_code": "TABLE_6",
-                    "field": "total_tax",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE6_GSTR3B_ITC_AVAILABLE_MISMATCH",
+                        "severity": "warning",
+                        "message": "Table 6 ITC available does not match GSTR-3B section 4 ITC available.",
+                        "table_code": "TABLE_6",
+                        "field": "total_tax",
+                    },
+                )
             )
 
         gstr9_itc_reversed = Decimal(table_7["rows"][-1]["total_tax"] or ZERO)
         gstr3b_itc_reversed = Decimal(gstr3b_summary["section_4"]["itc_reversed"]["total_tax"] or ZERO)
         if gstr9_itc_reversed != gstr3b_itc_reversed:
             warnings.append(
-                {
-                    "code": "TABLE7_GSTR3B_ITC_REVERSED_MISMATCH",
-                    "severity": "warning",
-                    "message": "Table 7 ITC reversed does not match GSTR-3B section 4 ITC reversed.",
-                    "table_code": "TABLE_7",
-                    "field": "total_tax",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE7_GSTR3B_ITC_REVERSED_MISMATCH",
+                        "severity": "warning",
+                        "message": "Table 7 ITC reversed does not match GSTR-3B section 4 ITC reversed.",
+                        "table_code": "TABLE_7",
+                        "field": "total_tax",
+                    },
+                )
             )
         table_8_diff_tax = Decimal(table_8["rows"][-1]["total_tax"] or ZERO)
         if table_8_diff_tax != ZERO:
             warnings.append(
-                {
-                    "code": "TABLE8_ITC_RECON_DIFFERENCE",
-                    "severity": "info",
-                    "message": "Table 8 shows a difference between books ITC and matched 2B ITC.",
-                    "table_code": "TABLE_8",
-                    "field": "total_tax",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE8_ITC_RECON_DIFFERENCE",
+                        "severity": "info",
+                        "message": "Table 8 shows a difference between books ITC and matched 2B ITC.",
+                        "table_code": "TABLE_8",
+                        "field": "total_tax",
+                    },
+                )
             )
         unlinked_amendment_tax = Decimal(table_10_14["rows"][3]["total_tax"] or ZERO)
         if unlinked_amendment_tax != ZERO:
             warnings.append(
-                {
-                    "code": "TABLE10_14_UNLINKED_NOTES",
-                    "severity": "warning",
-                    "message": "Credit/Debit notes without linked original invoice are present in annual scope.",
-                    "table_code": "TABLE_10_14",
-                    "field": "original_invoice",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE10_14_UNLINKED_NOTES",
+                        "severity": "warning",
+                        "message": "Credit/Debit notes without linked original invoice are present in annual scope.",
+                        "table_code": "TABLE_10_14",
+                        "field": "original_invoice",
+                    },
+                )
             )
         missing_hsn_tax = Decimal(table_15_19["rows"][6]["total_tax"] or ZERO)
         if missing_hsn_tax != ZERO:
             warnings.append(
-                {
-                    "code": "TABLE15_19_HSN_MISSING",
-                    "severity": "warning",
-                    "message": "Taxable sales summary rows exist without HSN/SAC code.",
-                    "table_code": "TABLE_15_19",
-                    "field": "hsn_sac_code",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "TABLE15_19_HSN_MISSING",
+                        "severity": "warning",
+                        "message": "Taxable sales summary rows exist without HSN/SAC code.",
+                        "table_code": "TABLE_15_19",
+                        "field": "hsn_sac_code",
+                    },
+                )
             )
 
         if not scope.entityfinid_id:
             warnings.append(
-                {
-                    "code": "ENTITYFINID_RECOMMENDED",
-                    "severity": "warning",
-                    "message": "entityfinid is recommended for annual-return accuracy.",
-                    "table_code": "",
-                    "field": "entityfinid",
-                }
+                self._build_validation_warning(
+                    scope,
+                    **{
+                        "code": "ENTITYFINID_RECOMMENDED",
+                        "severity": "warning",
+                        "message": "entityfinid is recommended for annual-return accuracy.",
+                        "table_code": "",
+                        "field": "entityfinid",
+                    },
+                )
             )
         return warnings
 
@@ -203,6 +227,57 @@ class Gstr9ReportService:
         if not fy:
             raise DRFValidationError({"entityfinid": ["No active financial year found for the selected entity."]})
         return ensure_date(fy.finstartyear), ensure_date(fy.finendyear), fy.id
+
+    def _build_validation_warning(self, scope, **payload):
+        warning = dict(payload)
+        drilldowns = {}
+        table_code = str(warning.get("table_code") or "").strip().upper()
+        code = str(warning.get("code") or "").strip().upper()
+        if table_code:
+            drilldowns["table_view"] = self._build_table_drilldown(scope, table_code)
+        related_report = self._build_related_report_drilldown(scope, code)
+        if related_report:
+            drilldowns["related_report"] = related_report
+        if drilldowns:
+            warning["drilldowns"] = drilldowns
+        return warning
+
+    def _build_table_drilldown(self, scope, table_code: str):
+        params = {
+            "section": "table",
+            "table_code": table_code,
+        }
+        if scope.entityfinid_id:
+            params["entityfinid"] = scope.entityfinid_id
+        if scope.subentity_id:
+            params["subentity"] = scope.subentity_id
+        return {
+            "target": "gstr9_table",
+            "label": "Open annual return table",
+            "kind": "report",
+            "route": "/gstr9report",
+            "params": params,
+        }
+
+    def _build_related_report_drilldown(self, scope, code: str):
+        if code not in {
+            "TABLE4_TABLE9_TAX_MISMATCH",
+            "TABLE6_GSTR3B_ITC_AVAILABLE_MISMATCH",
+            "TABLE7_GSTR3B_ITC_REVERSED_MISMATCH",
+        }:
+            return None
+        params = {}
+        if scope.entityfinid_id:
+            params["entityfinid"] = scope.entityfinid_id
+        if scope.subentity_id:
+            params["subentity"] = scope.subentity_id
+        return {
+            "target": "gstr3b_summary",
+            "label": "Open related GSTR-3B report",
+            "kind": "report",
+            "route": "/gstr3breport",
+            "params": params,
+        }
 
     def _sales_qs(self, scope):
         from_date, to_date, effective_entityfinid_id = self._resolve_date_window(scope)

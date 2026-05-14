@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
+from reports.tests_support.compliance_golden_dataset import build_compliance_golden_scope
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -20,40 +20,21 @@ class GstReconciliationAPITests(APITestCase):
             email="gstr-recon@example.com",
             password="pass123",
         )
+        self.permission_codes_patch = patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr1_gstr3b_reconciliation.view"],
+        )
+        self.permission_codes_patch.start()
+        self.addCleanup(self.permission_codes_patch.stop)
         self.client.force_authenticate(user=self.user)
-        gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
-        self.entity = Entity.objects.create(
-            entityname="Recon Entity",
-            legalname="Recon Entity Pvt Ltd",
-            GstRegitrationType=gst_type,
-            createdby=self.user,
-        )
-        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Head Office")
-        self.entityfin = EntityFinancialYear.objects.create(
-            entity=self.entity,
-            desc="FY 2025-26",
-            finstartyear="2025-04-01",
-            finendyear="2026-03-31",
-            createdby=self.user,
-        )
+        golden = build_compliance_golden_scope(user=self.user, entity_name="Recon Entity")
+        self.entity = golden.entity
+        self.subentity = golden.subentity
+        self.entityfin = golden.entityfin
         self.summary_url = reverse("reports_api:gst-reconciliation-summary")
         self.export_url = reverse("reports_api:gst-reconciliation-export")
-        self.params = {
-            "entity": self.entity.id,
-            "entityfinid": self.entityfin.id,
-            "subentity": self.subentity.id,
-            "from_date": "2025-04-01",
-            "to_date": "2025-04-30",
-        }
-        self.scope = SimpleNamespace(
-            entity_id=self.entity.id,
-            entityfinid_id=self.entityfin.id,
-            subentity_id=self.subentity.id,
-            month=4,
-            year=2025,
-            from_date="2025-04-01",
-            to_date="2025-04-30",
-        )
+        self.params = golden.params
+        self.scope = golden.scope
         self.gstr1_summary = {
             "sections": [
                 {"section": "B2B", "taxable_amount": "1000.00", "cgst_amount": "90.00", "sgst_amount": "90.00", "igst_amount": "0.00", "cess_amount": "0.00"},
@@ -93,8 +74,14 @@ class GstReconciliationAPITests(APITestCase):
         payload = response.json()
         self.assertEqual(payload["report_code"], "gstr1-vs-gstr3b-reconciliation")
         self.assertEqual(payload["summary"]["mismatch_count"], 1)
+        self.assertEqual(payload["summary"]["actionable_mismatch_count"], 0)
+        self.assertEqual(payload["summary"]["advisory_mismatch_count"], 1)
         self.assertEqual(payload["rows"][0]["status"], "matched")
         self.assertEqual(payload["rows"][4]["status"], "mismatch")
+        self.assertTrue(payload["rows"][4]["is_advisory"])
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["route"], "/gstreport")
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["route"], "/gstr3breport")
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["params"]["entityfinid"], self.entityfin.id)
 
     @patch("reports.api.gst_reconciliation_views.Gstr1VsGstr3bReconciliationExportAPIView.enforce_scope")
     @patch("reports.api.gst_reconciliation_views.Gstr3bSummaryService.build")
@@ -115,3 +102,15 @@ class GstReconciliationAPITests(APITestCase):
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(csv_response["Content-Type"], "text/csv")
         self.assertIn("attachment; filename=\"GSTR1_vs_GSTR3B_Reconciliation.csv\"", csv_response["Content-Disposition"])
+        csv_text = csv_response.content.decode("utf-8")
+        self.assertIn("Outward Taxable Supplies", csv_text)
+
+    @patch("reports.api.gst_reconciliation_views.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
+    def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 403)
+
+    @patch("reports.api.gst_reconciliation_views.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
+    def test_export_denies_when_report_permission_is_missing(self, _assert_permission):
+        response = self.client.get(self.export_url, {**self.params, "format": "csv"})
+        self.assertEqual(response.status_code, 403)

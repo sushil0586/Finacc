@@ -25,6 +25,12 @@ class Gstr9ScaffoldAPITests(APITestCase):
             email="gstr9-scaffold@example.com",
             password="pass123",
         )
+        self.permission_codes_patch = patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr9.view"],
+        )
+        self.permission_codes_patch.start()
+        self.addCleanup(self.permission_codes_patch.stop)
         self.client.force_authenticate(user=self.user)
 
         self.summary_url = reverse("reports_api:gstr9-summary")
@@ -169,6 +175,11 @@ class Gstr9ScaffoldAPITests(APITestCase):
 
     @patch("reports.gstr9.views.summary.Gstr9SummaryAPIView.enforce_report_scope", side_effect=PermissionDenied("forbidden"))
     def test_summary_denies_when_scope_enforcement_fails(self, _enforce_scope):
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 403)
+
+    @patch("reports.gstr9.views.utils.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
+    def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(self.summary_url, self.params)
         self.assertEqual(response.status_code, 403)
 
@@ -437,21 +448,70 @@ class Gstr9ScaffoldAPITests(APITestCase):
         self.assertEqual(Decimal(str(table["rows"][3]["total_tax"])), Decimal("9.00"))
         self.assertEqual(Decimal(str(table["rows"][6]["total_tax"])), Decimal("3.60"))
 
-    def test_validation_contract(self):
-        self._create_sales_doc(
-            doc_no=1,
-            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
-            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
-            taxable="100.00",
-            cgst="9.00",
-            sgst="9.00",
+    @patch(
+        "reports.gstr9.services.report.Gstr3bSummaryService.build",
+        return_value={
+            "section_4": {
+                "itc_available": {"total_tax": Decimal("0.00")},
+                "itc_reversed": {"total_tax": Decimal("0.00")},
+            },
+            "section_6_1": {
+                "tax_paid_cash": {
+                    "cgst": Decimal("0.00"),
+                    "sgst": Decimal("0.00"),
+                    "igst": Decimal("0.00"),
+                    "cess": Decimal("0.00"),
+                    "total_tax": Decimal("0.00"),
+                },
+                "tax_paid_itc": {
+                    "cgst": Decimal("0.00"),
+                    "sgst": Decimal("0.00"),
+                    "igst": Decimal("0.00"),
+                    "cess": Decimal("0.00"),
+                    "total_tax": Decimal("0.00"),
+                },
+            },
+        },
+    )
+    def test_validation_contract(self, _mock_gstr3b_build):
+        self._create_purchase_doc(
+            doc_no=11,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            is_itc_eligible=True,
+            is_reverse_charge=False,
+            gstr2b_match_status=PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED,
+            taxable="80.00",
+            cgst="7.20",
+            sgst="7.20",
             igst="0.00",
         )
-        response = self.client.get(self.validation_url, {"entity": self.entity.id})
+        response = self.client.get(self.validation_url, self.params)
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("warnings", payload)
         self.assertEqual(payload["warning_count"], len(payload["warnings"]))
+        available_mismatch = next(
+            warning
+            for warning in payload["warnings"]
+            if warning["code"] == "TABLE6_GSTR3B_ITC_AVAILABLE_MISMATCH"
+        )
+        self.assertEqual(available_mismatch["table_code"], "TABLE_6")
+        self.assertEqual(
+            available_mismatch["drilldowns"]["table_view"]["route"],
+            "/gstr9report",
+        )
+        self.assertEqual(
+            available_mismatch["drilldowns"]["table_view"]["params"]["table_code"],
+            "TABLE_6",
+        )
+        self.assertEqual(
+            available_mismatch["drilldowns"]["related_report"]["route"],
+            "/gstr3breport",
+        )
+        self.assertEqual(
+            available_mismatch["drilldowns"]["related_report"]["params"]["entityfinid"],
+            self.entityfin.id,
+        )
 
     def test_export_contract(self):
         response = self.client.get(self.export_url, {**self.params, "format": "json"})

@@ -6,6 +6,7 @@ from decimal import Decimal
 from entity.models import EntityFinancialYear
 
 from posting.adapters.year_opening import YearOpeningPostingAdapter
+from reports.services.controls.drilldowns import build_posting_detail_drilldown
 from reports.services.controls.opening_policy import resolve_opening_policy, summarize_opening_policy
 from reports.services.controls.year_end_close import build_year_end_close_preview
 
@@ -40,13 +41,20 @@ def _sum_rows(rows: list[dict]) -> Decimal:
     return total
 
 
-def _build_opening_history(destination_fy: EntityFinancialYear | None) -> dict[str, object] | None:
+def _build_opening_history(
+    destination_fy: EntityFinancialYear | None,
+    *,
+    entity_id: int,
+    entityfin_id: int | None = None,
+    subentity_id: int | None = None,
+) -> dict[str, object] | None:
     if destination_fy is None:
         return None
     metadata = getattr(destination_fy, "metadata", None) or {}
     opening = metadata.get("opening_carry_forward")
     if not isinstance(opening, dict):
         return None
+    batch = opening.get("batch") or {}
     return {
         "status": opening.get("status", "generated"),
         "generated_at": opening.get("generated_at"),
@@ -54,7 +62,16 @@ def _build_opening_history(destination_fy: EntityFinancialYear | None) -> dict[s
         "source_year": opening.get("source_year") or {},
         "destination_year": opening.get("destination_year") or {},
         "summary": opening.get("summary") or {},
-        "batch": opening.get("batch") or {},
+        "batch": {
+            **batch,
+            "drilldown": build_posting_detail_drilldown(
+                entry_id=batch.get("entry_id"),
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+                label="Open opening batch",
+            ),
+        },
         "sections": opening.get("sections") or [],
         "opening_lines": opening.get("opening_lines") or [],
         "policy_snapshot": opening.get("policy_snapshot") or {},
@@ -172,7 +189,12 @@ def build_opening_preview(*, entity_id: int, entityfin_id: int | None = None, su
     destination_year_obj = None
     if destination_year.get("id"):
         destination_year_obj = EntityFinancialYear.objects.filter(pk=destination_year.get("id"), entity_id=entity_id).first()
-    opening_history = _build_opening_history(destination_year_obj)
+    opening_history = _build_opening_history(
+        destination_year_obj,
+        entity_id=entity_id,
+        entityfin_id=destination_year.get("id"),
+        subentity_id=subentity_id,
+    )
     generation_ready = bool(source_close_state.get("is_year_closed")) if opening_policy.get("require_closed_source_year", True) else True
     can_generate = bool(preview_ready and generation_ready and constitution_is_valid and not opening_history)
 

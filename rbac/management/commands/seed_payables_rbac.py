@@ -10,6 +10,11 @@ class Command(BaseCommand):
 
     PAYABLE_PERMISSION_CODES = (
         "reports.payables.view",
+        "reports.payables.ap_payment_forecast.view",
+        "reports.payables.vendor_reconciliation_statement.view",
+        "reports.payables.grn_invoice_posting_exceptions.view",
+        "reports.payables.ap_compliance_aging.view",
+        "reports.payables.duplicate_anomalous_bill_detection.view",
         "reports.vendoroutstanding.view",
         "reports.accountspayableaging.view",
         "reports.purchase_register.view",

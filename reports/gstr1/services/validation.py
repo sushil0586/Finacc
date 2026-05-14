@@ -19,7 +19,7 @@ from django.db.models import Count, Max, Min, Q, Sum
 
 from reports.gstr1.conf import export_pos_code, enable_gstin_checksum
 from reports.gstr1.utils.gstin import format_valid as gstin_format_valid, is_valid as gstin_valid
-from sales.models import SalesAdvanceAdjustment, SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
+from sales.models import SalesAdvanceAdjustment, SalesChargeLine, SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 TOLERANCE = Decimal("0.50")
@@ -525,17 +525,26 @@ class Gstr1ValidationService:
             .values("header_id")
             .annotate(total=Sum("line_total"))
         )
+        charge_sums = (
+            SalesChargeLine.objects.filter(header__in=self.base_queryset)
+            .values("header_id")
+            .annotate(total=Sum("total_value"))
+        )
         sum_map = {row["header_id"]: row["total"] for row in line_sums}
+        charge_map = {row["header_id"]: row["total"] for row in charge_sums}
         warnings = []
-        for header in self.base_queryset.values("id", "invoice_number", "grand_total"):
+        for header in self.base_queryset.values("id", "invoice_number", "grand_total", "round_off"):
             line_total = sum_map.get(header["id"])
-            if line_total is None:
+            charge_total = charge_map.get(header["id"]) or Decimal("0.00")
+            round_off = header.get("round_off") or Decimal("0.00")
+            if line_total is None and not charge_total and not round_off:
                 continue
-            if _delta(line_total, header["grand_total"]) > TOLERANCE:
+            expected_total = (line_total or Decimal("0.00")) + charge_total + round_off
+            if _delta(expected_total, header["grand_total"]) > TOLERANCE:
                 warnings.append(
                     _warning(
                         code="INVOICE_TOTAL_MISMATCH",
-                        message="Invoice grand total mismatch with line totals.",
+                        message="Invoice grand total mismatch with lines, additional charges, or round-off.",
                         invoice_id=header["id"],
                         invoice_number=header["invoice_number"],
                         severity="warning",
