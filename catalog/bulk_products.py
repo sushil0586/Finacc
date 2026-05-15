@@ -74,7 +74,8 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     if value in (None, "", "-", "--"):
         return default
-    return Decimal(str(value))
+    raw = str(value).strip().replace(",", "").replace("\u00a0", "")
+    return Decimal(raw)
 
 
 def _to_int(value: Any, default: int | None = None) -> int | None:
@@ -450,6 +451,18 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
     existing_categories = {_norm_text(c) for c in ProductCategory.objects.filter(entity=entity).values_list("pcategoryname", flat=True) if _norm_text(c)}
     existing_uoms = {_norm_text(c) for c in UnitOfMeasure.objects.filter(entity=entity).values_list("code", flat=True) if _norm_text(c)}
     existing_asset_categories = {_norm_text(c) for c in AssetCategory.objects.filter(entity=entity).values_list("code", flat=True) if _norm_text(c)}
+    existing_branch_codes = {_norm_text(c) for c in SubEntity.objects.filter(entity=entity).values_list("subentity_code", flat=True) if _norm_text(c)}
+    godown_rows = list(Godown.objects.filter(entity=entity).values("code", "subentity_id"))
+    godown_subentity_by_code = {
+        _norm_text(row["code"]): row["subentity_id"]
+        for row in godown_rows
+        if _norm_text(row["code"])
+    }
+    branch_id_by_code = {
+        _norm_text(code): sid
+        for code, sid in SubEntity.objects.filter(entity=entity).values_list("subentity_code", "id")
+        if _norm_text(code)
+    }
     file_categories = {_norm_text(row.get("pcategoryname")) for row in payload.get("categories_master", []) if _norm_text(row.get("pcategoryname"))}
     file_uoms = {_norm_text(row.get("code")) for row in payload.get("uoms_master", []) if _norm_text(row.get("code"))}
 
@@ -573,6 +586,87 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
                 continue
             if sku not in skus_in_file:
                 errors.append({"sheet": sheet, "row": idx, "field": "sku", "message": f"SKU '{sku}' not found."})
+            if sheet == "opening_stocks":
+                try:
+                    branch_code = _norm_text(row.get("branch_code") or row.get("location_code"))
+                    godown_code = _norm_text(row.get("godown_code"))
+                    qty = _to_decimal(row.get("openingqty"), default=Decimal("-1"))
+                    rate = _to_decimal(row.get("openingrate"), default=Decimal("-1"))
+                    if qty <= 0:
+                        errors.append(
+                            {
+                                "sheet": "opening_stocks",
+                                "row": idx,
+                                "field": "openingqty",
+                                "message": "Opening quantity must be greater than zero.",
+                            }
+                        )
+                    if rate < 0:
+                        errors.append(
+                            {
+                                "sheet": "opening_stocks",
+                                "row": idx,
+                                "field": "openingrate",
+                                "message": "Opening rate cannot be negative.",
+                            }
+                        )
+                    if not branch_code:
+                        errors.append(
+                            {
+                                "sheet": "opening_stocks",
+                                "row": idx,
+                                "field": "branch_code",
+                                "message": "branch_code is required.",
+                            }
+                        )
+                    elif branch_code not in existing_branch_codes:
+                        errors.append(
+                            {
+                                "sheet": "opening_stocks",
+                                "row": idx,
+                                "field": "branch_code",
+                                "message": f"Invalid branch_code '{row.get('branch_code')}'.",
+                            }
+                        )
+                    if not godown_code:
+                        errors.append(
+                            {
+                                "sheet": "opening_stocks",
+                                "row": idx,
+                                "field": "godown_code",
+                                "message": "godown_code is required.",
+                            }
+                        )
+                    elif godown_code not in godown_subentity_by_code:
+                        errors.append(
+                            {
+                                "sheet": "opening_stocks",
+                                "row": idx,
+                                "field": "godown_code",
+                                "message": f"Invalid godown_code '{row.get('godown_code')}'.",
+                            }
+                        )
+                    elif branch_code in branch_id_by_code:
+                        branch_id = branch_id_by_code[branch_code]
+                        godown_subentity_id = godown_subentity_by_code[godown_code]
+                        if godown_subentity_id not in (None, branch_id):
+                            errors.append(
+                                {
+                                    "sheet": "opening_stocks",
+                                    "row": idx,
+                                    "field": "godown_code",
+                                    "message": "Godown must belong to the selected branch or be entity-wide.",
+                                }
+                            )
+                except Exception:
+                    errors.append(
+                        {
+                            "sheet": "opening_stocks",
+                            "row": idx,
+                            "field": "row",
+                            "message": "openingqty/openingrate must be valid numeric values.",
+                        }
+                    )
 
     summary = {
         "rows": {sheet: len(payload.get(sheet, [])) for sheet in SHEETS},
@@ -854,6 +948,9 @@ def commit_payload(
             product = product_map.get(sku)
             if not product:
                 continue
+            parsed_openingqty = None
+            parsed_openingrate = None
+            parsed_openingvalue = None
             try:
                 branch_code = (row.get("branch_code") or row.get("location_code") or "").strip().lower()
                 godown_code = (row.get("godown_code") or "").strip().lower()
@@ -866,24 +963,54 @@ def commit_payload(
                 if godown.subentity_id not in (None, branch.id):
                     raise ValueError("Godown must belong to the selected branch or be entity-wide")
                 as_of_date = _parse_date(row.get("as_of_date"))
-                obj, created = OpeningStockByLocation.objects.get_or_create(
+                obj = OpeningStockByLocation.objects.filter(
                     entity=entity,
                     product=product,
                     branch=branch,
                     godown=godown,
                     as_of_date=as_of_date,
-                    defaults={},
-                )
+                ).first()
+                created = obj is None
+                if created:
+                    obj = OpeningStockByLocation(
+                        entity=entity,
+                        product=product,
+                        branch=branch,
+                        godown=godown,
+                        as_of_date=as_of_date,
+                    )
                 if _should_apply(created):
-                    obj.openingqty = _to_decimal(row.get("openingqty"))
-                    obj.openingrate = _to_decimal(row.get("openingrate"))
-                    obj.openingvalue = _to_decimal(row.get("openingvalue"))
+                    parsed_openingqty = _to_decimal(row.get("openingqty"))
+                    parsed_openingrate = _to_decimal(row.get("openingrate"))
+                    parsed_openingvalue = _to_decimal(row.get("openingvalue"))
+                    obj.openingqty = parsed_openingqty
+                    obj.openingrate = parsed_openingrate
+                    obj.openingvalue = parsed_openingvalue
                     obj.save()
                     summary["updated" if not created else "created"] += 1
                 else:
                     summary["skipped"] += 1
             except Exception as exc:
-                errors.append({"sheet": "opening_stocks", "row": idx, "field": "row", "message": str(exc)})
+                errors.append(
+                    {
+                        "sheet": "opening_stocks",
+                        "row": idx,
+                        "field": "row",
+                        "message": str(exc),
+                        "debug": {
+                            "sku": sku,
+                            "openingqty_raw": row.get("openingqty"),
+                            "openingrate_raw": row.get("openingrate"),
+                            "openingvalue_raw": row.get("openingvalue"),
+                            "openingqty_parsed": str(parsed_openingqty) if parsed_openingqty is not None else None,
+                            "openingrate_parsed": str(parsed_openingrate) if parsed_openingrate is not None else None,
+                            "openingvalue_parsed": str(parsed_openingvalue) if parsed_openingvalue is not None else None,
+                            "branch_code": row.get("branch_code"),
+                            "godown_code": row.get("godown_code"),
+                            "as_of_date": row.get("as_of_date"),
+                        },
+                    }
+                )
 
         for idx, row in enumerate(payload.get("uom_conversions", []), start=2):
             sku = (row.get("sku") or "").strip()
