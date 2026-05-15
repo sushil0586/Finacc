@@ -49,6 +49,11 @@ def _parse_date(value: Any):
     if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
         return value
     s = str(value).strip()
+    # Accept ISO datetime/date strings such as 2026-01-01T00:00:00.
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -76,6 +81,12 @@ def _to_int(value: Any, default: int | None = None) -> int | None:
     if value in (None, "", "-", "--"):
         return default
     return int(str(value))
+
+
+def _norm_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
 
 
 def _read_xlsx(content: bytes) -> dict[str, list[dict[str, Any]]]:
@@ -436,11 +447,11 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
 
     seen_sku: set[str] = set()
     existing_skus = set(Product.objects.filter(entity=entity).values_list("sku", flat=True))
-    existing_categories = {c.strip().lower() for c in ProductCategory.objects.filter(entity=entity).values_list("pcategoryname", flat=True)}
-    existing_uoms = {c.strip().lower() for c in UnitOfMeasure.objects.filter(entity=entity).values_list("code", flat=True)}
-    existing_asset_categories = {c.strip().lower() for c in AssetCategory.objects.filter(entity=entity).values_list("code", flat=True)}
-    file_categories = {(row.get("pcategoryname") or "").strip().lower() for row in payload.get("categories_master", []) if (row.get("pcategoryname") or "").strip()}
-    file_uoms = {(row.get("code") or "").strip().lower() for row in payload.get("uoms_master", []) if (row.get("code") or "").strip()}
+    existing_categories = {_norm_text(c) for c in ProductCategory.objects.filter(entity=entity).values_list("pcategoryname", flat=True) if _norm_text(c)}
+    existing_uoms = {_norm_text(c) for c in UnitOfMeasure.objects.filter(entity=entity).values_list("code", flat=True) if _norm_text(c)}
+    existing_asset_categories = {_norm_text(c) for c in AssetCategory.objects.filter(entity=entity).values_list("code", flat=True) if _norm_text(c)}
+    file_categories = {_norm_text(row.get("pcategoryname")) for row in payload.get("categories_master", []) if _norm_text(row.get("pcategoryname"))}
+    file_uoms = {_norm_text(row.get("code")) for row in payload.get("uoms_master", []) if _norm_text(row.get("code"))}
 
     for idx, row in enumerate(payload.get("products_basic", []), start=2):
         sku = (row.get("sku") or "").strip()
