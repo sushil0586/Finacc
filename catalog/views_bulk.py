@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+from datetime import date, datetime
+from decimal import Decimal
 
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -40,7 +42,25 @@ def _entity_from_request(request):
     raw = request.query_params.get("entity") or request.data.get("entity")
     if not raw:
         raise ValidationError({"entity": "entity query param is required."})
-    return get_object_or_404(Entity, pk=int(raw))
+    try:
+        entity_id = int(raw)
+    except (TypeError, ValueError):
+        raise ValidationError({"entity": "entity must be a valid integer id."})
+    return get_object_or_404(Entity, pk=entity_id)
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
 
 
 class ProductBulkTemplateAPIView(APIView):
@@ -130,7 +150,17 @@ class ProductBulkImportValidateAPIView(APIView):
                     )
                 }
             )
-        result = validate_payload(payload, entity)
+        try:
+            result = validate_payload(payload, entity)
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise ValidationError(
+                {
+                    "detail": "Validation failed due to an unexpected server-side error.",
+                    "error": str(exc),
+                }
+            )
         token = secrets.token_hex(24)
         job = ProductBulkJob.objects.create(
             entity=entity,
@@ -142,9 +172,9 @@ class ProductBulkImportValidateAPIView(APIView):
             duplicate_strategy=(request.data.get("duplicate_strategy") or ProductBulkJob.DuplicateStrategy.FAIL),
             validation_token=token,
             input_filename=upload.name,
-            payload=payload,
-            summary=result.summary,
-            errors=result.errors,
+            payload=_json_safe(payload),
+            summary=_json_safe(result.summary),
+            errors=_json_safe(result.errors),
         )
         return Response(
             {
