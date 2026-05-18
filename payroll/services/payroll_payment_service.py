@@ -22,12 +22,22 @@ class PayrollPaymentService:
             "payment_batch_ref": run.payment_batch_ref,
             "employees": [
                 {
-                    "employee_profile_id": row.employee_profile_id,
-                    "employee_code": row.employee_profile.employee_code,
+                    "contract_payroll_profile_id": str(row.contract_payroll_profile_id),
+                    "hrms_contract_id": str(row.contract_payroll_profile.hrms_contract_id) if row.contract_payroll_profile_id else None,
+                    "contract_code": getattr(row.contract_payroll_profile.hrms_contract, "contract_code", None)
+                    if row.contract_payroll_profile_id
+                    else None,
+                    "employee_code": row.employee_code,
+                    "employee_name": row.employee_name,
+                    "work_email": getattr(row.contract_payroll_profile.hrms_contract.employee, "work_email", None)
+                    if row.contract_payroll_profile_id
+                    else None,
                     "amount": str(row.payable_amount),
-                    "payment_account_id": row.employee_profile.payment_account_id,
+                    "payment_account_id": row.payment_account_id,
                 }
-                for row in run.employee_runs.select_related("employee_profile")
+                for row in run.employee_runs.select_related(
+                    "contract_payroll_profile__hrms_contract__employee"
+                )
                 if row.payable_amount > 0
             ],
         }

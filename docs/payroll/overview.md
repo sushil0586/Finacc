@@ -40,7 +40,8 @@ Configuration and setup:
 - `SalaryStructure`
 - `SalaryStructureVersion`
 - `SalaryStructureLine`
-- `PayrollEmployeeProfile`
+- `ContractPayrollProfile`
+- `ContractSalaryStructureAssignment`
 - `PayrollLedgerPolicy`
 - `PayrollPeriod`
 
@@ -50,7 +51,6 @@ Operational runtime:
 - `PayrollRunEmployee`
 - `PayrollRunEmployeeComponent`
 - `Payslip`
-- `PayrollAdjustment`
 
 Audit and workflow support:
 
@@ -100,8 +100,9 @@ Important:
 For backend developers:
 
 1. Read [architecture.md](./architecture.md)
-2. Read [workflows.md](./workflows.md)
-3. Read [testing.md](./testing.md)
+2. Read [../../../../accountproject/docs/payroll-frontend/checkpoint-2026-05-16.md](../../../../accountproject/docs/payroll-frontend/checkpoint-2026-05-16.md)
+3. Read [workflows.md](./workflows.md)
+4. Read [testing.md](./testing.md)
 
 For finance operations and implementation:
 

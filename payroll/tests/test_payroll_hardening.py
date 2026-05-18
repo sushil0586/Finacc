@@ -10,11 +10,14 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from entity.models import EntityApprovalPolicy, EntityEmploymentProfile, EntityOrgUnit
 from payroll.admin import PayrollRunAdmin
 from payroll.models import PayrollRun, PayrollRunActionLog
 from payroll.services.payroll_export_service import PayrollExportService
 from payroll.services.payroll_run_service import PayrollRunService
 from payroll.tests.factories import PayrollFactory
+from subscriptions.models import UserEntityAccess
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from payroll.views.payroll_run_views import (
     PayrollRunApproveAPIView,
     PayrollRunCalculateAPIView,
@@ -22,6 +25,7 @@ from payroll.views.payroll_run_views import (
     PayrollRunPaymentReconcileAPIView,
     PayrollRunPostAPIView,
     PayrollRunReverseAPIView,
+    PayrollRunSubmitAPIView,
 )
 
 
@@ -40,6 +44,22 @@ class PayrollHardeningTests(TestCase):
         Group.objects.get_or_create(name="payroll_reviewer")[0].user_set.add(self.reviewer)
         Group.objects.get_or_create(name="payroll_finance")[0].user_set.add(self.finance)
         Group.objects.get_or_create(name="payroll_admin")[0].user_set.add(self.payroll_admin)
+        if not self.setup["entity"].customer_account_id:
+            SubscriptionService.register_entity_creation(entity=self.setup["entity"], owner=self.setup["user"])
+            self.setup["entity"].refresh_from_db()
+        customer_account = self.setup["entity"].customer_account
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=customer_account)
+        payroll_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_PAYROLL)
+        if payroll_limit.bool_value is not True:
+            payroll_limit.bool_value = True
+            payroll_limit.save(update_fields=["bool_value", "updated_at"])
+        for user in [self.operator, self.reviewer, self.finance, self.payroll_admin, self.admin_user]:
+            SubscriptionService.ensure_account_membership(
+                customer_account=customer_account,
+                user=user,
+                role=UserEntityAccess.Role.MEMBER,
+                granted_by=self.setup["user"],
+            )
 
     def _build_calculated_run(self):
         run = PayrollRunService.create_run(
@@ -125,6 +145,48 @@ class PayrollHardeningTests(TestCase):
         denied_response = view(denied_request, pk=run.id)
         self.assertEqual(denied_response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_post_view_enforces_posting_policy(self):
+        posting_user = PayrollFactory.user(
+            username="posting-user",
+            email="posting-user@example.com",
+        )
+        Group.objects.get_or_create(name="payroll_finance")[0].user_set.add(posting_user)
+        Group.objects.get_or_create(name="payroll_controller")[0].user_set.add(posting_user)
+        SubscriptionService.ensure_account_membership(
+            customer_account=self.setup["entity"].customer_account,
+            user=posting_user,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.setup["user"],
+        )
+        EntityApprovalPolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            policy_key=EntityApprovalPolicy.PolicyKey.PAYROLL_POSTING,
+            code="PAY-POST",
+            name="Posting Controller Policy",
+            approval_mode=EntityApprovalPolicy.ApprovalMode.FIXED_USERS,
+            approver_roles=["payroll_controller"],
+            min_approvers=1,
+            createdby=self.setup["user"],
+        )
+
+        run = self._build_calculated_run()
+        PayrollRunService.submit_run(run, submitted_by_id=self.setup["user"].id)
+        PayrollRunService.approve_run(run, approved_by_id=self.setup["user"].id)
+        view = PayrollRunPostAPIView.as_view()
+
+        denied_request = self.factory.post(f"/payroll/runs/{run.id}/post/", {}, format="json")
+        force_authenticate(denied_request, user=self.finance)
+        denied_response = view(denied_request, pk=run.id)
+        self.assertEqual(denied_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("posting policy", str(denied_response.data["detail"]).lower())
+
+        allowed_request = self.factory.post(f"/payroll/runs/{run.id}/post/", {}, format="json")
+        force_authenticate(allowed_request, user=posting_user)
+        with patch("posting.services.posting_service.PostingService._pg_advisory_lock", return_value=None):
+            allowed_response = view(allowed_request, pk=run.id)
+        self.assertEqual(allowed_response.status_code, status.HTTP_200_OK)
+
     def test_approve_view_requires_reviewer_permission(self):
         run = self._build_calculated_run()
         view = PayrollRunApproveAPIView.as_view()
@@ -136,6 +198,144 @@ class PayrollHardeningTests(TestCase):
 
         allowed_request = self.factory.post(f"/payroll/runs/{run.id}/approve/", {"note": "approved"}, format="json")
         force_authenticate(allowed_request, user=self.reviewer)
+        allowed_response = view(allowed_request, pk=run.id)
+        self.assertEqual(allowed_response.status_code, status.HTTP_200_OK)
+
+    def test_submit_view_blocks_when_manager_chain_policy_is_unresolved(self):
+        department = EntityOrgUnit.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            unit_type=EntityOrgUnit.UnitType.DEPARTMENT,
+            code="OPS-SUB",
+            name="Operations",
+            createdby=self.setup["user"],
+        )
+        designation = EntityOrgUnit.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            unit_type=EntityOrgUnit.UnitType.DESIGNATION,
+            code="PAY-SUB",
+            name="Payroll Executive",
+            createdby=self.setup["user"],
+        )
+        EntityEmploymentProfile.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            employee_user=self.setup["user"],
+            employee_code="EMP-SUBMIT",
+            full_name="Submit Owner",
+            work_email=self.setup["user"].email,
+            department=department,
+            designation=designation,
+            effective_from=self.setup["period"].period_start,
+            date_of_joining=self.setup["period"].period_start,
+            createdby=self.setup["user"],
+        )
+        EntityApprovalPolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            org_unit=department,
+            policy_key=EntityApprovalPolicy.PolicyKey.PAYROLL_RUN,
+            code="PAY-RUN-SUBMIT",
+            name="Submit Routing Policy",
+            approval_mode=EntityApprovalPolicy.ApprovalMode.MANAGER_CHAIN,
+            manager_levels=1,
+            min_approvers=1,
+            fallback_manager_required=True,
+            createdby=self.setup["user"],
+        )
+
+        run = self._build_calculated_run()
+        view = PayrollRunSubmitAPIView.as_view()
+        request = self.factory.post(f"/payroll/runs/{run.id}/submit/", {"note": "submit"}, format="json")
+        force_authenticate(request, user=self.operator)
+        response = view(request, pk=run.id)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("manager chain", str(response.data["detail"]).lower())
+
+    def test_approve_view_enforces_manager_chain_policy(self):
+        manager = PayrollFactory.user(
+            username="approver-manager",
+            email="approver-manager@example.com",
+            first_name="Neeraj",
+            last_name="Gupta",
+        )
+        Group.objects.get_or_create(name="payroll_reviewer")[0].user_set.add(manager)
+        SubscriptionService.ensure_account_membership(
+            customer_account=self.setup["entity"].customer_account,
+            user=manager,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.setup["user"],
+        )
+        department = EntityOrgUnit.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            unit_type=EntityOrgUnit.UnitType.DEPARTMENT,
+            code="OPS-APR",
+            name="Operations",
+            createdby=self.setup["user"],
+        )
+        designation = EntityOrgUnit.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            unit_type=EntityOrgUnit.UnitType.DESIGNATION,
+            code="PAY-EXE",
+            name="Payroll Executive",
+            createdby=self.setup["user"],
+        )
+        EntityEmploymentProfile.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            employee_user=self.setup["user"],
+            employee_code="EMP-OWNER",
+            full_name="Payroll Owner",
+            work_email=self.setup["user"].email,
+            department=department,
+            designation=designation,
+            manager_user=manager,
+            effective_from=self.setup["period"].period_start,
+            date_of_joining=self.setup["period"].period_start,
+            createdby=self.setup["user"],
+        )
+        EntityEmploymentProfile.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            employee_user=manager,
+            employee_code="EMP-MGR",
+            full_name="Neeraj Gupta",
+            work_email=manager.email,
+            department=department,
+            designation=designation,
+            effective_from=self.setup["period"].period_start,
+            date_of_joining=self.setup["period"].period_start,
+            createdby=self.setup["user"],
+        )
+        EntityApprovalPolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            org_unit=department,
+            policy_key=EntityApprovalPolicy.PolicyKey.PAYROLL_RUN,
+            code="PAY-RUN-OPS",
+            name="Operations Approval Policy",
+            approval_mode=EntityApprovalPolicy.ApprovalMode.MANAGER_CHAIN,
+            manager_levels=1,
+            min_approvers=1,
+            fallback_manager_required=True,
+            createdby=self.setup["user"],
+        )
+
+        run = self._build_calculated_run()
+        view = PayrollRunApproveAPIView.as_view()
+
+        denied_request = self.factory.post(f"/payroll/runs/{run.id}/approve/", {"note": "approved"}, format="json")
+        force_authenticate(denied_request, user=self.reviewer)
+        denied_response = view(denied_request, pk=run.id)
+        self.assertEqual(denied_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("manager chain", str(denied_response.data["detail"]).lower())
+
+        allowed_request = self.factory.post(f"/payroll/runs/{run.id}/approve/", {"note": "approved"}, format="json")
+        force_authenticate(allowed_request, user=manager)
         allowed_response = view(allowed_request, pk=run.id)
         self.assertEqual(allowed_response.status_code, status.HTTP_200_OK)
 
@@ -169,6 +369,52 @@ class PayrollHardeningTests(TestCase):
         force_authenticate(denied_reconcile, user=self.reviewer)
         denied_reconcile_response = reconcile_view(denied_reconcile, pk=run.id)
         self.assertEqual(denied_reconcile_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_payment_handoff_view_enforces_handoff_policy(self):
+        treasury_user = PayrollFactory.user(
+            username="treasury-user",
+            email="treasury-user@example.com",
+        )
+        Group.objects.get_or_create(name="payroll_finance")[0].user_set.add(treasury_user)
+        Group.objects.get_or_create(name="treasury_operator")[0].user_set.add(treasury_user)
+        SubscriptionService.ensure_account_membership(
+            customer_account=self.setup["entity"].customer_account,
+            user=treasury_user,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.setup["user"],
+        )
+        EntityApprovalPolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            policy_key=EntityApprovalPolicy.PolicyKey.PAYROLL_PAYMENT_HANDOFF,
+            code="PAY-HANDOFF",
+            name="Treasury Handoff Policy",
+            approval_mode=EntityApprovalPolicy.ApprovalMode.FIXED_USERS,
+            approver_roles=["treasury_operator"],
+            min_approvers=1,
+            createdby=self.setup["user"],
+        )
+        run = self._build_posted_run()
+        view = PayrollRunPaymentHandoffAPIView.as_view()
+
+        denied_request = self.factory.post(
+            f"/payroll/runs/{run.id}/payment-handoff/",
+            {"payment_batch_ref": "BATCH-02"},
+            format="json",
+        )
+        force_authenticate(denied_request, user=self.finance)
+        denied_response = view(denied_request, pk=run.id)
+        self.assertEqual(denied_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("handoff policy", str(denied_response.data["detail"]).lower())
+
+        allowed_request = self.factory.post(
+            f"/payroll/runs/{run.id}/payment-handoff/",
+            {"payment_batch_ref": "BATCH-02"},
+            format="json",
+        )
+        force_authenticate(allowed_request, user=treasury_user)
+        allowed_response = view(allowed_request, pk=run.id)
+        self.assertEqual(allowed_response.status_code, status.HTTP_200_OK)
 
     def test_reverse_view_requires_payroll_admin_permission(self):
         run = self._build_posted_run()
@@ -213,6 +459,19 @@ class PayrollHardeningTests(TestCase):
         rows = list(csv.reader(StringIO(content)))
         self.assertEqual(rows[0][0], "run_id")
         self.assertEqual(rows[1][0], str(run.id))
+
+    def test_export_employee_rows_uses_contract_native_identity_headers(self):
+        run = self._build_posted_run()
+        response = PayrollExportService.export_employee_rows(
+            rows=run.employee_runs.select_related("contract_payroll_profile__hrms_contract__employee")
+        )
+        content = response.content.decode()
+        rows = list(csv.reader(StringIO(content)))
+        self.assertIn("contract_payroll_profile_id", rows[0])
+        self.assertIn("hrms_contract_id", rows[0])
+        self.assertIn("contract_code", rows[0])
+        self.assertIn("work_email", rows[0])
+        self.assertNotIn("employee_profile_id", rows[0])
 
     def test_admin_export_action_returns_csv_response(self):
         run = self._build_posted_run()

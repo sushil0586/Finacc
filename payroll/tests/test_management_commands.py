@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from payroll.models import GlobalPayrollComponent, GlobalPayrollComponentGroup, GlobalSalaryStructureTemplate
 from payroll.services.payroll_run_service import PayrollRunService
 from payroll.tests.factories import PayrollFactory
 
@@ -122,3 +123,38 @@ class PayrollManagementCommandTests(TestCase):
         payload = json.loads(out.getvalue())
         self.assertIn("checks", payload)
         self.assertTrue(payload["passed"])
+
+
+class GlobalPayrollCatalogSeedCommandTests(TestCase):
+    def test_seed_command_supports_dry_run(self):
+        out = StringIO()
+
+        call_command("seed_global_payroll_catalog", dry_run=True, stdout=out)
+
+        output = out.getvalue()
+        self.assertIn("Dry run completed", output)
+        self.assertEqual(GlobalPayrollComponentGroup.objects.count(), 0)
+        self.assertEqual(GlobalPayrollComponent.objects.count(), 0)
+        self.assertEqual(GlobalSalaryStructureTemplate.objects.count(), 0)
+
+    def test_seed_command_supports_only_groups(self):
+        out = StringIO()
+
+        call_command("seed_global_payroll_catalog", only="groups", stdout=out)
+
+        self.assertEqual(GlobalPayrollComponentGroup.objects.count(), 6)
+        self.assertEqual(GlobalPayrollComponent.objects.count(), 0)
+        self.assertIn("Groups: created=6", out.getvalue())
+
+    def test_seed_command_force_updates_existing_system_record(self):
+        call_command("seed_global_payroll_catalog")
+        component = GlobalPayrollComponent.objects.get(code="BASIC")
+        component.name = "Old Name"
+        component.save(update_fields=["name"])
+        out = StringIO()
+
+        call_command("seed_global_payroll_catalog", force=True, stdout=out)
+
+        component.refresh_from_db()
+        self.assertEqual(component.name, "Basic Salary")
+        self.assertIn("Force update: yes", out.getvalue())

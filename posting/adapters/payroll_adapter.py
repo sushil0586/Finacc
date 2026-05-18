@@ -6,6 +6,7 @@ from typing import Dict, List
 from django.db import transaction
 
 from payroll.models import PayrollLedgerPolicy, PayrollRun
+from payroll.services.payroll_posting_finalization_service import PayrollPostingFinalizationService
 from posting.common.journal_descriptions import payroll_prefix
 from posting.models import TxnType
 from posting.services.posting_service import JLInput, PostingService
@@ -42,77 +43,9 @@ class PayrollPostingAdapter:
 
     @staticmethod
     def _aggregate_lines(run: PayrollRun, policy: PayrollLedgerPolicy) -> List[JLInput]:
-        debits: Dict[int, Decimal] = {}
-        credits: Dict[int, Decimal] = {}
-        is_reversal = bool(run.reversed_run_id)
-
-        for employee_row in run.employee_runs.select_related("employee_profile").prefetch_related("components"):
-            for component_row in employee_row.components.all():
-                component = component_row.component
-                posting_map = getattr(component_row, "component_posting_version", None)
-                amount = q2(component_row.amount)
-                if amount <= ZERO2:
-                    continue
-
-                if component.component_type in {
-                    component.ComponentType.EARNING,
-                    component.ComponentType.REIMBURSEMENT,
-                }:
-                    expense_account_id = getattr(posting_map, "expense_account_id", None)
-                    payable_account_id = getattr(posting_map, "payable_account_id", None) or policy.salary_payable_account_id
-                    if expense_account_id:
-                        bucket = credits if is_reversal else debits
-                        bucket[expense_account_id] = q2(bucket.get(expense_account_id, ZERO2) + amount)
-                    payable_bucket = debits if is_reversal else credits
-                    payable_bucket[payable_account_id] = q2(payable_bucket.get(payable_account_id, ZERO2) + amount)
-                elif component.component_type == component.ComponentType.EMPLOYER_CONTRIBUTION:
-                    expense_account_id = getattr(posting_map, "expense_account_id", None)
-                    liability_account_id = (
-                        getattr(posting_map, "liability_account_id", None)
-                        or policy.employer_contribution_payable_account_id
-                        or policy.salary_payable_account_id
-                    )
-                    if expense_account_id:
-                        bucket = credits if is_reversal else debits
-                        bucket[expense_account_id] = q2(bucket.get(expense_account_id, ZERO2) + amount)
-                    liability_bucket = debits if is_reversal else credits
-                    liability_bucket[liability_account_id] = q2(liability_bucket.get(liability_account_id, ZERO2) + amount)
-                else:
-                    liability_account_id = (
-                        getattr(posting_map, "liability_account_id", None)
-                        or getattr(posting_map, "payable_account_id", None)
-                    )
-                    if liability_account_id:
-                        salary_bucket = credits if is_reversal else debits
-                        liability_bucket = debits if is_reversal else credits
-                        salary_bucket[policy.salary_payable_account_id] = q2(
-                            salary_bucket.get(policy.salary_payable_account_id, ZERO2) + amount
-                        )
-                        liability_bucket[liability_account_id] = q2(
-                            liability_bucket.get(liability_account_id, ZERO2) + amount
-                        )
-
-        jl_inputs: List[JLInput] = []
-        prefix = payroll_prefix(run)
-        for account_id, amount in sorted(debits.items()):
-            jl_inputs.append(
-                JLInput(
-                    account_id=account_id,
-                    drcr=True,
-                    amount=amount,
-                    description=prefix,
-                )
-            )
-        for account_id, amount in sorted(credits.items()):
-            jl_inputs.append(
-                JLInput(
-                    account_id=account_id,
-                    drcr=False,
-                    amount=amount,
-                    description=prefix,
-                )
-            )
-        return jl_inputs
+        preview = PayrollPostingFinalizationService.preview_run(run)
+        PayrollPostingFinalizationService._raise_for_blocking_issues(preview)
+        return preview["posting"]["jl_inputs"]
 
     @staticmethod
     @transaction.atomic

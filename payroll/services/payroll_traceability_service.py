@@ -193,7 +193,7 @@ class PayrollTraceabilityService:
             )
             .annotate(
                 amount=Sum("components__amount"),
-                employee_count=Count("employee_profile_id", distinct=True),
+                employee_count=Count("contract_payroll_profile_id", distinct=True),
             )
             .order_by("components__component_code", "components__component_id")
         )
@@ -224,7 +224,7 @@ class PayrollTraceabilityService:
             blockers.append("Salary structure version snapshot is missing.")
         if not row.ledger_policy_version_id:
             blockers.append("Ledger policy snapshot is missing.")
-        if not getattr(row.employee_profile, "payment_account_id", None):
+        if not getattr(row, "payment_account_id", None):
             warnings.append("Payment account is missing on payroll profile.")
 
         missing_posting_count = sum(
@@ -244,15 +244,23 @@ class PayrollTraceabilityService:
     @classmethod
     def build_employee_rows(cls, *, run: PayrollRun) -> list[dict]:
         rows = []
-        for row in run.employee_runs.select_related("employee_profile", "salary_structure").prefetch_related("components").all():
+        for row in run.employee_runs.select_related(
+            "contract_payroll_profile__hrms_contract__employee",
+            "salary_structure",
+        ).prefetch_related("components").all():
+            contract = getattr(row.contract_payroll_profile, "hrms_contract", None)
+            employee = getattr(contract, "employee", None)
             issue_summary = cls.build_employee_issue_summary(row=row)
             rows.append(
                 {
                     "id": row.id,
-                    "payroll_profile_id": row.employee_profile_id,
-                    "employee_id": getattr(row.employee_profile, "employee_user_id", None),
-                    "employee_code": row.employee_profile.employee_code,
-                    "employee_name": row.employee_profile.full_name,
+                    "contract_payroll_profile_id": str(row.contract_payroll_profile_id),
+                    "hrms_contract_id": str(row.contract_payroll_profile.hrms_contract_id) if row.contract_payroll_profile_id else None,
+                    "contract_code": getattr(contract, "contract_code", None),
+                    "employee_id": row.employee_user_id,
+                    "employee_code": row.employee_code,
+                    "employee_name": row.employee_name,
+                    "work_email": getattr(employee, "work_email", None),
                     "salary_structure_id": row.salary_structure_id,
                     "payment_status": row.payment_status,
                     "gross_amount": row.gross_amount,

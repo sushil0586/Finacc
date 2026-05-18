@@ -27,7 +27,7 @@ class PayrollShadowRunService:
         }
         result = ShadowRunValidationResult(name="payroll-shadow-run", scope=scope, payroll_run_id=payroll_run.id)
 
-        employee_rows = payroll_run.employee_runs.select_related("employee_profile")
+        employee_rows = payroll_run.employee_runs.select_related("contract_payroll_profile__hrms_contract__employee")
         employee_count = employee_rows.count()
         result.summary = {
             "status": payroll_run.status,
@@ -44,11 +44,11 @@ class PayrollShadowRunService:
                 detail={"expected": expected_employee_count, "actual": employee_count},
             )
 
-        cross_scope = employee_rows.exclude(employee_profile__entity_id=payroll_run.entity_id)
+        cross_scope = employee_rows.exclude(contract_payroll_profile__entity_id=payroll_run.entity_id)
         if cross_scope.exists():
             result.add_issue(
                 "cross_scope_employee_leakage",
-                "Shadow run contains employee profiles from another entity.",
+                "Shadow run contains contract payroll profiles from another entity.",
                 detail={"employee_run_ids": list(cross_scope.values_list("id", flat=True)[:20])},
             )
 

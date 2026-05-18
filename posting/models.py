@@ -23,6 +23,7 @@ class TxnType(models.TextChoices):
     SALES_DEBIT_NOTE = "SDN", "Sales Debit Note"
     PURCHASE = "P", "Purchase"
     PAYROLL = "PRL", "Payroll"
+    PAYROLL_FNF = "PRLFNF", "Payroll FnF"
     FIXED_ASSET_CAPITALIZATION = "FAC", "Fixed Asset Capitalization"
     FIXED_ASSET_DEPRECIATION = "FADP", "Fixed Asset Depreciation"
     FIXED_ASSET_IMPAIRMENT = "FAI", "Fixed Asset Impairment"

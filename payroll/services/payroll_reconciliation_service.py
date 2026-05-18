@@ -149,13 +149,17 @@ class PayrollReconciliationService:
 
     @staticmethod
     def build_payslip_spotcheck_payload(*, run: PayrollRun, limit: int = 10) -> dict:
-        rows = run.employee_runs.select_related("employee_profile").prefetch_related("components")[:limit]
+        rows = run.employee_runs.select_related("contract_payroll_profile__hrms_contract__employee").prefetch_related("components")[:limit]
         return {
             "sample_size": len(rows),
             "rows": [
                 {
-                    "employee_code": row.employee_profile.employee_code,
-                    "employee_name": row.employee_profile.full_name,
+                    "contract_payroll_profile_id": str(row.contract_payroll_profile_id) if row.contract_payroll_profile_id else None,
+                    "hrms_contract_id": str(row.contract_payroll_profile.hrms_contract_id) if row.contract_payroll_profile_id else None,
+                    "contract_code": row.contract_payroll_profile.hrms_contract.contract_code if row.contract_payroll_profile_id else None,
+                    "employee_code": row.employee_code,
+                    "employee_name": row.employee_name,
+                    "work_email": row.contract_payroll_profile.hrms_contract.employee.work_email if row.contract_payroll_profile_id else None,
                     "gross_amount": str(row.gross_amount),
                     "deduction_amount": str(row.deduction_amount),
                     "payable_amount": str(row.payable_amount),

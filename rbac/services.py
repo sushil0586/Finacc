@@ -347,6 +347,7 @@ class RoleTemplateService:
                 "accounts.",
                 "compliance.",
                 "reports.",
+                "hrms.",
                 "stock.",
                 "payment.",
                 "receipt.",
@@ -410,6 +411,11 @@ class RoleTemplateService:
             "name": "Payroll User",
             "description": "Payroll and employee administration access.",
             "permission_prefixes": ["payroll.", "payments.payroll.", "reports.payroll."],
+        },
+        "hrms_user": {
+            "name": "HRMS User",
+            "description": "HRMS setup, leave, attendance, and onboarding access.",
+            "permission_prefixes": ["hrms."],
         },
         "compliance_user": {
             "name": "Compliance User",
@@ -529,6 +535,5 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
-
 
 

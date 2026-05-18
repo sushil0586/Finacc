@@ -48,16 +48,23 @@ Good practice:
 - do not edit active structure logic in place
 - create a new structure version for payroll rule changes
 
-### 4. Employee payroll profiles
+### 4. Contract payroll profiles
 
-Create `PayrollEmployeeProfile` rows with:
+Create `ContractPayrollProfile` rows with:
 
-- correct entity/subentity assignment
-- employee code
-- salary structure assignment
-- structure version assignment if used directly
-- payment account
+- the correct HRMS employment contract
+- entity/subentity alignment through the contract
+- pay frequency
 - payroll-active status
+- payroll start date
+- payment mode / bank account details where applicable
+
+Create `ContractSalaryStructureAssignment` rows with:
+
+- salary structure assignment
+- structure version assignment
+- effective-from date
+- active assignment status
 
 ### 5. Ledger policy
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from entity.models import EntityApprovalPolicy
 from payroll.models import PayrollRun, PayrollRunEmployee, PayrollRunEmployeeComponent, Payslip
+from payroll.services.payroll_approval_policy_service import PayrollApprovalPolicyService
 from payroll.services.payroll_traceability_service import PayrollTraceabilityService
 
 
@@ -49,10 +51,10 @@ class PayrollRunEmployeeComponentSerializer(serializers.ModelSerializer):
 
 
 class PayrollRunEmployeeSerializer(serializers.ModelSerializer):
-    employee_code = serializers.CharField(source="employee_profile.employee_code", read_only=True)
-    employee_name = serializers.CharField(source="employee_profile.full_name", read_only=True)
-    payroll_profile_id = serializers.IntegerField(source="employee_profile_id", read_only=True)
-    employee_id = serializers.IntegerField(source="employee_profile.employee_user_id", read_only=True)
+    employee_code = serializers.CharField(read_only=True)
+    employee_name = serializers.CharField(read_only=True)
+    payroll_profile_id = serializers.UUIDField(source="contract_payroll_profile_id", read_only=True)
+    employee_id = serializers.IntegerField(source="employee_user_id", read_only=True)
     salary_structure_id = serializers.IntegerField(read_only=True)
     warning_count = serializers.SerializerMethodField()
     blocking_issue_count = serializers.SerializerMethodField()
@@ -75,7 +77,7 @@ class PayrollRunEmployeeSerializer(serializers.ModelSerializer):
         model = PayrollRunEmployee
         fields = [
             "id",
-            "employee_profile",
+            "contract_payroll_profile",
             "payroll_profile_id",
             "employee_id",
             "employee_code",
@@ -104,16 +106,24 @@ class PayrollRunListSerializer(serializers.ModelSerializer):
     status_name = serializers.CharField(source="get_status_display", read_only=True)
     payment_status_name = serializers.CharField(source="get_payment_status_display", read_only=True)
     period_code = serializers.CharField(source="payroll_period.code", read_only=True)
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    entityfin_name = serializers.CharField(source="entityfinid.desc", read_only=True)
+    subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
+    period_name = serializers.CharField(source="payroll_period.code", read_only=True)
 
     class Meta:
         model = PayrollRun
         fields = [
             "id",
             "entity",
+            "entity_name",
             "entityfinid",
+            "entityfin_name",
             "subentity",
+            "subentity_name",
             "payroll_period",
             "period_code",
+            "period_name",
             "run_type",
             "doc_code",
             "doc_no",
@@ -122,6 +132,7 @@ class PayrollRunListSerializer(serializers.ModelSerializer):
             "payout_date",
             "status",
             "status_name",
+            "approval_status",
             "payment_status",
             "payment_status_name",
             "employee_count",
@@ -136,6 +147,9 @@ class PayrollRunListSerializer(serializers.ModelSerializer):
 
 
 class PayrollRunDetailSerializer(PayrollRunListSerializer):
+    approval_context = serializers.SerializerMethodField()
+    payment_handoff_policy_context = serializers.SerializerMethodField()
+    posting_policy_context = serializers.SerializerMethodField()
     employee_runs = PayrollRunEmployeeSerializer(many=True, read_only=True)
     actors = serializers.SerializerMethodField()
     traceability = serializers.SerializerMethodField()
@@ -172,9 +186,28 @@ class PayrollRunDetailSerializer(PayrollRunListSerializer):
     def get_payment_verification_issues(self, obj):
         return self._traceability(obj)["payment"]["verification_issues"]
 
+    def get_approval_context(self, obj):
+        return PayrollApprovalPolicyService.resolve_run_context(run=obj)
+
+    def get_payment_handoff_policy_context(self, obj):
+        return PayrollApprovalPolicyService.resolve_policy_context(
+            run=obj,
+            policy_key=EntityApprovalPolicy.PolicyKey.PAYROLL_PAYMENT_HANDOFF,
+        )
+
+    def get_posting_policy_context(self, obj):
+        return PayrollApprovalPolicyService.resolve_policy_context(
+            run=obj,
+            policy_key=EntityApprovalPolicy.PolicyKey.PAYROLL_POSTING,
+        )
+
     class Meta(PayrollRunListSerializer.Meta):
         fields = PayrollRunListSerializer.Meta.fields + [
+            "approval_context",
+            "payment_handoff_policy_context",
+            "posting_policy_context",
             "approval_note",
+            "requested_by",
             "status_reason_code",
             "status_comment",
             "config_snapshot",
@@ -184,12 +217,14 @@ class PayrollRunDetailSerializer(PayrollRunListSerializer):
             "submitted_by",
             "created_by",
             "approved_by",
+            "rejected_by",
             "locked_by",
             "posted_by",
             "cancelled_by",
             "reversed_by",
             "submitted_at",
             "approved_at",
+            "rejected_at",
             "locked_at",
             "posted_at",
             "cancelled_at",
@@ -226,14 +261,16 @@ class PayrollRunSummarySerializer(serializers.Serializer):
     timeline = serializers.JSONField(required=False)
     employee_rows = serializers.JSONField(required=False)
     component_totals = serializers.JSONField(required=False)
+    warnings = serializers.JSONField(required=False)
+    blocking_issues = serializers.JSONField(required=False)
     posting_verification_issues = serializers.JSONField(required=False)
     payment_verification_issues = serializers.JSONField(required=False)
 
 
 class PayslipSerializer(serializers.ModelSerializer):
-    employee_code = serializers.CharField(source="payroll_run_employee.employee_profile.employee_code", read_only=True)
-    employee_name = serializers.CharField(source="payroll_run_employee.employee_profile.full_name", read_only=True)
-    payroll_profile_id = serializers.IntegerField(source="payroll_run_employee.employee_profile_id", read_only=True)
+    employee_code = serializers.CharField(source="payroll_run_employee.employee_code", read_only=True)
+    employee_name = serializers.CharField(source="payroll_run_employee.employee_name", read_only=True)
+    payroll_profile_id = serializers.UUIDField(source="payroll_run_employee.contract_payroll_profile_id", read_only=True)
     salary_structure_id = serializers.IntegerField(source="payroll_run_employee.salary_structure_id", read_only=True)
     earnings = serializers.SerializerMethodField()
     deductions = serializers.SerializerMethodField()

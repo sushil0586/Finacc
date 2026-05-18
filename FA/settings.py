@@ -79,6 +79,7 @@ META_CACHE_LOG_LEVEL = config('META_CACHE_LOG_LEVEL', default='INFO')
 # ---------------------------------------------------------------------------
 RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == 'test'
 ENABLE_PAYROLL_IN_TESTS = config('ENABLE_PAYROLL_IN_TESTS', default=False, cast=_cast_boolish_env)
+PAYROLL_USE_CONTRACT_READINESS = config('PAYROLL_USE_CONTRACT_READINESS', default=False, cast=_cast_boolish_env)
 
 AUTH_USER_MODEL = "Authentication.User"
 
@@ -97,6 +98,7 @@ INSTALLED_APPS = [
     'django_filters',
     'drf_yasg',
     'entity',
+    'hrms',
     'geography',
     'financial',
     'corsheaders',

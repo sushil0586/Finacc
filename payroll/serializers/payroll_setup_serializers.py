@@ -1,21 +1,39 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import serializers
 
 from payroll.models import (
-    PayrollAdjustment,
+    ContractPayrollInputSnapshot,
+    ContractPayrollProfile,
+    ContractSalaryStructureAssignment,
+    ContractStatutoryProfile,
+    ContractTaxDeclaration,
+    ContractTaxDeclarationLine,
+    EntityPayrollPolicy,
+    EntityStatutoryRegistration,
+    OneTimePayItem,
     PayrollComponent,
-    PayrollEmployeeProfile,
+    PayrollPolicyRule,
     PayrollPeriod,
+    RecurringPayItem,
     SalaryStructure,
     SalaryStructureLine,
+    StatutoryRule,
+    StatutoryScheme,
+    StatutorySlab,
 )
 from payroll.services.payroll_setup_service import PayrollSetupService
 
 
 class PayrollPeriodSerializer(serializers.ModelSerializer):
     run_count = serializers.SerializerMethodField()
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
 
     def get_run_count(self, obj):
         return obj.runs.count()
@@ -25,8 +43,10 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "entity",
+            "entity_name",
             "entityfinid",
             "subentity",
+            "subentity_name",
             "code",
             "pay_frequency",
             "period_start",
@@ -71,6 +91,7 @@ class PayrollComponentSerializer(serializers.ModelSerializer):
             "entity",
             "code",
             "name",
+            "semantic_code",
             "component_type",
             "category",
             "posting_behavior",
@@ -93,6 +114,7 @@ class SalaryStructureLineSerializer(serializers.ModelSerializer):
             "id",
             "component",
             "sequence",
+            "rule_mode",
             "calculation_basis",
             "basis_component",
             "rate",
@@ -100,6 +122,11 @@ class SalaryStructureLineSerializer(serializers.ModelSerializer):
             "is_pro_rated",
             "is_override_allowed",
             "is_active",
+            "recurrence_frequency",
+            "compensation_bucket",
+            "ctc_treatment",
+            "gross_treatment",
+            "rule_json",
         ]
 
 
@@ -107,14 +134,22 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
     lines = SalaryStructureLineSerializer(many=True, write_only=True, required=False)
     current_version_id = serializers.IntegerField(read_only=True)
     current_version = serializers.SerializerMethodField()
+    available_versions = serializers.SerializerMethodField()
+    calculation_policy_json = serializers.JSONField(write_only=True, required=False)
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    entityfin_name = serializers.CharField(source="entityfinid.desc", read_only=True)
+    subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
 
     class Meta:
         model = SalaryStructure
         fields = [
             "id",
             "entity",
+            "entity_name",
             "entityfinid",
+            "entityfin_name",
             "subentity",
+            "subentity_name",
             "code",
             "name",
             "status",
@@ -123,6 +158,8 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
             "is_template",
             "current_version_id",
             "current_version",
+            "available_versions",
+            "calculation_policy_json",
             "lines",
         ]
 
@@ -130,14 +167,26 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
         version = obj.current_version
         if not version:
             return None
-        return {
+        return self._serialize_version(version, include_lines=True)
+
+    def get_available_versions(self, obj):
+        versions = getattr(obj, "_prefetched_objects_cache", {}).get("versions")
+        if versions is None:
+            versions = obj.versions.all()
+        return [self._serialize_version(version, include_lines=False) for version in versions]
+
+    def _serialize_version(self, version, *, include_lines: bool):
+        payload = {
             "id": version.id,
             "version_no": version.version_no,
             "effective_from": version.effective_from,
             "effective_to": version.effective_to,
             "status": version.status,
-            "lines": SalaryStructureLineSerializer(version.lines.all(), many=True).data,
+            "calculation_policy_json": version.calculation_policy_json,
         }
+        if include_lines:
+            payload["lines"] = SalaryStructureLineSerializer(version.lines.all(), many=True).data
+        return payload
 
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
@@ -152,11 +201,13 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         lines = validated_data.pop("lines", [])
+        calculation_policy_json = validated_data.pop("calculation_policy_json", {})
         structure = SalaryStructure.objects.create(**validated_data)
         if lines:
             PayrollSetupService.create_structure_version(
                 structure=structure,
                 lines=lines,
+                calculation_policy_json=calculation_policy_json,
                 approved_by=self.context["request"].user if self.context.get("request") else None,
             )
         return structure
@@ -164,6 +215,7 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         lines = validated_data.pop("lines", None)
+        calculation_policy_json = validated_data.pop("calculation_policy_json", {})
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
@@ -171,124 +223,441 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
             PayrollSetupService.create_structure_version(
                 structure=instance,
                 lines=lines,
+                calculation_policy_json=calculation_policy_json,
                 approved_by=self.context["request"].user if self.context.get("request") else None,
             )
         return instance
 
 
-class PayrollEmployeeProfileSerializer(serializers.ModelSerializer):
-    payment_mode = serializers.CharField(required=False, allow_blank=True, write_only=True)
-    payment_mode_display = serializers.SerializerMethodField()
+class ContractPayrollProfileSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="hrms_contract.contract_code", read_only=True)
+    contract_status = serializers.CharField(source="hrms_contract.status", read_only=True)
+    employee_number = serializers.CharField(source="hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="hrms_contract.employee.display_name", read_only=True)
+    work_email = serializers.CharField(source="hrms_contract.employee.work_email", read_only=True)
+    pay_group_code = serializers.CharField(source="hrms_contract.pay_group_code", read_only=True)
+    bank_account_label = serializers.SerializerMethodField()
 
     class Meta:
-        model = PayrollEmployeeProfile
+        model = ContractPayrollProfile
         fields = [
             "id",
             "entity",
-            "entityfinid",
-            "subentity",
-            "employee_user",
-            "employee_code",
-            "full_name",
+            "entity_name",
+            "hrms_contract",
+            "contract_code",
+            "contract_status",
+            "employee_number",
+            "employee_name",
             "work_email",
-            "pan",
-            "uan",
-            "date_of_joining",
-            "status",
-            "salary_structure",
-            "salary_structure_version",
-            "ctc_annual",
-            "payment_account",
-            "payment_mode",
-            "payment_mode_display",
-            "tax_regime",
+            "pay_group_code",
             "pay_frequency",
+            "payroll_status",
+            "tax_regime",
+            "payment_mode",
+            "bank_account",
+            "bank_account_label",
+            "bank_account_details",
+            "payroll_start_date",
+            "payroll_end_date",
+            "pf_applicable",
+            "esi_applicable",
+            "pt_applicable",
+            "tds_applicable",
+            "lwf_applicable",
+            "overtime_eligible",
+            "attendance_required",
+            "metadata",
+            "is_active",
+        ]
+
+    def get_bank_account_label(self, obj):
+        if not obj.bank_account_id:
+            return ""
+        return getattr(obj.bank_account, "accountname", "") or getattr(obj.bank_account, "name", "") or ""
+
+
+class ContractSalaryStructureAssignmentSerializer(serializers.ModelSerializer):
+    salary_structure_name = serializers.CharField(source="salary_structure.name", read_only=True)
+    salary_structure_code = serializers.CharField(source="salary_structure.code", read_only=True)
+    salary_structure_version_no = serializers.IntegerField(source="salary_structure_version.version_no", read_only=True)
+
+    class Meta:
+        model = ContractSalaryStructureAssignment
+        fields = [
+            "id",
+            "contract_payroll_profile",
+            "salary_structure",
+            "salary_structure_name",
+            "salary_structure_code",
+            "salary_structure_version",
+            "salary_structure_version_no",
             "effective_from",
             "effective_to",
-            "blocked_for_payroll",
-            "locked_for_processing",
-            "extra_data",
+            "assignment_status",
+            "ctc_amount",
+            "gross_amount",
+            "metadata",
+            "is_active",
         ]
-
-    def get_payment_mode_display(self, obj):
-        return (obj.extra_data or {}).get("payment_mode", "")
-
-    def validate(self, attrs):
-        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
-        subentity = attrs.get("subentity", getattr(self.instance, "subentity", None))
-        structure = attrs.get("salary_structure", getattr(self.instance, "salary_structure", None))
-        version = attrs.get("salary_structure_version", getattr(self.instance, "salary_structure_version", None))
-        payment_account = attrs.get("payment_account", getattr(self.instance, "payment_account", None))
-        if subentity and entity and subentity.entity_id != entity.id:
-            raise serializers.ValidationError({"subentity": "Subentity must belong to the selected entity."})
-        if structure and entity and structure.entity_id != entity.id:
-            raise serializers.ValidationError({"salary_structure": "Salary structure must belong to the selected entity."})
-        if version and structure and version.salary_structure_id != structure.id:
-            raise serializers.ValidationError({"salary_structure_version": "Version must belong to the selected salary structure."})
-        if payment_account and entity and payment_account.entity_id != entity.id:
-            raise serializers.ValidationError({"payment_account": "Payment account must belong to the selected entity."})
-        return attrs
-
-    def create(self, validated_data):
-        payment_mode = validated_data.pop("payment_mode", "")
-        if validated_data.get("salary_structure") and not validated_data.get("salary_structure_version"):
-            validated_data["salary_structure_version"] = validated_data["salary_structure"].current_version
-        if payment_mode:
-            validated_data["extra_data"] = {**(validated_data.get("extra_data") or {}), "payment_mode": payment_mode}
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        payment_mode = validated_data.pop("payment_mode", None)
-        if validated_data.get("salary_structure") and not validated_data.get("salary_structure_version"):
-            validated_data["salary_structure_version"] = validated_data["salary_structure"].current_version
-        if payment_mode is not None:
-            validated_data["extra_data"] = {**(instance.extra_data or {}), **(validated_data.get("extra_data") or {}), "payment_mode": payment_mode}
-        return super().update(instance, validated_data)
+        extra_kwargs = {
+            "contract_payroll_profile": {"required": False},
+        }
 
 
-class PayrollAdjustmentSerializer(serializers.ModelSerializer):
-    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+class ContractTaxDeclarationLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContractTaxDeclarationLine
+        fields = [
+            "id",
+            "declaration",
+            "section_code",
+            "declaration_category",
+            "declaration_code",
+            "description",
+            "declared_amount",
+            "approved_amount",
+            "evidence_required",
+            "evidence_status",
+            "metadata",
+            "is_active",
+        ]
+        extra_kwargs = {
+            "declaration": {"required": False},
+        }
+
+
+class ContractTaxDeclarationSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    financial_year_name = serializers.CharField(source="financial_year.desc", read_only=True)
+    lines = ContractTaxDeclarationLineSerializer(many=True, read_only=True)
 
     class Meta:
-        model = PayrollAdjustment
+        model = ContractTaxDeclaration
         fields = [
             "id",
             "entity",
-            "entityfinid",
-            "subentity",
-            "employee_profile",
-            "payroll_period",
-            "component",
-            "kind",
-            "kind_label",
-            "amount",
-            "effective_date",
-            "status",
-            "remarks",
-            "source_reference_type",
-            "source_reference_id",
+            "entity_name",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "financial_year",
+            "financial_year_name",
+            "tax_regime",
+            "declaration_status",
+            "approval_status",
+            "declared_annual_income",
+            "annual_other_income",
+            "previous_employer_income",
+            "previous_employer_tds",
+            "standard_deduction_amount",
+            "professional_tax_declared",
+            "annual_gross_projection",
+            "annual_exemption_total",
+            "annual_deduction_total",
+            "projected_taxable_income",
+            "projected_annual_tax",
+            "projected_monthly_tds",
+            "tax_already_deducted",
+            "balance_tax",
+            "metadata",
+            "requested_by",
             "approved_by",
+            "rejected_by",
+            "cancelled_by",
+            "locked_by",
+            "requested_at",
+            "submitted_at",
             "approved_at",
-            "approved_run",
-            "reversed_adjustment",
+            "rejected_at",
+            "cancelled_at",
+            "locked_at",
+            "is_active",
+            "lines",
         ]
-        read_only_fields = ["approved_by", "approved_at", "approved_run"]
 
-    def validate(self, attrs):
-        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
-        entityfinid = attrs.get("entityfinid") or getattr(self.instance, "entityfinid", None)
-        subentity = attrs.get("subentity", getattr(self.instance, "subentity", None))
-        employee_profile = attrs.get("employee_profile", getattr(self.instance, "employee_profile", None))
-        payroll_period = attrs.get("payroll_period", getattr(self.instance, "payroll_period", None))
-        component = attrs.get("component", getattr(self.instance, "component", None))
-        if employee_profile and entity and employee_profile.entity_id != entity.id:
-            raise serializers.ValidationError({"employee_profile": "Employee profile must belong to the selected entity."})
-        if employee_profile and subentity is not None and employee_profile.subentity_id != getattr(subentity, "id", None):
-            raise serializers.ValidationError({"employee_profile": "Employee profile must match the selected subentity."})
-        if payroll_period and entity and payroll_period.entity_id != entity.id:
-            raise serializers.ValidationError({"payroll_period": "Payroll period must belong to the selected entity."})
-        if payroll_period and entityfinid and payroll_period.entityfinid_id != entityfinid.id:
-            raise serializers.ValidationError({"payroll_period": "Payroll period must belong to the selected financial year."})
-        if component and entity and component.entity_id != entity.id:
-            raise serializers.ValidationError({"component": "Payroll component must belong to the selected entity."})
-        return attrs
+
+class ContractPayrollInputSnapshotSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    payroll_period_name = serializers.CharField(source="payroll_period.code", read_only=True)
+
+    class Meta:
+        model = ContractPayrollInputSnapshot
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "payroll_period",
+            "payroll_period_name",
+            "input_type",
+            "input_json",
+            "source",
+            "effective_from",
+            "effective_to",
+            "is_active",
+            "metadata",
+        ]
+
+
+class PayrollPolicyRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayrollPolicyRule
+        fields = [
+            "id",
+            "policy",
+            "rule_type",
+            "rule_key",
+            "rule_value_json",
+            "effective_from",
+            "effective_to",
+            "is_active",
+            "metadata",
+        ]
+        extra_kwargs = {
+            "policy": {"required": False},
+        }
+
+
+class RecurringPayItemSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    payroll_component_code = serializers.CharField(source="payroll_component.code", read_only=True)
+    payroll_component_name = serializers.CharField(source="payroll_component.name", read_only=True)
+
+    class Meta:
+        model = RecurringPayItem
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "payroll_component",
+            "payroll_component_code",
+            "payroll_component_name",
+            "item_type",
+            "amount",
+            "percentage",
+            "formula_override",
+            "recurrence_frequency",
+            "effective_from",
+            "effective_to",
+            "priority",
+            "remarks",
+            "metadata",
+            "is_active",
+        ]
+
+
+class OneTimePayItemSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    payroll_component_code = serializers.CharField(source="payroll_component.code", read_only=True)
+    payroll_component_name = serializers.CharField(source="payroll_component.name", read_only=True)
+    payroll_period_name = serializers.CharField(source="payroll_period.code", read_only=True)
+
+    class Meta:
+        model = OneTimePayItem
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "payroll_component",
+            "payroll_component_code",
+            "payroll_component_name",
+            "item_type",
+            "payroll_period",
+            "payroll_period_name",
+            "requested_date",
+            "effective_date",
+            "amount",
+            "quantity",
+            "remarks",
+            "approval_status",
+            "source_type",
+            "metadata",
+            "is_active",
+        ]
+
+
+class StatutorySchemeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StatutoryScheme
+        fields = [
+            "id",
+            "code",
+            "name",
+            "scheme_type",
+            "country_code",
+            "state_code",
+            "description",
+            "is_system",
+            "is_active",
+            "metadata",
+        ]
+
+
+class StatutorySlabSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StatutorySlab
+        fields = [
+            "id",
+            "rule",
+            "slab_from",
+            "slab_to",
+            "amount",
+            "percentage",
+            "formula",
+            "metadata",
+            "is_active",
+        ]
+        extra_kwargs = {"rule": {"required": False}}
+
+
+class StatutoryRuleSerializer(serializers.ModelSerializer):
+    scheme_code = serializers.CharField(source="scheme.code", read_only=True)
+    scheme_name = serializers.CharField(source="scheme.name", read_only=True)
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    slabs = StatutorySlabSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = StatutoryRule
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "scheme",
+            "scheme_code",
+            "scheme_name",
+            "rule_code",
+            "rule_name",
+            "rule_type",
+            "effective_from",
+            "effective_to",
+            "rule_json",
+            "applicability_json",
+            "priority",
+            "is_system",
+            "is_active",
+            "metadata",
+            "slabs",
+        ]
+
+
+class EntityStatutoryRegistrationSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    scheme_code = serializers.CharField(source="scheme.code", read_only=True)
+    scheme_name = serializers.CharField(source="scheme.name", read_only=True)
+
+    class Meta:
+        model = EntityStatutoryRegistration
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "scheme",
+            "scheme_code",
+            "scheme_name",
+            "registration_number",
+            "registration_state",
+            "effective_from",
+            "effective_to",
+            "is_active",
+            "metadata",
+        ]
+
+
+class ContractStatutoryProfileSerializer(serializers.ModelSerializer):
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    scheme_code = serializers.CharField(source="scheme.code", read_only=True)
+    scheme_name = serializers.CharField(source="scheme.name", read_only=True)
+
+    class Meta:
+        model = ContractStatutoryProfile
+        fields = [
+            "id",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "scheme",
+            "scheme_code",
+            "scheme_name",
+            "is_applicable",
+            "override_rule_json",
+            "effective_from",
+            "effective_to",
+            "is_active",
+            "metadata",
+        ]
+
+
+class EntityPayrollPolicySerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    rules = PayrollPolicyRuleSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = EntityPayrollPolicy
+        validators = []
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "code",
+            "name",
+            "description",
+            "pay_frequency",
+            "payroll_month_start_day",
+            "payroll_month_end_day",
+            "attendance_cutoff_day",
+            "salary_disbursement_day",
+            "rounding_mode",
+            "net_pay_rounding",
+            "component_rounding",
+            "lop_calculation_method",
+            "arrear_calculation_method",
+            "negative_salary_policy",
+            "payslip_publish_policy",
+            "payroll_lock_policy",
+            "approval_required",
+            "effective_from",
+            "effective_to",
+            "is_default",
+            "is_active",
+            "metadata",
+            "rules",
+        ]
+
+
+class PayrollRuntimeReadinessPreviewRequestSerializer(serializers.Serializer):
+    entity = serializers.IntegerField(required=True)
+    payroll_date = serializers.DateField(required=True)
+    contract_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+    )

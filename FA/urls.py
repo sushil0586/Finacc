@@ -39,6 +39,7 @@ urlpatterns = [
     path('api/auth/',include('Authentication.urls',namespace = 'Authentication_api')),
     path('api/financial/',include('financial.urls',namespace = 'financial_api')),
     path('api/entity/',include('entity.urls',namespace = 'entity_api')),
+    path('api/hrms/', include('hrms.urls', namespace='hrms_api')),
     path('api/geography/',include('geography.urls',namespace = 'geography_api')),
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
     path('api/dashboard/',include('dashboard.urls',namespace='dashboard_api')),

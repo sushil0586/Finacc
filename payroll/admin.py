@@ -7,10 +7,8 @@ from django.db.models import Count, Max
 from django.utils.html import format_html
 
 from payroll.models import (
-    PayrollAdjustment,
     PayrollComponent,
     PayrollComponentPosting,
-    PayrollEmployeeProfile,
     PayrollLedgerPolicy,
     PayrollPeriod,
     PayrollRun,
@@ -121,7 +119,10 @@ class PayslipInline(ReadOnlyInlineMixin, admin.StackedInline):
 class PayrollRunEmployeeInline(ReadOnlyInlineMixin, admin.TabularInline):
     model = PayrollRunEmployee
     fields = (
-        "employee_profile",
+        "contract_payroll_profile",
+        "contract_code",
+        "employee_code",
+        "employee_name",
         "status",
         "payment_status",
         "gross_amount",
@@ -132,7 +133,20 @@ class PayrollRunEmployeeInline(ReadOnlyInlineMixin, admin.TabularInline):
         "issue_counts",
     )
     readonly_fields = fields
-    raw_id_fields = ("employee_profile",)
+    raw_id_fields = ("contract_payroll_profile",)
+
+    @admin.display(description="Contract")
+    def contract_code(self, obj):
+        contract = getattr(getattr(obj, "contract_payroll_profile", None), "hrms_contract", None)
+        return getattr(contract, "contract_code", "") or "-"
+
+    @admin.display(description="Employee Code")
+    def employee_code(self, obj):
+        return obj.employee_code or "-"
+
+    @admin.display(description="Employee")
+    def employee_name(self, obj):
+        return obj.employee_name or "-"
 
     @admin.display(description="Issues")
     def issue_counts(self, obj):
@@ -170,6 +184,7 @@ class PayrollComponentAdmin(admin.ModelAdmin):
         "entity",
         "code",
         "name",
+        "semantic_code",
         "component_type",
         "posting_behavior",
         "is_taxable",
@@ -177,8 +192,8 @@ class PayrollComponentAdmin(admin.ModelAdmin):
         "affects_net_pay",
         "is_active",
     )
-    list_filter = ("entity", "component_type", "posting_behavior", "is_active", "is_taxable", "is_statutory")
-    search_fields = ("code", "name", "description", "statutory_tag")
+    list_filter = ("entity", "semantic_code", "component_type", "posting_behavior", "is_active", "is_taxable", "is_statutory")
+    search_fields = ("code", "name", "description", "statutory_tag", "semantic_code")
     raw_id_fields = ("entity",)
     readonly_fields = _existing_fields(
         PayrollComponent,
@@ -283,58 +298,6 @@ class SalaryStructureVersionAdmin(admin.ModelAdmin):
     @admin.display(description="Calculation Policy")
     def calculation_policy_pretty(self, obj):
         return _pretty_json(obj.calculation_policy_json)
-
-
-@admin.register(PayrollEmployeeProfile)
-class PayrollEmployeeProfileAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "entity",
-        "entityfinid",
-        "subentity",
-        "employee_code",
-        "full_name",
-        "status",
-        "salary_structure",
-        "salary_structure_version",
-        "pay_frequency",
-        "blocked_for_payroll",
-        "locked_for_processing",
-    )
-    list_filter = (
-        "entity",
-        "entityfinid",
-        "subentity",
-        "status",
-        "blocked_for_payroll",
-        "locked_for_processing",
-        "pay_frequency",
-    )
-    search_fields = ("employee_code", "full_name", "work_email", "pan", "uan")
-    raw_id_fields = (
-        "entity",
-        "entityfinid",
-        "subentity",
-        "employee_user",
-        "salary_structure",
-        "salary_structure_version",
-        "payment_account",
-    )
-    readonly_fields = _existing_fields(PayrollEmployeeProfile, "created_at", "updated_at", "extra_data_pretty")
-    fieldsets = (
-        ("Core Profile", {"fields": ("entity", "entityfinid", "subentity", "employee_user", "employee_code", "full_name", "work_email")}),
-        ("Payroll Setup", {"fields": ("status", "salary_structure", "salary_structure_version", "ctc_annual", "payment_account", "tax_regime", "pay_frequency")}),
-        ("Operational Flags", {"fields": ("blocked_for_payroll", "locked_for_processing", "effective_from", "effective_to")}),
-        ("Identity", {"fields": ("pan", "uan", "date_of_joining")}),
-        ("Metadata", {"classes": ("collapse",), "fields": ("extra_data_pretty", "created_at", "updated_at")}),
-    )
-    list_select_related = ("entity", "entityfinid", "subentity", "salary_structure", "salary_structure_version")
-    ordering = ("entity_id", "employee_code")
-    save_on_top = True
-
-    @admin.display(description="Extra Data")
-    def extra_data_pretty(self, obj):
-        return _pretty_json(obj.extra_data)
 
 
 @admin.register(PayrollLedgerPolicy)
@@ -710,7 +673,11 @@ class PayrollRunAdmin(admin.ModelAdmin):
     def issue_summary(self, obj):
         warnings = 0
         blockers = 0
-        for row in obj.employee_runs.select_related("employee_profile").prefetch_related("components").all()[:200]:
+        for row in obj.employee_runs.select_related(
+            "contract_payroll_profile",
+            "contract_payroll_profile__hrms_contract",
+            "contract_payroll_profile__hrms_contract__employee",
+        ).prefetch_related("components").all()[:200]:
             summary = PayrollTraceabilityService.build_employee_issue_summary(row=row)
             warnings += summary["warning_count"]
             blockers += summary["blocking_issue_count"]
@@ -759,7 +726,10 @@ class PayrollRunEmployeeAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "payroll_run",
-        "employee_profile",
+        "contract_payroll_profile",
+        "contract_code",
+        "employee_code_display",
+        "employee_name_display",
         "status",
         "payment_status",
         "gross_amount",
@@ -771,27 +741,40 @@ class PayrollRunEmployeeAdmin(admin.ModelAdmin):
     list_filter = ("status", "payment_status", "is_frozen", "payroll_run__entity", "payroll_run__subentity")
     search_fields = (
         "payroll_run__run_number",
-        "employee_profile__employee_code",
-        "employee_profile__full_name",
+        "contract_payroll_profile__employee_code",
+        "contract_payroll_profile__employee_name",
+        "contract_payroll_profile__hrms_contract__contract_code",
+        "contract_payroll_profile__hrms_contract__employee__employee_number",
         "remarks",
     )
-    raw_id_fields = ("payroll_run", "employee_profile", "salary_structure", "salary_structure_version", "ledger_policy_version")
+    raw_id_fields = ("payroll_run", "contract_payroll_profile", "salary_structure", "salary_structure_version", "ledger_policy_version")
     readonly_fields = (
+        "contract_code",
+        "employee_code_display",
+        "employee_name_display",
         "issue_summary",
         "calculation_payload_pretty",
         "calculation_assumptions_pretty",
         *_existing_fields(PayrollRunEmployee, "created_at", "updated_at"),
     )
     fieldsets = (
-        ("Core", {"fields": ("payroll_run", "employee_profile", "status", "payment_status", "is_frozen")}),
+        ("Core", {"fields": ("payroll_run", "contract_payroll_profile", "contract_code", "employee_code_display", "employee_name_display", "status", "payment_status", "is_frozen")}),
         ("Amounts", {"fields": ("gross_amount", "deduction_amount", "employer_contribution_amount", "reimbursement_amount", "payable_amount")}),
         ("Config Snapshot", {"fields": ("salary_structure", "salary_structure_version", "ledger_policy_version", "statutory_policy_version_ref")}),
         ("Operational Notes", {"fields": ("remarks", "issue_summary")}),
         ("Metadata", {"classes": ("collapse",), "fields": ("calculation_payload_pretty", "calculation_assumptions_pretty", "created_at", "updated_at")}),
     )
     inlines = [PayrollRunEmployeeComponentInline, PayslipInline]
-    list_select_related = ("payroll_run", "employee_profile", "salary_structure", "salary_structure_version", "ledger_policy_version")
-    ordering = ("-payroll_run_id", "employee_profile__employee_code")
+    list_select_related = (
+        "payroll_run",
+        "contract_payroll_profile",
+        "contract_payroll_profile__hrms_contract",
+        "contract_payroll_profile__hrms_contract__employee",
+        "salary_structure",
+        "salary_structure_version",
+        "ledger_policy_version",
+    )
+    ordering = ("-payroll_run_id", "contract_payroll_profile__employee_code")
     save_on_top = True
     show_full_result_count = False
     actions = ("export_selected_employee_rows_csv",)
@@ -802,7 +785,7 @@ class PayrollRunEmployeeAdmin(admin.ModelAdmin):
             readonly.extend(
                 [
                     "payroll_run",
-                    "employee_profile",
+                    "contract_payroll_profile",
                     "salary_structure",
                     "salary_structure_version",
                     "ledger_policy_version",
@@ -818,6 +801,19 @@ class PayrollRunEmployeeAdmin(admin.ModelAdmin):
                 ]
             )
         return tuple(dict.fromkeys(readonly))
+
+    @admin.display(description="Contract")
+    def contract_code(self, obj):
+        contract = getattr(getattr(obj, "contract_payroll_profile", None), "hrms_contract", None)
+        return getattr(contract, "contract_code", "") or "-"
+
+    @admin.display(description="Employee Code")
+    def employee_code_display(self, obj):
+        return obj.employee_code or "-"
+
+    @admin.display(description="Employee")
+    def employee_name_display(self, obj):
+        return obj.employee_name or "-"
 
     @admin.display(description="Issues")
     def issue_summary(self, obj):
@@ -837,41 +833,13 @@ class PayrollRunEmployeeAdmin(admin.ModelAdmin):
 
     @admin.action(description="Export selected payroll employee rows as CSV")
     def export_selected_employee_rows_csv(self, request, queryset):
-        queryset = queryset.select_related("payroll_run", "employee_profile")
+        queryset = queryset.select_related(
+            "payroll_run",
+            "contract_payroll_profile",
+            "contract_payroll_profile__hrms_contract",
+            "contract_payroll_profile__hrms_contract__employee",
+        )
         return PayrollExportService.export_employee_rows(rows=queryset)
-
-
-@admin.register(PayrollAdjustment)
-class PayrollAdjustmentAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "entity",
-        "entityfinid",
-        "subentity",
-        "employee_profile",
-        "kind",
-        "amount",
-        "effective_date",
-        "status",
-        "approved_run",
-    )
-    list_filter = ("entity", "entityfinid", "subentity", "kind", "status", "effective_date")
-    search_fields = ("employee_profile__employee_code", "employee_profile__full_name", "remarks", "source_reference_id")
-    raw_id_fields = (
-        "entity",
-        "entityfinid",
-        "subentity",
-        "employee_profile",
-        "payroll_period",
-        "component",
-        "approved_by",
-        "approved_run",
-        "reversed_adjustment",
-    )
-    readonly_fields = _existing_fields(PayrollAdjustment, "created_at", "updated_at", "approved_at")
-    list_select_related = ("entity", "entityfinid", "subentity", "employee_profile", "approved_run")
-    ordering = ("-effective_date", "-id")
-    save_on_top = True
 
 
 @admin.register(Payslip)
@@ -889,8 +857,10 @@ class PayslipAdmin(admin.ModelAdmin):
     list_filter = ("generated_at", "published_at", "voided_at")
     search_fields = (
         "payslip_number",
-        "payroll_run_employee__employee_profile__employee_code",
-        "payroll_run_employee__employee_profile__full_name",
+        "payroll_run_employee__contract_payroll_profile__employee_code",
+        "payroll_run_employee__contract_payroll_profile__employee_name",
+        "payroll_run_employee__contract_payroll_profile__hrms_contract__contract_code",
+        "payroll_run_employee__contract_payroll_profile__hrms_contract__employee__employee_number",
         "payroll_run_employee__payroll_run__run_number",
     )
     raw_id_fields = ("payroll_run_employee", "published_by")
@@ -905,7 +875,12 @@ class PayslipAdmin(admin.ModelAdmin):
         ("Publication", {"fields": ("generated_at", "published_at", "published_by", "voided_at", "void_reason")}),
         ("Payload", {"classes": ("collapse",), "fields": ("payload_pretty", "payload")}),
     )
-    list_select_related = ("payroll_run_employee__employee_profile", "payroll_run_employee__payroll_run")
+    list_select_related = (
+        "payroll_run_employee__contract_payroll_profile",
+        "payroll_run_employee__contract_payroll_profile__hrms_contract",
+        "payroll_run_employee__contract_payroll_profile__hrms_contract__employee",
+        "payroll_run_employee__payroll_run",
+    )
     ordering = ("-generated_at", "-id")
     date_hierarchy = "generated_at"
     show_full_result_count = False
@@ -923,7 +898,7 @@ class PayslipAdmin(admin.ModelAdmin):
 
     @admin.display(description="Employee")
     def employee_code(self, obj):
-        return obj.payroll_run_employee.employee_profile.employee_code
+        return obj.payroll_run_employee.employee_code or "-"
 
     @admin.display(description="Payload")
     def payload_pretty(self, obj):

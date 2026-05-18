@@ -16,7 +16,6 @@ from payments.models import PaymentMode
 from payroll.models import (
     PayrollComponent,
     PayrollLedgerPolicy,
-    PayrollAdjustment,
     SalaryStructure,
     SalaryStructureLine,
     SalaryStructureVersion,
@@ -45,14 +44,15 @@ class SeedSectionResult:
 
 class PayrollSeedService:
     SEED_MARKER = "payroll_master_seed"
-    TEMPLATE_CODE = "STD_EMPLOYEE_TEMPLATE"
-    TEMPLATE_NAME = "Standard Employee Structure"
+    TEMPLATE_CODE = "IND_MONTHLY_CTC_STD"
+    TEMPLATE_NAME = "India Monthly CTC Standard"
     LEDGER_POLICY_CODE = "DEFAULT_PAYROLL_LEDGER_POLICY"
 
     COMPONENT_SPECS = (
         {
             "code": "BASIC",
             "name": "Basic Salary",
+            "semantic_code": PayrollComponent.SemanticCode.BASIC_PAY,
             "component_type": PayrollComponent.ComponentType.EARNING,
             "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
             "is_taxable": True,
@@ -64,6 +64,7 @@ class PayrollSeedService:
         {
             "code": "HRA",
             "name": "House Rent Allowance",
+            "semantic_code": PayrollComponent.SemanticCode.HRA,
             "component_type": PayrollComponent.ComponentType.EARNING,
             "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
             "is_taxable": True,
@@ -75,6 +76,7 @@ class PayrollSeedService:
         {
             "code": "SPECIAL_ALLOWANCE",
             "name": "Special Allowance",
+            "semantic_code": PayrollComponent.SemanticCode.SPECIAL_ALLOWANCE,
             "component_type": PayrollComponent.ComponentType.EARNING,
             "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
             "is_taxable": True,
@@ -84,8 +86,129 @@ class PayrollSeedService:
             "description": "Seeded default payroll earning component.",
         },
         {
+            "code": "OTHER_ALLOWANCE",
+            "name": "Other Allowance",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 130,
+            "description": "Seeded default payroll earning component.",
+        },
+        {
+            "code": "BONUS",
+            "name": "Bonus",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 200,
+            "description": "Seeded default payroll variable earning component.",
+        },
+        {
+            "code": "INCENTIVE",
+            "name": "Incentive",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 210,
+            "description": "Seeded default payroll variable earning component.",
+        },
+        {
+            "code": "COMMISSION",
+            "name": "Commission",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 220,
+            "description": "Seeded default payroll variable earning component.",
+        },
+        {
+            "code": "ARREARS",
+            "name": "Arrears",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 230,
+            "description": "Seeded default payroll earning adjustment component.",
+        },
+        {
+            "code": "OVERTIME",
+            "name": "Overtime",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 240,
+            "description": "Seeded default payroll overtime component.",
+        },
+        {
+            "code": "LEAVE_ENCASHMENT",
+            "name": "Leave Encashment",
+            "semantic_code": PayrollComponent.SemanticCode.OTHER_EARNING,
+            "component_type": PayrollComponent.ComponentType.EARNING,
+            "posting_behavior": PayrollComponent.PostingBehavior.GROSS_EARNING,
+            "is_taxable": True,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 250,
+            "description": "Seeded default leave encashment component.",
+        },
+        {
+            "code": "REIMBURSEMENT",
+            "name": "Reimbursement",
+            "semantic_code": PayrollComponent.SemanticCode.REIMBURSEMENT,
+            "component_type": PayrollComponent.ComponentType.REIMBURSEMENT,
+            "posting_behavior": PayrollComponent.PostingBehavior.REIMBURSEMENT,
+            "is_taxable": False,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 500,
+            "description": "Seeded default reimbursement component.",
+        },
+        {
+            "code": "LOAN_RECOVERY",
+            "name": "Loan Recovery",
+            "semantic_code": PayrollComponent.SemanticCode.RECOVERY,
+            "component_type": PayrollComponent.ComponentType.RECOVERY,
+            "posting_behavior": PayrollComponent.PostingBehavior.RECOVERY,
+            "is_taxable": False,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 510,
+            "description": "Seeded default recovery component.",
+        },
+        {
+            "code": "ADVANCE_RECOVERY",
+            "name": "Advance Recovery",
+            "semantic_code": PayrollComponent.SemanticCode.RECOVERY,
+            "component_type": PayrollComponent.ComponentType.RECOVERY,
+            "posting_behavior": PayrollComponent.PostingBehavior.RECOVERY,
+            "is_taxable": False,
+            "is_statutory": False,
+            "affects_net_pay": True,
+            "default_sequence": 520,
+            "description": "Seeded default recovery component.",
+        },
+        {
             "code": "PF_EMPLOYEE",
             "name": "Provident Fund Employee",
+            "semantic_code": PayrollComponent.SemanticCode.PF_EMPLOYEE,
             "component_type": PayrollComponent.ComponentType.DEDUCTION,
             "posting_behavior": PayrollComponent.PostingBehavior.EMPLOYEE_LIABILITY,
             "is_taxable": False,
@@ -97,6 +220,7 @@ class PayrollSeedService:
         {
             "code": "PF_EMPLOYER",
             "name": "Provident Fund Employer",
+            "semantic_code": PayrollComponent.SemanticCode.PF_EMPLOYER,
             "component_type": PayrollComponent.ComponentType.EMPLOYER_CONTRIBUTION,
             "posting_behavior": PayrollComponent.PostingBehavior.EMPLOYER_LIABILITY,
             "is_taxable": False,
@@ -108,6 +232,7 @@ class PayrollSeedService:
         {
             "code": "PROFESSIONAL_TAX",
             "name": "Professional Tax",
+            "semantic_code": PayrollComponent.SemanticCode.PT,
             "component_type": PayrollComponent.ComponentType.DEDUCTION,
             "posting_behavior": PayrollComponent.PostingBehavior.EMPLOYEE_LIABILITY,
             "is_taxable": False,
@@ -117,8 +242,33 @@ class PayrollSeedService:
             "description": "Seeded default payroll deduction component.",
         },
         {
+            "code": "ESI_EMPLOYEE",
+            "name": "ESI Employee",
+            "semantic_code": PayrollComponent.SemanticCode.ESI_EMPLOYEE,
+            "component_type": PayrollComponent.ComponentType.DEDUCTION,
+            "posting_behavior": PayrollComponent.PostingBehavior.EMPLOYEE_LIABILITY,
+            "is_taxable": False,
+            "is_statutory": True,
+            "affects_net_pay": True,
+            "default_sequence": 305,
+            "description": "Seeded default payroll deduction component.",
+        },
+        {
+            "code": "ESI_EMPLOYER",
+            "name": "ESI Employer",
+            "semantic_code": PayrollComponent.SemanticCode.ESI_EMPLOYER,
+            "component_type": PayrollComponent.ComponentType.EMPLOYER_CONTRIBUTION,
+            "posting_behavior": PayrollComponent.PostingBehavior.EMPLOYER_LIABILITY,
+            "is_taxable": False,
+            "is_statutory": True,
+            "affects_net_pay": False,
+            "default_sequence": 405,
+            "description": "Seeded default employer contribution component.",
+        },
+        {
             "code": "TDS",
             "name": "Tax Deducted at Source",
+            "semantic_code": PayrollComponent.SemanticCode.TDS,
             "component_type": PayrollComponent.ComponentType.DEDUCTION,
             "posting_behavior": PayrollComponent.PostingBehavior.EMPLOYEE_LIABILITY,
             "is_taxable": False,
@@ -128,15 +278,79 @@ class PayrollSeedService:
             "description": "Seeded default payroll deduction component.",
         },
     )
-
-    TEMPLATE_LINE_SPECS = (
-        {"code": "BASIC", "sequence": 100},
-        {"code": "HRA", "sequence": 110},
-        {"code": "SPECIAL_ALLOWANCE", "sequence": 120},
-        {"code": "PF_EMPLOYEE", "sequence": 300},
-        {"code": "PF_EMPLOYER", "sequence": 400},
-        {"code": "PROFESSIONAL_TAX", "sequence": 310},
-        {"code": "TDS", "sequence": 320},
+    TEMPLATE_SPECS = (
+        {
+            "code": "IND_MONTHLY_CTC_STD",
+            "name": "India Monthly CTC Standard",
+            "salary_mode": "ctc",
+            "proration_basis": "calendar_days",
+            "rounding_policy": "half_up",
+            "lines": (
+                {"code": "BASIC", "sequence": 100, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_CTC, "rate": Decimal("40.0000")},
+                {"code": "HRA", "sequence": 110, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("40.0000")},
+                {"code": "SPECIAL_ALLOWANCE", "sequence": 120, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT},
+                {"code": "BONUS", "sequence": 200, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "recurrence_frequency": SalaryStructureLine.RecurrenceFrequency.QUARTERLY, "compensation_bucket": SalaryStructureLine.CompensationBucket.VARIABLE_PAY, "ctc_treatment": SalaryStructureLine.CTCTreatment.TARGET_ONLY, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "INCENTIVE", "sequence": 210, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.VARIABLE_PAY},
+                {"code": "PF_EMPLOYEE", "sequence": 300, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("12.0000"), "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "PF_EMPLOYER", "sequence": 400, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("12.0000"), "compensation_bucket": SalaryStructureLine.CompensationBucket.EMPLOYER_COST, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "ESI_EMPLOYEE", "sequence": 305, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "ESI_EMPLOYER", "sequence": 405, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.EMPLOYER_COST, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "PROFESSIONAL_TAX", "sequence": 310, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "TDS", "sequence": 320, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "REIMBURSEMENT", "sequence": 500, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.REIMBURSEMENT, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "LOAN_RECOVERY", "sequence": 510, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.RECOVERY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+            ),
+        },
+        {
+            "code": "IND_MONTHLY_GROSS_STD",
+            "name": "India Monthly Gross Standard",
+            "salary_mode": "gross",
+            "proration_basis": "attendance_days",
+            "rounding_policy": "half_up",
+            "lines": (
+                {"code": "BASIC", "sequence": 100, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_CTC, "rate": Decimal("40.0000")},
+                {"code": "HRA", "sequence": 110, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("40.0000")},
+                {"code": "SPECIAL_ALLOWANCE", "sequence": 120, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT},
+                {"code": "PF_EMPLOYEE", "sequence": 300, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("12.0000"), "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "PF_EMPLOYER", "sequence": 400, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("12.0000"), "compensation_bucket": SalaryStructureLine.CompensationBucket.EMPLOYER_COST, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "ESI_EMPLOYEE", "sequence": 305, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "ESI_EMPLOYER", "sequence": 405, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.EMPLOYER_COST, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "PROFESSIONAL_TAX", "sequence": 310, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "TDS", "sequence": 320, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+            ),
+        },
+        {
+            "code": "IND_CONSULTANT_STD",
+            "name": "India Consultant Standard",
+            "salary_mode": "gross",
+            "proration_basis": "payable_days",
+            "rounding_policy": "half_up",
+            "lines": (
+                {"code": "BASIC", "sequence": 100, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_CTC, "rate": Decimal("100.0000")},
+                {"code": "BONUS", "sequence": 200, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "recurrence_frequency": SalaryStructureLine.RecurrenceFrequency.YEARLY, "compensation_bucket": SalaryStructureLine.CompensationBucket.VARIABLE_PAY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "INCENTIVE", "sequence": 210, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.VARIABLE_PAY},
+                {"code": "REIMBURSEMENT", "sequence": 500, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.REIMBURSEMENT, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "TDS", "sequence": 320, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+            ),
+        },
+        {
+            "code": "IND_ATTENDANCE_WORKER_STD",
+            "name": "India Attendance Worker Standard",
+            "salary_mode": "gross",
+            "proration_basis": "attendance_days",
+            "rounding_policy": "half_up",
+            "lines": (
+                {"code": "BASIC", "sequence": 100, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_CTC, "rate": Decimal("60.0000")},
+                {"code": "HRA", "sequence": 110, "calculation_basis": SalaryStructureLine.CalculationBasis.PERCENT_OF_COMPONENT, "basis_component_code": "BASIC", "rate": Decimal("20.0000")},
+                {"code": "OTHER_ALLOWANCE", "sequence": 130, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT},
+                {"code": "OVERTIME", "sequence": 240, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.VARIABLE_PAY},
+                {"code": "ARREARS", "sequence": 230, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.VARIABLE_PAY},
+                {"code": "ESI_EMPLOYEE", "sequence": 305, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "ESI_EMPLOYER", "sequence": 405, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.EMPLOYER_COST, "gross_treatment": SalaryStructureLine.GrossTreatment.EXCLUDED},
+                {"code": "PROFESSIONAL_TAX", "sequence": 310, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+                {"code": "TDS", "sequence": 320, "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT, "compensation_bucket": SalaryStructureLine.CompensationBucket.STATUTORY, "ctc_treatment": SalaryStructureLine.CTCTreatment.EXCLUDED},
+            ),
+        },
     )
 
     PAYMENT_MODE_SPECS = (
@@ -146,10 +360,151 @@ class PayrollSeedService:
     )
 
     @classmethod
+    def _base_policy_defaults(cls, *, salary_mode: str, proration_basis: str, rounding_policy: str) -> dict:
+        flat = {
+            "country_code": "IN",
+            "salary_mode": salary_mode,
+            "proration_basis": proration_basis,
+            "rounding_policy": rounding_policy,
+            "pf_wage_cap": "15000.00",
+            "pf_employee_rate": "12.00",
+            "pf_employer_rate": "12.00",
+            "professional_tax_threshold": "15000.00",
+            "professional_tax_amount": "200.00",
+            "esi_wage_threshold": "21000.00",
+            "esi_employee_rate": "0.75",
+            "esi_employer_rate": "3.25",
+            "tds_default_remaining_periods": "12",
+            "tds_projection_rate": "10.00",
+            "tds_projection_rate_old_regime": "10.00",
+            "tds_projection_rate_new_regime": "12.00",
+            "tds_standard_deduction_old_regime": "50000.00",
+            "tds_standard_deduction_new_regime": "50000.00",
+            "tds_old_regime_slabs": [
+                {"upto": "250000.00", "rate": "0.00"},
+                {"upto": "500000.00", "rate": "5.00"},
+                {"upto": "1000000.00", "rate": "20.00"},
+                {"rate": "30.00"},
+            ],
+            "tds_new_regime_slabs": [
+                {"upto": "400000.00", "rate": "0.00"},
+                {"upto": "800000.00", "rate": "5.00"},
+                {"upto": "1200000.00", "rate": "10.00"},
+                {"upto": "1600000.00", "rate": "15.00"},
+                {"upto": "2000000.00", "rate": "20.00"},
+                {"upto": "2400000.00", "rate": "25.00"},
+                {"rate": "30.00"},
+            ],
+            "tds_rebate_threshold_old_regime": "500000.00",
+            "tds_rebate_max_old_regime": "12500.00",
+            "tds_rebate_threshold_new_regime": "1200000.00",
+            "tds_rebate_max_new_regime": "60000.00",
+            "tds_old_regime_surcharge_slabs": [
+                {"upto": "5000000.00", "rate": "0.00"},
+                {"upto": "10000000.00", "rate": "10.00"},
+                {"upto": "20000000.00", "rate": "15.00"},
+                {"upto": "50000000.00", "rate": "25.00"},
+                {"rate": "37.00"},
+            ],
+            "tds_new_regime_surcharge_slabs": [
+                {"upto": "5000000.00", "rate": "0.00"},
+                {"upto": "10000000.00", "rate": "10.00"},
+                {"upto": "20000000.00", "rate": "15.00"},
+                {"upto": "50000000.00", "rate": "25.00"},
+                {"rate": "25.00"},
+            ],
+            "tds_health_education_cess_rate": "4.00",
+            "tds_apply_marginal_relief": True,
+            "tds_allow_80c_old_regime": True,
+            "tds_allow_80d_old_regime": True,
+            "tds_allow_hra_exemption_old_regime": True,
+            "tds_require_verified_hra_evidence_for_approval": False,
+            "tds_require_verified_tax_declarations_for_approval": False,
+            "tds_80c_cap": "150000.00",
+            "tds_80d_cap": "25000.00",
+        }
+        return {
+            **flat,
+            "compensation_policy": {
+                "country_code": flat["country_code"],
+                "salary_mode": flat["salary_mode"],
+                "proration_basis": flat["proration_basis"],
+                "rounding_policy": flat["rounding_policy"],
+            },
+            "statutory_policy": {
+                "pf": {
+                    "wage_cap": flat["pf_wage_cap"],
+                    "employee_rate": flat["pf_employee_rate"],
+                    "employer_rate": flat["pf_employer_rate"],
+                },
+                "professional_tax": {
+                    "threshold": flat["professional_tax_threshold"],
+                    "amount": flat["professional_tax_amount"],
+                },
+                "esi": {
+                    "wage_threshold": flat["esi_wage_threshold"],
+                    "employee_rate": flat["esi_employee_rate"],
+                    "employer_rate": flat["esi_employer_rate"],
+                },
+            },
+            "tax_policy": {
+                "code": "IN_TDS",
+                "version": "FY2026_27_V1",
+                "financial_year": "FY 2026-27",
+                "effective_from": "2026-04-01",
+                "tds": {
+                    "default_remaining_periods": flat["tds_default_remaining_periods"],
+                    "projection_rate": flat["tds_projection_rate"],
+                    "projection_rate_old_regime": flat["tds_projection_rate_old_regime"],
+                    "projection_rate_new_regime": flat["tds_projection_rate_new_regime"],
+                    "standard_deduction_old_regime": flat["tds_standard_deduction_old_regime"],
+                    "standard_deduction_new_regime": flat["tds_standard_deduction_new_regime"],
+                    "allow_80c_old_regime": flat["tds_allow_80c_old_regime"],
+                    "allow_80d_old_regime": flat["tds_allow_80d_old_regime"],
+                    "allow_hra_exemption_old_regime": flat["tds_allow_hra_exemption_old_regime"],
+                    "cap_80c": flat["tds_80c_cap"],
+                    "cap_80d": flat["tds_80d_cap"],
+                    "old_regime_slabs": flat["tds_old_regime_slabs"],
+                    "new_regime_slabs": flat["tds_new_regime_slabs"],
+                    "rebate_threshold_old_regime": flat["tds_rebate_threshold_old_regime"],
+                    "rebate_max_old_regime": flat["tds_rebate_max_old_regime"],
+                    "rebate_threshold_new_regime": flat["tds_rebate_threshold_new_regime"],
+                    "rebate_max_new_regime": flat["tds_rebate_max_new_regime"],
+                    "old_regime_surcharge_slabs": flat["tds_old_regime_surcharge_slabs"],
+                    "new_regime_surcharge_slabs": flat["tds_new_regime_surcharge_slabs"],
+                    "health_education_cess_rate": flat["tds_health_education_cess_rate"],
+                    "apply_marginal_relief": flat["tds_apply_marginal_relief"],
+                }
+            },
+            "review_policy": {
+                "require_verified_hra_evidence_for_approval": flat["tds_require_verified_hra_evidence_for_approval"],
+                "require_verified_tax_declarations_for_approval": flat["tds_require_verified_tax_declarations_for_approval"],
+            },
+        }
+
+    @classmethod
+    def _template_line_defaults(cls, *, line_spec: dict, component_map: dict) -> dict:
+        return {
+            "sequence": line_spec["sequence"],
+            "rule_mode": line_spec.get("rule_mode", SalaryStructureLine.RuleMode.STANDARD),
+            "calculation_basis": line_spec.get("calculation_basis", SalaryStructureLine.CalculationBasis.INPUT),
+            "basis_component": component_map.get(line_spec["basis_component_code"]) if line_spec.get("basis_component_code") else None,
+            "rate": line_spec.get("rate", Decimal("0.0000")),
+            "fixed_amount": line_spec.get("fixed_amount", Decimal("0.00")),
+            "is_pro_rated": line_spec.get("is_pro_rated", True),
+            "is_override_allowed": line_spec.get("is_override_allowed", True),
+            "is_active": line_spec.get("is_active", True),
+            "recurrence_frequency": line_spec.get("recurrence_frequency", SalaryStructureLine.RecurrenceFrequency.MONTHLY),
+            "compensation_bucket": line_spec.get("compensation_bucket", SalaryStructureLine.CompensationBucket.FIXED_PAY),
+            "ctc_treatment": line_spec.get("ctc_treatment", SalaryStructureLine.CTCTreatment.INCLUDED),
+            "gross_treatment": line_spec.get("gross_treatment", SalaryStructureLine.GrossTreatment.INCLUDED),
+            "rule_json": line_spec.get("rule_json"),
+        }
+
+    @classmethod
     @transaction.atomic
     def seed_all(cls, *, entity_id: int | None = None) -> dict:
         summary = {
-            "adjustment_types": cls.seed_adjustment_types(),
             "payment_modes": cls.seed_payment_modes(),
             "payroll_components": cls.seed_payroll_components(entity_id=entity_id),
             "salary_structure_templates": cls.seed_salary_structure_templates(entity_id=entity_id),
@@ -165,15 +520,6 @@ class PayrollSeedService:
             totals["skipped"] += result["skipped"]
         summary["totals"] = dict(totals)
         return summary
-
-    @classmethod
-    def seed_adjustment_types(cls) -> dict:
-        result = SeedSectionResult()
-        result.skipped = len(PayrollAdjustment.Kind.values)
-        result.notes.append(
-            "Adjustment types are enum-backed by PayrollAdjustment.Kind; no standalone master rows were created."
-        )
-        return result.as_dict()
 
     @classmethod
     def seed_payment_modes(cls) -> dict:
@@ -253,136 +599,134 @@ class PayrollSeedService:
         result = SeedSectionResult()
         actor = cls._default_actor()
         for entity in cls._active_entities(entity_id=entity_id):
-            structure = SalaryStructure.objects.filter(
-                entity=entity,
-                entityfinid__isnull=True,
-                subentity__isnull=True,
-                code=cls.TEMPLATE_CODE,
-            ).first()
-            if not structure:
-                structure = SalaryStructure.objects.create(
+            for template_spec in cls.TEMPLATE_SPECS:
+                structure = SalaryStructure.objects.filter(
                     entity=entity,
-                    code=cls.TEMPLATE_CODE,
-                    name=cls.TEMPLATE_NAME,
-                    status=SalaryStructure.Status.ACTIVE,
-                    notes=cls._seed_text("Seeded default salary structure template."),
-                    is_active=True,
-                    is_template=True,
-                )
-                result.created += 1
-            elif cls._is_seeded_metadata(structure.notes):
-                changed = False
-                desired = {
-                    "name": cls.TEMPLATE_NAME,
-                    "status": SalaryStructure.Status.ACTIVE,
-                    "notes": cls._seed_text("Seeded default salary structure template."),
-                    "is_active": True,
-                    "is_template": True,
-                }
-                for field, value in desired.items():
-                    if getattr(structure, field) != value:
-                        setattr(structure, field, value)
-                        changed = True
-                if changed:
-                    structure.save()
-                    result.updated += 1
-                else:
-                    result.skipped += 1
-            else:
-                result.skipped += 1
-                continue
-
-            version, created = SalaryStructureVersion.objects.get_or_create(
-                salary_structure=structure,
-                version_no=1,
-                defaults={
-                    "effective_from": timezone.localdate(),
-                    "status": SalaryStructureVersion.Status.APPROVED,
-                    "approved_by": actor,
-                    "approved_at": timezone.now() if actor else None,
-                    "notes": cls._seed_text("Seeded default salary structure template version."),
-                },
-            )
-            if created:
-                result.created += 1
-            else:
-                changed = False
-                desired_status = SalaryStructureVersion.Status.APPROVED
-                desired_notes = cls._seed_text("Seeded default salary structure template version.")
-                if version.status != desired_status:
-                    version.status = desired_status
-                    changed = True
-                if version.notes != desired_notes and cls._is_seeded_metadata(version.notes):
-                    version.notes = desired_notes
-                    changed = True
-                if actor and version.approved_by_id is None:
-                    version.approved_by = actor
-                    version.approved_at = version.approved_at or timezone.now()
-                    changed = True
-                if changed:
-                    version.save()
-                    result.updated += 1
-                else:
-                    result.skipped += 1
-
-            if structure.current_version_id != version.id:
-                structure.current_version = version
-                structure.save(update_fields=["current_version"])
-
-            component_map = {
-                component.code: component
-                for component in PayrollComponent.objects.filter(
-                    entity=entity,
-                    code__in=[row["code"] for row in cls.TEMPLATE_LINE_SPECS],
-                )
-            }
-            for line_spec in cls.TEMPLATE_LINE_SPECS:
-                component = component_map.get(line_spec["code"])
-                if not component:
-                    result.skipped += 1
-                    result.notes.append(
-                        f"Template line {line_spec['code']} skipped for entity={entity.id} because component is missing."
+                    entityfinid__isnull=True,
+                    subentity__isnull=True,
+                    code=template_spec["code"],
+                ).first()
+                if not structure:
+                    structure = SalaryStructure.objects.create(
+                        entity=entity,
+                        code=template_spec["code"],
+                        name=template_spec["name"],
+                        status=SalaryStructure.Status.ACTIVE,
+                        notes=cls._seed_text(f"Seeded {template_spec['name']} salary structure template."),
+                        is_active=True,
+                        is_template=True,
                     )
-                    continue
-                line, line_created = SalaryStructureLine.objects.get_or_create(
-                    salary_structure=structure,
-                    salary_structure_version=version,
-                    component=component,
-                    defaults={
-                        "sequence": line_spec["sequence"],
-                        "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT,
-                        "rate": Decimal("0.0000"),
-                        "fixed_amount": Decimal("0.00"),
-                        "is_pro_rated": True,
-                        "is_override_allowed": True,
+                    result.created += 1
+                elif cls._is_seeded_metadata(structure.notes):
+                    changed = False
+                    desired = {
+                        "name": template_spec["name"],
+                        "status": SalaryStructure.Status.ACTIVE,
+                        "notes": cls._seed_text(f"Seeded {template_spec['name']} salary structure template."),
                         "is_active": True,
+                        "is_template": True,
+                    }
+                    for field, value in desired.items():
+                        if getattr(structure, field) != value:
+                            setattr(structure, field, value)
+                            changed = True
+                    if changed:
+                        structure.save()
+                        result.updated += 1
+                    else:
+                        result.skipped += 1
+                else:
+                    result.skipped += 1
+                    continue
+
+                desired_policy = cls._base_policy_defaults(
+                    salary_mode=template_spec["salary_mode"],
+                    proration_basis=template_spec["proration_basis"],
+                    rounding_policy=template_spec["rounding_policy"],
+                )
+                version, created = SalaryStructureVersion.objects.get_or_create(
+                    salary_structure=structure,
+                    version_no=1,
+                    defaults={
+                        "effective_from": timezone.localdate(),
+                        "status": SalaryStructureVersion.Status.APPROVED,
+                        "calculation_policy_json": desired_policy,
+                        "approved_by": actor,
+                        "approved_at": timezone.now() if actor else None,
+                        "notes": cls._seed_text(f"Seeded {template_spec['name']} structure version."),
                     },
                 )
-                if line_created:
+                if created:
                     result.created += 1
-                    continue
-                changed = False
-                desired_line = {
-                    "salary_structure": structure,
-                    "salary_structure_version": version,
-                    "sequence": line_spec["sequence"],
-                    "calculation_basis": SalaryStructureLine.CalculationBasis.INPUT,
-                    "is_pro_rated": True,
-                    "is_override_allowed": True,
-                    "is_active": True,
-                }
-                for field, value in desired_line.items():
-                    current = getattr(line, field)
-                    compare_value = value.id if hasattr(value, "id") else value
-                    current_value = current.id if hasattr(current, "id") else current
-                    if current_value != compare_value:
-                        setattr(line, field, value)
-                        changed = True
-                if changed:
-                    line.save()
-                    result.updated += 1
                 else:
-                    result.skipped += 1
+                    changed = False
+                    desired_status = SalaryStructureVersion.Status.APPROVED
+                    desired_notes = cls._seed_text(f"Seeded {template_spec['name']} structure version.")
+                    if version.status != desired_status:
+                        version.status = desired_status
+                        changed = True
+                    if version.notes != desired_notes and cls._is_seeded_metadata(version.notes):
+                        version.notes = desired_notes
+                        changed = True
+                    if version.calculation_policy_json != desired_policy:
+                        version.calculation_policy_json = desired_policy
+                        changed = True
+                    if actor and version.approved_by_id is None:
+                        version.approved_by = actor
+                        version.approved_at = version.approved_at or timezone.now()
+                        changed = True
+                    if changed:
+                        version.save()
+                        result.updated += 1
+                    else:
+                        result.skipped += 1
+
+                if structure.current_version_id != version.id:
+                    structure.current_version = version
+                    structure.save(update_fields=["current_version"])
+
+                component_map = {
+                    component.code: component
+                    for component in PayrollComponent.objects.filter(
+                        entity=entity,
+                        code__in=[row["code"] for row in template_spec["lines"]],
+                    )
+                }
+                for line_spec in template_spec["lines"]:
+                    component = component_map.get(line_spec["code"])
+                    if not component:
+                        result.skipped += 1
+                        result.notes.append(
+                            f"Template line {line_spec['code']} skipped for entity={entity.id} structure={template_spec['code']} because component is missing."
+                        )
+                        continue
+                    line, line_created = SalaryStructureLine.objects.get_or_create(
+                        salary_structure=structure,
+                        salary_structure_version=version,
+                        component=component,
+                        defaults=cls._template_line_defaults(line_spec=line_spec, component_map=component_map),
+                    )
+                    if line_created:
+                        result.created += 1
+                        continue
+                    changed = False
+                    desired_line = {
+                        "salary_structure": structure,
+                        "salary_structure_version": version,
+                        **cls._template_line_defaults(line_spec=line_spec, component_map=component_map),
+                    }
+                    for field, value in desired_line.items():
+                        current = getattr(line, field)
+                        compare_value = value.id if hasattr(value, "id") else value
+                        current_value = current.id if hasattr(current, "id") else current
+                        if current_value != compare_value:
+                            setattr(line, field, value)
+                            changed = True
+                    if changed:
+                        line.save()
+                        result.updated += 1
+                    else:
+                        result.skipped += 1
         if result.created == 0 and result.updated == 0 and result.skipped == 0:
             result.notes.append("No active entities found for salary structure template seeding.")
         return result.as_dict()

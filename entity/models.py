@@ -3,6 +3,8 @@ from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from helpers.models import TrackingModel
 from Authentication.models import User
 from geography.models import Country,State,District,City
@@ -693,6 +695,675 @@ class UserEntityContext(TrackingModel):
         ]
 
 
+class EntityOrgUnit(TrackingModel):
+    class UnitType(models.TextChoices):
+        DEPARTMENT = "department", "Department"
+        DESIGNATION = "designation", "Designation"
+        GRADE = "grade", "Grade"
+        BUSINESS_UNIT = "business_unit", "Business Unit"
+        COST_CENTER = "cost_center", "Cost Center"
+        WORK_LOCATION = "work_location", "Work Location"
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        INACTIVE = "inactive", "Inactive"
+        ARCHIVED = "archived", "Archived"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="org_units")
+    subentity = models.ForeignKey(
+        "SubEntity",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="org_units",
+    )
+    unit_type = models.CharField(max_length=30, choices=UnitType.choices)
+    code = models.CharField(max_length=40)
+    name = models.CharField(max_length=150)
+    short_name = models.CharField(max_length=80, null=True, blank=True)
+    description = models.CharField(max_length=255, null=True, blank=True)
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="children",
+    )
+    manager_title = models.CharField(max_length=100, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    sort_order = models.PositiveIntegerField(default=100)
+    metadata = models.JSONField(default=dict, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["entity_id", "unit_type", "sort_order", "name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "unit_type", "code"],
+                condition=Q(isactive=True, subentity__isnull=True),
+                name="uq_entity_org_unit_shared_code_active",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "subentity", "unit_type", "code"],
+                condition=Q(isactive=True, subentity__isnull=False),
+                name="uq_entity_org_unit_subentity_code_active",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "unit_type", "isactive"]),
+            models.Index(fields=["entity", "subentity", "unit_type"]),
+            models.Index(fields=["entity", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.entity_id}:{self.unit_type}:{self.code}"
+
+    def clean(self):
+        if self.subentity_id and self.subentity and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the selected entity."})
+
+        if self.parent_id and self.parent:
+            if self.parent.entity_id != self.entity_id:
+                raise ValidationError({"parent": "Parent unit must belong to the same entity."})
+            if self.subentity_id and self.parent.subentity_id not in (None, self.subentity_id):
+                raise ValidationError({"parent": "Parent unit must be shared or belong to the same subentity."})
+            if self.parent_id == self.id:
+                raise ValidationError({"parent": "Org unit cannot be its own parent."})
+
+        if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
+            raise ValidationError({"effective_to": "Effective end date must be on or after effective start date."})
+
+    def save(self, *args, **kwargs):
+        self.code = (self.code or "").strip().upper()
+        self.name = (self.name or "").strip()
+        self.short_name = (self.short_name or "").strip() or None
+        self.description = (self.description or "").strip() or None
+        self.manager_title = (self.manager_title or "").strip() or None
+        self.status = (self.status or self.Status.ACTIVE).strip().lower()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class EntityEmploymentProfile(TrackingModel):
+    class EmploymentStatus(models.TextChoices):
+        ACTIVE = "active", "Active"
+        PROBATION = "probation", "Probation"
+        NOTICE = "notice", "Notice Period"
+        HOLD = "hold", "Hold"
+        EXITED = "exited", "Exited"
+
+    class EmploymentType(models.TextChoices):
+        FULL_TIME = "full_time", "Full Time"
+        PART_TIME = "part_time", "Part Time"
+        CONTRACT = "contract", "Contract"
+        CONSULTANT = "consultant", "Consultant"
+        INTERN = "intern", "Intern"
+        APPRENTICE = "apprentice", "Apprentice"
+        TEMPORARY = "temporary", "Temporary"
+
+    class WorkType(models.TextChoices):
+        ONSITE = "onsite", "Onsite"
+        REMOTE = "remote", "Remote"
+        HYBRID = "hybrid", "Hybrid"
+        FIELD = "field", "Field"
+
+    class ExitStatus(models.TextChoices):
+        RESIGNED = "resigned", "Resigned"
+        TERMINATED = "terminated", "Terminated"
+        RETIRED = "retired", "Retired"
+        ABSCONDED = "absconded", "Absconded"
+        SEPARATED = "separated", "Separated"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="employment_profiles")
+    subentity = models.ForeignKey(
+        "SubEntity",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employment_profiles",
+    )
+    employee_user = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="employment_profiles",
+    )
+    employee_code = models.CharField(max_length=40)
+    full_name = models.CharField(max_length=200)
+    work_email = models.EmailField(blank=True, default="")
+    business_unit = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="employment_business_units",
+    )
+    department = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="employment_departments",
+    )
+    work_location = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="employment_work_locations",
+    )
+    cost_center = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="employment_cost_centers",
+    )
+    grade = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="employment_grades",
+    )
+    designation = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="employment_designations",
+    )
+    manager_user = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="managed_employment_profiles",
+    )
+    employment_type = models.CharField(max_length=20, choices=EmploymentType.choices, default=EmploymentType.FULL_TIME)
+    work_type = models.CharField(max_length=20, choices=WorkType.choices, default=WorkType.ONSITE)
+    status = models.CharField(max_length=20, choices=EmploymentStatus.choices, default=EmploymentStatus.ACTIVE)
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True)
+    date_of_joining = models.DateField()
+    probation_end = models.DateField(null=True, blank=True)
+    confirmation_date = models.DateField(null=True, blank=True)
+    last_working_day = models.DateField(null=True, blank=True)
+    separation_reason = models.CharField(max_length=255, null=True, blank=True)
+    exit_status = models.CharField(max_length=20, choices=ExitStatus.choices, null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["entity_id", "employee_code", "-effective_from", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "employee_user", "effective_from"],
+                condition=Q(isactive=True),
+                name="uq_entity_employment_profile_effective_from",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "employee_user", "isactive"]),
+            models.Index(fields=["entity", "subentity", "status"]),
+            models.Index(fields=["entity", "effective_from"]),
+        ]
+
+    def __str__(self):
+        return f"{self.entity_id}:{self.employee_code}:{self.effective_from}"
+
+    def _validate_org_unit(self, unit, *, expected_type: str, field_name: str):
+        if unit is None:
+            return
+        if unit.entity_id != self.entity_id:
+            raise ValidationError({field_name: "Org unit must belong to the selected entity."})
+        if unit.unit_type != expected_type:
+            raise ValidationError({field_name: f"Org unit must be of type '{expected_type}'."})
+        if self.subentity_id and unit.subentity_id not in (None, self.subentity_id):
+            raise ValidationError({field_name: "Org unit must be shared or belong to the selected subentity."})
+
+    def clean(self):
+        if self.subentity_id and self.subentity and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the selected entity."})
+        if self.manager_user_id == self.employee_user_id:
+            raise ValidationError({"manager_user": "Employee cannot be their own manager."})
+        if self.effective_to and self.effective_from and self.effective_to < self.effective_from:
+            raise ValidationError({"effective_to": "Effective end date must be on or after effective start date."})
+        if self.date_of_joining and self.effective_from and self.date_of_joining > self.effective_from:
+            raise ValidationError({"effective_from": "Effective start date cannot be before date of joining."})
+        if self.confirmation_date and self.probation_end and self.confirmation_date < self.probation_end:
+            raise ValidationError({"confirmation_date": "Confirmation date cannot be before probation end."})
+        if self.last_working_day and self.date_of_joining and self.last_working_day < self.date_of_joining:
+            raise ValidationError({"last_working_day": "Last working day cannot be before date of joining."})
+
+        self._validate_org_unit(self.business_unit, expected_type=EntityOrgUnit.UnitType.BUSINESS_UNIT, field_name="business_unit")
+        self._validate_org_unit(self.department, expected_type=EntityOrgUnit.UnitType.DEPARTMENT, field_name="department")
+        self._validate_org_unit(self.work_location, expected_type=EntityOrgUnit.UnitType.WORK_LOCATION, field_name="work_location")
+        self._validate_org_unit(self.cost_center, expected_type=EntityOrgUnit.UnitType.COST_CENTER, field_name="cost_center")
+        self._validate_org_unit(self.grade, expected_type=EntityOrgUnit.UnitType.GRADE, field_name="grade")
+        self._validate_org_unit(self.designation, expected_type=EntityOrgUnit.UnitType.DESIGNATION, field_name="designation")
+
+    def save(self, *args, **kwargs):
+        self.employee_code = (self.employee_code or "").strip().upper()
+        self.full_name = (self.full_name or "").strip()
+        self.work_email = (self.work_email or "").strip().lower()
+        self.separation_reason = (self.separation_reason or "").strip() or None
+        self.status = (self.status or self.EmploymentStatus.ACTIVE).strip().lower()
+        self.employment_type = (self.employment_type or self.EmploymentType.FULL_TIME).strip().lower()
+        self.work_type = (self.work_type or self.WorkType.ONSITE).strip().lower()
+        self.exit_status = (self.exit_status or "").strip().lower() or None
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class EntityApprovalPolicy(TrackingModel):
+    class PolicyKey(models.TextChoices):
+        PAYROLL_RUN = "payroll_run", "Payroll Run Approval"
+        PAYROLL_ADJUSTMENT = "payroll_adjustment", "Payroll Adjustment Approval"
+        PAYROLL_PAYMENT_HANDOFF = "payroll_payment_handoff", "Payroll Payment Handoff"
+        PAYROLL_POSTING = "payroll_posting", "Payroll Posting Approval"
+        PAYROLL_PAYMENT_BATCH = "payroll_payment_batch", "Payroll Payment Batch Approval"
+        FNF_SETTLEMENT = "fnf_settlement", "FnF Settlement Approval"
+        CONTRACT_TAX_DECLARATION = "contract_tax_declaration", "Contract Tax Declaration Approval"
+        LEAVE_APPLICATION = "leave_application", "Leave Application Approval"
+        EMPLOYMENT_CHANGE = "employment_change", "Employment Change Approval"
+
+    class ApprovalMode(models.TextChoices):
+        NONE = "none", "No Approval"
+        MANAGER_CHAIN = "manager_chain", "Manager Chain"
+        FIXED_USERS = "fixed_users", "Fixed Users"
+        PERMISSION_BASED = "permission_based", "Permission Based"
+        MIXED = "mixed", "Mixed"
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        INACTIVE = "inactive", "Inactive"
+        ARCHIVED = "archived", "Archived"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="approval_policies")
+    subentity = models.ForeignKey(
+        "SubEntity",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="approval_policies",
+    )
+    org_unit = models.ForeignKey(
+        "EntityOrgUnit",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="approval_policies",
+    )
+    policy_key = models.CharField(max_length=40, choices=PolicyKey.choices)
+    code = models.CharField(max_length=50)
+    name = models.CharField(max_length=150)
+    approval_mode = models.CharField(max_length=30, choices=ApprovalMode.choices, default=ApprovalMode.MANAGER_CHAIN)
+    manager_levels = models.PositiveIntegerField(default=1)
+    min_approvers = models.PositiveIntegerField(default=1)
+    approver_roles = models.JSONField(default=list, blank=True)
+    approver_permissions = models.JSONField(default=list, blank=True)
+    fallback_manager_required = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    effective_from = models.DateField(null=True, blank=True)
+    effective_to = models.DateField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    createdby = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["entity_id", "policy_key", "subentity_id", "org_unit_id", "name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"],
+                condition=Q(isactive=True),
+                name="uq_entity_approval_policy_code_active",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "policy_key", "isactive"]),
+            models.Index(fields=["entity", "subentity", "policy_key"]),
+            models.Index(fields=["entity", "org_unit", "policy_key"]),
+            models.Index(fields=["entity", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.entity_id}:{self.policy_key}:{self.code}"
+
+    def clean(self):
+        if self.subentity_id and self.subentity and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the selected entity."})
+        if self.org_unit_id and self.org_unit:
+            if self.org_unit.entity_id != self.entity_id:
+                raise ValidationError({"org_unit": "Org unit must belong to the selected entity."})
+            if self.subentity_id and self.org_unit.subentity_id not in (None, self.subentity_id):
+                raise ValidationError({"org_unit": "Org unit must be shared or belong to the selected subentity."})
+        if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
+            raise ValidationError({"effective_to": "Effective end date must be on or after effective start date."})
+        if self.min_approvers < 1:
+            raise ValidationError({"min_approvers": "At least one approver is required."})
+        if self.manager_levels < 0:
+            raise ValidationError({"manager_levels": "Manager levels cannot be negative."})
+
+    def save(self, *args, **kwargs):
+        self.code = (self.code or "").strip().upper()
+        self.name = (self.name or "").strip()
+        self.policy_key = (self.policy_key or self.PolicyKey.PAYROLL_RUN).strip().lower()
+        self.approval_mode = (self.approval_mode or self.ApprovalMode.MANAGER_CHAIN).strip().lower()
+        self.status = (self.status or self.Status.ACTIVE).strip().lower()
+        self.approver_roles = [str(role).strip() for role in (self.approver_roles or []) if str(role).strip()]
+        self.approver_permissions = [str(code).strip() for code in (self.approver_permissions or []) if str(code).strip()]
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class ApprovalRequest(TrackingModel):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        SUBMITTED = "SUBMITTED", "Submitted"
+        PENDING_APPROVAL = "PENDING_APPROVAL", "Pending Approval"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
+        LOCKED = "LOCKED", "Locked"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="approval_requests")
+    subentity = models.ForeignKey(
+        "SubEntity",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="approval_requests",
+    )
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, related_name="approval_requests")
+    object_id = models.CharField(max_length=64)
+    content_object = GenericForeignKey("content_type", "object_id")
+    workflow_key = models.CharField(max_length=50)
+    title = models.CharField(max_length=180, blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="requested_approvals")
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="approved_approvals")
+    rejected_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="rejected_approvals")
+    cancelled_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="cancelled_approvals")
+    locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="locked_approvals")
+    requested_at = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.CharField(max_length=255, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["entity", "status", "workflow_key"]),
+            models.Index(fields=["content_type", "object_id"]),
+            models.Index(fields=["entity", "subentity", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.workflow_key}:{self.content_type_id}:{self.object_id}:{self.status}"
+
+    def clean(self):
+        if self.subentity_id and self.subentity and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the selected entity."})
+
+    def save(self, *args, **kwargs):
+        self.workflow_key = (self.workflow_key or "").strip().lower()
+        self.title = (self.title or "").strip()
+        self.status = (self.status or self.Status.DRAFT).strip().upper()
+        self.remarks = (self.remarks or "").strip()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class ApprovalStep(TrackingModel):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
+        SKIPPED = "SKIPPED", "Skipped"
+
+    approval_request = models.ForeignKey(ApprovalRequest, on_delete=models.CASCADE, related_name="steps")
+    step_order = models.PositiveIntegerField(default=1)
+    step_name = models.CharField(max_length=120, blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    approver_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="approval_steps")
+    approver_role = models.CharField(max_length=80, blank=True, default="")
+    approver_permission = models.CharField(max_length=120, blank=True, default="")
+    acted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="acted_approval_steps")
+    acted_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.CharField(max_length=255, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["approval_request_id", "step_order", "id"]
+        indexes = [
+            models.Index(fields=["approval_request", "status"]),
+            models.Index(fields=["approver_user", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.approval_request_id}:step{self.step_order}:{self.status}"
+
+    def save(self, *args, **kwargs):
+        self.step_name = (self.step_name or "").strip()
+        self.status = (self.status or self.Status.PENDING).strip().upper()
+        self.approver_role = (self.approver_role or "").strip()
+        self.approver_permission = (self.approver_permission or "").strip()
+        self.remarks = (self.remarks or "").strip()
+        super().save(*args, **kwargs)
+
+
+class ApprovalActionLog(TrackingModel):
+    class Action(models.TextChoices):
+        SUBMITTED = "SUBMITTED", "Submitted"
+        ROUTED = "ROUTED", "Routed"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
+        LOCKED = "LOCKED", "Locked"
+        STATUS_SYNC = "STATUS_SYNC", "Status Sync"
+
+    approval_request = models.ForeignKey(ApprovalRequest, on_delete=models.CASCADE, related_name="action_logs")
+    approval_step = models.ForeignKey(ApprovalStep, on_delete=models.SET_NULL, null=True, blank=True, related_name="action_logs")
+    action = models.CharField(max_length=20, choices=Action.choices)
+    previous_status = models.CharField(max_length=20, blank=True, default="")
+    new_status = models.CharField(max_length=20, blank=True, default="")
+    acted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="approval_action_logs")
+    remarks = models.CharField(max_length=255, blank=True, default="")
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["approval_request", "created_at"]),
+            models.Index(fields=["action", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.approval_request_id}:{self.action}:{self.new_status}"
+
+    def clean(self):
+        if self.pk:
+            raise ValidationError("Approval action logs are immutable and cannot be edited.")
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Approval action logs are immutable and cannot be edited.")
+        self.action = (self.action or "").strip().upper()
+        self.previous_status = (self.previous_status or "").strip().upper()
+        self.new_status = (self.new_status or "").strip().upper()
+        self.remarks = (self.remarks or "").strip()
+        super().save(*args, **kwargs)
+
+
+class NotificationTemplate(TrackingModel):
+    class Channel(models.TextChoices):
+        IN_APP = "IN_APP", "In App"
+        EMAIL = "EMAIL", "Email"
+        SMS = "SMS", "SMS"
+        WHATSAPP = "WHATSAPP", "WhatsApp"
+
+    code = models.CharField(max_length=80, unique=True)
+    name = models.CharField(max_length=120)
+    channel = models.CharField(max_length=20, choices=Channel.choices, default=Channel.IN_APP)
+    subject_template = models.CharField(max_length=255, blank=True, default="")
+    body_template = models.TextField(blank=True, default="")
+    description = models.CharField(max_length=255, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["code"]
+        indexes = [
+            models.Index(fields=["channel", "isactive"]),
+        ]
+
+    def __str__(self):
+        return self.code
+
+    def save(self, *args, **kwargs):
+        self.code = (self.code or "").strip().upper()
+        self.name = (self.name or "").strip()
+        self.channel = (self.channel or self.Channel.IN_APP).strip().upper()
+        self.subject_template = (self.subject_template or "").strip()
+        self.description = (self.description or "").strip()
+        super().save(*args, **kwargs)
+
+
+class NotificationPreference(TrackingModel):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notification_preferences")
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, null=True, blank=True, related_name="notification_preferences")
+    event_code = models.CharField(max_length=80)
+    in_app_enabled = models.BooleanField(default=True)
+    email_enabled = models.BooleanField(default=False)
+    sms_enabled = models.BooleanField(default=False)
+    whatsapp_enabled = models.BooleanField(default=False)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["user_id", "entity_id", "event_code"]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "entity", "event_code"], name="uq_notification_pref_scope_event"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "entity", "event_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.entity_id or 0}:{self.event_code}"
+
+    def clean(self):
+        if self.entity_id and self.entity_id <= 0:
+            raise ValidationError({"entity": "Entity must be a valid scope when provided."})
+
+    def save(self, *args, **kwargs):
+        self.event_code = (self.event_code or "").strip().upper()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class NotificationEvent(TrackingModel):
+    class Channel(models.TextChoices):
+        IN_APP = "IN_APP", "In App"
+        EMAIL = "EMAIL", "Email"
+        SMS = "SMS", "SMS"
+        WHATSAPP = "WHATSAPP", "WhatsApp"
+
+    class DeliveryStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        CREATED = "CREATED", "Created"
+        SKIPPED = "SKIPPED", "Skipped"
+        FAILED = "FAILED", "Failed"
+
+    entity = models.ForeignKey("Entity", on_delete=models.CASCADE, related_name="notification_events")
+    subentity = models.ForeignKey("SubEntity", on_delete=models.CASCADE, null=True, blank=True, related_name="notification_events")
+    template = models.ForeignKey(NotificationTemplate, on_delete=models.SET_NULL, null=True, blank=True, related_name="events")
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, related_name="notification_events")
+    object_id = models.CharField(max_length=64)
+    content_object = GenericForeignKey("content_type", "object_id")
+    event_code = models.CharField(max_length=80)
+    title = models.CharField(max_length=180)
+    message = models.TextField(blank=True, default="")
+    channel = models.CharField(max_length=20, choices=Channel.choices, default=Channel.IN_APP)
+    delivery_status = models.CharField(max_length=20, choices=DeliveryStatus.choices, default=DeliveryStatus.CREATED)
+    target_url = models.CharField(max_length=255, blank=True, default="")
+    target_label = models.CharField(max_length=120, blank=True, default="")
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="triggered_notification_events")
+    recipient_count = models.PositiveIntegerField(default=0)
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["entity", "event_code", "created_at"]),
+            models.Index(fields=["content_type", "object_id"]),
+            models.Index(fields=["channel", "delivery_status", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.event_code}:{self.content_type_id}:{self.object_id}"
+
+    def clean(self):
+        if self.subentity_id and self.subentity and self.subentity.entity_id != self.entity_id:
+            raise ValidationError({"subentity": "Subentity must belong to the selected entity."})
+
+    def save(self, *args, **kwargs):
+        self.event_code = (self.event_code or "").strip().upper()
+        self.title = (self.title or "").strip()
+        self.channel = (self.channel or self.Channel.IN_APP).strip().upper()
+        self.delivery_status = (self.delivery_status or self.DeliveryStatus.CREATED).strip().upper()
+        self.target_url = (self.target_url or "").strip()
+        self.target_label = (self.target_label or "").strip()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class UserNotification(TrackingModel):
+    event = models.ForeignKey(NotificationEvent, on_delete=models.CASCADE, related_name="user_notifications")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="user_notifications")
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    title_override = models.CharField(max_length=180, blank=True, default="")
+    message_override = models.TextField(blank=True, default="")
+    target_url_override = models.CharField(max_length=255, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["event", "user"], name="uq_user_notification_event_user"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "is_read", "created_at"]),
+            models.Index(fields=["event", "user"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.event_id}:{'READ' if self.is_read else 'UNREAD'}"
+
+    @property
+    def title(self) -> str:
+        return (self.title_override or self.event.title or "").strip()
+
+    @property
+    def message(self) -> str:
+        return (self.message_override or self.event.message or "").strip()
+
+    @property
+    def target_url(self) -> str:
+        return (self.target_url_override or self.event.target_url or "").strip()
+
+    def save(self, *args, **kwargs):
+        self.title_override = (self.title_override or "").strip()
+        self.target_url_override = (self.target_url_override or "").strip()
+        super().save(*args, **kwargs)
+
+
 class EntityFinancialYear(TrackingModel):
     class PeriodStatus(models.TextChoices):
         OPEN = "open", "Open"
@@ -809,5 +1480,3 @@ class Godown(models.Model):
             else:
                 qs = qs.filter(subentity__isnull=True)
             qs.exclude(pk=self.pk).update(is_default=False)
-
-

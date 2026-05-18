@@ -62,4 +62,10 @@ class PayrollReconciliationServiceTests(TestCase):
     def test_payslip_spotcheck_payload_contains_rows(self):
         payload = PayrollReconciliationService.build_payslip_spotcheck_payload(run=self.run)
         self.assertEqual(payload["sample_size"], 1)
-        self.assertEqual(payload["rows"][0]["employee_code"], self.setup["profile"].employee_code)
+        self.assertEqual(payload["rows"][0]["employee_code"], self.run.employee_runs.first().employee_code)
+        self.assertEqual(
+            payload["rows"][0]["contract_payroll_profile_id"],
+            str(self.run.employee_runs.first().contract_payroll_profile_id),
+        )
+        self.assertIn("contract_code", payload["rows"][0])
+        self.assertNotIn("employee_profile_id", payload["rows"][0])
