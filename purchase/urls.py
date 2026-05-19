@@ -104,6 +104,7 @@ from invoice_import.views import (
     PurchaseInvoiceImportJobCreateAPIView,
     PurchaseInvoiceImportJobDetailAPIView,
     PurchaseInvoiceImportJobCommitAPIView,
+    PurchaseInvoiceImportJobReviewAPIView,
     PurchaseInvoiceImportJobErrorsExportAPIView,
     PurchaseInvoiceImportJobReconciliationAPIView,
 )
@@ -125,6 +126,7 @@ urlpatterns = [
     path("legacy-import/profiles/<int:profile_id>/", PurchaseInvoiceImportProfileDetailAPIView.as_view(), name="purchase-legacy-import-profile-detail"),
     path("legacy-import/jobs/", PurchaseInvoiceImportJobCreateAPIView.as_view(), name="purchase-legacy-import-job-create"),
     path("legacy-import/jobs/<int:job_id>/", PurchaseInvoiceImportJobDetailAPIView.as_view(), name="purchase-legacy-import-job-detail"),
+    path("legacy-import/jobs/<int:job_id>/review/", PurchaseInvoiceImportJobReviewAPIView.as_view(), name="purchase-legacy-import-job-review"),
     path("legacy-import/jobs/<int:job_id>/commit/", PurchaseInvoiceImportJobCommitAPIView.as_view(), name="purchase-legacy-import-job-commit"),
     path("legacy-import/jobs/<int:job_id>/errors/", PurchaseInvoiceImportJobErrorsExportAPIView.as_view(), name="purchase-legacy-import-job-errors"),
     path("legacy-import/jobs/<int:job_id>/reconciliation/", PurchaseInvoiceImportJobReconciliationAPIView.as_view(), name="purchase-legacy-import-job-reconciliation"),

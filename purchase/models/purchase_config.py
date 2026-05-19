@@ -51,6 +51,10 @@ DEFAULT_POLICY_CONTROLS = {
     "vendor_gstin_format_rule": "hard",
     "withholding_pan_required_rule": "hard",
     "withholding_pan_format_rule": "hard",
+    "legacy_import_review_required": "off",
+    "legacy_import_note_outstanding_rule": "warn",
+    "legacy_import_note_date_rule": "warn",
+    "legacy_import_note_amount_tolerance": "0.00",
 }
 
 
@@ -181,6 +185,3 @@ class PurchaseChoiceOverride(TrackingModel):
 
     def __str__(self):
         return f"{self.choice_group}:{self.choice_key} ({'on' if self.is_enabled else 'off'})"
-
-
-

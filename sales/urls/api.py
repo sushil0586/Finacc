@@ -82,6 +82,7 @@ from invoice_import.views import (
     SalesInvoiceImportJobCreateAPIView,
     SalesInvoiceImportJobDetailAPIView,
     SalesInvoiceImportJobCommitAPIView,
+    SalesInvoiceImportJobReviewAPIView,
     SalesInvoiceImportJobErrorsExportAPIView,
     SalesInvoiceImportJobReconciliationAPIView,
 )
@@ -119,6 +120,7 @@ urlpatterns = [
     path("legacy-import/profiles/<int:profile_id>/", SalesInvoiceImportProfileDetailAPIView.as_view(), name="sales-legacy-import-profile-detail"),
     path("legacy-import/jobs/", SalesInvoiceImportJobCreateAPIView.as_view(), name="sales-legacy-import-job-create"),
     path("legacy-import/jobs/<int:job_id>/", SalesInvoiceImportJobDetailAPIView.as_view(), name="sales-legacy-import-job-detail"),
+    path("legacy-import/jobs/<int:job_id>/review/", SalesInvoiceImportJobReviewAPIView.as_view(), name="sales-legacy-import-job-review"),
     path("legacy-import/jobs/<int:job_id>/commit/", SalesInvoiceImportJobCommitAPIView.as_view(), name="sales-legacy-import-job-commit"),
     path("legacy-import/jobs/<int:job_id>/errors/", SalesInvoiceImportJobErrorsExportAPIView.as_view(), name="sales-legacy-import-job-errors"),
     path("legacy-import/jobs/<int:job_id>/reconciliation/", SalesInvoiceImportJobReconciliationAPIView.as_view(), name="sales-legacy-import-job-reconciliation"),

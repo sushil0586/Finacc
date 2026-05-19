@@ -92,6 +92,17 @@ Each profile stores:
 
 Template download endpoints always return an `.xlsx` file with the canonical columns.
 
+### Purchase Template Coverage
+The purchase template now includes the major commercial and control columns needed for realistic bill migration:
+- `total_discount`
+- `tds_amount`
+- `gst_tds_amount`
+- `original_source_key`
+- line-level `discount_amount`
+- line-level `cess_amount`
+- line-level `taxable_value`
+- line-level `line_total`
+
 ## Core Columns
 ### Common
 - `entityfinid_id`
@@ -172,6 +183,7 @@ Required for `header_plus_lines`:
 - `PATCH /api/sales/legacy-import/profiles/<profile_id>/`
 - `POST /api/sales/legacy-import/jobs/`
 - `GET /api/sales/legacy-import/jobs/<job_id>/?entity=<id>`
+- `POST /api/sales/legacy-import/jobs/<job_id>/review/`
 - `POST /api/sales/legacy-import/jobs/<job_id>/commit/`
 - `GET /api/sales/legacy-import/jobs/<job_id>/errors/?entity=<id>&format=xlsx|csv`
 - `GET /api/sales/legacy-import/jobs/<job_id>/reconciliation/?entity=<id>`
@@ -184,6 +196,7 @@ Required for `header_plus_lines`:
 - `PATCH /api/purchase/legacy-import/profiles/<profile_id>/`
 - `POST /api/purchase/legacy-import/jobs/`
 - `GET /api/purchase/legacy-import/jobs/<job_id>/?entity=<id>`
+- `POST /api/purchase/legacy-import/jobs/<job_id>/review/`
 - `POST /api/purchase/legacy-import/jobs/<job_id>/commit/`
 - `GET /api/purchase/legacy-import/jobs/<job_id>/errors/?entity=<id>&format=xlsx|csv`
 - `GET /api/purchase/legacy-import/jobs/<job_id>/reconciliation/?entity=<id>`
@@ -194,8 +207,10 @@ Required for `header_plus_lines`:
 3. Optionally create or choose an import profile for the legacy source format.
 4. Upload the file to create an `ImportJob`.
 5. Review row-level validation output.
-6. Commit the validated job.
-7. Review the reconciliation summary.
+6. Review grouped document summaries.
+7. If review is required, mark the job reviewed.
+8. Commit the validated job.
+9. Review the reconciliation summary.
 
 ## Validation Rules
 - `legacy_source_system + legacy_source_key + entity` must be unique across imported invoices.
@@ -205,6 +220,64 @@ Required for `header_plus_lines`:
 - credit/debit notes require `original_source_key`.
 - live sales compliance requires the fields needed by compliance logic.
 - stock replay requires product-safe rows and is only allowed for `full_history`.
+
+### Purchase-Specific Validation
+- grouped purchase rows must use the same `doc_type`, `source_invoice_number`, and resolved party
+- `settled_amount + outstanding_amount` cannot exceed `grand_total`
+- `tds_amount` and `gst_tds_amount` must be non-negative
+- for `header_plus_lines`, purchase header totals are reconciled against summed line totals
+- purchase credit/debit notes are compared against the referenced original invoice
+- purchase note vendor mismatch is blocked
+- purchase note `grand_total` and `total_taxable` cannot exceed the original invoice beyond configured tolerance
+- purchase note earlier `bill_date` can be `off`, `warn`, or `hard` using purchase settings
+- purchase note outstanding exceedance can be `off`, `warn`, or `hard` using purchase settings
+
+## Purchase Review Workflow
+Purchase legacy import now supports a lightweight manual review stage.
+
+### Import Job Review Fields
+`ImportJob` stores:
+- `review_required`
+- `reviewed_by`
+- `reviewed_at`
+- `review_note`
+
+### Document Review Summary
+Each grouped purchase document summary now includes:
+- grouped totals
+- `error_count`
+- `warning_count`
+- `review_state`
+- `review_preview`
+- `original_source_key`
+- `original_document_summary` for purchase notes
+
+### Purchase Import Policy Controls
+These controls are available through Purchase Settings:
+- `legacy_import_review_required`
+- `legacy_import_note_outstanding_rule`
+- `legacy_import_note_date_rule`
+- `legacy_import_note_amount_tolerance`
+
+Recommended defaults:
+- `legacy_import_review_required = off` or `on` based on rollout plan
+- `legacy_import_note_outstanding_rule = warn`
+- `legacy_import_note_date_rule = warn`
+- `legacy_import_note_amount_tolerance = 0.00`
+
+## RBAC Split
+Legacy import endpoints no longer use one shared permission level for every action.
+
+### Permission Actions
+- template download, job detail, error export, reconciliation, and profile read use `view`
+- upload/validate and profile create use `create`
+- manual review and profile patch use `update`
+- final commit uses `post`
+
+This allows separation between:
+- uploader/operator
+- reviewer
+- poster/finalizer
 
 ## Import Flags Stored On Invoice Headers
 Both invoice headers now record:
@@ -243,3 +316,8 @@ Covered in `invoice_import.tests`:
 - withholding recompute warning behavior
 - duplicate source key rejection
 - template/download/create/detail/commit/reconciliation API flows
+- purchase review-required flow
+- purchase note preview labels
+- purchase note outstanding/date policy controls
+- purchase note amount tolerance behavior
+- legacy import RBAC action split at API view level

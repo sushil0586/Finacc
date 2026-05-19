@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -22,6 +23,8 @@ from invoice_import.views import (
     PurchaseInvoiceImportJobCommitAPIView,
     PurchaseInvoiceImportJobCreateAPIView,
     PurchaseInvoiceImportProfileListCreateAPIView,
+    PurchaseInvoiceImportJobCommitAPIView,
+    PurchaseInvoiceImportJobReviewAPIView,
     PurchaseInvoiceImportJobReconciliationAPIView,
     SalesInvoiceImportJobCommitAPIView,
     SalesInvoiceImportJobCreateAPIView,
@@ -116,6 +119,7 @@ class InvoiceImportServiceTests(TestCase):
             "outstanding_amount": "780.00",
             "reference": "Opening balance carry-forward",
             "remarks": "Imported from legacy ERP",
+            "original_source_key": "",
         }
 
     def _build_job(self, *, module: str, mode: str, detail_level: str, rows: list[dict[str, object]], stock_replay: bool = False, compliance_mode: str = ImportJob.ComplianceMode.PASSIVE, withholding_mode: str = ImportJob.WithholdingMode.PRESERVE_LEGACY) -> ImportJob:
@@ -321,6 +325,390 @@ class InvoiceImportServiceTests(TestCase):
             file_bytes=_write_csv_zip([row]),
         )
         self.assertEqual(generate_job.status, ImportJob.Status.VALIDATED)
+
+    def test_purchase_header_plus_lines_rejects_group_total_mismatch(self):
+        row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-lines-mismatch-1",
+            source_invoice_number="P-LEG-LINE-001",
+        )
+        row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-LINE-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "line_no": 1,
+                "product_desc": "Imported purchase line",
+                "is_service": True,
+                "qty": "10.0000",
+                "rate": "100.00",
+                "discount_type": "N",
+                "discount_percent": "0.00",
+                "discount_amount": "0.00",
+                "taxable_value": "900.00",
+                "gst_rate": "18.00",
+                "cgst_amount": "81.00",
+                "sgst_amount": "81.00",
+                "igst_amount": "0.00",
+                "cess_percent": "0.00",
+                "cess_amount": "0.00",
+                "line_total": "1062.00",
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.FULL_HISTORY,
+            detail_level=ImportJob.DetailLevel.HEADER_PLUS_LINES,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any(err["field"] == "total_taxable" for err in row_state.errors))
+
+    def test_purchase_review_required_blocks_commit_until_marked_reviewed(self):
+        row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-review-1",
+            source_invoice_number="P-LEG-REVIEW-001",
+        )
+        row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-REVIEW-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_review_required": "on"})):
+            job = self._build_job(
+                module=ImportJob.Module.PURCHASE,
+                mode=ImportJob.Mode.OUTSTANDING_ONLY,
+                detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+                rows=[row],
+            )
+
+        self.assertTrue(job.review_required)
+        with self.assertRaisesMessage(ValueError, "must be reviewed before commit"):
+            commit_job(job=job, user=self.user)
+
+    def test_purchase_review_endpoint_marks_job_reviewed(self):
+        row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-review-api-1",
+            source_invoice_number="P-LEG-REVIEW-API-001",
+        )
+        row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-REVIEW-API-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_review_required": "on"})):
+            job = self._build_job(
+                module=ImportJob.Module.PURCHASE,
+                mode=ImportJob.Mode.OUTSTANDING_ONLY,
+                detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+                rows=[row],
+            )
+
+        factory = APIRequestFactory()
+        request = factory.post(
+            f"/api/purchase/legacy-import/jobs/{job.id}/review/?entity={self.entity.id}",
+            {"review_note": "Checked against legacy report"},
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        with patch("invoice_import.views.require_purchase_request_permission"):
+            response = PurchaseInvoiceImportJobReviewAPIView.as_view()(request, job_id=job.id)
+        self.assertEqual(response.status_code, 200)
+        job.refresh_from_db()
+        self.assertIsNotNone(job.reviewed_at)
+        self.assertEqual(job.review_note, "Checked against legacy report")
+
+    def test_purchase_credit_note_cannot_exceed_original_amount_in_same_import_job(self):
+        invoice_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-base-1",
+            source_invoice_number="P-LEG-CN-BASE-001",
+        )
+        invoice_row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-BASE-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        credit_note_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-note-1",
+            source_invoice_number="P-LEG-CN-NOTE-001",
+        )
+        credit_note_row.update(
+            {
+                "doc_type": "credit_note",
+                "original_source_key": "purchase-cn-base-1",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-NOTE-001",
+                "supplier_invoice_date": "2025-04-02",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "total_taxable": "1500.00",
+                "total_cgst": "135.00",
+                "total_sgst": "135.00",
+                "grand_total": "1770.00",
+                "settled_amount": "0.00",
+                "outstanding_amount": "1770.00",
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[invoice_row, credit_note_row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        note_row = job.rows.get(group_key="purchase-cn-note-1")
+        self.assertTrue(any(err["field"] == "grand_total" for err in note_row.errors))
+        note_summary = next(item for item in (job.summary or {}).get("document_summaries", []) if item["legacy_source_key"] == "purchase-cn-note-1")
+        self.assertTrue(note_summary["review_preview"].startswith("Original mismatch:"))
+
+    def test_purchase_credit_note_earlier_bill_date_adds_review_warning(self):
+        invoice_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-warn-base-1",
+            source_invoice_number="P-LEG-CN-WARN-BASE-001",
+        )
+        invoice_row.update(
+            {
+                "bill_date": "2025-04-10",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-WARN-BASE-001",
+                "supplier_invoice_date": "2025-04-10",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        credit_note_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-warn-note-1",
+            source_invoice_number="P-LEG-CN-WARN-NOTE-001",
+        )
+        credit_note_row.update(
+            {
+                "doc_type": "credit_note",
+                "bill_date": "2025-04-01",
+                "original_source_key": "purchase-cn-warn-base-1",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-WARN-NOTE-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "total_taxable": "500.00",
+                "total_cgst": "45.00",
+                "total_sgst": "45.00",
+                "grand_total": "590.00",
+                "settled_amount": "0.00",
+                "outstanding_amount": "590.00",
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[invoice_row, credit_note_row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.VALIDATED)
+        note_row = job.rows.get(group_key="purchase-cn-warn-note-1")
+        self.assertTrue(any("earlier than original invoice" in warning for warning in (note_row.warnings or [])))
+        note_summary = next(item for item in (job.summary or {}).get("document_summaries", []) if item["legacy_source_key"] == "purchase-cn-warn-note-1")
+        self.assertTrue(note_summary["review_preview"].startswith("Date warning:"))
+        self.assertIn("earlier than original invoice", note_summary["review_preview"])
+
+    def test_purchase_credit_note_outstanding_can_be_blocked_by_policy(self):
+        invoice_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-hard-outstanding-base-1",
+            source_invoice_number="P-LEG-CN-HARD-BASE-001",
+        )
+        invoice_row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-HARD-BASE-001",
+                "supplier_invoice_date": "2025-04-10",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "grand_total": "1180.00",
+                "settled_amount": "600.00",
+                "outstanding_amount": "580.00",
+            }
+        )
+        credit_note_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-hard-outstanding-note-1",
+            source_invoice_number="P-LEG-CN-HARD-NOTE-001",
+        )
+        credit_note_row.update(
+            {
+                "doc_type": "credit_note",
+                "original_source_key": "purchase-cn-hard-outstanding-base-1",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-HARD-NOTE-001",
+                "supplier_invoice_date": "2025-04-11",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "total_taxable": "400.00",
+                "total_cgst": "36.00",
+                "total_sgst": "36.00",
+                "grand_total": "472.00",
+                "settled_amount": "0.00",
+                "outstanding_amount": "700.00",
+            }
+        )
+        with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_note_outstanding_rule": "hard"})):
+            job = self._build_job(
+                module=ImportJob.Module.PURCHASE,
+                mode=ImportJob.Mode.OUTSTANDING_ONLY,
+                detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+                rows=[invoice_row, credit_note_row],
+            )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        note_row = job.rows.get(group_key="purchase-cn-hard-outstanding-note-1")
+        self.assertTrue(any(err["field"] == "outstanding_amount" for err in note_row.errors))
+        note_summary = next(item for item in (job.summary or {}).get("document_summaries", []) if item["legacy_source_key"] == "purchase-cn-hard-outstanding-note-1")
+        self.assertTrue(note_summary["review_preview"].startswith("Outstanding issue:"))
+
+    def test_purchase_credit_note_date_can_be_blocked_by_policy(self):
+        invoice_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-hard-date-base-1",
+            source_invoice_number="P-LEG-CN-HARD-DATE-BASE-001",
+        )
+        invoice_row.update(
+            {
+                "bill_date": "2025-04-10",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-HARD-DATE-BASE-001",
+                "supplier_invoice_date": "2025-04-10",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        credit_note_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-hard-date-note-1",
+            source_invoice_number="P-LEG-CN-HARD-DATE-NOTE-001",
+        )
+        credit_note_row.update(
+            {
+                "doc_type": "credit_note",
+                "bill_date": "2025-04-01",
+                "original_source_key": "purchase-cn-hard-date-base-1",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-HARD-DATE-NOTE-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "total_taxable": "500.00",
+                "total_cgst": "45.00",
+                "total_sgst": "45.00",
+                "grand_total": "590.00",
+                "settled_amount": "0.00",
+                "outstanding_amount": "590.00",
+            }
+        )
+        with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_note_date_rule": "hard"})):
+            job = self._build_job(
+                module=ImportJob.Module.PURCHASE,
+                mode=ImportJob.Mode.OUTSTANDING_ONLY,
+                detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+                rows=[invoice_row, credit_note_row],
+            )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        note_row = job.rows.get(group_key="purchase-cn-hard-date-note-1")
+        self.assertTrue(any(err["field"] == "bill_date" for err in note_row.errors))
+        note_summary = next(item for item in (job.summary or {}).get("document_summaries", []) if item["legacy_source_key"] == "purchase-cn-hard-date-note-1")
+        self.assertTrue(note_summary["review_preview"].startswith("Date issue:"))
+
+    def test_purchase_credit_note_amount_tolerance_allows_small_variance(self):
+        invoice_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-tolerance-base-1",
+            source_invoice_number="P-LEG-CN-TOL-BASE-001",
+        )
+        invoice_row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-TOL-BASE-001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "total_taxable": "1000.00",
+                "total_cgst": "90.00",
+                "total_sgst": "90.00",
+                "grand_total": "1180.00",
+                "settled_amount": "0.00",
+                "outstanding_amount": "1180.00",
+            }
+        )
+        credit_note_row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-cn-tolerance-note-1",
+            source_invoice_number="P-LEG-CN-TOL-NOTE-001",
+        )
+        credit_note_row.update(
+            {
+                "doc_type": "credit_note",
+                "original_source_key": "purchase-cn-tolerance-base-1",
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "SUP-CN-TOL-NOTE-001",
+                "supplier_invoice_date": "2025-04-02",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+                "total_taxable": "1005.00",
+                "total_cgst": "90.45",
+                "total_sgst": "90.45",
+                "grand_total": "1185.90",
+                "settled_amount": "0.00",
+                "outstanding_amount": "1185.90",
+            }
+        )
+        with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_note_amount_tolerance": "10.00"})):
+            job = self._build_job(
+                module=ImportJob.Module.PURCHASE,
+                mode=ImportJob.Mode.OUTSTANDING_ONLY,
+                detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+                rows=[invoice_row, credit_note_row],
+            )
+
+        self.assertEqual(job.status, ImportJob.Status.VALIDATED)
+        note_row = job.rows.get(group_key="purchase-cn-tolerance-note-1")
+        self.assertFalse(any(err["field"] in {"grand_total", "total_taxable"} for err in (note_row.errors or [])))
 
     def test_full_history_sales_with_stock_replay_and_live_compliance_calls_hooks(self):
         uom = UnitOfMeasure.objects.create(entity=self.entity, code="NOS", description="Numbers")
@@ -745,6 +1133,7 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         self.assertIn("attachment;", response["Content-Disposition"])
+        _mock_permission.assert_called_once_with(user=self.user, entity_id=self.entity.id, doc_type=1, action="view")
 
     @patch("invoice_import.views.require_sales_request_permission")
     def test_sales_job_create_detail_and_commit_views(self, _mock_permission):
@@ -793,6 +1182,59 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
         self.assertEqual(commit_response.status_code, 200)
         self.assertEqual(commit_response.data["status"], ImportJob.Status.COMMITTED)
         self.assertTrue(SalesInvoiceHeader.objects.filter(legacy_source_key="sales-api-1").exists())
+        actions = [call.kwargs["action"] for call in _mock_permission.call_args_list]
+        self.assertEqual(actions, ["create", "view", "post"])
+
+    @patch("invoice_import.views.require_purchase_request_permission")
+    def test_purchase_review_view_uses_update_permission(self, mock_permission):
+        row = self._purchase_row(source_key="purchase-review-api-2", invoice_number="P-REVIEW-API-002")
+        with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_review_required": "on"})):
+            job = self._build_job(
+                module=ImportJob.Module.PURCHASE,
+                mode=ImportJob.Mode.OUTSTANDING_ONLY,
+                detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+                rows=[row],
+            )
+
+        request = self._request(
+            "post",
+            f"/api/purchase/legacy-import/jobs/{job.id}/review/",
+            data={"entity": self.entity.id, "review_note": "Checked by reviewer"},
+            format="json",
+        )
+        response = PurchaseInvoiceImportJobReviewAPIView.as_view()(request, job_id=job.id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_permission.call_args_list[0].kwargs["action"], "update")
+
+    @patch("invoice_import.views.require_purchase_request_permission")
+    def test_purchase_detail_and_reconciliation_views_use_view_permission(self, mock_permission):
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[self._purchase_row(source_key="purchase-view-api-1", invoice_number="P-VIEW-001")],
+        )
+        commit_job(job=job, user=self.user)
+
+        detail_request = self._request(
+            "get",
+            f"/api/purchase/legacy-import/jobs/{job.id}/",
+            query={"entity": self.entity.id},
+        )
+        detail_response = PurchaseInvoiceImportJobDetailAPIView.as_view()(detail_request, job_id=job.id)
+        self.assertEqual(detail_response.status_code, 200)
+
+        reconciliation_request = self._request(
+            "get",
+            f"/api/purchase/legacy-import/jobs/{job.id}/reconciliation/",
+            query={"entity": self.entity.id},
+        )
+        reconciliation_response = PurchaseInvoiceImportJobReconciliationAPIView.as_view()(reconciliation_request, job_id=job.id)
+        self.assertEqual(reconciliation_response.status_code, 200)
+
+        actions = [call.kwargs["action"] for call in mock_permission.call_args_list]
+        self.assertEqual(actions, ["view", "view"])
 
     @patch("invoice_import.views.require_sales_request_permission")
     def test_sales_profile_create_list_and_patch_views(self, _mock_permission):
