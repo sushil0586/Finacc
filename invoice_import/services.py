@@ -21,6 +21,8 @@ from invoice_import.models import ImportJob, ImportProfile, ImportRow
 from posting.models import Entry, InventoryMove
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.adapters.purchase_invoice import PurchaseInvoicePostingAdapter, PurchaseInvoicePostingConfig
+from numbering.models import DocumentType
+from numbering.services.document_number_service import DocumentNumberService
 from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine, PurchaseTaxSummary
 from purchase.models.purchase_ap import VendorBillOpenItem
 from purchase.services.purchase_ap_service import q2 as ap_q2
@@ -36,6 +38,8 @@ Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
 SHEET = "invoices"
 ERROR_SHEET = "invoice_import_errors"
+DOCUMENT_NUMBER_STRATEGY_PRESERVE_LEGACY = "preserve_legacy"
+DOCUMENT_NUMBER_STRATEGY_GENERATE_FINACC = "generate_finacc"
 
 
 def q2(value: Any) -> Decimal:
@@ -420,7 +424,8 @@ def _resolve_subentity(entity: Entity, value: Any) -> SubEntity | None:
 def _resolve_party(entity: Entity, code: Any, name: Any) -> account | None:
     account_code = _to_int(code)
     if account_code:
-        party = account.objects.filter(entity=entity, accountcode=account_code).first()
+        # Account code now lives on the linked Ledger model.
+        party = account.objects.filter(entity=entity, ledger__ledger_code=account_code).first()
         if party:
             return party
     party_name = _normalize_text(name)
@@ -634,6 +639,7 @@ def create_validated_job(
     stock_replay: bool,
     compliance_mode: str,
     withholding_mode: str,
+    document_number_strategy: str = DOCUMENT_NUMBER_STRATEGY_PRESERVE_LEGACY,
     source_system: str,
     filename: str,
     fmt: str,
@@ -659,6 +665,7 @@ def create_validated_job(
             "stock_replay": stock_replay,
             "compliance_mode": compliance_mode,
             "withholding_mode": withholding_mode,
+            "document_number_strategy": document_number_strategy,
         },
     )
     rows = _apply_import_profile(_parse_rows(file_bytes, fmt), profile, source_system=effective_source_system)
@@ -702,6 +709,7 @@ def create_validated_job(
 
 
 def _apply_existing_collision_rules(job: ImportJob) -> None:
+    document_number_strategy = str((job.options or {}).get("document_number_strategy") or DOCUMENT_NUMBER_STRATEGY_PRESERVE_LEGACY)
     for row in job.rows.all():
         normalized = row.normalized_payload or {}
         source_key = normalized.get("legacy_source_key")
@@ -728,7 +736,10 @@ def _apply_existing_collision_rules(job: ImportJob) -> None:
             ).exists():
                 row.status = ImportRow.Status.ERROR
                 row.errors = list(row.errors or []) + [{"field": "legacy_source_key", "message": "Legacy source key already imported for purchase."}]
-            elif PurchaseInvoiceHeader.objects.filter(entity=job.entity, purchase_number=invoice_number, is_legacy_imported=False).exists():
+            elif (
+                document_number_strategy == DOCUMENT_NUMBER_STRATEGY_PRESERVE_LEGACY
+                and PurchaseInvoiceHeader.objects.filter(entity=job.entity, purchase_number=invoice_number, is_legacy_imported=False).exists()
+            ):
                 row.status = ImportRow.Status.ERROR
                 row.errors = list(row.errors or []) + [{"field": "source_invoice_number", "message": "Invoice number collides with an existing live purchase invoice."}]
         if row.status == ImportRow.Status.ERROR:
@@ -843,6 +854,28 @@ def _create_purchase_header(job: ImportJob, normalized: dict[str, Any], *, origi
     grand_total = Decimal(normalized["grand_total"])
     settled_amount = Decimal(normalized["settled_amount"])
     outstanding_amount = Decimal(normalized["outstanding_amount"])
+    document_number_strategy = str((job.options or {}).get("document_number_strategy") or DOCUMENT_NUMBER_STRATEGY_PRESERVE_LEGACY)
+    purchase_number = normalized["source_invoice_number"]
+    doc_no = None
+    if document_number_strategy == DOCUMENT_NUMBER_STRATEGY_GENERATE_FINACC:
+        dt = DocumentType.objects.filter(
+            module="purchase",
+            default_code=_purchase_doc_code(int(normalized["doc_type"])),
+            is_active=True,
+        ).first()
+        if dt is None:
+            raise ValueError("DocumentType not found for purchase document number allocation.")
+        allocated = DocumentNumberService.allocate_final(
+            entity_id=job.entity_id,
+            entityfinid_id=normalized["entityfinid_id"],
+            subentity_id=normalized.get("subentity_id"),
+            doc_type_id=dt.id,
+            doc_code=_purchase_doc_code(int(normalized["doc_type"])),
+            on_date=_to_date(normalized["bill_date"]),
+        )
+        doc_no = allocated.doc_no
+        purchase_number = allocated.display_no
+
     header = PurchaseInvoiceHeader.objects.create(
         entity=job.entity,
         entityfinid_id=normalized["entityfinid_id"],
@@ -853,7 +886,8 @@ def _create_purchase_header(job: ImportJob, normalized: dict[str, Any], *, origi
         posting_date=_to_date(normalized["bill_date"]),
         due_date=_to_date(normalized.get("due_date")),
         doc_code=_purchase_doc_code(int(normalized["doc_type"])),
-        purchase_number=normalized["source_invoice_number"],
+        doc_no=doc_no,
+        purchase_number=purchase_number,
         supplier_invoice_number=normalized.get("supplier_invoice_number") or normalized["source_invoice_number"],
         supplier_invoice_date=_to_date(normalized.get("supplier_invoice_date")),
         ref_document_id=original_invoice_id,
@@ -894,6 +928,7 @@ def _create_purchase_header(job: ImportJob, normalized: dict[str, Any], *, origi
             "detail_level": job.detail_level,
             "stock_replay": job.stock_replay,
             "withholding_mode": job.withholding_mode,
+            "document_number_strategy": document_number_strategy,
         },
         confirmed_at=timezone.now() if int(normalized["status"]) >= 2 else None,
         posted_at=timezone.now() if int(normalized["status"]) >= 3 else None,
