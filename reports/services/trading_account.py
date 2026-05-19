@@ -606,6 +606,15 @@ def _aggregate_journal(
             item = {"label": label, "amount": float(amt)}
             if level == 'account':
                 item["_head"] = head_name
+                item["can_drilldown"] = True
+                item["drilldown_target"] = "ledger_book"
+                item["drilldown_params"] = {
+                    "ledger": row.get("resolved_account_id"),
+                    "ledger_id": row.get("resolved_account_id"),
+                    "entity": entity_id,
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                }
             debit_rows.append(item)
             total_period_debits += amt
         elif net < 0:
@@ -613,6 +622,15 @@ def _aggregate_journal(
             item = {"label": label, "amount": float(amt)}
             if level == 'account':
                 item["_head"] = head_name
+                item["can_drilldown"] = True
+                item["drilldown_target"] = "ledger_book"
+                item["drilldown_params"] = {
+                    "ledger": row.get("resolved_account_id"),
+                    "ledger_id": row.get("resolved_account_id"),
+                    "entity": entity_id,
+                    "entityfinid": entityfin_id,
+                    "subentity": subentity_id,
+                }
             credit_rows.append(item)
             total_period_credits += amt
 

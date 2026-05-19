@@ -139,6 +139,42 @@ class SalesInvoiceService:
         return clean
 
     @staticmethod
+    def _set_tcs_runtime_snapshot(
+        *,
+        header: SalesInvoiceHeader,
+        mode: str,
+        enabled: bool,
+        reason: str | None,
+        reason_code: str | None,
+    ) -> None:
+        flags = dict(getattr(header, "legacy_behavior_flags", {}) or {})
+        if not enabled:
+            flags.pop("tcs_runtime_result", None)
+            header.legacy_behavior_flags = flags
+            return
+
+        section = getattr(header, "tcs_section", None)
+        amount = q2(getattr(header, "tcs_amount", ZERO2) or ZERO2)
+        base_amount = q2(getattr(header, "tcs_base_amount", ZERO2) or ZERO2)
+        rate = q4(getattr(header, "tcs_rate", ZERO4) or ZERO4)
+
+        flags["tcs_runtime_result"] = {
+            "enabled": True,
+            "mode": str(mode or "AUTO").upper().strip(),
+            "section_id": getattr(section, "id", None) if section is not None else None,
+            "section_code": str(getattr(section, "section_code", "") or "").strip().upper() or None,
+            "rate": str(rate),
+            "base_amount": str(base_amount),
+            "amount": str(amount),
+            "reason": (str(reason or "").strip() or None),
+            "reason_code": (str(reason_code or "").strip().upper() or None),
+            "collection_status": "COLLECTED" if amount > ZERO2 else "NOT_COLLECTED",
+            "zero_collection": bool(amount <= ZERO2),
+            "user_selected_add_tcs": bool(getattr(header, "withholding_enabled", False)),
+        }
+        header.legacy_behavior_flags = flags
+
+    @staticmethod
     def _policy_controls(header: SalesInvoiceHeader) -> dict:
         settings_obj = SalesInvoiceService.get_settings(
             header.entity_id,
@@ -754,6 +790,7 @@ class SalesInvoiceService:
                 base_amount=ZERO2,
                 amount=ZERO2,
                 reason="Withholding disabled",
+                reason_code="DISABLED",
             )
             header.tcs_section = None
             header.tcs_rate = Decimal("0.0000")
@@ -761,9 +798,17 @@ class SalesInvoiceService:
             header.tcs_amount = ZERO2
             header.tcs_reason = None
             header.tcs_is_reversal = False
+            cls._set_tcs_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=False,
+                reason=None,
+                reason_code=None,
+            )
             header.updated_by = user
             header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal", "updated_by"
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                "tcs_is_reversal", "legacy_behavior_flags", "updated_by"
             ])
             cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
             return
@@ -780,6 +825,7 @@ class SalesInvoiceService:
                 base_amount=ZERO2,
                 amount=ZERO2,
                 reason="TCS on credit note disallowed by policy.",
+                reason_code="CREDIT_NOTE_POLICY_DISALLOW",
             )
             header.tcs_section = None
             header.tcs_rate = Decimal("0.0000")
@@ -787,10 +833,17 @@ class SalesInvoiceService:
             header.tcs_amount = ZERO2
             header.tcs_reason = "TCS on credit note disallowed by policy."
             header.tcs_is_reversal = False
+            cls._set_tcs_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=True,
+                reason=preview.reason,
+                reason_code=preview.reason_code,
+            )
             header.updated_by = user
             header.save(update_fields=[
                 "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount",
-                "tcs_reason", "tcs_is_reversal", "updated_by",
+                "tcs_reason", "tcs_is_reversal", "legacy_behavior_flags", "updated_by",
             ])
             cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
             return
@@ -818,6 +871,13 @@ class SalesInvoiceService:
         header.tcs_amount = res.amount
         header.tcs_reason = res.reason
         header.tcs_is_reversal = bool(is_credit_note and credit_note_policy == "REVERSE" and q2(res.amount) > ZERO2)
+        cls._set_tcs_runtime_snapshot(
+            header=header,
+            mode="AUTO",
+            enabled=True,
+            reason=res.reason,
+            reason_code=res.reason_code,
+        )
         header.updated_by = user
 
         # OPTIONAL: if you have receivable_total field
@@ -826,12 +886,14 @@ class SalesInvoiceService:
             header.save(update_fields=[
                 "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
                 "tcs_is_reversal",
+                "legacy_behavior_flags",
                 "customer_receivable",
                 "updated_by",
             ])
         else:
             header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal", "updated_by"
+                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                "tcs_is_reversal", "legacy_behavior_flags", "updated_by"
             ])
 
         status = "REVERSED" if bool(header.tcs_is_reversal) else "CONFIRMED"

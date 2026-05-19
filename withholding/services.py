@@ -399,7 +399,14 @@ class WithholdingResolver:
         return qs.first()
 
     @staticmethod
-    def resolve_section(*, tax_type: int, explicit_section_id: int | None, cfg: Optional[EntityWithholdingConfig], doc_date: date) -> Optional[WithholdingSection]:
+    def resolve_section(
+        *,
+        tax_type: int,
+        explicit_section_id: int | None,
+        cfg: Optional[EntityWithholdingConfig],
+        doc_date: date,
+        party_account_id: int | None = None,
+    ) -> Optional[WithholdingSection]:
         if explicit_section_id:
             sec = WithholdingSection.objects.filter(id=explicit_section_id, tax_type=tax_type, is_active=True).first()
             if sec:
@@ -409,19 +416,57 @@ class WithholdingResolver:
                     return None
                 return sec
 
-        if not cfg:
+        if cfg:
+            sec = cfg.default_tds_section if tax_type == WithholdingTaxType.TDS else cfg.default_tcs_section
+            if sec:
+                # Ensure section is valid for doc_date
+                if sec.effective_from and sec.effective_from > doc_date:
+                    return None
+                if sec.effective_to and sec.effective_to < doc_date:
+                    return None
+                return sec
+
+        if int(tax_type) == int(WithholdingTaxType.TDS):
+            return WithholdingResolver.resolve_vendor_default_tds_section(
+                party_account_id=party_account_id,
+                doc_date=doc_date,
+            )
+        return None
+
+    @staticmethod
+    def resolve_vendor_default_tds_section(*, party_account_id: int | None, doc_date: date) -> Optional[WithholdingSection]:
+        """
+        Vendor master fallback for TDS section selection.
+        Only the section identity is sourced from the vendor profile here.
+        Rates, thresholds, and applicability remain driven by section master and
+        runtime policy.
+        """
+        if not party_account_id or AccountComplianceProfile is None:
             return None
 
-        sec = cfg.default_tds_section if tax_type == WithholdingTaxType.TDS else cfg.default_tcs_section
+        section_code = (
+            AccountComplianceProfile.objects.filter(account_id=party_account_id)
+            .values_list("tdssection", flat=True)
+            .first()
+        )
+        code = str(section_code or "").strip().upper()
+        if not code:
+            return None
+
+        sec = (
+            WithholdingSection.objects.filter(
+                tax_type=WithholdingTaxType.TDS,
+                section_code=code,
+                is_active=True,
+                effective_from__lte=doc_date,
+            )
+            .order_by("-effective_from", "-id")
+            .first()
+        )
         if not sec:
-            return None
-
-        # Ensure section is valid for doc_date
-        if sec.effective_from and sec.effective_from > doc_date:
             return None
         if sec.effective_to and sec.effective_to < doc_date:
             return None
-
         return sec
 
     @staticmethod
@@ -562,6 +607,7 @@ def compute_withholding_preview(
         explicit_section_id=explicit_section_id,
         cfg=cfg,
         doc_date=doc_date,
+        party_account_id=party_account_id,
     )
     if not sec:
         return WithholdingResult(False, None, Decimal("0.0000"), ZERO2, ZERO2, "No section resolved", "NO_SECTION")

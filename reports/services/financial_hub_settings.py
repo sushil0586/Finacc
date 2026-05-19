@@ -1520,3 +1520,17 @@ def format_financial_hub_balance(value, *, settings: dict) -> str:
 def financial_hub_amount_unit_label(settings: dict) -> str:
     unit = ((settings or {}).get("general_display") or {}).get("amount_display_unit", "actual")
     return AMOUNT_UNIT_LABELS.get(unit, "Actual")
+
+
+def apply_amount_display_unit_override(settings: dict, amount_display_unit: str | None) -> dict:
+    overridden = deepcopy(settings or {})
+    if not amount_display_unit:
+        return overridden
+
+    unit = str(amount_display_unit).strip().lower()
+    if unit not in AMOUNT_UNIT_FACTORS:
+        return overridden
+
+    general = overridden.setdefault("general_display", {})
+    general["amount_display_unit"] = unit
+    return overridden

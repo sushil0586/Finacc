@@ -410,6 +410,53 @@ def _tcs_runtime_quality_flags(*, section, reason_code: str, pan: str) -> dict[s
     }
 
 
+def _tcs_filing_pack_exception_flags(
+    *,
+    comp_tcs: Decimal,
+    comp_collected_total: Decimal,
+    comp_alloc_total: Decimal,
+    runtime_flags: dict[str, bool],
+    invalid_pan_format: bool,
+    quarter_boundary_violation: bool,
+    is_reversal: bool,
+) -> dict[str, bool]:
+    effective_exposure = bool(
+        q2(comp_tcs) > Decimal("0.00")
+        or q2(comp_collected_total) > Decimal("0.00")
+        or q2(comp_alloc_total) > Decimal("0.00")
+    )
+    if not effective_exposure:
+        return {
+            "missing_pan": False,
+            "invalid_pan_format": False,
+            "missing_tax_id": False,
+            "residency_mismatch": False,
+            "missing_section": False,
+            "not_collected": False,
+            "not_deposited": False,
+            "partially_allocated": False,
+            "deposit_mismatch": False,
+            "quarter_boundary_violation": False,
+            "reversal_case": False,
+        }
+
+    collected = q2(comp_collected_total)
+    allocated = q2(comp_alloc_total)
+    return {
+        "missing_pan": bool(runtime_flags["missing_pan"]),
+        "invalid_pan_format": bool(invalid_pan_format),
+        "missing_tax_id": bool(runtime_flags["missing_tax_id"]),
+        "residency_mismatch": bool(runtime_flags["residency_mismatch"]),
+        "missing_section": bool(runtime_flags["missing_section"]),
+        "not_collected": collected <= Decimal("0.00"),
+        "not_deposited": collected > Decimal("0.00") and allocated <= Decimal("0.00"),
+        "partially_allocated": collected > Decimal("0.00") and allocated > Decimal("0.00") and allocated < collected,
+        "deposit_mismatch": collected > Decimal("0.00") and allocated != collected,
+        "quarter_boundary_violation": bool(quarter_boundary_violation),
+        "reversal_case": bool(is_reversal),
+    }
+
+
 def _row_readiness_status(*, amount: Decimal, flags: dict[str, bool]) -> str:
     if amount <= Decimal("0.00"):
         return "fix_now"
@@ -1145,6 +1192,31 @@ class TcsDepositRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVi
         serializer.save(deposited_by=self.request.user)
 
 
+class TcsDepositConfirmAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk: int):
+        try:
+            deposit = TcsDeposit.objects.get(pk=pk)
+        except TcsDeposit.DoesNotExist:
+            return Response({"detail": "Deposit not found."}, status=status.HTTP_404_NOT_FOUND)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=deposit.entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to confirm TCS deposits.",
+        )
+
+        if deposit.status == TcsDeposit.Status.FILED:
+            return Response({"detail": "Filed deposits cannot be reconfirmed."}, status=status.HTTP_400_BAD_REQUEST)
+        if deposit.status != TcsDeposit.Status.CONFIRMED:
+            deposit.status = TcsDeposit.Status.CONFIRMED
+            deposit.deposited_by = request.user
+            deposit.save(update_fields=["status", "deposited_by", "updated_at"])
+
+        return Response(TcsDepositSerializer(deposit).data, status=status.HTTP_200_OK)
+
+
 class TcsDepositAllocateAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1212,6 +1284,15 @@ class TcsDepositAllocateAPIView(APIView):
                 collection=collection,
                 allocated_amount=alloc_amount,
             )
+            updated_collection_total = q2(collection_alloc_total + alloc_amount)
+            next_status = (
+                TcsCollection.Status.ALLOCATED
+                if updated_collection_total >= q2(collection.tcs_collected_amount)
+                else TcsCollection.Status.OPEN
+            )
+            if collection.status != next_status:
+                collection.status = next_status
+                collection.save(update_fields=["status", "updated_at"])
         return Response(TcsDepositAllocationSerializer(row).data, status=status.HTTP_201_CREATED)
 
 
@@ -1959,6 +2040,9 @@ class TcsReportFilingPackAPIView(APIView):
         exceptions_only = _safe_bool(request.query_params.get("exceptions_only"))
         pending_only = _safe_bool(request.query_params.get("pending_only"))
         include_cancelled = _safe_bool(request.query_params.get("include_cancelled"))
+        section_code = (request.query_params.get("section") or "").strip().upper()
+        customer_id = _safe_int(request.query_params.get("customer_id"))
+        customer_q = (request.query_params.get("customer_q") or "").strip()
 
         fy_candidates = _expand_fy_values(fy)
         computations = (
@@ -1967,6 +2051,18 @@ class TcsReportFilingPackAPIView(APIView):
             .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
             .order_by("doc_date", "id")
         )
+        if customer_id is not None:
+            computations = computations.filter(party_account_id=customer_id)
+        if customer_q:
+            computations = computations.filter(
+                Q(party_account__accountname__icontains=customer_q)
+                | Q(party_account__legalname__icontains=customer_q)
+            )
+        if section_code:
+            if section_code == "UNMAPPED":
+                computations = computations.filter(section__isnull=True)
+            else:
+                computations = computations.filter(section__section_code__iexact=section_code)
         if not include_cancelled:
             computations = _exclude_cancelled_documents(computations)
         deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months).order_by("challan_date", "id")
@@ -2134,19 +2230,15 @@ class TcsReportFilingPackAPIView(APIView):
                                 "source_module": module_name,
                             },
                         }
-                    row["exceptions"] = {
-                        "missing_pan": bool(runtime_flags["missing_pan"]),
-                        "invalid_pan_format": invalid_pan_format,
-                        "missing_tax_id": bool(runtime_flags["missing_tax_id"]),
-                        "residency_mismatch": bool(runtime_flags["residency_mismatch"]),
-                        "missing_section": bool(runtime_flags["missing_section"]),
-                        "not_collected": comp_collected_total <= Decimal("0.00"),
-                        "not_deposited": comp_alloc_total <= Decimal("0.00"),
-                        "partially_allocated": comp_alloc_total > Decimal("0.00") and comp_alloc_total < q2(comp.tcs_amount or Decimal("0.00")),
-                        "deposit_mismatch": q2(comp_alloc_total) != q2(comp_collected_total),
-                        "quarter_boundary_violation": quarter_boundary_violation,
-                        "reversal_case": row["is_reversal"],
-                    }
+                    row["exceptions"] = _tcs_filing_pack_exception_flags(
+                        comp_tcs=q2(comp.tcs_amount or Decimal("0.00")),
+                        comp_collected_total=q2(comp_collected_total),
+                        comp_alloc_total=q2(comp_alloc_total),
+                        runtime_flags=runtime_flags,
+                        invalid_pan_format=invalid_pan_format,
+                        quarter_boundary_violation=quarter_boundary_violation,
+                        is_reversal=bool(row["is_reversal"]),
+                    )
                     if exceptions_only and not any(bool(v) for v in row["exceptions"].values()):
                         continue
                     if pending_only and not (
@@ -2613,14 +2705,6 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
             missing_pan_count += 1
         elif pan and not _is_valid_pan(pan):
             invalid_pan_format_count += 1
-        if runtime_flags["missing_section"]:
-            missing_section_count += 1
-        if runtime_flags["missing_tax_id"]:
-            missing_tax_id_count += 1
-        if runtime_flags["residency_mismatch"]:
-            residency_mismatch_count += 1
-        if _quarter_boundary_violation(doc_date=comp.doc_date, fiscal_year=comp.fiscal_year or "", quarter=comp.quarter or ""):
-            quarter_boundary_violation_count += 1
 
         comp_collected_total = Decimal("0.00")
         comp_alloc_total = Decimal("0.00")
@@ -2631,6 +2715,24 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
             comp_alloc_total += _sum_tcs_allocation_rows(col.deposit_allocations.all(), deposited_only=True)
 
         comp_tcs = q2(comp.tcs_amount or Decimal("0.00"))
+        quarter_violation = _quarter_boundary_violation(doc_date=comp.doc_date, fiscal_year=comp.fiscal_year or "", quarter=comp.quarter or "")
+        exception_flags = _tcs_filing_pack_exception_flags(
+            comp_tcs=comp_tcs,
+            comp_collected_total=q2(comp_collected_total),
+            comp_alloc_total=q2(comp_alloc_total),
+            runtime_flags=runtime_flags,
+            invalid_pan_format=bool(pan and not _is_valid_pan(pan)),
+            quarter_boundary_violation=quarter_violation,
+            is_reversal=bool(comp.status == TcsComputation.Status.REVERSED or comp_tcs < Decimal("0.00")),
+        )
+        if exception_flags["missing_section"]:
+            missing_section_count += 1
+        if exception_flags["missing_tax_id"]:
+            missing_tax_id_count += 1
+        if exception_flags["residency_mismatch"]:
+            residency_mismatch_count += 1
+        if exception_flags["quarter_boundary_violation"]:
+            quarter_boundary_violation_count += 1
         if comp_tcs > Decimal("0.00") and comp_collected_total <= Decimal("0.00"):
             not_collected_count += 1
         if comp_collected_total > Decimal("0.00") and comp_alloc_total <= Decimal("0.00"):

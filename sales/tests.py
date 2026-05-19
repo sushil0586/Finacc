@@ -19,6 +19,7 @@ from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_nav_service import SalesInvoiceNavService
 from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.providers.mastergst import _extract_error
+from withholding.services import WithholdingResult
 from sales.views.sales_invoice_views import (
     SalesInvoiceCancelAPIView,
     SalesInvoiceConfirmAPIView,
@@ -892,6 +893,109 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         SalesInvoiceService._apply_tcs(header=h, user=None)
         self.assertEqual(h.tcs_amount, Decimal("0.00"))
         self.assertIn("disallowed", (h.tcs_reason or "").lower())
+        self.assertEqual(
+            (h.legacy_behavior_flags or {}).get("tcs_runtime_result", {}).get("reason_code"),
+            "CREDIT_NOTE_POLICY_DISALLOW",
+        )
+
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_apply_tcs_persists_runtime_snapshot_for_zero_collection_reason(
+        self,
+        mocked_get_settings,
+        mocked_compute_tcs,
+    ):
+        mocked_get_settings.return_value = SimpleNamespace(tcs_credit_note_policy="REVERSE")
+        section = SimpleNamespace(id=11, section_code="206C(1H)")
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("0.1000"),
+            base_amount=Decimal("0.00"),
+            amount=Decimal("0.00"),
+            reason="Below cumulative threshold (5000000.00)",
+            reason_code="BELOW_THRESHOLD_CUMULATIVE",
+        )
+
+        class Header:
+            withholding_enabled = True
+            doc_type = int(SalesInvoiceHeader.DocType.TAX_INVOICE)
+            tcs_section = section
+            tcs_section_id = 11
+            tcs_rate = Decimal("0.0000")
+            tcs_base_amount = Decimal("0.00")
+            tcs_amount = Decimal("0.00")
+            tcs_reason = ""
+            tcs_is_reversal = False
+            entity_id = 1
+            entityfinid_id = 1
+            subentity_id = None
+            customer_id = 1
+            bill_date = date(2026, 4, 1)
+            grand_total = Decimal("1180.00")
+            total_taxable_value = Decimal("1000.00")
+            legacy_behavior_flags = {}
+
+            def save(self, **kwargs):
+                return None
+
+        h = Header()
+        SalesInvoiceService._apply_tcs(header=h, user=None)
+
+        runtime = (h.legacy_behavior_flags or {}).get("tcs_runtime_result", {})
+        self.assertEqual(runtime.get("reason_code"), "BELOW_THRESHOLD_CUMULATIVE")
+        self.assertEqual(runtime.get("section_code"), "206C(1H)")
+        self.assertEqual(runtime.get("collection_status"), "NOT_COLLECTED")
+        self.assertTrue(runtime.get("zero_collection"))
+        self.assertTrue(runtime.get("user_selected_add_tcs"))
+
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_apply_tcs_persists_runtime_snapshot_for_config_disabled_reason(
+        self,
+        mocked_get_settings,
+        mocked_compute_tcs,
+    ):
+        mocked_get_settings.return_value = SimpleNamespace(tcs_credit_note_policy="REVERSE")
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=False,
+            section=None,
+            rate=Decimal("0.0000"),
+            base_amount=Decimal("0.00"),
+            amount=Decimal("0.00"),
+            reason="TCS disabled in entity config",
+            reason_code="DISABLED",
+        )
+
+        class Header:
+            withholding_enabled = True
+            doc_type = int(SalesInvoiceHeader.DocType.TAX_INVOICE)
+            tcs_section = None
+            tcs_section_id = 1
+            tcs_rate = Decimal("0.0000")
+            tcs_base_amount = Decimal("0.00")
+            tcs_amount = Decimal("0.00")
+            tcs_reason = ""
+            tcs_is_reversal = False
+            entity_id = 1
+            entityfinid_id = 1
+            subentity_id = None
+            customer_id = 1
+            bill_date = date(2026, 4, 1)
+            grand_total = Decimal("1180.00")
+            total_taxable_value = Decimal("1000.00")
+            legacy_behavior_flags = {}
+
+            def save(self, **kwargs):
+                return None
+
+        h = Header()
+        SalesInvoiceService._apply_tcs(header=h, user=None)
+
+        runtime = (h.legacy_behavior_flags or {}).get("tcs_runtime_result", {})
+        self.assertEqual(runtime.get("reason_code"), "DISABLED")
+        self.assertEqual(runtime.get("reason"), "TCS disabled in entity config")
+        self.assertEqual(runtime.get("collection_status"), "NOT_COLLECTED")
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects")
     def test_validate_adjustment_caps_blocks_excess(self, mocked_hdr_objects):

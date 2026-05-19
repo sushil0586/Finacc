@@ -267,6 +267,9 @@ class EntityWithholdingConfig(models.Model):
     )
 
     apply_194q = models.BooleanField(default=False)
+    tds_194q_prev_fy_turnover = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    tds_194q_turnover_limit = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("100000000.00"))
+    tds_194q_force_eligible = models.BooleanField(null=True, blank=True, help_text="Optional manual override for 194Q turnover eligibility.")
     apply_tcs_206c1h = models.BooleanField(default=False)  # keep for history
     tcs_206c1h_prev_fy_turnover = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
     tcs_206c1h_turnover_limit = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("100000000.00"))

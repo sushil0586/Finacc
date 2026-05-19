@@ -34,6 +34,7 @@ def q4(x) -> Decimal:
 class GstTdsComputed:
     eligible: bool
     reason: str
+    reason_code: str
     rate: Decimal
     base: Decimal
     cgst: Decimal
@@ -66,13 +67,14 @@ class GstTdsService:
     @staticmethod
     def compute_for_invoice(inv) -> GstTdsComputed:
         if not getattr(inv, "gst_tds_enabled", False):
-            return GstTdsComputed(False, "gst_tds_enabled false", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(False, "gst_tds_enabled false", "DISABLED", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
         cfg = GstTdsService._config_for(inv)
         if not cfg or not cfg.enabled:
             return GstTdsComputed(
                 False,
                 f"gst tds config disabled/missing (entity={getattr(inv, 'entity_id', None)}, subentity={getattr(inv, 'subentity_id', None)})",
+                "CONFIG_DISABLED_OR_MISSING",
                 q4(ZERO2),
                 q2(ZERO2),
                 q2(ZERO2),
@@ -87,6 +89,7 @@ class GstTdsService:
             return GstTdsComputed(
                 False,
                 f"contract ref missing (entity={getattr(inv, 'entity_id', None)}, subentity={getattr(inv, 'subentity_id', None)})",
+                "CONTRACT_REF_MISSING",
                 q4(ZERO2),
                 q2(ZERO2),
                 q2(ZERO2),
@@ -97,7 +100,7 @@ class GstTdsService:
 
         base_full = q2(getattr(inv, "total_taxable", None) or ZERO2)
         if base_full <= ZERO2:
-            return GstTdsComputed(False, "taxable base zero", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(False, "taxable base zero", "BASE_ZERO", q4(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
         # Contract-wise threshold decision (ledger)
         before = q2(
@@ -118,6 +121,7 @@ class GstTdsService:
             return GstTdsComputed(
                 False,
                 f"threshold not reached (before={before}, after={after}, threshold={threshold}, contract={contract_ref})",
+                "THRESHOLD_NOT_REACHED",
                 q4(ZERO2),
                 base_full,
                 q2(ZERO2),
@@ -133,7 +137,7 @@ class GstTdsService:
             taxable_for_tds = base_full
 
         if taxable_for_tds <= ZERO2:
-            return GstTdsComputed(False, "taxable_for_tds zero", q4(ZERO2), base_full, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(False, "taxable_for_tds zero", "TAXABLE_FOR_TDS_ZERO", q4(ZERO2), base_full, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
         # Determine split using your existing flags
         is_inter = (int(inv.tax_regime) == 2) or bool(getattr(inv, "is_igst", False))
@@ -144,18 +148,18 @@ class GstTdsService:
 
         total = q2(taxable_for_tds * total_rate / Decimal("100.00"))
         if total <= ZERO2:
-            return GstTdsComputed(False, "computed tds zero", total_rate, taxable_for_tds, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
+            return GstTdsComputed(False, "computed tds zero", "COMPUTED_ZERO", total_rate, taxable_for_tds, q2(ZERO2), q2(ZERO2), q2(ZERO2), q2(ZERO2))
 
         if is_inter:
             igst = q2(taxable_for_tds * igst_rate / Decimal("100.00"))
-            return GstTdsComputed(True, "eligible inter-state (IGST)", total_rate, taxable_for_tds, q2(ZERO2), q2(ZERO2), igst, igst)
+            return GstTdsComputed(True, "eligible inter-state (IGST)", "ELIGIBLE_INTER_IGST", total_rate, taxable_for_tds, q2(ZERO2), q2(ZERO2), igst, igst)
 
         cgst = q2(taxable_for_tds * cgst_rate / Decimal("100.00"))
         sgst = q2(taxable_for_tds * sgst_rate / Decimal("100.00"))
-        return GstTdsComputed(True, "eligible intra-state (CGST + SGST)", total_rate, taxable_for_tds, cgst, sgst, q2(ZERO2), q2(cgst + sgst))
+        return GstTdsComputed(True, "eligible intra-state (CGST + SGST)", "ELIGIBLE_INTRA_CGST_SGST", total_rate, taxable_for_tds, cgst, sgst, q2(ZERO2), q2(cgst + sgst))
 
     @staticmethod
-    def apply_to_header(inv) -> None:
+    def apply_to_header(inv) -> GstTdsComputed:
         """
         Apply computed fields to header. Call this after totals are computed.
         No ledger update here (recommended). Ledger update should happen at payment time.
@@ -173,6 +177,7 @@ class GstTdsService:
         # Persist machine-readable reason for easier audit/debug in admin + API consumers.
         # This is especially useful for NA outcomes (config missing, threshold not reached, etc.).
         inv.gst_tds_reason = (res.reason or None)
+        return res
 
     @staticmethod
     def _scope_key_for_header(inv):

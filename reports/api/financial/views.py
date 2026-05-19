@@ -41,6 +41,7 @@ from reports.services.financial_hub_settings import (
     get_visible_profit_loss_columns,
     get_visible_trading_account_columns,
     get_visible_trial_balance_columns,
+    apply_amount_display_unit_override,
 )
 from reports.schemas.common import build_report_envelope
 from reports.schemas.financial_reports import FinancialReportScopeSerializer, LedgerBookScopeSerializer
@@ -109,6 +110,7 @@ class _BaseFinancialReportAPIView(ScopedEntitlementMixin, APIView):
             ),
             "include_inactive_ledgers": scope.get("include_inactive_ledgers", False),
             "search": scope.get("search"),
+            "amount_display_unit": scope.get("amount_display_unit"),
             "sort_by": scope.get("sort_by"),
             "sort_order": scope.get("sort_order", "asc"),
             "page": scope.get("page", 1),
@@ -2279,6 +2281,7 @@ class _BaseTrialBalanceExportAPIView(_BaseFinancialReportAPIView):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_trial_balance_settings(settings_payload)
+        settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         data = build_trial_balance(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -2486,6 +2489,7 @@ class _BaseLedgerBookExportAPIView(_BaseFinancialReportAPIView):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_ledger_book_settings(settings_payload)
+        settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         data = build_ledger_book(
             entity_id=scope["entity"],
             ledger_id=scope["ledger"],
@@ -2678,6 +2682,7 @@ class LedgerSummaryAPIView(_BaseFinancialReportAPIView):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_ledger_summary_settings(settings_payload)
+        settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         report_defaults = settings.get("report_defaults") or {}
         data = build_ledger_summary(
             entity_id=scope["entity"],
@@ -2948,6 +2953,7 @@ class _BaseProfitAndLossExportAPIView(_BaseFinancialReportAPIView):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_profit_loss_settings(settings_payload)
+        settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
         report_defaults = settings.get("report_defaults") or {}
         view_type = (scope.get("view_type") or report_defaults.get("default_view_type") or "summary").lower()
@@ -3206,6 +3212,7 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_balance_sheet_settings(settings_payload)
+        settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         report_defaults = settings.get("report_defaults") or {}
         reporting_policy = resolve_financial_reporting_policy(scope["entity"])
         period_by = _effective_period_by(scope)
@@ -3580,6 +3587,7 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
         scope = serializer.validated_data
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_trading_account_settings(settings_payload)
+        settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         report_defaults = settings.get("report_defaults") or {}
         effective_view_type = scope.get("view_type") or report_defaults.get("default_view_type") or "summary"
         valuation_method = (request.query_params.get("valuation_method") or report_defaults.get("stock_valuation_method") or "fifo").lower()

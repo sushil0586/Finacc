@@ -97,6 +97,79 @@ class PurchaseInvoiceService:
         locked, reason = PurchaseSettingsService.is_locked(entity_id, subentity_id, bill_date)
         if locked:
             raise ValueError(f"Purchase period locked. {reason}")
+
+    @staticmethod
+    def _set_tds_runtime_snapshot(
+        *,
+        header: PurchaseInvoiceHeader,
+        mode: str,
+        enabled: bool,
+        reason: Optional[str],
+        reason_code: Optional[str],
+    ) -> None:
+        notes = dict(getattr(header, "match_notes", {}) or {})
+        if not enabled:
+            notes.pop("withholding_runtime_result", None)
+            header.match_notes = notes
+            return
+
+        section = getattr(header, "tds_section", None)
+        amount = q2(getattr(header, "tds_amount", ZERO2) or ZERO2)
+        base_amount = q2(getattr(header, "tds_base_amount", ZERO2) or ZERO2)
+        rate = q4(getattr(header, "tds_rate", ZERO4) or ZERO4)
+
+        notes["withholding_runtime_result"] = {
+            "enabled": True,
+            "mode": str(mode or "AUTO").upper().strip(),
+            "section_id": getattr(section, "id", None) if section is not None else None,
+            "section_code": str(getattr(section, "section_code", "") or "").strip().upper() or None,
+            "rate": str(rate),
+            "base_amount": str(base_amount),
+            "amount": str(amount),
+            "reason": (str(reason or "").strip() or None),
+            "reason_code": (str(reason_code or "").strip().upper() or None),
+            "deduction_status": "DEDUCTED" if amount > ZERO2 else "NOT_DEDUCTED",
+            "zero_deduction": bool(amount <= ZERO2),
+            "user_selected_add_tds": bool(getattr(header, "withholding_enabled", False)),
+        }
+        header.match_notes = notes
+
+    @staticmethod
+    def _set_gst_tds_runtime_snapshot(
+        *,
+        header: PurchaseInvoiceHeader,
+        mode: str,
+        enabled: bool,
+        reason: Optional[str],
+        reason_code: Optional[str],
+    ) -> None:
+        notes = dict(getattr(header, "match_notes", {}) or {})
+        if not enabled:
+            notes.pop("gst_tds_runtime_result", None)
+            header.match_notes = notes
+            return
+
+        amount = q2(getattr(header, "gst_tds_amount", ZERO2) or ZERO2)
+        base_amount = q2(getattr(header, "gst_tds_base_amount", ZERO2) or ZERO2)
+        rate = q4(getattr(header, "gst_tds_rate", ZERO4) or ZERO4)
+
+        notes["gst_tds_runtime_result"] = {
+            "enabled": True,
+            "mode": str(mode or "AUTO").upper().strip(),
+            "contract_ref": normalize_contract_ref(getattr(header, "gst_tds_contract_ref", "")) or None,
+            "rate": str(rate),
+            "base_amount": str(base_amount),
+            "amount": str(amount),
+            "cgst_amount": str(q2(getattr(header, "gst_tds_cgst_amount", ZERO2) or ZERO2)),
+            "sgst_amount": str(q2(getattr(header, "gst_tds_sgst_amount", ZERO2) or ZERO2)),
+            "igst_amount": str(q2(getattr(header, "gst_tds_igst_amount", ZERO2) or ZERO2)),
+            "reason": (str(reason or "").strip() or None),
+            "reason_code": (str(reason_code or "").strip().upper() or None),
+            "deduction_status": "DEDUCTED" if amount > ZERO2 else "NOT_DEDUCTED",
+            "zero_deduction": bool(amount <= ZERO2),
+            "user_selected_add_gst_tds": bool(getattr(header, "gst_tds_enabled", False)),
+        }
+        header.match_notes = notes
         
     @staticmethod
     def _apply_gst_tds(*, header: PurchaseInvoiceHeader) -> None:
@@ -119,17 +192,40 @@ class PurchaseInvoiceService:
             header.gst_tds_igst_amount = q2(ZERO2)
             header.gst_tds_amount = q2(ZERO2)
             header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)  # NA
+            PurchaseInvoiceService._set_gst_tds_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=False,
+                reason=None,
+                reason_code=None,
+            )
             return
 
         # contract ref required
         contract_ref = normalize_contract_ref(getattr(header, "gst_tds_contract_ref", ""))
         header.gst_tds_contract_ref = contract_ref
         if not contract_ref:
+            header.gst_tds_reason = "contract ref missing"
+            PurchaseInvoiceService._set_gst_tds_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=True,
+                reason=header.gst_tds_reason,
+                reason_code="CONTRACT_REF_MISSING",
+            )
             return  # keep NA (or raise in serializer)
 
         # base must be taxable value (excluding GST)
         taxable = q2(getattr(header, "total_taxable", None) or ZERO2)
         if taxable <= ZERO2:
+            header.gst_tds_reason = "taxable base zero"
+            PurchaseInvoiceService._set_gst_tds_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=True,
+                reason=header.gst_tds_reason,
+                reason_code="BASE_ZERO",
+            )
             return
 
         is_inter = (int(getattr(header, "tax_regime", 1)) == int(header.TaxRegime.INTER)) or bool(getattr(header, "is_igst", False))
@@ -177,6 +273,13 @@ class PurchaseInvoiceService:
                 raise ValueError(f"GST-TDS amount mismatch. Expected {expected} for base {base} at rate {rate}.")
 
             header.gst_tds_status = getattr(header.GstTdsStatus, "ELIGIBLE", 1)
+            PurchaseInvoiceService._set_gst_tds_runtime_snapshot(
+                header=header,
+                mode="MANUAL",
+                enabled=True,
+                reason=(getattr(header, "gst_tds_reason", "") or "").strip() or "MANUAL",
+                reason_code="MANUAL" if total > ZERO2 else "MANUAL_ZERO_AMOUNT",
+            )
             return
 
         # ----------------------------
@@ -190,7 +293,14 @@ class PurchaseInvoiceService:
         header.gst_tds_igst_amount = q2(ZERO2)
         header.gst_tds_amount = q2(ZERO2)
         header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)
-        GstTdsService.apply_to_header(header)
+        res = GstTdsService.apply_to_header(header)
+        PurchaseInvoiceService._set_gst_tds_runtime_snapshot(
+            header=header,
+            mode="AUTO",
+            enabled=True,
+            reason=res.reason,
+            reason_code=res.reason_code,
+        )
 
     @staticmethod
     def _apply_vendor_withholding_variance_policy(*, header: PurchaseInvoiceHeader) -> None:
@@ -981,6 +1091,13 @@ class PurchaseInvoiceService:
             header.tds_base_amount = ZERO2
             header.tds_amount = ZERO2
             header.tds_reason = None
+            PurchaseInvoiceService._set_tds_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=False,
+                reason=None,
+                reason_code=None,
+            )
             return
 
         # ✅ MANUAL MODE
@@ -1032,6 +1149,13 @@ class PurchaseInvoiceService:
             header.tds_base_amount = base
             header.tds_amount = amt
             header.tds_reason = (getattr(header, "tds_reason", "") or "").strip() or "MANUAL"
+            PurchaseInvoiceService._set_tds_runtime_snapshot(
+                header=header,
+                mode="MANUAL",
+                enabled=True,
+                reason=header.tds_reason,
+                reason_code="MANUAL" if amt > ZERO2 else "MANUAL_ZERO_AMOUNT",
+            )
             return
 
         # ✅ AUTO MODE (source of truth)
@@ -1048,6 +1172,13 @@ class PurchaseInvoiceService:
         header.tds_base_amount = res.base_amount
         header.tds_amount = res.amount
         header.tds_reason = res.reason
+        PurchaseInvoiceService._set_tds_runtime_snapshot(
+            header=header,
+            mode="AUTO",
+            enabled=True,
+            reason=res.reason,
+            reason_code=res.reason_code,
+        )
         if not res.section:
             raise ValueError("Provide tds_section or configure default TDS section for this entity.")
     @staticmethod

@@ -20,6 +20,7 @@ from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product, ProductPurchaseBehavior
 from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
+from withholding.models import EntityWithholdingSectionPostingMap
 
 
 # =========================
@@ -92,6 +93,32 @@ class PurchaseInvoicePostingAdapter:
       - Credit Note => OUT only if header.affects_inventory=True
       - Debit Note => default no inventory (financial adjustment)
     """
+
+    @staticmethod
+    def _resolve_tds_payable_target(*, header: Any, resolver: StaticAccountResolver) -> tuple[int, int | None]:
+        section_id = getattr(header, "tds_section_id", None)
+        bill_date = getattr(header, "bill_date", None)
+        if section_id and bill_date is not None:
+            base_qs = EntityWithholdingSectionPostingMap.objects.filter(
+                entity_id=int(header.entity_id),
+                section_id=int(section_id),
+                is_active=True,
+                effective_from__lte=bill_date,
+            ).select_related("payable_account")
+            subentity_id = getattr(header, "subentity_id", None)
+            if subentity_id is not None:
+                mapped = base_qs.filter(subentity_id=subentity_id).order_by("-effective_from", "-id").first()
+                if mapped:
+                    ledger_id = mapped.payable_ledger_id or getattr(getattr(mapped, "payable_account", None), "ledger_id", None) or None
+                    return int(mapped.payable_account_id), int(ledger_id) if ledger_id else None
+            mapped = base_qs.filter(subentity__isnull=True).order_by("-effective_from", "-id").first()
+            if mapped:
+                ledger_id = mapped.payable_ledger_id or getattr(getattr(mapped, "payable_account", None), "ledger_id", None) or None
+                return int(mapped.payable_account_id), int(ledger_id) if ledger_id else None
+
+        account_id = int(resolver.get_account_id(StaticAccountCodes.TDS_PAYABLE, required=True))
+        ledger_id = resolver.get_ledger_id(StaticAccountCodes.TDS_PAYABLE, required=True)
+        return account_id, int(ledger_id) if ledger_id else None
 
     @staticmethod
     @transaction.atomic
@@ -491,8 +518,10 @@ class PurchaseInvoicePostingAdapter:
 
         tds = q2(getattr(header, "tds_amount", None) or ZERO2)
         if tds > ZERO2:
-            tds_payable_ac = resolver.get_account_id(StaticAccountCodes.TDS_PAYABLE, required=True)
-            tds_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.TDS_PAYABLE, required=True)
+            tds_payable_ac, tds_payable_ledger = PurchaseInvoicePostingAdapter._resolve_tds_payable_target(
+                header=header,
+                resolver=resolver,
+            )
 
             # Dr Vendor Payable (reduce vendor liability)
             jl.append(JLInput(
@@ -506,7 +535,7 @@ class PurchaseInvoicePostingAdapter:
             # Cr TDS Payable
             jl.append(JLInput(
                 account_id=int(tds_payable_ac),
-                ledger_id=int(tds_payable_ledger),
+                ledger_id=int(tds_payable_ledger) if tds_payable_ledger else None,
                 drcr=False,  # CR
                 amount=tds,
                 description=f"{narration} (TDS payable)",

@@ -952,12 +952,16 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         self.assertEqual(len(adjustments), 1)
         self.assertEqual(adjustments[0]["adj_type"], "BANK_CHARGES")
         self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "DISABLED")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("deduction_status"), "NOT_DEDUCTED")
+        self.assertTrue(payload.get("withholding_runtime_result", {}).get("zero_deduction"))
+        self.assertFalse(payload.get("withholding_runtime_result", {}).get("user_selected_add_tds"))
 
     @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     def test_runtime_withholding_rejects_invoice_based_section_even_in_manual_mode(self, mock_filter):
         mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
             id=10,
             base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+            section_code="194C",
         )
 
         adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
@@ -981,6 +985,56 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
 
         self.assertEqual(adjustments, [])
         self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "INVALID_BASE_RULE")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("section_code"), "194C")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("deduction_status"), "NOT_DEDUCTED")
+
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
+    @patch("payments.services.payment_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_snapshot_persists_status_and_section_code(
+        self,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+        mock_filter,
+    ):
+        mock_resolve_entity.return_value = (None, None)
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=5,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+            section_code="194A",
+        )
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            rate=Decimal("10.0000"),
+            amount=Decimal("10.00"),
+            reason="payment-stage tds computed",
+            reason_code="OK",
+            section=SimpleNamespace(id=5, section_code="194A"),
+        )
+
+        adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("100.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(runtime.get("section_code"), "194A")
+        self.assertEqual(runtime.get("deduction_status"), "DEDUCTED")
+        self.assertFalse(runtime.get("zero_deduction"))
+        self.assertTrue(runtime.get("user_selected_add_tds"))
 
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")

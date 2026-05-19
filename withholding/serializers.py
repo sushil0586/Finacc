@@ -37,6 +37,10 @@ APPLICABILITY_ALLOWED_KEYS = {
     "resident_country_codes",
     "party_country_codes",
     "threshold_mode",
+    "aggregate_threshold",
+    "rent_rate_plant_machinery",
+    "rent_rate_land_building",
+    "rent_plant_machinery_keywords",
 }
 APPLICABILITY_RESIDENT_STATUSES = {"resident", "non_resident"}
 APPLICABILITY_THRESHOLD_MODES = {"single_txn", "cumulative"}
@@ -86,6 +90,16 @@ def _normalize_country_code_list(value, field_name: str):
             raise serializers.ValidationError({field_name: "must contain ISO alpha-2 country codes (e.g. IN, AE)."})
         out.append(upper)
     return out
+
+
+def _normalize_decimal_string(value, field_name: str):
+    try:
+        amount = q2(Decimal(str(value or ZERO2)))
+    except Exception as exc:
+        raise serializers.ValidationError({field_name: "Enter a valid amount."}) from exc
+    if amount < ZERO2:
+        raise serializers.ValidationError({field_name: "Amount cannot be negative."})
+    return str(amount)
 
 
 def _is_valid_fy_label(value: str) -> bool:
@@ -242,6 +256,29 @@ class WithholdingSectionSerializer(serializers.ModelSerializer):
                         }
                     )
                 normalized["threshold_mode"] = mode
+
+        if "aggregate_threshold" in value:
+            normalized["aggregate_threshold"] = _normalize_decimal_string(
+                value.get("aggregate_threshold"),
+                "aggregate_threshold",
+            )
+
+        if "rent_rate_plant_machinery" in value:
+            normalized["rent_rate_plant_machinery"] = _normalize_decimal_string(
+                value.get("rent_rate_plant_machinery"),
+                "rent_rate_plant_machinery",
+            )
+
+        if "rent_rate_land_building" in value:
+            normalized["rent_rate_land_building"] = _normalize_decimal_string(
+                value.get("rent_rate_land_building"),
+                "rent_rate_land_building",
+            )
+
+        if "rent_plant_machinery_keywords" in value:
+            keywords = [token.lower() for token in _normalize_text_list(value.get("rent_plant_machinery_keywords"))]
+            if keywords:
+                normalized["rent_plant_machinery_keywords"] = list(dict.fromkeys(keywords))
 
         return normalized
 
@@ -440,6 +477,19 @@ class EntityWithholdingConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(errors)
 
         prev_turnover = attrs.get(
+            "tds_194q_prev_fy_turnover",
+            getattr(instance, "tds_194q_prev_fy_turnover", ZERO2) if instance else ZERO2,
+        )
+        turnover_limit = attrs.get(
+            "tds_194q_turnover_limit",
+            getattr(instance, "tds_194q_turnover_limit", ZERO2) if instance else ZERO2,
+        )
+        if q2(prev_turnover or ZERO2) < ZERO2:
+            errors["tds_194q_prev_fy_turnover"] = "Previous FY turnover cannot be negative."
+        if q2(turnover_limit or ZERO2) < ZERO2:
+            errors["tds_194q_turnover_limit"] = "Turnover limit cannot be negative."
+
+        prev_turnover = attrs.get(
             "tcs_206c1h_prev_fy_turnover",
             getattr(instance, "tcs_206c1h_prev_fy_turnover", ZERO2) if instance else ZERO2,
         )
@@ -467,6 +517,9 @@ class EntityWithholdingConfigSerializer(serializers.ModelSerializer):
             "default_tds_section",
             "default_tcs_section",
             "apply_194q",
+            "tds_194q_prev_fy_turnover",
+            "tds_194q_turnover_limit",
+            "tds_194q_force_eligible",
             "apply_tcs_206c1h",
             "tcs_206c1h_prev_fy_turnover",
             "tcs_206c1h_turnover_limit",

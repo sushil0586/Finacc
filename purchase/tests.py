@@ -59,6 +59,7 @@ class PurchaseTdsApplyTests(SimpleTestCase):
             "bill_date": None,
             "total_taxable": Decimal("1000.00"),
             "grand_total": Decimal("1180.00"),
+            "match_notes": {},
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
@@ -82,6 +83,7 @@ class PurchaseTdsApplyTests(SimpleTestCase):
         self.assertEqual(header.tds_base_amount, Decimal("0.00"))
         self.assertEqual(header.tds_amount, Decimal("0.00"))
         self.assertIsNone(header.tds_reason)
+        self.assertEqual(header.match_notes, {})
 
     @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
     def test_manual_mode_requires_section(self, mock_get_cfg):
@@ -160,7 +162,140 @@ class PurchaseTdsApplyTests(SimpleTestCase):
         self.assertEqual(header.tds_base_amount, Decimal("1000.00"))
         self.assertEqual(header.tds_amount, Decimal("10.00"))
         self.assertEqual(header.tds_reason, "resolved from config")
+        self.assertEqual(
+            header.match_notes.get("withholding_runtime_result"),
+            {
+                "enabled": True,
+                "mode": "AUTO",
+                "section_id": 22,
+                "section_code": None,
+                "rate": "1.0000",
+                "base_amount": "1000.00",
+                "amount": "10.00",
+                "reason": "resolved from config",
+                "reason_code": None,
+                "deduction_status": "DEDUCTED",
+                "zero_deduction": False,
+                "user_selected_add_tds": True,
+            },
+        )
 
+    @patch("purchase.services.purchase_invoice_service.PurchaseWithholdingService.compute_tds")
+    def test_auto_mode_zero_deduction_persists_reason_snapshot(self, mock_compute):
+        section = SimpleNamespace(id=31, section_code="194J")
+        header = self._make_header(withholding_enabled=True, tds_is_manual=False, tds_section_id=31)
+
+        mock_compute.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("10.0000"),
+            base_amount=Decimal("0.00"),
+            amount=Decimal("0.00"),
+            reason="Below threshold (50000.00)",
+            reason_code="BELOW_THRESHOLD",
+        )
+
+        PurchaseInvoiceService._apply_tds(header=header)
+
+        self.assertEqual(header.tds_amount, Decimal("0.00"))
+        self.assertEqual(header.tds_reason, "Below threshold (50000.00)")
+        self.assertEqual(
+            header.match_notes.get("withholding_runtime_result"),
+            {
+                "enabled": True,
+                "mode": "AUTO",
+                "section_id": 31,
+                "section_code": "194J",
+                "rate": "10.0000",
+                "base_amount": "0.00",
+                "amount": "0.00",
+                "reason": "Below threshold (50000.00)",
+                "reason_code": "BELOW_THRESHOLD",
+                "deduction_status": "NOT_DEDUCTED",
+                "zero_deduction": True,
+                "user_selected_add_tds": True,
+            },
+        )
+
+
+class PurchaseGstTdsApplyTests(SimpleTestCase):
+    def _make_header(self, **overrides):
+        defaults = {
+            "gst_tds_enabled": True,
+            "gst_tds_is_manual": False,
+            "gst_tds_contract_ref": "CNT-001",
+            "gst_tds_reason": None,
+            "gst_tds_rate": Decimal("0.0000"),
+            "gst_tds_base_amount": Decimal("0.00"),
+            "gst_tds_cgst_amount": Decimal("0.00"),
+            "gst_tds_sgst_amount": Decimal("0.00"),
+            "gst_tds_igst_amount": Decimal("0.00"),
+            "gst_tds_amount": Decimal("0.00"),
+            "gst_tds_status": 0,
+            "entity_id": 1,
+            "entityfinid_id": 1,
+            "subentity_id": 1,
+            "vendor_id": 1,
+            "total_taxable": Decimal("1000.00"),
+            "tax_regime": 1,
+            "is_igst": False,
+            "match_notes": {},
+            "GstTdsStatus": SimpleNamespace(NA=0, ELIGIBLE=1),
+            "TaxRegime": SimpleNamespace(INTER=2),
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_gst_tds_disabled_clears_runtime_snapshot(self):
+        header = self._make_header(
+            gst_tds_enabled=False,
+            gst_tds_reason="old",
+            match_notes={"gst_tds_runtime_result": {"enabled": True}},
+        )
+
+        PurchaseInvoiceService._apply_gst_tds(header=header)
+
+        self.assertEqual(header.gst_tds_amount, Decimal("0.00"))
+        self.assertNotIn("gst_tds_runtime_result", header.match_notes)
+
+    @patch("purchase.services.purchase_invoice_service.GstTdsService.apply_to_header")
+    def test_gst_tds_auto_zero_deduction_persists_reason_snapshot(self, mock_apply):
+        header = self._make_header()
+
+        def _apply(inv):
+            inv.gst_tds_rate = Decimal("2.0000")
+            inv.gst_tds_base_amount = Decimal("1000.00")
+            inv.gst_tds_cgst_amount = Decimal("0.00")
+            inv.gst_tds_sgst_amount = Decimal("0.00")
+            inv.gst_tds_igst_amount = Decimal("0.00")
+            inv.gst_tds_amount = Decimal("0.00")
+            inv.gst_tds_status = 0
+            inv.gst_tds_reason = "threshold not reached"
+            return SimpleNamespace(reason="threshold not reached", reason_code="THRESHOLD_NOT_REACHED")
+
+        mock_apply.side_effect = _apply
+
+        PurchaseInvoiceService._apply_gst_tds(header=header)
+
+        self.assertEqual(
+            header.match_notes.get("gst_tds_runtime_result"),
+            {
+                "enabled": True,
+                "mode": "AUTO",
+                "contract_ref": "CNT-001",
+                "rate": "2.0000",
+                "base_amount": "1000.00",
+                "amount": "0.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "reason": "threshold not reached",
+                "reason_code": "THRESHOLD_NOT_REACHED",
+                "deduction_status": "NOT_DEDUCTED",
+                "zero_deduction": True,
+                "user_selected_add_gst_tds": True,
+            },
+        )
 
 class PurchaseInvoiceViewUnitTests(SimpleTestCase):
     def setUp(self):
@@ -512,6 +647,14 @@ class PurchaseVendorComplianceValidationTests(SimpleTestCase):
 
 
 class PurchaseWithholdingBaseRuleTests(SimpleTestCase):
+    def _make_line(self, **overrides):
+        defaults = {
+            "product_desc": "",
+            "hsn_sac": "",
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
     @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
     @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
     def test_compute_tds_skips_payment_based_section_in_invoice_context(self, mock_get_cfg, mock_resolve_section):
@@ -541,6 +684,658 @@ class PurchaseWithholdingBaseRuleTests(SimpleTestCase):
         self.assertTrue(res.enabled)
         self.assertEqual(res.amount, Decimal("0.00"))
         self.assertEqual(res.reason_code, "NOT_APPLICABLE_BASE_RULE_CONTEXT")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_returns_explicit_no_deduction_reason_for_credit_note_reversal(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=101,
+            section_code="194J",
+            base_rule=1,
+            threshold_default=Decimal("50000.00"),
+            applicability_json={},
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("10.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            vendor_id=10,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("-100000.00"),
+            gross_total=Decimal("-118000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("0.00"))
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "CREDIT_NOTE_REVERSAL_NO_TDS")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_blocks_194q_when_config_flag_disabled(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True, apply_194q=False)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=99,
+            section_code="194Q",
+            base_rule=1,
+            threshold_default=Decimal("5000000.00"),
+            applicability_json={},
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("0.1000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=99,
+            vendor_id=10,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("5500000.00"),
+            gross_total=Decimal("5500000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_APPLICABLE_194Q_DISABLED")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_blocks_194q_for_import_purchase(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True, apply_194q=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=99,
+            section_code="194Q",
+            base_rule=1,
+            threshold_default=Decimal("5000000.00"),
+            applicability_json={},
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("0.1000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=99,
+            vendor_id=10,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("5500000.00"),
+            gross_total=Decimal("5500000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_APPLICABLE_IMPORT")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.evaluate_section_applicability")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_blocks_194q_for_non_resident_vendor(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_applicability,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True, apply_194q=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=99,
+            section_code="194Q",
+            base_rule=1,
+            threshold_default=Decimal("5000000.00"),
+            applicability_json={"resident_status": ["resident"], "party_country_codes": ["IN"]},
+        )
+        mock_applicability.return_value = (
+            False,
+            "Section not applicable for party residency 'non_resident'",
+            "NOT_APPLICABLE_RESIDENCY",
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("0.1000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        lines = MagicMock()
+        lines.filter.return_value.exists.return_value = False
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=99,
+            vendor_id=10,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            lines=lines,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("5500000.00"),
+            gross_total=Decimal("5500000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_APPLICABLE_RESIDENCY")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.evaluate_section_applicability")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_blocks_194q_for_service_invoice(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_applicability,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True, apply_194q=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=99,
+            section_code="194Q",
+            base_rule=1,
+            threshold_default=Decimal("5000000.00"),
+            applicability_json={},
+        )
+        mock_applicability.return_value = (True, None, None)
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("0.1000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        service_qs = MagicMock()
+        service_qs.exists.return_value = True
+        goods_qs = MagicMock()
+        goods_qs.exists.return_value = False
+        lines = MagicMock()
+        lines.filter.side_effect = lambda **kwargs: service_qs if kwargs == {"is_service": True} else goods_qs
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=99,
+            vendor_id=10,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            lines=lines,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("5500000.00"),
+            gross_total=Decimal("5500000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_APPLICABLE_SERVICE_INVOICE")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_blocks_194q_when_turnover_gate_not_met(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(
+            enable_tds=True,
+            apply_194q=True,
+            tds_194q_prev_fy_turnover=Decimal("50000000.00"),
+            tds_194q_turnover_limit=Decimal("100000000.00"),
+            tds_194q_force_eligible=None,
+        )
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=99,
+            section_code="194Q",
+            base_rule=1,
+            threshold_default=Decimal("5000000.00"),
+            applicability_json={},
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("0.1000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        lines = MagicMock()
+        lines.filter.return_value.exists.return_value = False
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=99,
+            vendor_id=10,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            lines=lines,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("5500000.00"),
+            gross_total=Decimal("5500000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "NOT_ELIGIBLE_TURNOVER_GATE")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_respects_single_transaction_threshold_for_invoice_section(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=101,
+            section_code="194J",
+            base_rule=1,
+            threshold_default=Decimal("50000.00"),
+            applicability_json={},
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("10.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            vendor_id=10,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("40000.00"),
+            gross_total=Decimal("47200.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("40000.00"))
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "BELOW_THRESHOLD")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_applies_amount_when_invoice_section_crosses_threshold(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=101,
+            section_code="194J",
+            base_rule=1,
+            threshold_default=Decimal("50000.00"),
+            applicability_json={},
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("10.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            vendor_id=10,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("100000.00"),
+            gross_total=Decimal("118000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("100000.00"))
+        self.assertEqual(res.amount, Decimal("10000.00"))
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_194i_uses_lower_plant_machinery_rate_when_line_matches_keywords(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=101,
+            section_code="194I",
+            base_rule=1,
+            threshold_default=Decimal("50000.00"),
+            rate_default=Decimal("10.0000"),
+            applicability_json={
+                "rent_rate_plant_machinery": "2.00",
+                "rent_plant_machinery_keywords": ["plant", "machinery", "equipment"],
+            },
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("10.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            vendor_id=10,
+            lines=[self._make_line(product_desc="Mobile crane plant hire charges", hsn_sac="9973")],
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("100000.00"),
+            gross_total=Decimal("118000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.rate, Decimal("2.00"))
+        self.assertEqual(res.amount, Decimal("2000.00"))
+        self.assertEqual(res.reason_code, "RATE_SUBTYPE_194I_PLANT_MACHINERY")
+
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_194i_keeps_default_rate_for_office_rent(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        mock_resolve_section.return_value = SimpleNamespace(
+            id=101,
+            section_code="194I",
+            base_rule=1,
+            threshold_default=Decimal("50000.00"),
+            rate_default=Decimal("10.0000"),
+            applicability_json={
+                "rent_rate_plant_machinery": "2.00",
+                "rent_plant_machinery_keywords": ["plant", "machinery", "equipment"],
+            },
+        )
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("10.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            vendor_id=10,
+            lines=[self._make_line(product_desc="Office building monthly rent", hsn_sac="9972")],
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("100000.00"),
+            gross_total=Decimal("118000.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.rate, Decimal("10.0000"))
+        self.assertEqual(res.amount, Decimal("10000.00"))
+
+    @patch("purchase.services.purchase_withholding_service.FyPartyThresholdService.compute_base_above_threshold")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_194c_uses_cumulative_threshold_when_single_invoice_below_threshold(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+        mock_compute_threshold,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        section = SimpleNamespace(
+            id=101,
+            section_code="194C",
+            base_rule=1,
+            threshold_default=Decimal("30000.00"),
+            applicability_json={"threshold_mode": "cumulative", "aggregate_threshold": "100000.00"},
+        )
+        mock_resolve_section.return_value = section
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        mock_compute_threshold.return_value = SimpleNamespace(
+            base_applicable=Decimal("5000.00"),
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            tds_section=section,
+            vendor_id=10,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("25000.00"),
+            gross_total=Decimal("29500.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("25000.00"))
+        self.assertEqual(res.amount, Decimal("250.00"))
+        self.assertEqual(res.reason_code, "THRESHOLD_CROSSED_CUMULATIVE")
+
+    @patch("purchase.services.purchase_withholding_service.FyPartyThresholdService.compute_base_above_threshold")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.resolve_section")
+    @patch("purchase.services.purchase_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tds_194c_blocks_below_aggregate_threshold_when_single_invoice_below_threshold(
+        self,
+        mock_get_cfg,
+        mock_resolve_section,
+        mock_party_profile,
+        mock_resolve_rate,
+        mock_compute_threshold,
+    ):
+        mock_get_cfg.return_value = SimpleNamespace(enable_tds=True)
+        section = SimpleNamespace(
+            id=101,
+            section_code="194C",
+            base_rule=1,
+            threshold_default=Decimal("30000.00"),
+            applicability_json={"threshold_mode": "cumulative", "aggregate_threshold": "100000.00"},
+        )
+        mock_resolve_section.return_value = section
+        mock_party_profile.return_value = None
+        mock_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        mock_compute_threshold.return_value = SimpleNamespace(
+            base_applicable=Decimal("0.00"),
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            withholding_enabled=True,
+            tds_section_id=101,
+            tds_section=section,
+            vendor_id=10,
+        )
+
+        res = PurchaseWithholdingService.compute_tds(
+            header=header,
+            vendor_account_id=10,
+            bill_date=date(2026, 4, 1),
+            taxable_total=Decimal("25000.00"),
+            gross_total=Decimal("29500.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("25000.00"))
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "BELOW_THRESHOLD_CUMULATIVE")
 
 
 class PurchaseApiSmokeTests(APITestCase):
@@ -827,8 +1622,10 @@ class PurchasePostingAdapterTests(SimpleTestCase):
     @patch("posting.adapters.purchase_invoice.Product.objects")
     @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
     @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    @patch("posting.adapters.purchase_invoice.EntityWithholdingSectionPostingMap.objects.filter")
     def test_posts_gst_tds_when_config_enabled(
         self,
+        mock_section_map_filter,
         mock_static_resolver_cls,
         mock_product_resolver_cls,
         mock_product_objects,
@@ -849,6 +1646,8 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         resolver = mock_static_resolver_cls.return_value
         resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_section_map_filter.return_value.filter.return_value.order_by.return_value.first.return_value = None
         mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
         mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
 
@@ -880,6 +1679,136 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         self.assertTrue(vendor_dr, "Expected DR Vendor entry for GST-TDS deduction.")
         self.assertTrue(gst_tds_cr, "Expected CR GST-TDS Payable entry.")
+
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    @patch("posting.adapters.purchase_invoice.EntityWithholdingSectionPostingMap.objects.filter")
+    def test_posts_tds_to_section_specific_payable_mapping_when_available(
+        self,
+        mock_section_map_filter,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+            StaticAccountCodes.TDS_PAYABLE: 8108,
+            StaticAccountCodes.GST_TDS_PAYABLE: 8109,
+        }
+
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=1002)
+
+        mapped = SimpleNamespace(payable_account_id=9901, payable_ledger_id=9902)
+        sub_qs = MagicMock()
+        sub_qs.order_by.return_value.first.return_value = mapped
+        root_qs = MagicMock()
+        root_qs.order_by.return_value.first.return_value = None
+        base_qs = MagicMock()
+        base_qs.select_related.return_value = base_qs
+        base_qs.filter.side_effect = lambda **kwargs: sub_qs if kwargs == {"subentity_id": 1} else root_qs
+        mock_section_map_filter.return_value = base_qs
+
+        header = self._base_header(tds_amount=Decimal("10.00"))
+        header.tds_section_id = 77
+        header.subentity_id = 1
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[self._line()],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        jl_inputs = posting_instance.post.call_args.kwargs["jl_inputs"]
+        tds_payable = [
+            x for x in jl_inputs
+            if x.account_id == 9901 and x.ledger_id == 9902 and x.drcr is False and x.amount == Decimal("10.00")
+        ]
+        self.assertTrue(tds_payable, "Expected TDS payable posting to use section-specific mapping.")
+
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    @patch("posting.adapters.purchase_invoice.EntityWithholdingSectionPostingMap.objects.filter")
+    def test_posts_tds_to_mapped_account_ledger_when_payable_ledger_is_blank(
+        self,
+        mock_section_map_filter,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+            StaticAccountCodes.TDS_PAYABLE: 8108,
+            StaticAccountCodes.GST_TDS_PAYABLE: 8109,
+        }
+
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+
+        posting_instance = mock_posting_service_cls.return_value
+        posting_instance.post.return_value = SimpleNamespace(id=1003)
+
+        mapped_account = SimpleNamespace(ledger_id=9911)
+        mapped = SimpleNamespace(payable_account_id=9901, payable_ledger_id=None, payable_account=mapped_account)
+        sub_qs = MagicMock()
+        sub_qs.order_by.return_value.first.return_value = mapped
+        root_qs = MagicMock()
+        root_qs.order_by.return_value.first.return_value = None
+        base_qs = MagicMock()
+        base_qs.select_related.return_value = base_qs
+        base_qs.filter.side_effect = lambda **kwargs: sub_qs if kwargs == {"subentity_id": 1} else root_qs
+        mock_section_map_filter.return_value = base_qs
+
+        header = self._base_header(tds_amount=Decimal("10.00"))
+        header.tds_section_id = 77
+        header.subentity_id = 1
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[self._line()],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        jl_inputs = posting_instance.post.call_args.kwargs["jl_inputs"]
+        tds_payable = [
+            x for x in jl_inputs
+            if x.account_id == 9901 and x.ledger_id == 9911 and x.drcr is False and x.amount == Decimal("10.00")
+        ]
+        self.assertTrue(
+            tds_payable,
+            "Expected TDS payable posting to fall back to the mapped account ledger when payable_ledger is blank.",
+        )
 
     @patch("posting.adapters.purchase_invoice.PostingService")
     @patch("posting.adapters.purchase_invoice.Product.objects")
@@ -1609,7 +2538,7 @@ class PurchaseStatutoryServiceTests(TestCase):
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._vendor_deductee_snapshot")
     def test_return_eligible_lines_filters_by_26q_rules(self, mock_snapshot, mock_return_line_objects, mock_challan_line_objects):
         challan = SimpleNamespace(challan_no="CH1", cin_no="CIN1")
-        header = SimpleNamespace(tds_section=None)
+        header = SimpleNamespace(tds_section=None, purchase_number="PINV-10", doc_code="PINV", doc_no=10, vendor_name="Vendor A")
         resident_line = SimpleNamespace(header_id=10, challan_id=20, amount=Decimal("5.00"), header=header, challan=challan)
         non_resident_line = SimpleNamespace(header_id=11, challan_id=21, amount=Decimal("6.00"), header=header, challan=challan)
 
@@ -1660,6 +2589,150 @@ class PurchaseStatutoryServiceTests(TestCase):
 
         self.assertEqual(len(payload["lines"]), 1)
         self.assertEqual(payload["lines"][0]["header_id"], 10)
+        self.assertEqual(payload["readiness_summary"]["eligible_lines"], 1)
+        self.assertEqual(payload["readiness_summary"]["excluded_lines"], 1)
+        self.assertEqual(payload["readiness_summary"]["excluded_residency_mismatch"], 1)
+        self.assertEqual(payload["totals"]["excluded_amount"], "6.00")
+        self.assertEqual(len(payload["excluded_rows"]), 1)
+        self.assertEqual(payload["excluded_rows"][0]["reason_code"], "RESIDENCY_MISMATCH")
+        self.assertEqual(payload["excluded_rows"][0]["source_kind"], "purchase_invoice")
+        self.assertEqual(payload["excluded_rows"][0]["source_route"], "/purchaseinvoice")
+        self.assertEqual(payload["excluded_rows"][0]["linked_challan_source_kind"], "challan")
+        self.assertEqual(payload["excluded_rows"][0]["linked_challan_source_label"], "CH1")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallanLine.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturnLine.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._vendor_deductee_snapshot")
+    def test_return_eligible_lines_exposes_invalid_pan_format_exclusion(self, mock_snapshot, mock_return_line_objects, mock_challan_line_objects):
+        challan = SimpleNamespace(challan_no="CH2", cin_no="CIN2")
+        header = SimpleNamespace(tds_section=None, purchase_number="PINV-12", doc_code="PINV", doc_no=12, vendor_name="Vendor PAN")
+        invalid_pan_line = SimpleNamespace(header_id=12, challan_id=22, amount=Decimal("7.00"), header=header, challan=challan)
+
+        challan_line_qs = MagicMock()
+        challan_line_qs.filter.return_value = challan_line_qs
+        challan_line_qs.__iter__.return_value = iter([invalid_pan_line])
+        mock_challan_line_objects.select_related.return_value.filter.return_value = challan_line_qs
+
+        consumed_qs = MagicMock()
+        consumed_qs.exclude.return_value = consumed_qs
+        consumed_values_qs = MagicMock()
+        consumed_values_qs.annotate.return_value = consumed_values_qs
+        consumed_values_qs.filter.return_value = []
+        consumed_values_qs.__iter__.return_value = iter([])
+        consumed_qs.values.return_value = consumed_values_qs
+        mock_return_line_objects.filter.return_value = consumed_qs
+
+        mock_snapshot.return_value = {
+            "deductee_residency_snapshot": "RESIDENT",
+            "deductee_country_obj": None,
+            "deductee_country_code_snapshot": "",
+            "deductee_country_name_snapshot": "",
+            "deductee_tax_id_snapshot": "TAX3",
+            "deductee_pan_snapshot": "BADPAN",
+            "deductee_gstin_snapshot": "",
+        }
+
+        payload = PurchaseStatutoryService.return_eligible_lines(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 6, 30),
+            return_code="26Q",
+        )
+
+        self.assertEqual(len(payload["lines"]), 0)
+        self.assertEqual(payload["readiness_summary"]["excluded_invalid_pan_format"], 1)
+        self.assertEqual(payload["excluded_rows"][0]["reason_code"], "INVALID_PAN_FORMAT")
+        self.assertEqual(payload["excluded_rows"][0]["source_search"], "PINV-12")
+        self.assertEqual(payload["excluded_rows"][0]["linked_challan_source_search"], "CH2")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallanLine.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturnLine.objects")
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService._vendor_deductee_snapshot")
+    def test_return_eligible_lines_exposes_source_metadata_for_eligible_preview(self, mock_snapshot, mock_return_line_objects, mock_challan_line_objects):
+        section = SimpleNamespace(section_code="194J", description="Professional Fees")
+        challan = SimpleNamespace(challan_no="CH3", cin_no="CIN3")
+        header = SimpleNamespace(
+            tds_section=section,
+            purchase_number="PINV-13",
+            doc_code="PINV",
+            doc_no=13,
+            vendor_name="Vendor Eligible",
+        )
+        eligible_line = SimpleNamespace(header_id=13, challan_id=23, amount=Decimal("8.00"), header=header, challan=challan)
+
+        challan_line_qs = MagicMock()
+        challan_line_qs.filter.return_value = challan_line_qs
+        challan_line_qs.__iter__.return_value = iter([eligible_line])
+        mock_challan_line_objects.select_related.return_value.filter.return_value = challan_line_qs
+
+        consumed_qs = MagicMock()
+        consumed_qs.exclude.return_value = consumed_qs
+        consumed_values_qs = MagicMock()
+        consumed_values_qs.annotate.return_value = consumed_values_qs
+        consumed_values_qs.filter.return_value = []
+        consumed_values_qs.__iter__.return_value = iter([])
+        consumed_qs.values.return_value = consumed_values_qs
+        mock_return_line_objects.filter.return_value = consumed_qs
+
+        mock_snapshot.return_value = {
+            "deductee_residency_snapshot": "RESIDENT",
+            "deductee_country_obj": None,
+            "deductee_country_code_snapshot": "",
+            "deductee_country_name_snapshot": "",
+            "deductee_tax_id_snapshot": "TAX4",
+            "deductee_pan_snapshot": "ABCDE1234F",
+            "deductee_gstin_snapshot": "",
+        }
+
+        payload = PurchaseStatutoryService.return_eligible_lines(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 6, 30),
+            return_code="26Q",
+        )
+
+        self.assertEqual(payload["lines"][0]["source_kind"], "purchase_invoice")
+        self.assertEqual(payload["lines"][0]["source_id"], 13)
+        self.assertEqual(payload["lines"][0]["source_label"], "Voucher PINV-13")
+        self.assertEqual(payload["lines"][0]["linked_challan_source_kind"], "challan")
+        self.assertEqual(payload["lines"][0]["linked_challan_source_id"], 23)
+        self.assertEqual(payload["lines"][0]["linked_challan_source_label"], "CH3")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService.return_eligible_lines")
+    def test_return_readiness_summary_wraps_eligible_payload(self, mock_return_eligible):
+        mock_return_eligible.return_value = {
+            "lines": [{"header_id": 10, "amount": "5.00", "source_kind": "purchase_invoice", "source_id": 10}],
+            "totals": {"line_count": 1, "amount": "5.00", "excluded_line_count": 1, "excluded_amount": "6.00"},
+            "section_totals": [{"section_code": "194J", "amount": "5.00"}],
+            "vendor_totals": [{"vendor_name": "Vendor A", "line_count": 1, "amount": "5.00"}],
+            "readiness_summary": {"eligible_lines": 1, "excluded_lines": 1, "excluded_invalid_pan_format": 1},
+            "excluded_rows": [{"header_id": 12, "reason_code": "INVALID_PAN_FORMAT", "source_kind": "purchase_invoice", "linked_challan_source_kind": "challan"}],
+        }
+
+        payload = PurchaseStatutoryService.return_readiness_summary(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 6, 30),
+            return_code="26Q",
+        )
+
+        self.assertEqual(payload["summary"]["eligible_lines"], 1)
+        self.assertEqual(payload["totals"]["excluded_amount"], "6.00")
+        self.assertEqual(payload["section_totals"][0]["section_code"], "194J")
+        self.assertEqual(payload["vendor_totals"][0]["vendor_name"], "Vendor A")
+        self.assertEqual(payload["excluded_rows"][0]["reason_code"], "INVALID_PAN_FORMAT")
+        self.assertEqual(payload["excluded_rows"][0]["source_kind"], "purchase_invoice")
+        self.assertEqual(payload["eligible_preview"][0]["source_kind"], "purchase_invoice")
+        self.assertEqual(payload["filters"]["return_code"], "26Q")
 
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryChallan.objects")
     @patch("purchase.services.purchase_statutory_service.PurchaseInvoiceHeader.objects")
@@ -2579,6 +3652,63 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("nsdl_txt", resp.data)
 
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.return_readiness_summary")
+    def test_statutory_return_readiness_summary_endpoint_returns_200(self, mock_fn, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.statutory.view"}
+        mock_fn.return_value = {
+            "filters": {
+                "entity_id": 1,
+                "entityfinid_id": 1,
+                "subentity_id": None,
+                "tax_type": "IT_TDS",
+                "period_from": date(2026, 4, 1),
+                "period_to": date(2026, 4, 30),
+                "return_code": "26Q",
+            },
+            "summary": {"eligible_lines": 1, "excluded_lines": 1},
+            "totals": {"line_count": 1, "amount": "5.00", "excluded_amount": "6.00"},
+            "section_totals": [{"section_code": "194J", "amount": "5.00"}],
+            "vendor_totals": [{"vendor_name": "Vendor A", "line_count": 1, "amount": "5.00"}],
+            "excluded_rows": [{"header_id": 12, "reason_code": "INVALID_PAN_FORMAT"}],
+            "eligible_preview": [{"header_id": 10, "amount": "5.00"}],
+        }
+        resp = self.client.get(
+            "/api/purchase/statutory/returns/readiness-summary/"
+            "?entity=1&entityfinid=1&tax_type=IT_TDS&period_from=2026-04-01&period_to=2026-04-30&return_code=26Q"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["eligible_lines"], 1)
+        self.assertEqual(resp.data["excluded_rows"][0]["reason_code"], "INVALID_PAN_FORMAT")
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.return_quality_summary")
+    def test_statutory_return_quality_summary_endpoint_returns_200(self, mock_fn, mock_perm_codes):
+        mock_perm_codes.return_value = {"purchase.statutory.view"}
+        mock_fn.return_value = {
+            "filters": {
+                "entity_id": 1,
+                "entityfinid_id": 1,
+                "subentity_id": None,
+                "tax_type": "IT_TDS",
+                "period_from": date(2026, 4, 1),
+                "period_to": date(2026, 4, 30),
+                "return_code": "26Q",
+            },
+            "summary": {"return_count": 1, "line_count": 2, "invalid_pan_format": 1},
+            "section_summary": [{"section_code": "194J", "line_count": 1, "amount": "5.00"}],
+            "vendor_summary": [{"vendor_name": "Vendor A", "line_count": 1, "amount": "5.00"}],
+            "status_summary": [{"status_name": "Filed", "return_count": 1, "line_count": 2, "amount": "11.00"}],
+            "line_preview": [{"return_id": 21, "section_code": "194J", "amount": "5.00"}],
+        }
+        resp = self.client.get(
+            "/api/purchase/statutory/returns/quality-summary/"
+            "?entity=1&entityfinid=1&tax_type=IT_TDS&period_from=2026-04-01&period_to=2026-04-30&return_code=26Q"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["return_count"], 1)
+        self.assertEqual(resp.data["section_summary"][0]["section_code"], "194J")
+
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.get_review_note")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_exceptions")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_summary")
@@ -2826,6 +3956,8 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertIn("02_Reviewer_Signoff", wb.sheetnames)
         self.assertIn("03_Action_Items", wb.sheetnames)
         self.assertIn("12_Supporting_Doc_Index", wb.sheetnames)
+        self.assertIn("13_IT_Return_Quality", wb.sheetnames)
+        self.assertIn("14_IT_Return_Scope_Summary", wb.sheetnames)
 
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.issue_form16a")
     def test_statutory_form16a_issue_endpoint_returns_201(self, mock_fn):
@@ -2903,6 +4035,15 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
         with self.assertRaisesMessage(ValueError, "26Q allows only RESIDENT"):
             PurchaseStatutoryService._validate_it_tds_return_code(return_code="26Q", lines=[line_bad])
 
+    def test_validate_it_tds_return_code_26q_requires_valid_pan_format(self):
+        line_bad = SimpleNamespace(
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT,
+            deductee_pan_snapshot="BADPAN",
+            deductee_tax_id_snapshot=None,
+        )
+        with self.assertRaisesMessage(ValueError, "valid PAN format"):
+            PurchaseStatutoryService._validate_it_tds_return_code(return_code="26Q", lines=[line_bad])
+
     def test_validate_it_tds_return_code_27q_requires_non_resident_tax_id(self):
         line_bad = SimpleNamespace(
             deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT,
@@ -2911,6 +4052,118 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
         )
         with self.assertRaisesMessage(ValueError, "27Q requires deductee_tax_id_snapshot"):
             PurchaseStatutoryService._validate_it_tds_return_code(return_code="27Q", lines=[line_bad])
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    def test_generate_nsdl_payload_includes_quality_and_section_summary(self, mock_return_objects):
+        line_one = SimpleNamespace(
+            header_id=10,
+            amount=Decimal("5.00"),
+            deductee_pan_snapshot="ABCDE1234F",
+            deductee_tax_id_snapshot="",
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT,
+            section_snapshot_code="194J",
+            cin_snapshot="CIN1",
+        )
+        line_two = SimpleNamespace(
+            header_id=11,
+            amount=Decimal("6.00"),
+            deductee_pan_snapshot="BADPAN",
+            deductee_tax_id_snapshot="TAX9",
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT,
+            section_snapshot_code="27QSEC",
+            cin_snapshot="CIN2",
+        )
+        filing = SimpleNamespace(
+            id=21,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="27Q",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 6, 30),
+            lines=SimpleNamespace(all=lambda: [line_one, line_two]),
+        )
+        mock_return_objects.prefetch_related.return_value.get.return_value = filing
+
+        payload = PurchaseStatutoryService.generate_nsdl_payload(filing_id=21)
+
+        self.assertEqual(payload["line_count"], 2)
+        self.assertEqual(payload["quality_summary"]["resident_count"], 1)
+        self.assertEqual(payload["quality_summary"]["non_resident_count"], 1)
+        self.assertEqual(payload["quality_summary"]["invalid_pan_format"], 1)
+        self.assertEqual(payload["quality_summary"]["missing_tax_id"], 1)
+        self.assertEqual(payload["section_summary"][0]["section_code"], "194J")
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
+    def test_return_quality_summary_aggregates_section_vendor_and_status_quality(self, mock_return_objects):
+        header_one = SimpleNamespace(purchase_number="PINV-31", vendor_name="Vendor A")
+        header_two = SimpleNamespace(purchase_number="PINV-32", vendor_name="Vendor B")
+        challan_one = SimpleNamespace(challan_no="CH-31")
+        challan_two = SimpleNamespace(challan_no="CH-32")
+        line_one = SimpleNamespace(
+            header_id=31,
+            header=header_one,
+            challan=challan_one,
+            amount=Decimal("5.00"),
+            deductee_pan_snapshot="ABCDE1234F",
+            deductee_tax_id_snapshot="TAX31",
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT,
+            section_snapshot_code="194J",
+        )
+        line_two = SimpleNamespace(
+            header_id=32,
+            header=header_two,
+            challan=challan_two,
+            amount=Decimal("6.00"),
+            deductee_pan_snapshot="BADPAN",
+            deductee_tax_id_snapshot="",
+            deductee_residency_snapshot=PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT,
+            section_snapshot_code="27QSEC",
+        )
+        filing_one = SimpleNamespace(
+            id=31,
+            status=PurchaseStatutoryReturn.Status.FILED,
+            status_name="Filed",
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="26Q",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            filed_on=date(2026, 5, 10),
+            lines=SimpleNamespace(all=lambda: [line_one]),
+        )
+        filing_two = SimpleNamespace(
+            id=32,
+            status=PurchaseStatutoryReturn.Status.REVISED,
+            status_name="Revised",
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            return_code="27Q",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            filed_on=date(2026, 5, 11),
+            lines=SimpleNamespace(all=lambda: [line_two]),
+        )
+        qs = MagicMock()
+        qs.filter.return_value = qs
+        qs.order_by.return_value = [filing_one, filing_two]
+        mock_return_objects.prefetch_related.return_value.filter.return_value = qs
+
+        payload = PurchaseStatutoryService.return_quality_summary(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+        )
+
+        self.assertEqual(payload["summary"]["return_count"], 2)
+        self.assertEqual(payload["summary"]["line_count"], 2)
+        self.assertEqual(payload["summary"]["filed_returns"], 1)
+        self.assertEqual(payload["summary"]["revised_returns"], 1)
+        self.assertEqual(payload["summary"]["invalid_pan_format"], 1)
+        self.assertEqual(payload["summary"]["missing_tax_id"], 1)
+        self.assertEqual(payload["section_summary"][0]["section_code"], "194J")
+        self.assertEqual(payload["vendor_summary"][0]["vendor_name"], "Vendor A")
+        self.assertEqual(payload["status_summary"][0]["return_count"], 1)
+        self.assertEqual(payload["line_preview"][1]["challan_no"], "CH-32")
 
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryReturn.objects")
     @patch("purchase.services.purchase_statutory_service.PurchaseStatutoryService.return_eligible_lines")
@@ -2944,6 +4197,53 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
         self.assertEqual(len(payload["exceptions"]["invoices_pending_challan_mapping"]["rows"]), 1)
         self.assertEqual(payload["exceptions"]["challan_lines_pending_return_mapping"]["count"], 1)
         self.assertEqual(len(payload["exceptions"]["challan_lines_pending_return_mapping"]["rows"]), 1)
+        challan_row = payload["exceptions"]["invoices_pending_challan_mapping"]["rows"][0]
+        self.assertEqual(challan_row["source_kind"], "purchase_invoice")
+        self.assertEqual(challan_row["source_id"], 11)
+        self.assertEqual(challan_row["source_route"], "/purchaseinvoice")
+        return_row = payload["exceptions"]["challan_lines_pending_return_mapping"]["rows"][0]
+        self.assertEqual(return_row["source_kind"], "challan")
+        self.assertEqual(return_row["source_id"], 21)
+
+    @patch("purchase.services.purchase_statutory_service.PurchaseInvoiceHeader.objects")
+    def test_reconciliation_gl_status_exposes_source_metadata_for_missing_entries(
+        self,
+        mock_header_objects,
+    ):
+        invoice_qs = MagicMock()
+        invoice_qs.filter.return_value = invoice_qs
+        invoice_qs.values_list.return_value = [44]
+        invoice_qs.exclude.return_value.values.return_value = [
+            {
+                "id": 44,
+                "purchase_number": "PINV-44",
+                "bill_date": date(2026, 4, 12),
+                "grand_total": "80.00",
+                "vendor_name": "Vendor Trace",
+            }
+        ]
+        mock_header_objects.filter.return_value = invoice_qs
+
+        with patch("posting.models.Entry.objects") as mock_entry_objects:
+            entry_qs = MagicMock()
+            entry_qs.values_list.return_value = []
+            entry_qs.count.return_value = 0
+            mock_entry_objects.filter.return_value = entry_qs
+
+            payload = PurchaseStatutoryService.reconciliation_gl_status(
+                entity_id=1,
+                entityfinid_id=1,
+                subentity_id=None,
+                period_from=date(2026, 4, 1),
+                period_to=date(2026, 4, 30),
+            )
+
+        self.assertEqual(payload["gl_reconciliation"]["missing_gl_entry_count"], 1)
+        row = payload["gl_reconciliation"]["missing_gl_entries"][0]
+        self.assertEqual(row["vendor_name"], "Vendor Trace")
+        self.assertEqual(row["source_kind"], "purchase_invoice")
+        self.assertEqual(row["source_id"], 44)
+        self.assertEqual(row["source_route"], "/purchaseinvoice")
 
 
 class PurchaseApiPermissionTests(APITestCase):

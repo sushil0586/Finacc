@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from calendar import monthrange
 from decimal import Decimal, ROUND_HALF_UP
+import re
 from typing import Dict, List, Optional
 
 from django.db import transaction
@@ -39,6 +40,13 @@ class StatutoryResult:
 
 
 class PurchaseStatutoryService:
+    _PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+
+    @staticmethod
+    def _is_valid_pan(pan: Optional[str]) -> bool:
+        token = (pan or "").strip().upper()
+        return bool(token and PurchaseStatutoryService._PAN_RE.fullmatch(token))
+
     @staticmethod
     def _validate_period_bounds(
         *,
@@ -530,6 +538,29 @@ class PurchaseStatutoryService:
         }
 
     @staticmethod
+    def _purchase_source_meta(*, header_id: Optional[int], purchase_number: Optional[str]) -> Dict[str, object]:
+        token = (purchase_number or "").strip()
+        source_id = int(header_id or 0)
+        return {
+            "source_kind": "purchase_invoice",
+            "source_id": source_id or None,
+            "source_route": "/purchaseinvoice",
+            "source_search": token or source_id or "",
+            "source_label": f"Voucher {token}" if token else (f"Voucher #{source_id}" if source_id else ""),
+        }
+
+    @staticmethod
+    def _challan_source_meta(*, challan_id: Optional[int], challan_no: Optional[str]) -> Dict[str, object]:
+        token = (challan_no or "").strip()
+        source_id = int(challan_id or 0)
+        return {
+            "linked_challan_source_kind": "challan",
+            "linked_challan_source_id": source_id or None,
+            "linked_challan_source_search": token or source_id or "",
+            "linked_challan_source_label": token or (f"Challan #{source_id}" if source_id else ""),
+        }
+
+    @staticmethod
     def _policy_controls(entity_id: int, subentity_id: Optional[int]) -> Dict[str, object]:
         try:
             return PurchaseSettingsService.get_policy(entity_id, subentity_id).controls
@@ -796,8 +827,11 @@ class PurchaseStatutoryService:
             if code == "26Q":
                 if residency != PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT:
                     raise ValueError("26Q allows only RESIDENT deductees.")
-                if not (ln.deductee_pan_snapshot or "").strip():
+                pan_token = (ln.deductee_pan_snapshot or "").strip().upper()
+                if not pan_token:
                     raise ValueError("26Q requires PAN for all deductees.")
+                if not PurchaseStatutoryService._is_valid_pan(pan_token):
+                    raise ValueError("26Q requires a valid PAN format for all deductees.")
             if code == "27Q":
                 if residency != PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
                     raise ValueError("27Q allows only NON_RESIDENT deductees.")
@@ -820,8 +854,11 @@ class PurchaseStatutoryService:
         if code == "26Q":
             if residency != PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT:
                 raise ValueError(f"{line_label}: 26Q allows only RESIDENT deductees.")
-            if not (deductee_pan_snapshot or "").strip():
+            pan_token = (deductee_pan_snapshot or "").strip().upper()
+            if not pan_token:
                 raise ValueError(f"{line_label}: 26Q requires PAN for all deductees.")
+            if not PurchaseStatutoryService._is_valid_pan(pan_token):
+                raise ValueError(f"{line_label}: 26Q requires a valid PAN format for all deductees.")
         if code == "27Q":
             if residency != PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
                 raise ValueError(f"{line_label}: 27Q allows only NON_RESIDENT deductees.")
@@ -2271,6 +2308,17 @@ class PurchaseStatutoryService:
         lines: List[Dict[str, object]] = []
         total_amount = ZERO2
         section_totals: Dict[str, Decimal] = {}
+        vendor_totals: Dict[str, Dict[str, object]] = {}
+        excluded_rows: List[Dict[str, object]] = []
+        readiness_counts: Dict[str, int] = {
+            "eligible_lines": 0,
+            "excluded_lines": 0,
+            "excluded_residency_mismatch": 0,
+            "excluded_missing_pan": 0,
+            "excluded_invalid_pan_format": 0,
+            "excluded_missing_tax_id": 0,
+        }
+        excluded_amount = ZERO2
         for cl in challan_lines_qs:
             key = (int(cl.header_id), int(cl.challan_id))
             used = q2(consumed_map.get(key, ZERO2))
@@ -2283,6 +2331,17 @@ class PurchaseStatutoryService:
             section_code = (getattr(section_obj, "section_code", None) or "")
             section_desc = (getattr(section_obj, "description", None) or "")
             ds = PurchaseStatutoryService._vendor_deductee_snapshot(h)
+            purchase_number = getattr(h, "purchase_number", "") or f"{getattr(h, 'doc_code', '')}-{getattr(h, 'doc_no', '')}"
+            vendor_name = getattr(h, "vendor_name", "") or ""
+            source_meta = PurchaseStatutoryService._purchase_source_meta(
+                header_id=getattr(cl, "header_id", None),
+                purchase_number=purchase_number,
+            )
+            challan_source_meta = PurchaseStatutoryService._challan_source_meta(
+                challan_id=getattr(cl, "challan_id", None),
+                challan_no=getattr(cl.challan, "challan_no", None),
+            )
+            pan_token = (ds["deductee_pan_snapshot"] or "").strip().upper()
             if tax_type == PurchaseStatutoryReturn.TaxType.IT_TDS and normalized_return_code in {"26Q", "27Q"}:
                 try:
                     PurchaseStatutoryService._validate_it_tds_return_snapshot(
@@ -2292,12 +2351,48 @@ class PurchaseStatutoryService:
                         deductee_tax_id_snapshot=ds["deductee_tax_id_snapshot"],
                         line_label=f"Invoice {cl.header_id}",
                     )
-                except ValueError:
+                except ValueError as exc:
+                    message = str(exc)
+                    reason_code = "INVALID_LINE"
+                    if "allows only RESIDENT" in message or "allows only NON_RESIDENT" in message:
+                        reason_code = "RESIDENCY_MISMATCH"
+                        readiness_counts["excluded_residency_mismatch"] += 1
+                    elif "requires PAN" in message and "valid PAN format" not in message:
+                        reason_code = "MISSING_PAN"
+                        readiness_counts["excluded_missing_pan"] += 1
+                    elif "valid PAN format" in message:
+                        reason_code = "INVALID_PAN_FORMAT"
+                        readiness_counts["excluded_invalid_pan_format"] += 1
+                    elif "requires deductee_tax_id_snapshot" in message:
+                        reason_code = "MISSING_TAX_ID"
+                        readiness_counts["excluded_missing_tax_id"] += 1
+                    readiness_counts["excluded_lines"] += 1
+                    excluded_amount = q2(excluded_amount + eligible)
+                    excluded_rows.append(
+                        {
+                            "header_id": int(cl.header_id),
+                            "purchase_number": purchase_number,
+                            "vendor_name": vendor_name,
+                            "challan_id": int(cl.challan_id),
+                            "challan_no": cl.challan.challan_no or "",
+                            "amount": str(eligible),
+                            "section_snapshot_code": section_code,
+                            "deductee_residency_snapshot": ds["deductee_residency_snapshot"],
+                            "deductee_pan_snapshot": pan_token,
+                            "deductee_tax_id_snapshot": ds["deductee_tax_id_snapshot"] or "",
+                            "reason_code": reason_code,
+                            "reason_message": message,
+                            **source_meta,
+                            **challan_source_meta,
+                        }
+                    )
                     continue
 
             lines.append(
                 {
                     "header_id": int(cl.header_id),
+                    "purchase_number": purchase_number,
+                    "vendor_name": vendor_name,
                     "challan_id": int(cl.challan_id),
                     "challan_no": cl.challan.challan_no or "",
                     "amount": str(eligible),
@@ -2312,11 +2407,25 @@ class PurchaseStatutoryService:
                     "deductee_gstin_snapshot": ds["deductee_gstin_snapshot"] or "",
                     "cin_snapshot": PurchaseStatutoryService._clean_text(getattr(cl.challan, "cin_no", None)) or "",
                     "metadata_json": {},
+                    **source_meta,
+                    **challan_source_meta,
                 }
             )
             total_amount = q2(total_amount + eligible)
+            readiness_counts["eligible_lines"] += 1
             section_key = section_code or "UNSPECIFIED"
             section_totals[section_key] = q2(section_totals.get(section_key, ZERO2) + eligible)
+            vendor_key = vendor_name or "UNSPECIFIED"
+            bucket = vendor_totals.setdefault(
+                vendor_key,
+                {
+                    "vendor_name": vendor_key,
+                    "line_count": 0,
+                    "amount": ZERO2,
+                },
+            )
+            bucket["line_count"] += 1
+            bucket["amount"] = q2(bucket["amount"] + eligible)
 
         return {
             "lines": lines,
@@ -2342,11 +2451,281 @@ class PurchaseStatutoryService:
             "totals": {
                 "line_count": len(lines),
                 "amount": str(total_amount),
+                "excluded_line_count": readiness_counts["excluded_lines"],
+                "excluded_amount": str(excluded_amount),
             },
             "section_totals": [
                 {"section_code": code, "amount": str(amount)}
                 for code, amount in sorted(section_totals.items(), key=lambda item: item[0])
             ],
+            "vendor_totals": [
+                {
+                    "vendor_name": bucket["vendor_name"],
+                    "line_count": int(bucket["line_count"]),
+                    "amount": str(bucket["amount"]),
+                }
+                for _, bucket in sorted(vendor_totals.items(), key=lambda item: item[0])
+            ],
+            "readiness_summary": {
+                **readiness_counts,
+                "eligible_amount": str(total_amount),
+                "excluded_amount": str(excluded_amount),
+            },
+            "excluded_rows": excluded_rows,
+        }
+
+    @staticmethod
+    def return_readiness_summary(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        period_from,
+        period_to,
+        return_code: Optional[str] = None,
+    ) -> Dict[str, object]:
+        payload = PurchaseStatutoryService.return_eligible_lines(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            tax_type=tax_type,
+            period_from=period_from,
+            period_to=period_to,
+            return_code=return_code,
+        )
+        return {
+            "filters": {
+                "entity_id": int(entity_id),
+                "entityfinid_id": int(entityfinid_id),
+                "subentity_id": int(subentity_id) if subentity_id is not None else None,
+                "tax_type": tax_type,
+                "period_from": period_from,
+                "period_to": period_to,
+                "return_code": (return_code or "").strip().upper() or None,
+            },
+            "summary": payload.get("readiness_summary") or {},
+            "totals": payload.get("totals") or {},
+            "section_totals": payload.get("section_totals") or [],
+            "vendor_totals": payload.get("vendor_totals") or [],
+            "excluded_rows": payload.get("excluded_rows") or [],
+            "eligible_preview": payload.get("lines") or [],
+        }
+
+    @staticmethod
+    def return_quality_summary(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        tax_type: str,
+        period_from,
+        period_to,
+        return_code: Optional[str] = None,
+    ) -> Dict[str, object]:
+        if tax_type not in (PurchaseStatutoryReturn.TaxType.IT_TDS, PurchaseStatutoryReturn.TaxType.GST_TDS):
+            raise ValueError("tax_type must be IT_TDS or GST_TDS.")
+        if period_from is None or period_to is None:
+            raise ValueError("period_from and period_to are required.")
+        if period_from > period_to:
+            raise ValueError("period_from cannot be greater than period_to.")
+
+        qs = (
+            PurchaseStatutoryReturn.objects
+            .prefetch_related("lines__header", "lines__challan")
+            .filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                tax_type=tax_type,
+                period_from__gte=period_from,
+                period_to__lte=period_to,
+            )
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+
+        normalized_return_code = (return_code or "").strip().upper()
+        if normalized_return_code:
+            qs = qs.filter(return_code__iexact=normalized_return_code)
+
+        filings = list(qs.order_by("-period_to", "-id"))
+        quality_summary = {
+            "return_count": len(filings),
+            "line_count": 0,
+            "total_amount": "0.00",
+            "missing_pan": 0,
+            "invalid_pan_format": 0,
+            "missing_tax_id": 0,
+            "resident_count": 0,
+            "non_resident_count": 0,
+            "draft_returns": 0,
+            "filed_returns": 0,
+            "revised_returns": 0,
+            "cancelled_returns": 0,
+        }
+        total_amount = ZERO2
+        section_totals: Dict[str, Dict[str, object]] = {}
+        vendor_totals: Dict[str, Dict[str, object]] = {}
+        status_totals: Dict[str, Dict[str, object]] = {}
+        line_rows: List[Dict[str, object]] = []
+
+        for filing in filings:
+            status_name = getattr(filing, "status_name", None) or filing.get_status_display()
+            status_key = (status_name or "").strip().upper() or "UNKNOWN"
+            if int(filing.status) == int(PurchaseStatutoryReturn.Status.DRAFT):
+                quality_summary["draft_returns"] += 1
+            elif int(filing.status) == int(PurchaseStatutoryReturn.Status.FILED):
+                quality_summary["filed_returns"] += 1
+            elif int(filing.status) == int(PurchaseStatutoryReturn.Status.REVISED):
+                quality_summary["revised_returns"] += 1
+            elif int(filing.status) == int(PurchaseStatutoryReturn.Status.CANCELLED):
+                quality_summary["cancelled_returns"] += 1
+
+            for ln in filing.lines.all():
+                amount = q2(ln.amount)
+                total_amount = q2(total_amount + amount)
+                quality_summary["line_count"] += 1
+
+                section_code = (ln.section_snapshot_code or "").strip().upper() or "UNSPECIFIED"
+                vendor_name = (
+                    getattr(getattr(ln, "header", None), "vendor_name", None)
+                    or getattr(getattr(ln, "header", None), "purchase_number", None)
+                    or "UNSPECIFIED"
+                )
+                pan_token = (ln.deductee_pan_snapshot or "").strip().upper()
+                tax_id_token = (ln.deductee_tax_id_snapshot or "").strip()
+                residency = (ln.deductee_residency_snapshot or "").strip().upper()
+
+                has_missing_pan = not pan_token
+                has_invalid_pan = bool(pan_token) and not PurchaseStatutoryService._is_valid_pan(pan_token)
+                has_missing_tax_id = not tax_id_token
+                if residency == PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT:
+                    quality_summary["resident_count"] += 1
+                elif residency == PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
+                    quality_summary["non_resident_count"] += 1
+                if has_missing_pan:
+                    quality_summary["missing_pan"] += 1
+                if has_invalid_pan:
+                    quality_summary["invalid_pan_format"] += 1
+                if has_missing_tax_id:
+                    quality_summary["missing_tax_id"] += 1
+
+                sec_bucket = section_totals.setdefault(
+                    section_code,
+                    {
+                        "section_code": section_code,
+                        "line_count": 0,
+                        "amount": ZERO2,
+                        "missing_pan": 0,
+                        "invalid_pan_format": 0,
+                        "missing_tax_id": 0,
+                    },
+                )
+                sec_bucket["line_count"] += 1
+                sec_bucket["amount"] = q2(sec_bucket["amount"] + amount)
+                sec_bucket["missing_pan"] += 1 if has_missing_pan else 0
+                sec_bucket["invalid_pan_format"] += 1 if has_invalid_pan else 0
+                sec_bucket["missing_tax_id"] += 1 if has_missing_tax_id else 0
+
+                vendor_bucket = vendor_totals.setdefault(
+                    vendor_name,
+                    {
+                        "vendor_name": vendor_name,
+                        "line_count": 0,
+                        "amount": ZERO2,
+                        "missing_pan": 0,
+                        "invalid_pan_format": 0,
+                        "missing_tax_id": 0,
+                    },
+                )
+                vendor_bucket["line_count"] += 1
+                vendor_bucket["amount"] = q2(vendor_bucket["amount"] + amount)
+                vendor_bucket["missing_pan"] += 1 if has_missing_pan else 0
+                vendor_bucket["invalid_pan_format"] += 1 if has_invalid_pan else 0
+                vendor_bucket["missing_tax_id"] += 1 if has_missing_tax_id else 0
+
+                status_bucket = status_totals.setdefault(
+                    status_key,
+                    {
+                        "status_name": status_name,
+                        "return_count": 0,
+                        "line_count": 0,
+                        "amount": ZERO2,
+                    },
+                )
+                status_bucket["line_count"] += 1
+                status_bucket["amount"] = q2(status_bucket["amount"] + amount)
+
+                line_rows.append(
+                    {
+                        "return_id": filing.id,
+                        "return_code": (filing.return_code or "").strip().upper(),
+                        "status": int(filing.status),
+                        "status_name": status_name,
+                        "filed_on": filing.filed_on,
+                        "header_id": ln.header_id,
+                        "purchase_number": getattr(getattr(ln, "header", None), "purchase_number", "") or "",
+                        "vendor_name": getattr(getattr(ln, "header", None), "vendor_name", "") or "",
+                        "section_code": section_code,
+                        "pan": pan_token,
+                        "tax_id": tax_id_token,
+                        "residency": residency,
+                        "challan_no": getattr(getattr(ln, "challan", None), "challan_no", "") or "",
+                        "amount": str(amount),
+                        "missing_pan": has_missing_pan,
+                        "invalid_pan_format": has_invalid_pan,
+                        "missing_tax_id": has_missing_tax_id,
+                    }
+                )
+
+        quality_summary["total_amount"] = str(total_amount)
+        for filing in filings:
+            bucket = status_totals.setdefault(
+                ((getattr(filing, "status_name", None) or filing.get_status_display()).strip().upper() or "UNKNOWN"),
+                {
+                    "status_name": getattr(filing, "status_name", None) or filing.get_status_display(),
+                    "return_count": 0,
+                    "line_count": 0,
+                    "amount": ZERO2,
+                },
+            )
+            bucket["return_count"] = int(bucket["return_count"]) + 1
+
+        return {
+            "filters": {
+                "entity_id": int(entity_id),
+                "entityfinid_id": int(entityfinid_id),
+                "subentity_id": int(subentity_id) if subentity_id is not None else None,
+                "tax_type": tax_type,
+                "period_from": period_from,
+                "period_to": period_to,
+                "return_code": normalized_return_code or None,
+            },
+            "summary": quality_summary,
+            "section_summary": [
+                {
+                    **bucket,
+                    "amount": str(bucket["amount"]),
+                }
+                for _, bucket in sorted(section_totals.items(), key=lambda item: item[0])
+            ],
+            "vendor_summary": [
+                {
+                    **bucket,
+                    "amount": str(bucket["amount"]),
+                }
+                for _, bucket in sorted(vendor_totals.items(), key=lambda item: item[0])
+            ],
+            "status_summary": [
+                {
+                    **bucket,
+                    "amount": str(bucket["amount"]),
+                }
+                for _, bucket in sorted(status_totals.items(), key=lambda item: item[0])
+            ],
+            "line_preview": line_rows[:100],
         }
 
     @staticmethod
@@ -2390,23 +2769,55 @@ class PurchaseStatutoryService:
             .values("id", "return_code", "period_from", "period_to", "ack_no", "arn_no")
         )
 
+        pending_challan_rows = [
+            {
+                **dict(row),
+                "source_kind": "purchase_invoice",
+                "source_id": int(row.get("header_id") or 0),
+                "source_route": "/purchaseinvoice",
+                "source_search": row.get("purchase_number") or row.get("header_id") or "",
+                "source_label": f"Voucher {row.get('purchase_number')}" if row.get("purchase_number") else "",
+            }
+            for row in challan_data.get("lines", [])
+        ]
+        pending_return_rows = [
+            {
+                **dict(row),
+                "source_kind": "challan",
+                "source_id": int(row.get("challan_id") or 0),
+                "source_search": row.get("challan_no") or row.get("challan_id") or "",
+                "source_label": f"Challan {row.get('challan_no')}" if row.get("challan_no") else "",
+            }
+            for row in return_data.get("lines", [])
+        ]
+        missing_ack_rows = [
+            {
+                **dict(row),
+                "source_kind": "return",
+                "source_id": int(row.get("id") or 0),
+                "source_search": row.get("return_code") or row.get("id") or "",
+                "source_label": f"Return {row.get('return_code')}" if row.get("return_code") else "",
+            }
+            for row in missing_ack
+        ]
+
         return {
             "exceptions": {
                 "invoices_pending_challan_mapping": {
-                    "count": len(challan_data.get("lines", [])),
+                    "count": len(pending_challan_rows),
                     "line_count": challan_data.get("totals", {}).get("line_count", 0),
                     "amount": challan_data.get("totals", {}).get("amount", "0.00"),
-                    "rows": challan_data.get("lines", []),
+                    "rows": pending_challan_rows,
                 },
                 "challan_lines_pending_return_mapping": {
-                    "count": len(return_data.get("lines", [])),
+                    "count": len(pending_return_rows),
                     "line_count": return_data.get("totals", {}).get("line_count", 0),
                     "amount": return_data.get("totals", {}).get("amount", "0.00"),
-                    "rows": return_data.get("lines", []),
+                    "rows": pending_return_rows,
                 },
                 "filed_returns_missing_ack_or_arn": {
-                    "count": len(missing_ack),
-                    "rows": missing_ack,
+                    "count": len(missing_ack_rows),
+                    "rows": missing_ack_rows,
                 },
             }
         }
@@ -2428,10 +2839,33 @@ class PurchaseStatutoryService:
             residency_mode = "NON_RESIDENT_ONLY"
 
         txt_rows: List[str] = []
+        section_totals: Dict[str, Decimal] = {}
+        quality_summary = {
+            "missing_pan": 0,
+            "invalid_pan_format": 0,
+            "missing_tax_id": 0,
+            "resident_count": 0,
+            "non_resident_count": 0,
+        }
         txt_rows.append(
             f"HDR|{filing.id}|{filing.tax_type}|{code}|{filing.period_from}|{filing.period_to}|{len(lines)}|{total_amt}"
         )
         for i, ln in enumerate(lines, start=1):
+            section_code = (ln.section_snapshot_code or "").strip().upper() or "UNSPECIFIED"
+            section_totals[section_code] = q2(section_totals.get(section_code, ZERO2) + q2(ln.amount))
+            residency = (ln.deductee_residency_snapshot or "").strip().upper()
+            pan_token = (ln.deductee_pan_snapshot or "").strip().upper()
+            tax_id_token = (ln.deductee_tax_id_snapshot or "").strip()
+            if residency == PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT:
+                quality_summary["resident_count"] += 1
+            elif residency == PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
+                quality_summary["non_resident_count"] += 1
+            if not pan_token:
+                quality_summary["missing_pan"] += 1
+            elif not PurchaseStatutoryService._is_valid_pan(pan_token):
+                quality_summary["invalid_pan_format"] += 1
+            if not tax_id_token:
+                quality_summary["missing_tax_id"] += 1
             txt_rows.append(
                 "|".join(
                     [
@@ -2457,6 +2891,11 @@ class PurchaseStatutoryService:
             "line_count": len(lines),
             "amount": str(total_amt),
             "residency_mode": residency_mode,
+            "quality_summary": quality_summary,
+            "section_summary": [
+                {"section_code": section_code, "amount": str(amount)}
+                for section_code, amount in sorted(section_totals.items(), key=lambda item: item[0])
+            ],
             "nsdl_txt": "\n".join(txt_rows),
             "note": "NSDL/FVU pre-format payload. Validate and convert via your filing utility pipeline.",
         }
@@ -2841,7 +3280,18 @@ class PurchaseStatutoryService:
         if subentity_id is not None:
             entry_qs = entry_qs.filter(subentity_id=subentity_id)
         entry_ids = set(entry_qs.values_list("txn_id", flat=True))
-        missing = list(invoice_qs.exclude(id__in=entry_ids).values("id", "purchase_number", "bill_date", "grand_total"))
+        missing = [
+            {
+                **dict(row),
+                "vendor_name": row.get("vendor_name") or "",
+                "source_kind": "purchase_invoice",
+                "source_id": int(row.get("id") or 0),
+                "source_route": "/purchaseinvoice",
+                "source_search": row.get("purchase_number") or row.get("id") or "",
+                "source_label": f"Voucher {row.get('purchase_number')}" if row.get("purchase_number") else "",
+            }
+            for row in invoice_qs.exclude(id__in=entry_ids).values("id", "purchase_number", "bill_date", "grand_total", "vendor_name")
+        ]
         return {
             "gl_reconciliation": {
                 "enabled": True,

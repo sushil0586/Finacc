@@ -47,6 +47,11 @@ class DaybookScopeSerializer(serializers.Serializer):
     status = serializers.CharField(required=False, allow_blank=True)
     posted = serializers.BooleanField(required=False, allow_null=True, default=None)
     search = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    amount_display_unit = serializers.ChoiceField(
+        choices=("actual", "hundreds", "thousands", "lakhs", "crores", "millions"),
+        required=False,
+        allow_null=True,
+    )
     page = serializers.IntegerField(required=False, min_value=1)
     page_size = serializers.IntegerField(required=False, min_value=1, max_value=500)
 
@@ -104,6 +109,11 @@ class CashbookScopeSerializer(serializers.Serializer):
     account = serializers.CharField(required=False, allow_blank=True)
     voucher_type = serializers.CharField(required=False, allow_blank=True)
     search = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    amount_display_unit = serializers.ChoiceField(
+        choices=("actual", "hundreds", "thousands", "lakhs", "crores", "millions"),
+        required=False,
+        allow_null=True,
+    )
     page = serializers.IntegerField(required=False, min_value=1)
     page_size = serializers.IntegerField(required=False, min_value=1, max_value=500)
 

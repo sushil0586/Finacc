@@ -526,16 +526,32 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         return wh if isinstance(wh, dict) else {}
 
     @staticmethod
-    def _build_runtime_withholding_snapshot(*, enabled: bool, mode: str, section_id: Optional[int], base_amount: Decimal, rate: Decimal, amount: Decimal, reason: Optional[str], reason_code: Optional[str]) -> Dict[str, Any]:
+    def _build_runtime_withholding_snapshot(
+        *,
+        enabled: bool,
+        mode: str,
+        section_id: Optional[int],
+        section_code: Optional[str],
+        base_amount: Decimal,
+        rate: Decimal,
+        amount: Decimal,
+        reason: Optional[str],
+        reason_code: Optional[str],
+    ) -> Dict[str, Any]:
+        amount_q = q2(amount)
         return {
             "enabled": bool(enabled),
             "mode": mode,
             "section_id": section_id,
+            "section_code": (section_code or "").strip(),
             "base_amount": str(q2(base_amount)),
             "rate": str(q2(rate)),
-            "amount": str(q2(amount)),
+            "amount": str(amount_q),
             "reason": reason or "",
             "reason_code": reason_code or "",
+            "collection_status": "COLLECTED" if amount_q > ZERO2 else "NOT_COLLECTED",
+            "zero_collection": bool(amount_q <= ZERO2),
+            "user_selected_add_tcs": bool(enabled),
         }
 
     @staticmethod
@@ -730,6 +746,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 enabled=False,
                 mode="OFF",
                 section_id=None,
+                section_code=None,
                 base_amount=ZERO2,
                 rate=ZERO2,
                 amount=ZERO2,
@@ -748,6 +765,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 enabled=True,
                 mode="AUTO",
                 section_id=None,
+                section_code=None,
                 base_amount=ZERO2,
                 rate=ZERO2,
                 amount=ZERO2,
@@ -771,7 +789,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             reason_code = "MANUAL"
             section_obj = (
                 WithholdingSection.objects.filter(id=section_id)
-                .only("id")
+                .only("id", "section_code")
                 .first()
             )
         else:
@@ -800,6 +818,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             enabled=True,
             mode=mode,
             section_id=section_id,
+            section_code=getattr(section_obj, "section_code", None),
             base_amount=base_amount,
             rate=rate,
             amount=amount,

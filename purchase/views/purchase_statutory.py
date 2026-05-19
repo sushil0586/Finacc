@@ -1098,6 +1098,8 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
                 "10_Reconciliation",
                 "11_Exceptions",
                 "12_Supporting_Doc_Index",
+                "13_IT_Return_Quality",
+                "14_IT_Return_Scope_Summary",
             ]
             for idx, name in enumerate(included, start=11):
                 ws[f"A{idx}"] = name
@@ -1484,14 +1486,50 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
         it_returns = return_qs.filter(tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS)
         it_return_rows = []
+        it_quality_rows = []
+        it_scope_summary = {}
+
+        def bump_it_scope(scope_type: str, scope_value: str, amount, *, missing_pan=False, invalid_pan=False, missing_tax_id=False):
+            key = (scope_type, scope_value or "UNSPECIFIED")
+            bucket = it_scope_summary.setdefault(
+                key,
+                {
+                    "scope_type": scope_type,
+                    "scope_value": scope_value or "UNSPECIFIED",
+                    "line_count": 0,
+                    "amount": Decimal("0.00"),
+                    "missing_pan": 0,
+                    "invalid_pan_format": 0,
+                    "missing_tax_id": 0,
+                },
+            )
+            bucket["line_count"] += 1
+            bucket["amount"] += decimal_or_zero(amount)
+            if missing_pan:
+                bucket["missing_pan"] += 1
+            if invalid_pan:
+                bucket["invalid_pan_format"] += 1
+            if missing_tax_id:
+                bucket["missing_tax_id"] += 1
+
         for filing in it_returns:
             for line in filing.lines.all():
+                residency = (getattr(line, "deductee_residency_snapshot", "") or "").strip().upper()
+                pan = (getattr(line, "deductee_pan_snapshot", "") or "").strip().upper()
+                tax_id = (getattr(line, "deductee_tax_id_snapshot", "") or "").strip()
+                vendor_name = getattr(getattr(line, "header", None), "vendor_name", "") or ""
+                section_code = getattr(line, "section_snapshot_code", "") or "UNSPECIFIED"
+                missing_pan = not bool(pan)
+                invalid_pan = bool(pan) and not PurchaseStatutoryService._is_valid_pan(pan)
+                missing_tax_id = not bool(tax_id)
+                pan_status = "VALID" if pan and not invalid_pan else ("INVALID" if invalid_pan else "MISSING")
+                tax_id_status = "PRESENT" if tax_id else "MISSING"
                 it_return_rows.append(
                     (
                         filing.return_code, filing.period_from, filing.period_to,
                         line.header.purchase_number if line.header_id else "",
-                        line.deductee_pan_snapshot or "",
-                        line.section_snapshot_code or "",
+                        pan,
+                        section_code,
                         line.amount,
                         line.challan.challan_no if line.challan_id else "",
                         line.cin_snapshot or "",
@@ -1499,6 +1537,27 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
                         filing.get_status_display(),
                     )
                 )
+                it_quality_rows.append(
+                    (
+                        filing.return_code,
+                        filing.period_from,
+                        filing.period_to,
+                        line.header.purchase_number if line.header_id else "",
+                        vendor_name,
+                        residency or "",
+                        pan,
+                        pan_status,
+                        tax_id,
+                        tax_id_status,
+                        section_code,
+                        line.amount,
+                        line.challan.challan_no if line.challan_id else "",
+                        line.cin_snapshot or "",
+                        filing.get_status_display(),
+                    )
+                )
+                bump_it_scope("SECTION", section_code, line.amount, missing_pan=missing_pan, invalid_pan=invalid_pan, missing_tax_id=missing_tax_id)
+                bump_it_scope("VENDOR", vendor_name or "UNSPECIFIED", line.amount, missing_pan=missing_pan, invalid_pan=invalid_pan, missing_tax_id=missing_tax_id)
         add_sheet(
             "06_IT_TDS_Returns",
             ["Return Code", "Period From", "Period To", "Invoice", "PAN", "Section", "Amount", "Challan", "CIN", "Ack No", "ARN No", "Status"],
@@ -1589,6 +1648,35 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
             ],
         )
 
+        add_sheet(
+            "13_IT_Return_Quality",
+            [
+                "Return Code", "Period From", "Period To", "Invoice", "Vendor", "Residency",
+                "PAN", "PAN Status", "Tax ID", "Tax ID Status", "Section", "Amount",
+                "Challan", "CIN", "Filing Status",
+            ],
+            it_quality_rows,
+            total_columns=[11],
+        )
+
+        add_sheet(
+            "14_IT_Return_Scope_Summary",
+            ["Scope Type", "Scope Value", "Line Count", "Amount", "Missing PAN", "Invalid PAN", "Missing Tax ID"],
+            [
+                (
+                    row["scope_type"],
+                    row["scope_value"],
+                    row["line_count"],
+                    row["amount"],
+                    row["missing_pan"],
+                    row["invalid_pan_format"],
+                    row["missing_tax_id"],
+                )
+                for _, row in sorted(it_scope_summary.items(), key=lambda item: (item[0][0], item[0][1]))
+            ],
+            total_columns=[2, 3, 4, 5, 6],
+        )
+
         out = BytesIO()
         wb.save(out)
         out.seek(0)
@@ -1631,6 +1719,52 @@ class PurchaseStatutoryReturnEligibleLinesAPIView(APIView):
         return_code = request.query_params.get("return_code")
         try:
             payload = PurchaseStatutoryService.return_eligible_lines(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type,
+                period_from=period_from,
+                period_to=period_to,
+                return_code=return_code,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response(payload)
+
+
+class PurchaseStatutoryReturnReadinessSummaryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_statutory_view(request, entity_id)
+        tax_type, period_from, period_to = _parse_required_period_and_tax_type(request)
+        return_code = request.query_params.get("return_code")
+        try:
+            payload = PurchaseStatutoryService.return_readiness_summary(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                tax_type=tax_type,
+                period_from=period_from,
+                period_to=period_to,
+                return_code=return_code,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response(payload)
+
+
+class PurchaseStatutoryReturnQualitySummaryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_statutory_view(request, entity_id)
+        tax_type, period_from, period_to = _parse_required_period_and_tax_type(request)
+        return_code = request.query_params.get("return_code")
+        try:
+            payload = PurchaseStatutoryService.return_quality_summary(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
                 subentity_id=subentity_id,

@@ -203,6 +203,9 @@ def configs_template_payload(default_entity: int | None, default_entityfin: int 
                 "default_tds_section": "",
                 "default_tcs_section": "",
                 "apply_194q": False,
+                "tds_194q_prev_fy_turnover": "0.00",
+                "tds_194q_turnover_limit": "100000000.00",
+                "tds_194q_force_eligible": "",
                 "apply_tcs_206c1h": False,
                 "tcs_206c1h_prev_fy_turnover": "0.00",
                 "tcs_206c1h_turnover_limit": "100000000.00",
@@ -233,6 +236,13 @@ def configs_export_payload(entity_id: int | None = None, entityfin_id: int | Non
             "default_tds_section": row.default_tds_section_id or "",
             "default_tcs_section": row.default_tcs_section_id or "",
             "apply_194q": row.apply_194q,
+            "tds_194q_prev_fy_turnover": str(row.tds_194q_prev_fy_turnover or ""),
+            "tds_194q_turnover_limit": str(row.tds_194q_turnover_limit or ""),
+            "tds_194q_force_eligible": (
+                ""
+                if row.tds_194q_force_eligible is None
+                else bool(row.tds_194q_force_eligible)
+            ),
             "apply_tcs_206c1h": row.apply_tcs_206c1h,
             "tcs_206c1h_prev_fy_turnover": str(row.tcs_206c1h_prev_fy_turnover or ""),
             "tcs_206c1h_turnover_limit": str(row.tcs_206c1h_turnover_limit or ""),
@@ -301,6 +311,13 @@ def _config_payload(row: dict[str, Any], default_entity: int | None, default_ent
         "default_tds_section": _to_int(row.get("default_tds_section")),
         "default_tcs_section": _to_int(row.get("default_tcs_section")),
         "apply_194q": _to_bool(row.get("apply_194q"), default=False),
+        "tds_194q_prev_fy_turnover": _to_decimal(row.get("tds_194q_prev_fy_turnover")) or Decimal("0.00"),
+        "tds_194q_turnover_limit": _to_decimal(row.get("tds_194q_turnover_limit")) or Decimal("100000000.00"),
+        "tds_194q_force_eligible": (
+            None
+            if _normalize_text(row.get("tds_194q_force_eligible")) in {"", "-", "--"}
+            else _to_bool(row.get("tds_194q_force_eligible"), default=False)
+        ),
         "apply_tcs_206c1h": _to_bool(row.get("apply_tcs_206c1h"), default=False),
         "tcs_206c1h_prev_fy_turnover": _to_decimal(row.get("tcs_206c1h_prev_fy_turnover")) or Decimal("0.00"),
         "tcs_206c1h_turnover_limit": _to_decimal(row.get("tcs_206c1h_turnover_limit")) or Decimal("100000000.00"),

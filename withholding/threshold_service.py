@@ -114,7 +114,7 @@ class FyPartyThresholdService:
         threshold = q2(threshold)
         current_amount = q2(current_amount)
 
-        if current_amount <= ZERO2 or threshold <= ZERO2:
+        if threshold <= ZERO2:
             return ThresholdResult(threshold, ZERO2, current_amount, ZERO2, current_amount)
 
         prev_total = cls._sum_previous(
@@ -130,8 +130,12 @@ class FyPartyThresholdService:
             allowed_statuses=allowed_statuses,
             date_field=date_field,
         )
-
         cumulative_after = q2(prev_total + current_amount)
+
+        # Credit notes / reversal transactions should still preserve cumulative
+        # history even though they do not themselves create a fresh deduction.
+        if current_amount <= ZERO2:
+            return ThresholdResult(threshold, prev_total, current_amount, ZERO2, cumulative_after)
 
         # 3 cases:
         # A) still below threshold => 0

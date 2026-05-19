@@ -27,7 +27,10 @@ from reports.schemas.book_reports import CashbookScopeSerializer, DaybookScopeSe
 from reports.schemas.common import build_report_envelope
 from reports.api.financial.export_utils import ExportSection, write_sectioned_csv, write_sectioned_excel, write_sectioned_pdf
 from reports.services.financial_hub_settings import (
+    apply_amount_display_unit_override,
     format_financial_hub_amount,
+    get_effective_cashbook_settings,
+    get_effective_daybook_settings,
     get_financial_hub_settings_payload,
     get_visible_cashbook_columns,
     get_visible_daybook_columns,
@@ -1094,12 +1097,16 @@ class _BaseDaybookExportAPIView(_BaseBookReportAPIView):
 class DaybookExcelAPIView(_BaseDaybookExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
-        section = _daybook_export_section(data, settings=settings)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = apply_amount_display_unit_override(
+            get_effective_daybook_settings(settings_payload),
+            scope.get("amount_display_unit"),
+        )
+        section = _daybook_export_section(data, settings=effective)
         summary_items = [
             ("Transactions", data.get("totals", {}).get("transaction_count", 0)),
-            ("Debit Total", format_financial_hub_amount(data.get("totals", {}).get("debit_total"), settings=settings)),
-            ("Credit Total", format_financial_hub_amount(data.get("totals", {}).get("credit_total"), settings=settings)),
+            ("Debit Total", format_financial_hub_amount(data.get("totals", {}).get("debit_total"), settings=effective)),
+            ("Credit Total", format_financial_hub_amount(data.get("totals", {}).get("credit_total"), settings=effective)),
         ]
         content = write_sectioned_excel(
             title="Daybook",
@@ -1107,7 +1114,7 @@ class DaybookExcelAPIView(_BaseDaybookExportAPIView):
             summary_items=summary_items,
             sections=[section],
             orientation=self.build_orientation(request),
-            freeze_header=(settings.get("export_layout") or {}).get("freeze_excel_header", True),
+            freeze_header=(effective.get("export_layout") or {}).get("freeze_excel_header", True),
         )
         return self.export_response(
             filename=f"Daybook_{_safe_filename(subtitle)}.xlsx",
@@ -1119,8 +1126,12 @@ class DaybookExcelAPIView(_BaseDaybookExportAPIView):
 class DaybookCSVAPIView(_BaseDaybookExportAPIView):
     def get(self, request):
         scope, data, _subtitle = self.report_data(request)
-        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
-        section = _daybook_export_section(data, settings=settings)
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = apply_amount_display_unit_override(
+            get_effective_daybook_settings(settings_payload),
+            scope.get("amount_display_unit"),
+        )
+        section = _daybook_export_section(data, settings=effective)
         meta_items = [
             ("Entity", data.get("entity_name") or "Selected entity"),
             ("Financial Year", data.get("entityfin_name") or "Current FY"),
@@ -1140,8 +1151,11 @@ class DaybookCSVAPIView(_BaseDaybookExportAPIView):
 class DaybookPDFAPIView(_BaseDaybookExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
-        effective = settings.get("daybook") or {}
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = apply_amount_display_unit_override(
+            get_effective_daybook_settings(settings_payload),
+            scope.get("amount_display_unit"),
+        )
         meta_items = [
             ("Entity", data.get("entity_name") or "Selected entity"),
             ("Financial Year", data.get("entityfin_name") or "Current FY"),
@@ -1415,8 +1429,11 @@ class _BaseCashbookExportAPIView(_BaseBookReportAPIView):
 class CashbookExcelAPIView(_BaseCashbookExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
-        effective = settings.get("cashbook") or {}
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = apply_amount_display_unit_override(
+            get_effective_cashbook_settings(settings_payload),
+            scope.get("amount_display_unit"),
+        )
         section = _cashbook_export_section(data, settings=effective)
         summary_items = [
             ("Opening Balance", format_financial_hub_amount(data.get("opening_balance"), settings=effective)),
@@ -1442,8 +1459,11 @@ class CashbookExcelAPIView(_BaseCashbookExportAPIView):
 class CashbookCSVAPIView(_BaseCashbookExportAPIView):
     def get(self, request):
         scope, data, _subtitle = self.report_data(request)
-        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
-        effective = settings.get("cashbook") or {}
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = apply_amount_display_unit_override(
+            get_effective_cashbook_settings(settings_payload),
+            scope.get("amount_display_unit"),
+        )
         section = _cashbook_export_section(data, settings=effective)
         meta_items = [
             ("Entity", data.get("entity_name") or "Selected entity"),
@@ -1464,8 +1484,11 @@ class CashbookCSVAPIView(_BaseCashbookExportAPIView):
 class CashbookPDFAPIView(_BaseCashbookExportAPIView):
     def get(self, request):
         scope, data, subtitle = self.report_data(request)
-        settings = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
-        effective = settings.get("cashbook") or {}
+        settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
+        effective = apply_amount_display_unit_override(
+            get_effective_cashbook_settings(settings_payload),
+            scope.get("amount_display_unit"),
+        )
         meta_items = [
             ("Entity", data.get("entity_name") or "Selected entity"),
             ("Financial Year", data.get("entityfin_name") or "Current FY"),

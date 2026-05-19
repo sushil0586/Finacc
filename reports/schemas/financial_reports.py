@@ -77,6 +77,11 @@ class FinancialReportScopeSerializer(serializers.Serializer):
     posted_only = serializers.BooleanField(required=False)
     include_inactive_ledgers = serializers.BooleanField(required=False)
     search = serializers.CharField(required=False, allow_blank=True)
+    amount_display_unit = serializers.ChoiceField(
+        choices=("actual", "hundreds", "thousands", "lakhs", "crores", "millions"),
+        required=False,
+        allow_null=True,
+    )
     sort_by = serializers.CharField(required=False, allow_blank=True)
     sort_order = serializers.ChoiceField(choices=("asc", "desc"), required=False, allow_null=True)
     page = serializers.IntegerField(required=False, min_value=1)

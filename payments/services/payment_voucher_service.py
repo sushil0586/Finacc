@@ -91,16 +91,32 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         return wh if isinstance(wh, dict) else {}
 
     @staticmethod
-    def _build_runtime_withholding_snapshot(*, enabled: bool, mode: str, section_id: Optional[int], base_amount: Decimal, rate: Decimal, amount: Decimal, reason: Optional[str], reason_code: Optional[str]) -> Dict[str, Any]:
+    def _build_runtime_withholding_snapshot(
+        *,
+        enabled: bool,
+        mode: str,
+        section_id: Optional[int],
+        section_code: Optional[str],
+        base_amount: Decimal,
+        rate: Decimal,
+        amount: Decimal,
+        reason: Optional[str],
+        reason_code: Optional[str],
+    ) -> Dict[str, Any]:
+        amount_q = q2(amount)
         return {
             "enabled": bool(enabled),
             "mode": mode,
             "section_id": section_id,
+            "section_code": (section_code or "").strip(),
             "base_amount": str(q2(base_amount)),
             "rate": str(q2(rate)),
-            "amount": str(q2(amount)),
+            "amount": str(amount_q),
             "reason": reason or "",
             "reason_code": reason_code or "",
+            "deduction_status": "DEDUCTED" if amount_q > ZERO2 else "NOT_DEDUCTED",
+            "zero_deduction": bool(amount_q <= ZERO2),
+            "user_selected_add_tds": bool(enabled),
         }
 
     @classmethod
@@ -186,6 +202,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                 enabled=False,
                 mode="OFF",
                 section_id=None,
+                section_code=None,
                 base_amount=ZERO2,
                 rate=ZERO2,
                 amount=ZERO2,
@@ -204,6 +221,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                 enabled=True,
                 mode="AUTO",
                 section_id=None,
+                section_code=None,
                 base_amount=ZERO2,
                 rate=ZERO2,
                 amount=ZERO2,
@@ -223,7 +241,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                 id=section_id,
                 tax_type=WithholdingTaxType.TDS,
             )
-            .only("id", "base_rule")
+            .only("id", "base_rule", "section_code")
             .first()
         )
         if not section_obj:
@@ -231,6 +249,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                 enabled=True,
                 mode=mode,
                 section_id=section_id,
+                section_code=None,
                 base_amount=base_amount,
                 rate=ZERO2,
                 amount=ZERO2,
@@ -244,6 +263,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                 enabled=True,
                 mode=mode,
                 section_id=section_id,
+                section_code=getattr(section_obj, "section_code", None),
                 base_amount=base_amount,
                 rate=ZERO2,
                 amount=ZERO2,
@@ -282,6 +302,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             enabled=True,
             mode=mode,
             section_id=section_id,
+            section_code=getattr(section_obj, "section_code", None),
             base_amount=base_amount,
             rate=rate,
             amount=amount,

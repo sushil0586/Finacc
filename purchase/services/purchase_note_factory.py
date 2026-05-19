@@ -24,6 +24,7 @@ from numbering.models import DocumentType
 @dataclass(frozen=True)
 class NoteCreateResult:
     header: PurchaseInvoiceHeader
+    message: str
 
 
 class PurchaseNoteFactory:
@@ -246,4 +247,5 @@ class PurchaseNoteFactory:
             "total_cess", "total_gst", "grand_total"
         ])
 
-        return NoteCreateResult(header=note)
+        note_label = "Credit Note" if int(note_type) == int(DocType.CREDIT_NOTE) else "Debit Note"
+        return NoteCreateResult(header=note, message=f"{note_label} created successfully.")
