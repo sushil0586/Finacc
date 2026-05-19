@@ -40,6 +40,11 @@ class ImportProfileSerializer(serializers.ModelSerializer):
 
 
 class ImportJobCreateSerializer(serializers.Serializer):
+    DOCUMENT_NUMBER_STRATEGY_CHOICES = (
+        ("preserve_legacy", "Preserve legacy source invoice number"),
+        ("generate_finacc", "Generate Finacc document number"),
+    )
+
     entity = serializers.IntegerField()
     profile = serializers.IntegerField(required=False, allow_null=True)
     mode = serializers.ChoiceField(choices=ImportJob.Mode.choices)
@@ -47,6 +52,11 @@ class ImportJobCreateSerializer(serializers.Serializer):
     compliance_mode = serializers.ChoiceField(choices=ImportJob.ComplianceMode.choices, required=False, default=ImportJob.ComplianceMode.PASSIVE)
     withholding_mode = serializers.ChoiceField(choices=ImportJob.WithholdingMode.choices, required=False, default=ImportJob.WithholdingMode.PRESERVE_LEGACY)
     stock_replay = serializers.BooleanField(required=False, default=False)
+    document_number_strategy = serializers.ChoiceField(
+        choices=DOCUMENT_NUMBER_STRATEGY_CHOICES,
+        required=False,
+        default="preserve_legacy",
+    )
     source_system = serializers.CharField(required=False, allow_blank=True, default="")
     file = serializers.FileField()
 

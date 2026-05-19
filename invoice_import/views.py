@@ -86,6 +86,7 @@ class InvoiceImportJobCreateAPIView(InvoiceImportBaseAPIView):
             stock_replay=bool(data["stock_replay"]),
             compliance_mode=data["compliance_mode"],
             withholding_mode=data["withholding_mode"],
+            document_number_strategy=data["document_number_strategy"],
             source_system=data["source_system"],
             filename=upload.name,
             fmt=fmt,
@@ -123,7 +124,29 @@ class InvoiceImportJobCommitAPIView(InvoiceImportBaseAPIView):
     def post(self, request, job_id: int):
         job = self._get_job(request, job_id)
         job = commit_job(job=job, user=request.user)
-        return Response(ImportJobSerializer(job).data)
+        payload = ImportJobSerializer(job).data
+        if job.status == ImportJob.Status.COMMITTED:
+            return Response(payload, status=status.HTTP_200_OK)
+
+        error_count = payload.get("error_count", 0)
+        if job.status == ImportJob.Status.PARTIAL:
+            return Response(
+                {
+                    **payload,
+                    "detail": "Import partially completed. Some rows failed and were skipped.",
+                    "error_count": error_count,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response(
+            {
+                **payload,
+                "detail": "Import failed. No rows were committed.",
+                "error_count": error_count,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 class InvoiceImportJobErrorsExportAPIView(InvoiceImportBaseAPIView):

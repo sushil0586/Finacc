@@ -17,7 +17,10 @@ from financial.services import apply_normalized_profile_payload, create_account_
 from invoice_import.models import ImportJob
 from invoice_import.models import ImportProfile
 from invoice_import.services import _write_csv_zip, commit_job, create_validated_job
+from numbering.services import ensure_document_type, ensure_series
 from invoice_import.views import (
+    PurchaseInvoiceImportJobCommitAPIView,
+    PurchaseInvoiceImportJobCreateAPIView,
     PurchaseInvoiceImportProfileListCreateAPIView,
     PurchaseInvoiceImportJobReconciliationAPIView,
     SalesInvoiceImportJobCommitAPIView,
@@ -199,6 +202,125 @@ class InvoiceImportServiceTests(TestCase):
         self.assertEqual(header.legacy_import_mode, ImportJob.Mode.OUTSTANDING_ONLY)
         self.assertEqual(header.match_notes["legacy_settlement"]["outstanding_amount"], "780.00")
         self.assertEqual(open_item.outstanding_amount, Decimal("780.00"))
+
+    def test_purchase_import_can_generate_finacc_document_number(self):
+        doc_type = ensure_document_type(
+            module="purchase",
+            doc_key="PURCHASE_INVOICE",
+            name="Purchase Invoice",
+            default_code="PINV",
+        )
+        ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=doc_type.id,
+            doc_code="PINV",
+            prefix="PINV",
+            start=1001,
+            padding=4,
+        )
+
+        row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-finacc-num-1",
+            source_invoice_number="LEG-P-0001",
+        )
+        row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "LEG-P-0001",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        job = create_validated_job(
+            entity=self.entity,
+            user=self.user,
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            stock_replay=False,
+            compliance_mode=ImportJob.ComplianceMode.PASSIVE,
+            withholding_mode=ImportJob.WithholdingMode.PRESERVE_LEGACY,
+            document_number_strategy="generate_finacc",
+            source_system="legacy_erp",
+            filename="import.zip",
+            fmt=ImportJob.FileFormat.CSV,
+            file_bytes=_write_csv_zip([row]),
+        )
+        self.assertEqual(job.status, ImportJob.Status.VALIDATED)
+
+        job = commit_job(job=job, user=self.user)
+        header = PurchaseInvoiceHeader.objects.get(legacy_source_key="purchase-finacc-num-1")
+        self.assertEqual(job.status, ImportJob.Status.COMMITTED)
+        self.assertTrue(bool(header.doc_no))
+        self.assertNotEqual(header.purchase_number, "LEG-P-0001")
+        self.assertEqual(header.supplier_invoice_number, "LEG-P-0001")
+
+    def test_purchase_collision_with_live_invoice_is_skipped_for_generate_finacc_strategy(self):
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            bill_date=timezone.now().date(),
+            posting_date=timezone.now().date(),
+            purchase_number="P-LIVE-EXISTING-1",
+            supplier_invoice_number="LIVE-SUP-1",
+            status=PurchaseInvoiceHeader.Status.POSTED,
+        )
+        row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key="purchase-collision-test-1",
+            source_invoice_number="P-LIVE-EXISTING-1",
+        )
+        row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": "P-LIVE-EXISTING-1",
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+
+        preserve_job = create_validated_job(
+            entity=self.entity,
+            user=self.user,
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            stock_replay=False,
+            compliance_mode=ImportJob.ComplianceMode.PASSIVE,
+            withholding_mode=ImportJob.WithholdingMode.PRESERVE_LEGACY,
+            document_number_strategy="preserve_legacy",
+            source_system="legacy_erp",
+            filename="import.zip",
+            fmt=ImportJob.FileFormat.CSV,
+            file_bytes=_write_csv_zip([row]),
+        )
+        self.assertEqual(preserve_job.status, ImportJob.Status.FAILED)
+
+        generate_job = create_validated_job(
+            entity=self.entity,
+            user=self.user,
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            stock_replay=False,
+            compliance_mode=ImportJob.ComplianceMode.PASSIVE,
+            withholding_mode=ImportJob.WithholdingMode.PRESERVE_LEGACY,
+            document_number_strategy="generate_finacc",
+            source_system="legacy_erp",
+            filename="import.zip",
+            fmt=ImportJob.FileFormat.CSV,
+            file_bytes=_write_csv_zip([row]),
+        )
+        self.assertEqual(generate_job.status, ImportJob.Status.VALIDATED)
 
     def test_full_history_sales_with_stock_replay_and_live_compliance_calls_hooks(self):
         uom = UnitOfMeasure.objects.create(entity=self.entity, code="NOS", description="Numbers")
@@ -717,6 +839,81 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
         patch_response = SalesInvoiceImportProfileDetailAPIView.as_view()(patch_request, profile_id=profile_id)
         self.assertEqual(patch_response.status_code, 200)
         self.assertEqual(patch_response.data["description"], "Updated mapping description")
+
+    @patch("invoice_import.views.require_purchase_request_permission")
+    def test_purchase_job_commit_view_returns_partial_when_some_groups_fail(self, _mock_permission):
+        ok_row = self._purchase_row(source_key="purchase-ok-1", invoice_number="P-OK-001")
+        ok_row["original_source_key"] = ""
+        bad_cn_row = self._purchase_row(source_key="purchase-cn-bad-1", invoice_number="P-CN-001")
+        bad_cn_row["doc_type"] = 2
+        bad_cn_row["original_source_key"] = "missing-original"
+        rows = [
+            ok_row,
+            bad_cn_row,
+        ]
+        create_request = self._request(
+            "post",
+            "/api/purchase/legacy-import/jobs/",
+            data={
+                "entity": self.entity.id,
+                "mode": ImportJob.Mode.OUTSTANDING_ONLY,
+                "detail_level": ImportJob.DetailLevel.HEADER_ONLY,
+                "file": self._upload(rows),
+            },
+            format="multipart",
+        )
+        create_response = PurchaseInvoiceImportJobCreateAPIView.as_view()(create_request)
+        self.assertEqual(create_response.status_code, 201)
+        job_id = create_response.data["job"]["id"]
+        self.assertTrue(create_response.data["can_commit"])
+
+        commit_request = self._request(
+            "post",
+            f"/api/purchase/legacy-import/jobs/{job_id}/commit/",
+            data={"entity": self.entity.id},
+            format="json",
+        )
+        commit_response = PurchaseInvoiceImportJobCommitAPIView.as_view()(commit_request, job_id=job_id)
+        self.assertEqual(commit_response.status_code, 409)
+        self.assertEqual(commit_response.data["status"], ImportJob.Status.PARTIAL)
+        self.assertIn("partially completed", commit_response.data["detail"].lower())
+        self.assertGreater(commit_response.data["error_count"], 0)
+
+    @patch("invoice_import.views.require_purchase_request_permission")
+    def test_purchase_job_commit_view_returns_failed_when_all_groups_fail(self, _mock_permission):
+        bad_cn_row = self._purchase_row(source_key="purchase-cn-fail-1", invoice_number="P-CN-FAIL-001")
+        bad_cn_row["doc_type"] = 2
+        bad_cn_row["original_source_key"] = "missing-original"
+        rows = [
+            bad_cn_row,
+        ]
+        create_request = self._request(
+            "post",
+            "/api/purchase/legacy-import/jobs/",
+            data={
+                "entity": self.entity.id,
+                "mode": ImportJob.Mode.OUTSTANDING_ONLY,
+                "detail_level": ImportJob.DetailLevel.HEADER_ONLY,
+                "file": self._upload(rows),
+            },
+            format="multipart",
+        )
+        create_response = PurchaseInvoiceImportJobCreateAPIView.as_view()(create_request)
+        self.assertEqual(create_response.status_code, 201)
+        job_id = create_response.data["job"]["id"]
+        self.assertTrue(create_response.data["can_commit"])
+
+        commit_request = self._request(
+            "post",
+            f"/api/purchase/legacy-import/jobs/{job_id}/commit/",
+            data={"entity": self.entity.id},
+            format="json",
+        )
+        commit_response = PurchaseInvoiceImportJobCommitAPIView.as_view()(commit_request, job_id=job_id)
+        self.assertEqual(commit_response.status_code, 400)
+        self.assertEqual(commit_response.data["status"], ImportJob.Status.FAILED)
+        self.assertIn("failed", commit_response.data["detail"].lower())
+        self.assertGreater(commit_response.data["error_count"], 0)
 
     @patch("invoice_import.views.require_purchase_request_permission")
     def test_purchase_reconciliation_view_returns_summary(self, _mock_permission):
